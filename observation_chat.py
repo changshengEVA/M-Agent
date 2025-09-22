@@ -1,79 +1,17 @@
 import os
 from dotenv import load_dotenv
-import yaml
 import json
-import time
 from flipflop.utils import *
+from chat.utils import *
 from llama_index.core.llms import ChatMessage
 from llama_index.core import Settings
-load_dotenv()
-with open("./prompt.yaml","r",encoding="utf-8") as file:
-    prompt_data = yaml.safe_load(file)
+from llama_index.core import StorageContext, load_index_from_storage
+from chat.prepare_input import find_memory,emerge_chat_prompt_wo_memory,emerge_chat_prompt_w_memory
 
-SELFWOM,SELFWOM_WO_OB,OBSERVATION,HISTORY,MEMORY,FIND  =   prompt_data["obserchatprompt"]["selfwom"],\
-                                prompt_data["obserchatprompt"]["selfwom_wo_ob"],\
-                                prompt_data["obserchatprompt"]["observation"],\
-                                prompt_data["obserchatprompt"]["history"],\
-                                prompt_data["obserchatprompt"]["memory"],\
-                                prompt_data['obserchatprompt']['findmemory']
-#print(SELFWOM,OBSERVATION,HISTORY)
+load_dotenv()
 LANGUAGE = os.getenv("LANGUAGE")
 
 import json
-
-def store_the_history(history, llm, **kwargs):
-    
-    memory_o = ""
-    for key, value in kwargs.items():
-        content = f"{key}: {value}"
-        memory_o += content + "\n"
-        print(content)
-    memory_o += "The following is the conversation history:\n" + history
-    memory_o += f"\nThis is the basic memory of a conversation, please summarize the content in {LANGUAGE} taking changshengEVA's perspective, only talk about the key information, such as time...\n"
-    print("Start to memory...")
-    mem = str(llm.chat([ChatMessage(content=memory_o)])).split('assistant:')[-1]
-    #print(mem)
-    #raise ValueError('Stop')
-    print("The history is storing, find the following args:")
-    data_to_store = {
-        'history': history,
-        'kwargs': kwargs,
-        'memory': mem
-    }
-    filename = "./data/memory/dialog_history.json"
-    
-    try:
-        with open(filename, 'r', encoding='utf-8') as file:
-            existing_data = json.load(file)
-            if not isinstance(existing_data, list):
-                raise ValueError("Existing data is not a list")
-    except (FileNotFoundError, ValueError):
-        existing_data = []
-    
-    existing_data.append(data_to_store)
-    
-    json_data = json.dumps(existing_data, ensure_ascii=False, indent=4)
-    
-    with open(filename, 'w', encoding='utf-8') as file:
-        file.write(json_data)
-    
-    print("OK!! Data saved to", filename)
-
-
-
-def emerge_chat_prompt_wo_memory(history,observation = None): 
-    if observation: return f"{SELFWOM.format(LANGUAGE)}{OBSERVATION.format(observation)}{HISTORY.format(history)}"
-    else : return f"{SELFWOM_WO_OB.format(LANGUAGE)}{HISTORY.format(history)}"
-
-from llama_index.core import StorageContext, load_index_from_storage
-def find_memory(index, find):
-    query_engine = index.as_query_engine()
-    response = query_engine.query(FIND.format(find))
-    return response
-    
-def emerge_chat_prompt_w_memory(history,memory,observation = None): 
-    if observation: return f"{SELFWOM.format(LANGUAGE)}{MEMORY.format(memory)}{OBSERVATION.format(observation)}{HISTORY.format(history)}"
-    else : return f"{SELFWOM_WO_OB.format(LANGUAGE)}{MEMORY.format(memory)}{HISTORY.format(history)}"
 
 def start_chat(llm, embed, memory = False, store = False, observation = None):
     """
@@ -87,6 +25,9 @@ def start_chat(llm, embed, memory = False, store = False, observation = None):
         print("\n\n\n")
         displayed = "ZQR:" + start_talk + "\n"
         history += displayed
+    if not os.path.exists("./data/memory/index"):
+        print_with_color("Warning: 记忆索引文件夹不存在，将使用无记忆模式", "yellow")
+        memory = False
     if memory is False:
         final_prompt = emerge_chat_prompt_wo_memory(history,observation)
     else:
@@ -99,8 +40,8 @@ def start_chat(llm, embed, memory = False, store = False, observation = None):
         print(memory)
         final_prompt = emerge_chat_prompt_w_memory(history, memory, observation)
         
-    #print(final_prompt)
-    #raise ValueError("EVA error...")
+    # print(final_prompt)
+    # raise ValueError("EVA error...")
     print_with_color("changshengEVA:","green")
     response = str(llm.chat([ChatMessage(content = final_prompt)])).split('assistant:')[-1]
     print(response)
@@ -129,8 +70,7 @@ def start_chat(llm, embed, memory = False, store = False, observation = None):
     print(history)
     if store: 
         store_the_history(history, llm, observation=observation, time=get_current_time())
-
-
+        store_mem(embed, llm)
 
 
 if __name__ == "__main__":

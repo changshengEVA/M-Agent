@@ -2,8 +2,6 @@ import os
 from dotenv import load_dotenv
 load_dotenv()
 from llama_index.core.llms import ChatMessage
-from multiff import start_server
-from flipflop.utils import *
 import argparse
 parser = argparse.ArgumentParser(description='处理方法选择。')
 parser.add_argument('--method', type=str, choices=['local', 'azure', 'openai'], required=True, help='选择处理方法,参照README。')
@@ -61,11 +59,12 @@ def main():
     if args.memory:
         pre_load()
     if args.function == "Email":
+        from multiff import start_server
         start_server(args)
     elif args.function == "Talker":
         from observation_chat import start_chat
         start_chat(args.llm, args.embed_model, args.memory, args.store)
-        store_mem(args.embed_model, args.llm)
+        
     #print('正在加载记忆，请稍等...')
     #pre_load()
     #print('记忆加载完成')
@@ -74,4 +73,5 @@ def main():
 if __name__ == '__main__':
     main()
 
+## Use command: python main.py --method openai
 

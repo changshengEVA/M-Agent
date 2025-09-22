@@ -7,20 +7,58 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flipflop.utils import try_multi_decode
 
 with open("./flipflop/config.yaml",'r', encoding="utf-8") as f:
-    cfg = yaml.safe_load(f)['Email']
+    cfg = yaml.safe_load(f)['Gmail']
 import email
 import imaplib
+import logging
+import time
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
  
 # IMAP服务器信息
 imap_host = cfg["url"]
 username = cfg['Acount']
 password = cfg['Password']
- 
+
+def connect_imap_with_retry(imap_host, max_retries=5, retry_delay=3):
+    """
+    连接到IMAP服务器，支持失败重连
+    Args:
+        imap_host: IMAP服务器地址
+        max_retries: 最大重试次数
+        retry_delay: 重试延迟时间（秒）
+    
+    Returns:
+        IMAP4_SSL连接对象
+    """
+    server = None
+    attempt = 0
+    while attempt < max_retries:
+        try:
+            attempt += 1
+            logger.info(f"尝试连接IMAP服务器 (第{attempt}次)...")
+            # 创建SSL连接
+            server = imaplib.IMAP4_SSL(imap_host)
+            logger.info("IMAP连接成功!")
+            # 测试连接是否有效
+            server.noop()
+            return server
+        except Exception as e:
+            logger.error(f"第{attempt}次连接失败: {str(e)}")
+            if attempt < max_retries:
+                logger.info(f"{retry_delay}秒后重试...")
+                time.sleep(retry_delay)
+            else:
+                logger.error(f"已达到最大重试次数({max_retries})，连接失败")
+                raise
+    return server
+
 def read_unseen_emails(use_llm, delete = False):
 
     email_get = ''
     # 连接到IMAP服务器
-    server = imaplib.IMAP4_SSL(imap_host)
+    server = connect_imap_with_retry(imap_host)
     server.login(username, password)
     
     # 选择收件箱

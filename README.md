@@ -3,7 +3,10 @@ This this a chat robot with memory throughout the right rag!!
 This project is trying to build an Agent that brings out its best ability to memory and use it to communicate with users.
 
 # Log
-2024-08-06: 
+2024-08-06:
+
+# TODO
+1. 需要将代码重构变得更加清晰有条理
 
 # install
 Firstly, you need to install the necessary packages

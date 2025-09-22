@@ -6,7 +6,7 @@ from flipflop.utils import *
 from flipflop.ReceiveEmail import read_unseen_emails
 import asyncio
 def check_email_and_start_chat(args):
-    print(args)
+    # print(args)
     T = 0
     try:
         while True:

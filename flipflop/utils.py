@@ -54,39 +54,6 @@ def get_weather(api_key, city):
         print(i)
     return data_h
 
-def read_mem():
-    import json
-    # 初始化一个空列表来存储memory值
-    memory_list = []
-
-    # 打开并读取JSON文件
-    with open('./data/memory/dialog_history.json', 'r', encoding='utf-8') as file:
-        # 加载JSON内容
-        data = json.load(file)
-        
-        # 遍历数据列表
-        for item in data:
-            # 提取每个字典中的'memory'值
-            memory_value = item.get('memory', None)
-            
-            # 如果'memory'值存在，则添加到列表中
-            if memory_value:
-                memory_list.append(memory_value)
-
-    return memory_list
-
-def store_mem(embed_model, llm):
-    from llama_index.core import Document,Settings
-    Settings.embed_model = embed_model
-    Settings.llm = llm
-    documents = [Document(text=intro) for intro in read_mem()]
-    from llama_index.core import VectorStoreIndex
-    index = VectorStoreIndex.from_documents(documents,)
-    #print(index)
-    index.storage_context.persist(persist_dir="./data/memory/index")
-    print('index已保存...')
-
-
 def print_with_color(text, color):
     """
     在终端中打印带颜色的文本。
