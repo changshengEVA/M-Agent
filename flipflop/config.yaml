@@ -7,6 +7,6 @@ Email:
 
 Gmail:
   url: "imap.gmail.com"
-  Acount: 
-  Password: 
+  Acount: "changshengEVA@gmail.com"
+  Password: "odlratkmfvritenm"
   conclude_prompt: "请对以下邮件内容进行总结：{}"
