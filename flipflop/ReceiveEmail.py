@@ -6,7 +6,7 @@ from llama_index.core.llms import ChatMessage
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flipflop.utils import try_multi_decode
 
-with open("./flipflop/config.yaml",'r', encoding="utf-8") as f:
+with open("./config/email.yaml",'r', encoding="utf-8") as f:
     cfg = yaml.safe_load(f)['Gmail']
 import email
 import imaplib

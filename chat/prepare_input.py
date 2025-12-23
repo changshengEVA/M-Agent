@@ -6,7 +6,7 @@ import os
 from llama_index.core.indices.base import BaseIndex
 
 # 0922: 初始化prompt与语言信息
-with open("./prompt.yaml","r",encoding="utf-8") as file:
+with open("./config/prompt.yaml","r",encoding="utf-8") as file:
     prompt_data = yaml.safe_load(file)
 ROLE,SELFWOM,SELFWOM_WO_OB,OBSERVATION,HISTORY,MEMORY,FIND  =   prompt_data["roleprompt"],\
                                 prompt_data["obserchatprompt"]["selfwom"],\

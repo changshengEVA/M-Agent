@@ -8,7 +8,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flipflop.utils import try_multi_decode
 
 # 读取配置文件，获取 Gmail 相关信息（注意节点名称为 Gmail）
-with open("./flipflop/config.yaml", 'r', encoding="utf-8") as f:
+with open("./config/email.yaml", 'r', encoding="utf-8") as f:
     cfg = yaml.safe_load(f)['Gmail']
 
 # 从配置中读取服务器地址、账户、密码和总结提示
