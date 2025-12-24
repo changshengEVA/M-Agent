@@ -1,0 +1,6 @@
+# changshengEVA 2025/12/24 adding config of neo4j
+# the name of the instance of the neo4j
+# before using this 
+url: "neo4j://127.0.0.1:7687"
+user_name: "neo4j"
+password: "EVAnational0"

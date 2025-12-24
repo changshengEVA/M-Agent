@@ -1,12 +1,16 @@
 # M-Agent
 This this a chat robot with memory throughout the right rag!!
-This project is trying to build an Agent that brings out its best ability to memory and use it to communicate with users.
+This project is trying to build an Agent that brings out its best ability to memory and use it to communicate with users. 构建知识图谱的统一训练范式
 
 # Log
-2024-08-06:
+2024-08-06:启动项目
+2025-12-24:正式进行知识图谱的定义与搭建
 
 # TODO
-1. 需要将代码重构变得更加清晰有条理
+1. 需要将代码重构变得更加清晰有条理。
+2. 当前的知识图谱中节点的生成并没有进行去重的操作，可能导致关系对节点牵引的破坏。
+3. 关系的定义，提取构建。
+4. 将某些属性进行参数化存储。
 
 # install
 Firstly, you need to install the necessary packages

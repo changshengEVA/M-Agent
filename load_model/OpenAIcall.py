@@ -30,6 +30,6 @@ def get_embed_model():
             engine="text-embedding-ada-002",
             input=text
         )
-        return response.data[0].embeddingxz
+        return response.data[0].embedding
 
     return embed_model
