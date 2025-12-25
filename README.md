@@ -7,10 +7,13 @@ This project is trying to build an Agent that brings out its best ability to mem
 2025-12-24:正式进行知识图谱的定义与搭建
 
 # TODO
-1. 需要将代码重构变得更加清晰有条理。
-2. 当前的知识图谱中节点的生成并没有进行去重的操作，可能导致关系对节点牵引的破坏。
-3. 关系的定义，提取构建。
-4. 将某些属性进行参数化存储。
+1. 构造分支
+2. 需要将代码重构变得更加清晰有条理，更加高效。
+3. 当前的知识图谱中节点的生成并没有进行去重的操作，可能导致关系对节点牵引的破坏。
+4. 关系的定义，提取构建。
+5. 将某些属性进行参数化存储。
+6. 构建双模态记忆的邮件管理助手。  
+<img src="data\imgs\1.png" alt="示例图片" width="650" height="300">
 
 # install
 Firstly, you need to install the necessary packages
@@ -34,7 +37,7 @@ python main.py --method <method>
 the \<method\> you can choose are:
 * local -> this mean that you will use the local model.
 * azure -> this mean that you will use the azure base openai.
-* openai -> this mean that you will use the openai or domestic factor base openai.
+* openai -> this mean that you will use the openai or domestic factor base openai.（测试版本仅仅支持该版本）
 # Config
 Firstly, you need to set your .env file 
 ```
