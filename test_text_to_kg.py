@@ -1,2 +1,4 @@
 from memory.build_memory.build_episode import scan_and_build_episodes
+from memory.build_memory.qualify_episode import scan_and_qualify_episodes
 scan_and_build_episodes()
+scan_and_qualify_episodes()

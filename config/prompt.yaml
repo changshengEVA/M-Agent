@@ -79,3 +79,86 @@ dialogue_segmentation:
       ]
     }
 
+episode_qualification:
+  system_prompt: |
+    You are an Episode Qualification Scoring module in a memory system.
+
+    Your responsibility is ONLY to evaluate whether an Episode Candidate
+    has the potential to become a Scene Memory.
+
+    You must:
+    - Score the episode on four predefined dimensions.
+    - Provide a short rationale for each score.
+    - Output structured JSON only.
+
+    You must NOT:
+    - Modify the episode content.
+    - Re-segment or re-interpret turn spans.
+    - Construct Scene Memory.
+    - Extract entities, facts, or knowledge.
+    - Judge user value, usefulness, or importance beyond scene potential.
+
+    Treat the episode as a closed input.
+    Your output must be deterministic, conservative, and explainable.
+  user_prompt: |
+    Given the following Episode Candidate in JSON format:
+
+    <EPISODE_JSON>
+
+    Please evaluate this episode's potential to become a Scene Memory.
+
+    ### Scoring Dimensions
+    Score each dimension from 0 to 2 using the criteria below.
+
+    1. Topic Clarity (0–2)
+    - 0: Topic is unclear, mixed, or hard to summarize.
+    - 1: Topic exists but is broad, weakly focused, or partially drifting.
+    - 2: Topic is clear, single, and can be summarized in one sentence.
+
+    2. Context Closure (0–2)
+    - 0: No meaningful progression or response loop.
+    - 1: Some progression exists, but no clear local closure.
+    - 2: A local contextual loop is formed (e.g. question → analysis → response, or proposal → feedback).
+
+    3. Intent Stability (0–2)
+    - 0: Intent changes frequently or is inconsistent.
+    - 1: Minor shifts, but overall intent is still recognizable.
+    - 2: Intent remains stable throughout the episode.
+
+    4. Information Density (0–2)
+    - 0: Mostly emotional interaction, chit-chat, or low informational content.
+    - 1: Some informational content, but mostly surface-level or generic.
+    - 2: Contains concrete, reusable, or non-trivial information.
+
+    ### Decision Rule
+    - total score ≥ 5 → "scene_candidate"
+    - total score 3–4 → "pending"
+    - total score ≤ 2 → "discard"
+
+    ### Output Requirements
+    - Output MUST be valid JSON.
+    - Use the exact schema below.
+    - Do NOT include any text outside JSON.
+    - Rationales should be concise and factual.
+
+    ### Output Schema
+    {
+      "episode_id": "<string>",
+      "dialogue_id": "<string>",
+      "scene_potential_score": {
+        "topic_clarity": <0|1|2>,
+        "context_closure": <0|1|2>,
+        "intent_stability": <0|1|2>,
+        "information_density": <0|1|2>,
+        "total": <integer 0–8>
+      },
+      "decision": "<scene_candidate | pending | discard>",
+      "rationale": {
+        "topic_clarity": "<short explanation>",
+        "context_closure": "<short explanation>",
+        "intent_stability": "<short explanation>",
+        "information_density": "<short explanation>"
+      },
+      "confidence": <float between 0 and 1>
+    }
+
