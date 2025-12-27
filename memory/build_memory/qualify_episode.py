@@ -3,6 +3,7 @@
 """
 Episode Qualification 模块。
 扫描 episodes 目录下的 episode 文件，对每个 episode 进行打分和资格评估。
+提供清理 qualifications 文件的接口。
 """
 
 import os
@@ -25,6 +26,7 @@ logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(le
 logger = logging.getLogger(__name__)
 
 # 路径配置
+DIALOGUES_ROOT = PROJECT_ROOT / "data" / "memory" / "dialogues"
 EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "episodes"
 CONFIG_PATH = PROJECT_ROOT / "config" / "prompt.yaml"
 
@@ -75,7 +77,77 @@ def load_episodes(episode_file: Path) -> Dict:
     with open(episode_file, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-def call_openai_for_qualification(episode_json: Dict, prompts: Dict) -> Dict:
+def find_dialogue_file(dialogue_id: str) -> Optional[Path]:
+    """
+    根据 dialogue_id 查找对应的对话文件。
+    搜索 dialogues 目录下的所有子目录。
+    """
+    # 搜索 by_user 目录
+    by_user_dir = DIALOGUES_ROOT / "by_user"
+    if by_user_dir.exists():
+        for user_dir in by_user_dir.iterdir():
+            if user_dir.is_dir():
+                for year_month_dir in user_dir.iterdir():
+                    if year_month_dir.is_dir():
+                        dialogue_file = year_month_dir / f"{dialogue_id}.json"
+                        if dialogue_file.exists():
+                            return dialogue_file
+    
+    # 搜索 by_flipflop 目录
+    by_flipflop_dir = DIALOGUES_ROOT / "by_flipflop"
+    if by_flipflop_dir.exists():
+        for flipflop_dir in by_flipflop_dir.iterdir():
+            if flipflop_dir.is_dir():
+                for year_month_dir in flipflop_dir.iterdir():
+                    if year_month_dir.is_dir():
+                        dialogue_file = year_month_dir / f"{dialogue_id}.json"
+                        if dialogue_file.exists():
+                            return dialogue_file
+    
+    return None
+
+def load_dialogue(dialogue_file: Path) -> Dict:
+    """加载对话 JSON 文件"""
+    with open(dialogue_file, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+def build_episode_with_content(episode_meta: Dict, dialogue_data: Dict) -> Dict:
+    """
+    根据 episode 元数据和对话数据构建完整的 episode 内容。
+    
+    Args:
+        episode_meta: episode 元数据（来自 episodes_v1.json）
+        dialogue_data: 完整的对话数据
+        
+    Returns:
+        包含完整内容的 episode 字典
+    """
+    # 提取 turn_span
+    turn_span = episode_meta.get('turn_span', [0, 0])
+    start_id, end_id = turn_span[0], turn_span[1]
+    
+    # 提取对应的对话轮次
+    turns = dialogue_data.get('turns', [])
+    episode_turns = []
+    
+    for turn in turns:
+        turn_id = turn.get('turn_id', -1)
+        if start_id <= turn_id <= end_id:
+            episode_turns.append(turn)
+    
+    # 构建完整的 episode 结构
+    episode_with_content = episode_meta.copy()
+    episode_with_content['turns'] = episode_turns
+    episode_with_content['dialogue_content'] = {
+        'dialogue_id': dialogue_data.get('dialogue_id', ''),
+        'user_id': dialogue_data.get('user_id', ''),
+        'participants': dialogue_data.get('participants', []),
+        'meta': dialogue_data.get('meta', {})
+    }
+    
+    return episode_with_content
+
+def call_openai_for_qualification(episode_with_content: Dict, prompts: Dict) -> Dict:
     """
     调用 OpenAI 进行 episode qualification 打分。
     返回包含 qualification 结果的字典。
@@ -90,7 +162,7 @@ def call_openai_for_qualification(episode_json: Dict, prompts: Dict) -> Dict:
     user_prompt_template = prompts.get('user_prompt', '')
     
     # 将 episode JSON 转换为字符串用于插入
-    episode_str = json.dumps(episode_json, ensure_ascii=False, indent=2)
+    episode_str = json.dumps(episode_with_content, ensure_ascii=False, indent=2)
     user_prompt = user_prompt_template.replace('<EPISODE_JSON>', episode_str)
     
     # 组合 system 和 user prompt（适用于 text completion 模型）
@@ -166,6 +238,14 @@ def process_episode_file(episode_file: Path, prompts: Dict) -> bool:
         episode_data = load_episodes(episode_file)
         dialogue_id = episode_data.get('dialogue_id', episode_file.parent.name)
         
+        # 查找并加载对应的对话文件
+        dialogue_file = find_dialogue_file(dialogue_id)
+        if not dialogue_file:
+            logger.error(f"找不到对话文件: {dialogue_id}")
+            return False
+        
+        dialogue_data = load_dialogue(dialogue_file)
+        
         # 获取所有 episodes
         episodes = episode_data.get('episodes', [])
         if not episodes:
@@ -177,8 +257,11 @@ def process_episode_file(episode_file: Path, prompts: Dict) -> bool:
         for episode in episodes:
             episode_id = episode.get('episode_id', 'unknown')
             
+            # 构建包含完整内容的 episode
+            episode_with_content = build_episode_with_content(episode, dialogue_data)
+            
             # 调用 OpenAI 进行 qualification
-            openai_result = call_openai_for_qualification(episode, prompts)
+            openai_result = call_openai_for_qualification(episode_with_content, prompts)
             
             # 构建最终结构
             qualification = build_qualification_structure(dialogue_id, episode_id, openai_result)
@@ -191,6 +274,8 @@ def process_episode_file(episode_file: Path, prompts: Dict) -> bool:
         return True
     except Exception as e:
         logger.error(f"处理 episode 文件 {episode_file} 失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return False
 
 def save_qualifications(qualifications: List[Dict], qualification_file: Path):
@@ -246,6 +331,60 @@ def scan_and_qualify_episodes(use_tqdm: bool = True):
     
     logger.info(f"成功处理 {success_count}/{len(files_to_process)} 个 episode 文件")
 
+def clear_all_qualifications(confirm: bool = False):
+    """
+    清理所有 qualifications_v1.json 文件。
+    
+    Args:
+        confirm: 如果为 True，则实际删除文件；如果为 False，只显示将要删除的文件列表
+    """
+    # 扫描所有 episode 文件
+    episode_files = scan_episode_files()
+    
+    qualification_files = []
+    for episode_file in episode_files:
+        qual_file = get_qualification_path(episode_file)
+        if qual_file.exists():
+            qualification_files.append(qual_file)
+    
+    if not qualification_files:
+        print("没有找到 qualifications_v1.json 文件")
+        return
+    
+    print(f"找到 {len(qualification_files)} 个 qualifications_v1.json 文件:")
+    for qual_file in qualification_files:
+        print(f"  - {qual_file}")
+    
+    if not confirm:
+        print("\n这只是预览。要实际删除这些文件，请运行: clear_all_qualifications(confirm=True)")
+        return
+    
+    # 实际删除文件
+    deleted_count = 0
+    for qual_file in qualification_files:
+        try:
+            qual_file.unlink()
+            print(f"已删除: {qual_file}")
+            deleted_count += 1
+        except Exception as e:
+            print(f"删除失败 {qual_file}: {e}")
+    
+    print(f"\n成功删除 {deleted_count}/{len(qualification_files)} 个文件")
+
 if __name__ == "__main__":
-    # 直接运行此脚本时执行扫描和评估
-    scan_and_qualify_episodes()
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Episode Qualification 模块")
+    parser.add_argument("--scan", action="store_true", help="扫描并评估 episodes")
+    parser.add_argument("--clear", action="store_true", help="清理所有 qualifications 文件")
+    parser.add_argument("--confirm", action="store_true", help="确认删除（与 --clear 一起使用）")
+    
+    args = parser.parse_args()
+    
+    if args.clear:
+        clear_all_qualifications(confirm=args.confirm)
+    elif args.scan:
+        scan_and_qualify_episodes()
+    else:
+        # 默认行为：扫描并评估
+        scan_and_qualify_episodes()
