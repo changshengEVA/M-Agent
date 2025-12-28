@@ -162,3 +162,163 @@ episode_qualification:
       "confidence": <float between 0 and 1>
     }
 
+scene_build: |
+  You are a “Scene Memory Unit” construction assistant.
+
+  Your task is:
+  Based on the provided [original episode dialogue content], extract and construct a “scene-level semantic representation” as a memory record from the perspective of the memory owner.
+
+  IMPORTANT ROLE SETTING:
+  - The memory owner and first-person perspective is changshengEVA.
+  - This scene record represents changshengEVA’s own conversational memory.
+
+  [Important Constraints]
+  1. Only extract and summarize information that is explicitly stated or highly reliable within the dialogue.
+  2. Do not introduce any new facts, assumptions, or inferred relationships that do not exist in the dialogue.
+  3. Do not infer long-term preferences, personality traits, or conclusions not explicitly expressed.
+  4. All output must be strictly valid JSON.
+  5. Do not output anything other than JSON.
+  6. This scene unit is a high-level memory index; detailed information can be deferred to the original dialogue or episode.
+
+  ---
+
+  [Input: Original Episode Dialogue Content (original_episode_talk)]
+  Below is the original dialogue record segmented by turn_span, preserving the original order and speaker roles:
+
+  <<<
+  {{original_episode_talk}}
+  >>>
+
+  ---
+
+  [Task 1: Scene Type Classification]
+
+  Determine the overall “scene_type” formed by this dialogue.
+  Choose the single best match from the following:
+  - problem_solving
+  - knowledge_explanation
+  - preference_expression
+  - decision_making
+  - task_planning
+  - comparison_analysis
+  - meta_discussion
+  - clarification
+  - other
+
+  ---
+
+  [Task 2: Content Form Classification]
+
+  Determine the primary form of information in this scene (content_type).
+  Choose one:
+  - factual
+  - procedural
+  - opinion
+  - analytical
+  - exploratory
+  - mixed
+
+  ---
+
+  [Task 3: Diary Entry (diary)]
+
+  Write a short diary-style memory entry describing this scene.
+
+  Content requirements:
+  - Write from the first-person perspective of changshengEVA.
+  - Describe this as “I talked with (the name extracted from dialogue) …”, not as a third-person story.
+  - This is a memory note, not a narrative or literary description.
+  - Do NOT describe the participants as third parties (e.g., “a brother and sister”, “two people”).
+  - Do NOT invent or emphasize social roles unless they are explicitly stated and essential.
+  - Focus on what was discussed or what happened, not on evaluation or judgment.
+  - Length: 1–3 concise sentences.
+
+  ---
+
+  [Task 4: User Intent Abstraction (intent)]
+
+  Abstract the user’s primary intent in this scene.
+
+  Constraints:
+  - Start with a verb.
+  - Express the user’s purpose, not the conversation content.
+  - Keep the intent reusable across different scenes.
+
+  Example formats:
+  - "clarify_where_to_store_scene_files"
+  - "understand_how_to_prepare_for_exam"
+
+  ---
+
+  [Task 5: Scene Semantic Description (content)]
+
+  Describe the scene using the following fields.
+
+  GLOBAL CONSTRAINTS FOR `content`:
+  - All fields inside `content` MUST be plain strings.
+  - Do NOT use objects, arrays, or nested structures.
+  - If no reliable information is available for a field, return an empty string "".
+  - Content should remain neutral, concise, and recall-friendly.
+
+  Fields:
+
+  1. core  
+   - A concise description of the most central issue, topic, or fact in this scene.
+   - Should be understandable without additional context.
+   - Do NOT include narration or dialogue-style language.
+
+  2. context  
+   - Background conditions, constraints, or situations that frame the core issue.
+   - Only include information explicitly present or clearly implied by the dialogue.
+   - Leave empty if no such context is stated.
+
+  3. outcome  
+   - Any explicitly stated decision, conclusion, or interim result reached in the scene.
+   - Leave empty if no clear outcome is reached.
+
+  4. notes  
+   - Important supplementary information such as uncertainties, open questions, or points of disagreement.
+   - Do NOT speculate or resolve unresolved issues.
+   - Leave empty if not applicable.
+
+  ---
+
+  [Task 6: Tag Generation (tags)]
+
+  Generate 5–10 tags.
+
+  Constraints:
+  - Use short English words or snake_case.
+  - Cover topics, technical domains, or methodological themes.
+  - Some redundancy is acceptable.
+
+  ---
+
+  [Task 7: Confidence Assessment (confidence)]
+
+  Assign a confidence score between 0 and 1 indicating how clear and stable this scene is:
+  - Above 0.8: Information is clear and well defined.
+  - 0.5–0.8: Discussion is sufficient but some uncertainty remains.
+  - Below 0.5: Highly exploratory or unclear.
+
+  ---
+
+  [Output Format]
+
+  Strictly output the following JSON structure.
+  Do not add, remove, or rename any fields:
+
+  {
+    "scene_type": "string",
+    "content_type": "string",
+    "diary": "string",
+    "intent": "string",
+    "content": {
+      "core": "string",
+      "context": "string",
+      "outcome": "string",
+      "notes": "string"
+    },
+    "tags": ["string"],
+    "confidence": number
+  }
