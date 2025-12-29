@@ -112,10 +112,12 @@ def check_scene_built(user_id: str, dialogue_id: str, episode_id: str) -> Tuple[
                         scene_data = json.load(f)
                     
                     # 检查 scene 是否对应这个 episode
-                    episode_meta_in_scene = scene_data.get("episode_metadata", {})
-                    if (episode_meta_in_scene.get("dialogue_id") == dialogue_id and
-                        episode_meta_in_scene.get("episode_id") == episode_id):
-                        return True, scene_dir.name
+                    # 从 source.episodes 中查找匹配的 episode
+                    source_episodes = scene_data.get("source", {}).get("episodes", [])
+                    for episode_info in source_episodes:
+                        if (episode_info.get("dialogue_id") == dialogue_id and
+                            episode_info.get("episode_id") == episode_id):
+                            return True, scene_dir.name
                 except Exception as e:
                     logger.warning(f"读取 scene 文件失败 {scene_file}: {e}")
                     continue
@@ -434,7 +436,9 @@ def build_scene_from_episode(dialogue_id: str, episode_id: str, user_id: str) ->
             "episodes": [
                 {
                     "episode_id": episode_id,
-                    "dialogue_id": dialogue_id
+                    "dialogue_id": dialogue_id,
+                    "user_id": user_id,
+                    "turn_span": turn_span
                 }
             ]
         },
@@ -449,14 +453,7 @@ def build_scene_from_episode(dialogue_id: str, episode_id: str, user_id: str) ->
             "notes": ""
         }),
         "tags": scene_content.get("tags", []),
-        "confidence": scene_content.get("confidence", 0.5),
-        "episode_metadata": {
-            "dialogue_id": dialogue_id,
-            "episode_id": episode_id,
-            "user_id": user_id,
-            "turn_span": turn_span,
-            "generated_at": datetime.utcnow().isoformat() + "Z"
-        }
+        "confidence": scene_content.get("confidence", 0.5)
     }
     
     return scene_data
@@ -473,7 +470,11 @@ def save_scene(scene_data: Dict) -> bool:
     """
     try:
         scene_id = scene_data.get("scene_id")
-        user_id = scene_data.get("episode_metadata", {}).get("user_id", "unknown")
+        # 从 source.episodes[0].user_id 获取 user_id
+        user_id = "unknown"
+        source_episodes = scene_data.get("source", {}).get("episodes", [])
+        if source_episodes and len(source_episodes) > 0:
+            user_id = source_episodes[0].get("user_id", "unknown")
         
         if user_id == "unknown":
             logger.error(f"无法为 unknown 用户保存 scene")

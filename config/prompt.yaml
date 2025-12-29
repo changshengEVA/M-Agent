@@ -171,6 +171,7 @@ scene_build: |
   IMPORTANT ROLE SETTING:
   - The memory owner and first-person perspective is changshengEVA.
   - This scene record represents changshengEVA’s own conversational memory.
+  - All descriptions implicitly reflect changshengEVA’s viewpoint unless explicitly attributed to another speaker. // MODIFIED
 
   [Important Constraints]
   1. Only extract and summarize information that is explicitly stated or highly reliable within the dialogue.
@@ -178,7 +179,7 @@ scene_build: |
   3. Do not infer long-term preferences, personality traits, or conclusions not explicitly expressed.
   4. All output must be strictly valid JSON.
   5. Do not output anything other than JSON.
-  6. This scene unit is a high-level memory index; detailed information can be deferred to the original dialogue or episode.
+  6. This scene unit is a high-level memory index, written as something changshengEVA can later recall, not an objective report. // MODIFIED
 
   ---
 
@@ -225,61 +226,59 @@ scene_build: |
   Write a short diary-style memory entry describing this scene.
 
   Content requirements:
-  - Write from the first-person perspective of changshengEVA.
-  - Describe this as “I talked with (the name extracted from dialogue) …”, not as a third-person story.
-  - This is a memory note, not a narrative or literary description.
-  - Do NOT describe the participants as third parties (e.g., “a brother and sister”, “two people”).
-  - Do NOT invent or emphasize social roles unless they are explicitly stated and essential.
-  - Focus on what was discussed or what happened, not on evaluation or judgment.
+  - Write strictly from the first-person perspective of changshengEVA.
+  - Begin with “I talked with [name from dialogue] …” or an equivalent first-person phrasing.
+  - This is a brief memory note, not a summary report or analytical overview. 
+  - Do NOT evaluate, justify, or generalize beyond what occurred.
+  - Do NOT describe participants as third parties.
+  - Focus on what was discussed or what happened in this interaction.
   - Length: 1–3 concise sentences.
 
   ---
 
-  [Task 4: User Intent Abstraction (intent)]
+  [Task 4: Memory Owner Intent Abstraction (intent)] 
 
-  Abstract the user’s primary intent in this scene.
+  Abstract changshengEVA’s primary intent in participating in this scene.
 
   Constraints:
   - Start with a verb.
-  - Express the user’s purpose, not the conversation content.
+  - Express changshengEVA’s purpose, not a neutral topic label.
   - Keep the intent reusable across different scenes.
 
   Example formats:
   - "clarify_where_to_store_scene_files"
-  - "understand_how_to_prepare_for_exam"
+  - "explore_implications_of_human_machine_replacement"
 
   ---
 
   [Task 5: Scene Semantic Description (content)]
 
-  Describe the scene using the following fields.
+  Describe the scene as remembered by changshengEVA using the following fields.
 
   GLOBAL CONSTRAINTS FOR `content`:
   - All fields inside `content` MUST be plain strings.
   - Do NOT use objects, arrays, or nested structures.
   - If no reliable information is available for a field, return an empty string "".
-  - Content should remain neutral, concise, and recall-friendly.
+  - Content must remain recall-oriented and grounded in the dialogue, not written as an external analysis.
+  - If expressing a sentence would require interpreting motivations, psychological states, value judgments, or abstract intent that are NOT explicitly stated in the dialogue, leave the field empty "" instead.
 
   Fields:
 
   1. core  
-   - A concise description of the most central issue, topic, or fact in this scene.
-   - Should be understandable without additional context.
-   - Do NOT include narration or dialogue-style language.
+   - A concise description of the central topic or issue discussed in this scene.
+   - Write as something changshengEVA remembers discussing, not an abstract thesis.
 
   2. context  
-   - Background conditions, constraints, or situations that frame the core issue.
-   - Only include information explicitly present or clearly implied by the dialogue.
+   - Any explicit background or framing mentioned during the conversation.
    - Leave empty if no such context is stated.
 
   3. outcome  
-   - Any explicitly stated decision, conclusion, or interim result reached in the scene.
+   - Any explicitly stated conclusion, decision, or temporary resolution reached.
    - Leave empty if no clear outcome is reached.
 
   4. notes  
-   - Important supplementary information such as uncertainties, open questions, or points of disagreement.
-   - Do NOT speculate or resolve unresolved issues.
-   - Leave empty if not applicable.
+   - Important open questions, disagreements, or uncertainties explicitly expressed.
+   - Do NOT resolve or speculate beyond the dialogue.
 
   ---
 
@@ -289,8 +288,8 @@ scene_build: |
 
   Constraints:
   - Use short English words or snake_case.
-  - Cover topics, technical domains, or methodological themes.
-  - Some redundancy is acceptable.
+  - Cover topics, technical domains, or conceptual themes.
+  - Tags should support future retrieval and clustering.
 
   ---
 
