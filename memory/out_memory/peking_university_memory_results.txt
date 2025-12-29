@@ -1,0 +1,134 @@
+============================================================
+北京大学相关记忆召回结果
+============================================================
+
+一、关键词搜索结果（基于标签匹配）
+--------------------------------------------------
+
+结果 #1:
+对话ID: dlg_2025-10-21_22-24-25
+片段ID: ep_001
+场景ID: scene_000001
+场景版本: v1
+用户ID: ZQR
+标签: exam_preparation, postgraduate_exam, family_conversation, study_motivation, encouragement, mistakes, Peking_University, sibling_interaction
+文件路径: data\memory\scenes\by_user\ZQR\scene_000001\v1.0.json
+
+结果 #2:
+对话ID: dlg_2025-11-17_19-04-53
+片段ID: ep_002
+场景ID: scene_000004
+场景版本: v1
+用户ID: ZQR
+标签: internship, family, encouragement, teasing, peking_university, qiyuan_laboratory, conversation_end
+文件路径: data\memory\scenes\by_user\ZQR\scene_000004\v1.0.json
+
+结果 #3:
+对话ID: dlg_2025-10-21_22-24-25
+片段ID: ep_001
+场景ID: scene_000001
+场景版本: v1
+用户ID: ZQR
+标签: exam_preparation, postgraduate_exam, family_conversation, study_motivation, encouragement, mistakes, Peking_University, sibling_interaction
+文件路径: data\memory\scenes\by_user\ZQR\scene_000001\v1.0.json
+
+结果 #4:
+对话ID: dlg_2025-11-17_19-04-53
+片段ID: ep_002
+场景ID: scene_000004
+场景版本: v1
+用户ID: ZQR
+标签: internship, family, encouragement, teasing, peking_university, qiyuan_laboratory, conversation_end
+文件路径: data\memory\scenes\by_user\ZQR\scene_000004\v1.0.json
+
+
+二、向量相似度搜索结果
+--------------------------------------------------
+
+查询: '北京大学'
+------------------------------
+排名: #1
+相似度分数: 0.6898 (距离: 0.4496)
+场景ID: scene_000004
+对话ID: dlg_2025-11-17_19-04-53
+片段ID: ep_002
+用户ID: ZQR
+场景类型: other
+内容类型: opinion
+意图: encourage_and_tease_brother_about_his_internship_and_studies
+标签: internship, family, encouragement, teasing, peking_university, qiyuan_laboratory, conversation_end
+置信度: 0.9
+文件路径: data\memory\scenes\by_user\ZQR\scene_000004\v1.0.json
+--------------------------------------------------
+排名: #2
+相似度分数: 0.6794 (距离: 0.4719)
+场景ID: scene_000001
+对话ID: dlg_2025-10-21_22-24-25
+片段ID: ep_001
+用户ID: ZQR
+场景类型: other
+内容类型: factual
+意图: respond_to_brothers_exam_preparation_updates
+标签: exam_preparation, postgraduate_exam, family_conversation, study_motivation, encouragement, mistakes, Peking_University, sibling_interaction
+置信度: 0.9
+文件路径: data\memory\scenes\by_user\ZQR\scene_000001\v1.0.json
+--------------------------------------------------
+排名: #3
+相似度分数: 0.6459 (距离: 0.5482)
+场景ID: scene_000006
+对话ID: dlg_2025-12-23_21-53-05
+片段ID: ep_001
+用户ID: ZQR
+场景类型: other
+内容类型: opinion
+意图: tease_and_warn_brother_about_exam_and_health
+标签: family, exam, interview, health, teasing, brother_sister, study, gaming, sleep_schedule
+置信度: 0.9
+文件路径: data\memory\scenes\by_user\ZQR\scene_000006\v1.0.json
+--------------------------------------------------
+排名: #4
+相似度分数: 0.6325 (距离: 0.5811)
+场景ID: scene_000005
+对话ID: dlg_2025-12-06_22-13-17
+片段ID: ep_001
+用户ID: ZQR
+场景类型: clarification
+内容类型: factual
+意图: clarify_my_understanding_of_vector_calculus_concepts
+标签: curl, divergence, gradient, vector_calculus, math_concepts, knowledge_check, clarification
+置信度: 0.9
+文件路径: data\memory\scenes\by_user\ZQR\scene_000005\v1.0.json
+--------------------------------------------------
+排名: #5
+相似度分数: 0.6306 (距离: 0.5858)
+场景ID: scene_000003
+对话ID: dlg_2025-11-17_19-04-53
+片段ID: ep_001
+用户ID: ZQR
+场景类型: exploratory
+内容类型: opinion
+意图: explore_implications_of_mechanical_replacement_of_human_roles
+标签: machine_replacement, robotic_spouse, human_emotion, philosophy, social_issues, marriage, technology_ethics, human_vs_machine, emotional_authenticity
+置信度: 0.9
+文件路径: data\memory\scenes\by_user\ZQR\scene_000003\v1.0.json
+--------------------------------------------------
+排名: #6
+相似度分数: 0.6278 (距离: 0.5929)
+场景ID: scene_000002
+对话ID: dlg_2025-10-21_23-02-58
+片段ID: ep_001
+用户ID: ZQR
+场景类型: problem_solving
+内容类型: procedural
+意图: advise_on_improving_sleep_and_study_habits
+标签: sleep_habits, study_problems, brother_sister, advice, galgame, bedtime_routine, problem_solving, health
+置信度: 0.9
+文件路径: data\memory\scenes\by_user\ZQR\scene_000002\v1.0.json
+--------------------------------------------------
+
+
+三、总结
+--------------------------------------------------
+找到的唯一对话ID: dlg_2025-10-21_22-24-25, dlg_2025-10-21_23-02-58, dlg_2025-11-17_19-04-53, dlg_2025-12-06_22-13-17, dlg_2025-12-23_21-53-05
+找到的唯一片段ID: ep_001, ep_002
+总计: 5 个对话, 2 个片段
