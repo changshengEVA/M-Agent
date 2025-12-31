@@ -180,6 +180,10 @@ scene_build: |
   4. All output must be strictly valid JSON.
   5. Do not output anything other than JSON.
   6. This scene unit is a high-level memory index, written as something changshengEVA can later recall, not an objective report. // MODIFIED
+  7. Role Reference Binding Rule (CRITICAL):
+   If a participant in the dialogue can be uniquely identified by a stable name or ID,
+   any role-based reference (e.g., brother, friend, teacher) MUST explicitly bind to that identifier.
+   Role references may NOT appear alone when an explicit identifier exists.
 
   ---
 
