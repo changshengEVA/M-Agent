@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>知识图谱实时可视化</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://unpkg.com/vis-network/standalone/umd/vis-network.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>📊 知识图谱实时可视化</h1>
+            <p class="subtitle">实时观测节点和关系的变化，无需手动刷新</p>
+            <div class="connection-status">
+                <span id="connection-status" class="status-disconnected">● 连接中...</span>
+                <span id="last-update">最后更新: --</span>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <div class="left-panel">
+                <div class="stats-panel">
+                    <h2>📈 统计信息</h2>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-value" id="stat-nodes">0</div>
+                            <div class="stat-label">实体节点</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="stat-edges">0</div>
+                            <div class="stat-label">关系边</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="stat-scenes">0</div>
+                            <div class="stat-label">场景数</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="stat-updates">0</div>
+                            <div class="stat-label">实时更新</div>
+                        </div>
+                    </div>
+                    
+                    <div class="entity-types">
+                        <h3>实体类型分布</h3>
+                        <canvas id="entity-type-chart"></canvas>
+                    </div>
+                </div>
+
+                <div class="controls-panel">
+                    <h2>⚙️ 控制面板</h2>
+                    <div class="control-group">
+                        <label for="confidence-filter">置信度阈值:</label>
+                        <input type="range" id="confidence-filter" min="0" max="1" step="0.1" value="0">
+                        <span id="confidence-value">0.0</span>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="node-type-filter">实体类型过滤:</label>
+                        <select id="node-type-filter" multiple>
+                            <option value="all" selected>全部类型</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="search-node">搜索节点:</label>
+                        <input type="text" id="search-node" placeholder="输入节点ID...">
+                        <button id="search-btn">搜索</button>
+                    </div>
+                    
+                    <div class="control-group">
+                        <button id="refresh-btn">🔄 手动刷新数据</button>
+                        <button id="reset-view-btn">🗺️ 重置视图</button>
+                    </div>
+                </div>
+
+                <div class="updates-panel">
+                    <h2>🔄 实时更新日志</h2>
+                    <div class="updates-list" id="updates-list">
+                        <div class="update-item">等待更新...</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="visualization-panel">
+                <div class="graph-header">
+                    <h2>🌐 知识图谱可视化</h2>
+                    <div class="graph-controls">
+                        <button id="toggle-physics">物理引擎: 开启</button>
+                        <button id="toggle-labels">显示标签: 开启</button>
+                        <button id="export-btn">导出图片</button>
+                    </div>
+                </div>
+                <div id="knowledge-graph"></div>
+                <div class="graph-info">
+                    <div class="info-section">
+                        <h3>📝 选中的节点/边信息</h3>
+                        <div id="selected-info">点击图中的节点或边查看详细信息</div>
+                    </div>
+                    <div class="info-section">
+                        <h3>🎯 图例</h3>
+                        <div class="legend">
+                            <div class="legend-item">
+                                <span class="legend-color person"></span> 人物 (person)
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color organization"></span> 组织 (organization)
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color mathematical_concept"></span> 数学概念 (mathematical_concept)
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color unknown"></span> 其他类型
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>数据源: <code>data/memory/kg_candidates/strong/</code> | 后端API: <span id="api-status">未连接</span></p>
+            <p>系统状态: <span id="system-status">初始化中...</span></p>
+        </footer>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
