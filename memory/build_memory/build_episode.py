@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 # 路径配置
 DIALOGUES_ROOT = PROJECT_ROOT / "data" / "memory" / "dialogues"
 EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "episodes"
-CONFIG_PATH = PROJECT_ROOT / "config" / "prompt.yaml"
+CONFIG_PATH = PROJECT_ROOT / "config" / "prompt" / "episode.yaml"
 
 def load_prompts() -> Dict:
     """从 config/prompt.yaml 加载 prompts"""

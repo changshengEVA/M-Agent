@@ -44,9 +44,42 @@ elif args.method == 'openai':
     API_SECRET_KEY = os.getenv("API_SECRET_KEY").encode().decode('utf-8')
     BASE_URL = os.getenv("BASE_URL")
     args.llm = OpenAI(api_key = API_SECRET_KEY, api_base = BASE_URL, temperature=0.1, model="gpt-3.5-turbo")
-    args.embed_model = OpenAIEmbedding(api_key = API_SECRET_KEY, api_base = BASE_URL, model="text-embedding-3-small")
-    # if the api embed is not working, use the local embed model.
-    #args.embed_model = get_embed_model("./checkpoint/bge-large-en-v1.5")
+    
+    # 尝试使用不同的 OpenAI 嵌入模型
+    embed_models_to_try = [
+        "text-embedding-3-large",  # 这个模型可用
+        "text-embedding-3-small",  # 原始模型
+        "text-embedding-ada-002",  # 备选模型
+    ]
+    
+    args.embed_model = None
+    
+    for model_name in embed_models_to_try:
+        try:
+            print(f"尝试使用嵌入模型: {model_name}")
+            test_embed = OpenAIEmbedding(
+                api_key=API_SECRET_KEY,
+                api_base=BASE_URL,
+                model=model_name
+            )
+            # 快速测试
+            test_embed.get_query_embedding("test")
+            args.embed_model = test_embed
+            print(f"✓ 成功使用 OpenAI 嵌入模型: {model_name}")
+            break
+        except Exception as e:
+            print(f"模型 {model_name} 不可用: {e}")
+            continue
+    
+    # 如果所有 OpenAI 模型都失败，使用本地嵌入模型
+    if args.embed_model is None:
+        print("所有 OpenAI 嵌入模型都不可用，回退到本地嵌入模型")
+        try:
+            args.embed_model = get_embed_model("./checkpoints/bge-large-en-v1.5")
+            print("使用本地嵌入模型")
+        except Exception as e:
+            print(f"本地嵌入模型也失败: {e}")
+            raise
 
 from llama_index.core import VectorStoreIndex
 from llama_index.core import Document
