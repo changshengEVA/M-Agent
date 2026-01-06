@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Memory数据可视化</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1><i class="fas fa-database"></i> Memory数据可视化</h1>
+            <p class="subtitle">实时监控dialogues、episodes和scenes的信息</p>
+            <div class="connection-status">
+                <span id="connection-status" class="status-disconnected"><i class="fas fa-circle"></i> 连接中...</span>
+                <span id="last-update"><i class="fas fa-clock"></i> 最后更新: --</span>
+                <span id="data-source"><i class="fas fa-folder"></i> 数据源: data/memory/</span>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <div class="left-panel">
+                <!-- 统计信息面板 -->
+                <div class="stats-panel">
+                    <h2><i class="fas fa-chart-bar"></i> 统计概览</h2>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-icon"><i class="fas fa-comments"></i></div>
+                            <div class="stat-value" id="stat-dialogues">0</div>
+                            <div class="stat-label">Dialogues</div>
+                            <div class="stat-desc">原始对话</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon"><i class="fas fa-layer-group"></i></div>
+                            <div class="stat-value" id="stat-episodes">0</div>
+                            <div class="stat-label">Episodes</div>
+                            <div class="stat-desc">对话片段</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon"><i class="fas fa-star"></i></div>
+                            <div class="stat-value" id="stat-qualifications">0</div>
+                            <div class="stat-label">Qualifications</div>
+                            <div class="stat-desc">评分信息</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-icon"><i class="fas fa-scroll"></i></div>
+                            <div class="stat-value" id="stat-scenes">0</div>
+                            <div class="stat-label">Scenes</div>
+                            <div class="stat-desc">场景记忆</div>
+                        </div>
+                    </div>
+                    
+                    <div class="distribution-charts">
+                        <div class="chart-container">
+                            <h3><i class="fas fa-user-friends"></i> 用户分布</h3>
+                            <canvas id="user-distribution-chart"></canvas>
+                        </div>
+                        <div class="chart-container">
+                            <h3><i class="fas fa-chart-line"></i> 评分分布</h3>
+                            <canvas id="score-distribution-chart"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 控制面板 -->
+                <div class="controls-panel">
+                    <h2><i class="fas fa-sliders-h"></i> 控制面板</h2>
+                    <div class="control-group">
+                        <label for="data-type-filter"><i class="fas fa-filter"></i> 数据类型:</label>
+                        <select id="data-type-filter">
+                            <option value="all">全部数据</option>
+                            <option value="dialogues">仅Dialogues</option>
+                            <option value="episodes">仅Episodes</option>
+                            <option value="scenes">仅Scenes</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="user-filter"><i class="fas fa-user"></i> 用户过滤:</label>
+                        <select id="user-filter">
+                            <option value="all">所有用户</option>
+                        </select>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="search-input"><i class="fas fa-search"></i> 搜索:</label>
+                        <input type="text" id="search-input" placeholder="输入ID或关键词...">
+                        <button id="search-btn"><i class="fas fa-search"></i></button>
+                    </div>
+                    
+                    <div class="control-buttons">
+                        <button id="refresh-btn" class="btn-primary"><i class="fas fa-sync-alt"></i> 刷新数据</button>
+                        <button id="export-btn" class="btn-secondary"><i class="fas fa-download"></i> 导出数据</button>
+                        <button id="toggle-auto-refresh" class="btn-secondary"><i class="fas fa-play"></i> 自动刷新</button>
+                    </div>
+                </div>
+
+                <!-- 实时更新日志 -->
+                <div class="updates-panel">
+                    <h2><i class="fas fa-history"></i> 实时更新日志</h2>
+                    <div class="updates-list" id="updates-list">
+                        <div class="update-item"><i class="fas fa-info-circle"></i> 等待更新...</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="right-panel">
+                <!-- 数据详情面板 -->
+                <div class="details-panel">
+                    <div class="details-header">
+                        <h2><i class="fas fa-info-circle"></i> 数据详情</h2>
+                        <div class="details-tabs">
+                            <button class="tab-btn active" data-tab="dialogues-tab">Dialogues</button>
+                            <button class="tab-btn" data-tab="episodes-tab">Episodes</button>
+                            <button class="tab-btn" data-tab="scenes-tab">Scenes</button>
+                        </div>
+                    </div>
+                    
+                    <div class="details-content">
+                        <!-- Dialogues标签页 -->
+                        <div id="dialogues-tab" class="tab-content active">
+                            <div class="data-list" id="dialogues-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-comments fa-3x"></i>
+                                    <p>选择或搜索一个dialogue查看详情</p>
+                                </div>
+                            </div>
+                            <div class="data-detail" id="dialogue-detail">
+                                <div class="empty-state">
+                                    <i class="fas fa-info-circle fa-3x"></i>
+                                    <p>点击左侧的dialogue查看详细信息</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Episodes标签页 -->
+                        <div id="episodes-tab" class="tab-content">
+                            <div class="data-list" id="episodes-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-layer-group fa-3x"></i>
+                                    <p>选择或搜索一个episode查看详情</p>
+                                </div>
+                            </div>
+                            <div class="data-detail" id="episode-detail">
+                                <div class="empty-state">
+                                    <i class="fas fa-info-circle fa-3x"></i>
+                                    <p>点击左侧的episode查看详细信息</p>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Scenes标签页 -->
+                        <div id="scenes-tab" class="tab-content">
+                            <div class="data-list" id="scenes-list">
+                                <div class="empty-state">
+                                    <i class="fas fa-scroll fa-3x"></i>
+                                    <p>选择或搜索一个scene查看详情</p>
+                                </div>
+                            </div>
+                            <div class="data-detail" id="scene-detail">
+                                <div class="empty-state">
+                                    <i class="fas fa-info-circle fa-3x"></i>
+                                    <p>点击左侧的scene查看详细信息</p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Episode元素池面板 -->
+                <div class="analysis-panel">
+                    <h2><i class="fas fa-layer-group"></i> Episode元素池</h2>
+                    <div class="episode-pool-controls">
+                        <div class="control-group">
+                            <label for="episode-filter"><i class="fas fa-filter"></i> 过滤:</label>
+                            <select id="episode-filter">
+                                <option value="all">全部Episodes</option>
+                                <option value="candidate">仅候选 (scene_candidate)</option>
+                                <option value="reject">仅拒绝 (reject)</option>
+                                <option value="high-score">高分 (3-4分)</option>
+                                <option value="medium-score">中分 (2分)</option>
+                                <option value="low-score">低分 (0-1分)</option>
+                            </select>
+                        </div>
+                        <div class="control-group">
+                            <label for="episode-sort"><i class="fas fa-sort"></i> 排序:</label>
+                            <select id="episode-sort">
+                                <option value="score-desc">分数降序</option>
+                                <option value="score-asc">分数升序</option>
+                                <option value="id">ID顺序</option>
+                                <option value="dialogue">对话ID</option>
+                            </select>
+                        </div>
+                    </div>
+                    <div class="episode-pool-container">
+                        <div class="episode-pool" id="episode-pool">
+                            <div class="empty-state">
+                                <i class="fas fa-layer-group fa-3x"></i>
+                                <p>正在加载episodes...</p>
+                            </div>
+                        </div>
+                        <div class="episode-pool-stats">
+                            <div class="pool-stat">
+                                <span class="stat-label">总数:</span>
+                                <span class="stat-value" id="episode-total">0</span>
+                            </div>
+                            <div class="pool-stat">
+                                <span class="stat-label">候选:</span>
+                                <span class="stat-value" id="episode-candidates">0</span>
+                            </div>
+                            <div class="pool-stat">
+                                <span class="stat-label">平均分:</span>
+                                <span class="stat-value" id="episode-avg-score">0.0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p><i class="fas fa-server"></i> 后端API: <span id="api-status">未连接</span> | <i class="fas fa-bolt"></i> 系统状态: <span id="system-status">初始化中...</span></p>
+            <p><i class="fas fa-code"></i> Memory可视化界面 v1.0 | 数据实时更新: <span id="update-frequency">--</span></p>
+        </footer>
+    </div>
+
+    <!-- 模态框模板 -->
+    <div id="detail-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">详情</h3>
+                <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body" id="modal-body">
+                <!-- 动态内容 -->
+            </div>
+        </div>
+    </div>
+
+    <script type="module" src="main-app.js"></script>
+</body>
+</html>

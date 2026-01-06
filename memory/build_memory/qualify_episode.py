@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # 2025-12-27 changshengEVA
 """
-Episode Qualification 模块。
-扫描 episodes 目录下的 episode 文件，对每个 episode 进行打分和资格评估。
+Episode Information Scoring 模块。
+扫描 episodes 目录下的 episode 文件，对每个 episode 进行信息评分评估。
 提供清理 qualifications 文件的接口。
 """
 
@@ -28,13 +28,13 @@ logger = logging.getLogger(__name__)
 # 路径配置
 DIALOGUES_ROOT = PROJECT_ROOT / "data" / "memory" / "dialogues"
 EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "episodes"
-CONFIG_PATH = PROJECT_ROOT / "config" / "prompt.yaml"
+CONFIG_PATH = PROJECT_ROOT / "config" / "prompt" / "episode.yaml"
 
 def load_prompts() -> Dict:
-    """从 config/prompt.yaml 加载 prompts"""
+    """从 config/prompt/episode.yaml 加载 episode_information_scoring prompts"""
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
-    return config.get('episode_qualification', {})
+    return config.get('episode_information_scoring', {})
 
 def ensure_directory(path: Path):
     """确保目录存在"""
@@ -149,8 +149,8 @@ def build_episode_with_content(episode_meta: Dict, dialogue_data: Dict) -> Dict:
 
 def call_openai_for_qualification(episode_with_content: Dict, prompts: Dict) -> Dict:
     """
-    调用 OpenAI 进行 episode qualification 打分。
-    返回包含 qualification 结果的字典。
+    调用 OpenAI 进行 episode information scoring。
+    返回包含 information score 结果的字典。
     """
     from load_model.OpenAIcall import get_llm
     
@@ -189,46 +189,50 @@ def call_openai_for_qualification(episode_with_content: Dict, prompts: Dict) -> 
 def build_qualification_structure(dialogue_id: str, episode_id: str, openai_result: Dict) -> Dict:
     """
     构建最终的 qualification 结构，符合要求的格式。
+    适配新的 episode_information_scoring 输出结构。
     """
-    # 确保 openai_result 包含所有必需字段
-    if "scene_potential_score" not in openai_result:
-        openai_result["scene_potential_score"] = {
-            "topic_clarity": 0,
-            "context_closure": 0,
-            "intent_stability": 0,
-            "information_density": 0,
-            "total": 0
-        }
+    # 从新的信息评分结构转换到 scene_potential_score 结构
+    information_score = openai_result.get("information_score", {})
+    density = information_score.get("density", 0)
+    novelty = information_score.get("novelty", 0)
     
-    if "decision" not in openai_result:
-        total = openai_result["scene_potential_score"].get("total", 0)
-        if total >= 5:
-            openai_result["decision"] = "scene_candidate"
-        elif total >= 3:
-            openai_result["decision"] = "pending"
-        else:
-            openai_result["decision"] = "discard"
+    # 计算总分（density + novelty，范围 0-4）
+    total_score = density + novelty
     
-    if "rationale" not in openai_result:
-        openai_result["rationale"] = {
-            "topic_clarity": "No rationale provided",
-            "context_closure": "No rationale provided",
-            "intent_stability": "No rationale provided",
-            "information_density": "No rationale provided"
-        }
+    # 构建 scene_potential_score 结构
+    # 只保留 information_density 和 novelty 字段，去掉其他未评分的字段
+    scene_potential_score = {
+        "information_density": density,
+        "novelty": novelty,
+        "total": total_score
+    }
     
-    if "confidence" not in openai_result:
-        openai_result["confidence"] = 0.5
+    # 基于总分计算决策
+    # 决策逻辑：总分 >= 3 为 scene_candidate，2 为 pending，<= 1 为 discard
+    if total_score >= 3:
+        decision = "scene_candidate"
+    elif total_score >= 2:
+        decision = "pending"
+    else:
+        decision = "discard"
+    
+    # 转换 rationale 结构
+    # 只保留 information_density 和 novelty 的解释，去掉其他未评分的字段
+    original_rationale = openai_result.get("rationale", {})
+    rationale = {
+        "information_density": original_rationale.get("density", "No rationale provided"),
+        "novelty": original_rationale.get("novelty", "No rationale provided")
+    }
     
     return {
         "episode_id": episode_id,
         "dialogue_id": dialogue_id,
         "qualification_version": "v1",
         "generated_at": datetime.utcnow().isoformat() + "Z",
-        "scene_potential_score": openai_result["scene_potential_score"],
-        "decision": openai_result["decision"],
-        "rationale": openai_result["rationale"],
-        "confidence": openai_result["confidence"]
+        "scene_potential_score": scene_potential_score,
+        "decision": decision,
+        "rationale": rationale
+        # 去掉 confidence 字段
     }
 
 def process_episode_file(episode_file: Path, prompts: Dict) -> bool:
@@ -301,7 +305,7 @@ def scan_and_qualify_episodes(use_tqdm: bool = True):
     # 加载 prompts
     prompts = load_prompts()
     if not prompts:
-        logger.error("未找到 episode_qualification prompts")
+        logger.error("未找到 episode_information_scoring prompts")
         return
     
     # 扫描所有 episode 文件
@@ -374,7 +378,7 @@ def clear_all_qualifications(confirm: bool = False):
 if __name__ == "__main__":
     import argparse
     
-    parser = argparse.ArgumentParser(description="Episode Qualification 模块")
+    parser = argparse.ArgumentParser(description="Episode Information Scoring 模块")
     parser.add_argument("--scan", action="store_true", help="扫描并评估 episodes")
     parser.add_argument("--clear", action="store_true", help="清理所有 qualifications 文件")
     parser.add_argument("--confirm", action="store_true", help="确认删除（与 --clear 一起使用）")
