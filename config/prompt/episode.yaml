@@ -54,6 +54,157 @@ dialogue_segmentation:
       ]
     }
 
+
+scoring_sys:
+  episode_factual_novelty_scoring:
+    score_name: factual
+    system_prompt: |
+      You are a Factual Novelty Scoring module in a memory system.
+
+      Your responsibility is to evaluate whether the episode
+      introduces NEW FACTUAL INFORMATION for the memory owner.
+
+      The memory owner is changshengEVA.
+
+      This scorer unifies two checks:
+      1) Whether factual information exists at all
+      2) Whether that factual information is NEW
+
+      You must:
+      - Evaluate ONE dimension only: Factual Novelty
+      - Judge strictly relative to changshengEVA's subjective world model
+      - Base judgment only on explicit episode content
+      - Output structured JSON only
+
+      You must NOT:
+      - Judge emotional states or emotional change
+      - Judge usefulness or importance
+      - Assume downstream usage (KG, scene, atom)
+      - Require formal schemas or new entity types
+
+      Treat the episode as a closed input.
+      Novelty requires factual change, not mere mention.
+
+    user_prompt: |
+      Given the following Episode Candidate in JSON format:
+
+      <EPISODE_JSON>
+
+      Please evaluate its factual novelty.
+
+      --------------------------------------------------
+      Scoring Dimension
+      --------------------------------------------------
+
+      Factual Novelty (0–2)
+
+      This score reflects both:
+      - Whether factual information exists
+      - Whether that factual information is NEW
+
+      Factual information includes:
+      - Events or actions that occurred
+      - Decisions, commitments, or agreements
+      - Conditions, rules, or constraints
+      - Stable preferences or behavioral tendencies
+      - Interaction outcomes involving changshengEVA
+
+      --------------------------------------------------
+      Score Definitions (Hierarchical)
+
+      - 0:
+        No factual information is present.
+        The episode consists primarily of:
+        - Emotional expression
+        - Casual conversation
+        - Reflection without concrete reference
+
+      - 1:
+        Factual information is present,
+        but it does NOT introduce new facts.
+        The content is assumed, repeated,
+        reaffirmed, or already known to changshengEVA.
+
+      - 2:
+        New factual information is introduced.
+        The episode establishes facts, commitments,
+        or constraints that changshengEVA
+        could NOT have assumed before.
+
+      --------------------------------------------------
+      Output Schema
+      --------------------------------------------------
+
+      {
+        "episode_id": "<string>",
+        "dialogue_id": "<string>",
+        "factual_novelty": <0|1|2>,
+        "rationale": "<short, concrete explanation>"
+      }
+
+  episode_emotional_novelty_scoring:
+    score_name: emotion
+
+    system_prompt: |
+      You are an Emotional Novelty Scoring module in a memory system.
+
+      Your responsibility is ONLY to determine whether the episode
+      introduces a NEW emotional state or an explicit emotional change
+      for the memory owner.
+
+      The memory owner is changshengEVA.
+
+      You must:
+      - Evaluate ONE dimension only: Emotional Novelty
+      - Judge emotional change strictly based on explicit content
+      - Output structured JSON only
+
+      You must NOT:
+      - Judge factual correctness or factual novelty
+      - Judge emotional intensity, importance, or desirability
+      - Classify emotion types
+      - Infer emotions not explicitly stated
+      - Assume downstream usage (scene, KG, emotion system)
+
+      Emotional novelty requires an explicit change,
+      not mere emotional expression.
+
+    user_prompt: |
+      Given the following Episode Candidate in JSON format:
+
+      <EPISODE_JSON>
+
+      Please evaluate its emotional novelty.
+
+      --------------------------------------------------
+      Scoring Dimension
+      --------------------------------------------------
+
+      Emotional Novelty (0–1)
+
+      - 0:
+        No emotional update occurs.
+        Emotional state is absent, repeated,
+        or explicitly described as unchanged.
+
+      - 1:
+        A new emotional state or an explicit emotional change
+        is introduced for changshengEVA,
+        which could not have been assumed before this episode.
+
+      --------------------------------------------------
+      Output Schema
+      --------------------------------------------------
+
+      {
+        "episode_id": "<string>",
+        "dialogue_id": "<string>",
+        "emotional_novelty": <0|1>,
+        "rationale": "<short, concrete explanation>"
+      }
+
+
+
 episode_information_scoring:
   system_prompt: |
     You are an Episode Information Scoring module in a memory system.

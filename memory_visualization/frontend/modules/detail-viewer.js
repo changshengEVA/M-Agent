@@ -106,44 +106,97 @@ class DetailViewer {
         // 显示评分信息
         if (qualification) {
             const score = qualification.scene_potential_score || {};
-            const infoDensity = score.information_density || 0;
-            const novelty = score.novelty || 0;
-            const total = score.total || 0;
             const decision = qualification.decision || 'unknown';
             const rationale = qualification.rationale || {};
+            
+            // 调试：记录实际接收到的评分数据
+            console.log('评分数据详情:', {
+                qualification,
+                score,
+                scoreFields: Object.keys(score),
+                scoreValues: score
+            });
+            
+            // 动态生成评分网格
+            let scoreGridHtml = '';
+            const scoreFields = Object.keys(score);
+            
+            // 过滤掉不需要的字段，只显示实际的评分字段
+            const actualScoreFields = scoreFields.filter(field => {
+                // 只保留我们关心的评分字段
+                const validFields = ['factual_novelty', 'emotional_novelty', 'emotion_novelty', 'information_density', 'novelty', 'density'];
+                return validFields.includes(field);
+            });
+            
+            if (actualScoreFields.length > 0) {
+                scoreGridHtml = '<div class="score-grid">';
+                actualScoreFields.forEach(field => {
+                    const value = score[field];
+                    // 将字段名转换为中文显示（可扩展）
+                    const fieldLabels = {
+                        'factual_novelty': '事实新颖性',
+                        'emotional_novelty': '情感新颖性',
+                        'emotion_novelty': '情感新颖性', // 可能的别名
+                        'information_density': '信息密度',
+                        'novelty': '新颖性',
+                        'density': '信息密度' // information_score.density 的别名
+                    };
+                    const label = fieldLabels[field] || field.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                    
+                    // 调试：记录字段映射
+                    console.log(`字段映射: ${field} -> ${label}, 值: ${value}`);
+                    
+                    // 根据字段确定评分范围
+                    let maxScore = 2; // 默认最大值
+                    if (field === 'emotional_novelty' || field === 'emotion_novelty') {
+                        maxScore = 1; // 情感新颖性范围是0-1
+                    }
+                    
+                    scoreGridHtml += `
+                        <div class="score-item">
+                            <div class="score-label">${label}</div>
+                            <div class="score-value ${this.getScoreClass(value, field)}">${value}/${maxScore}</div>
+                        </div>
+                    `;
+                });
+                
+                // 决策项
+                scoreGridHtml += `
+                    <div class="score-item">
+                        <div class="score-label">决策</div>
+                        <div class="score-decision ${decision === 'scene_candidate' ? 'decision-candidate' : 'decision-reject'}">${decision}</div>
+                    </div>
+                `;
+                
+                scoreGridHtml += '</div>';
+            }
             
             html += `
                 <div class="detail-section">
                     <h4><i class="fas fa-chart-bar"></i> 评分信息</h4>
                     <div class="score-info">
-                        <div class="score-grid">
-                            <div class="score-item">
-                                <div class="score-label">信息密度</div>
-                                <div class="score-value ${this.getScoreClass(infoDensity)}">${infoDensity}/2</div>
-                            </div>
-                            <div class="score-item">
-                                <div class="score-label">新颖性</div>
-                                <div class="score-value ${this.getScoreClass(novelty)}">${novelty}/2</div>
-                            </div>
-                            <div class="score-item">
-                                <div class="score-label">总分</div>
-                                <div class="score-value ${this.getTotalScoreClass(total)}">${total}/4</div>
-                            </div>
-                            <div class="score-item">
-                                <div class="score-label">决策</div>
-                                <div class="score-decision ${decision === 'scene_candidate' ? 'decision-candidate' : 'decision-reject'}">${decision}</div>
-                            </div>
-                        </div>
+                        ${scoreGridHtml}
             `;
             
-            if (rationale.information_density || rationale.novelty) {
-                html += `
-                        <div class="rationale-section">
-                            <h5>评分理由</h5>
-                            ${rationale.information_density ? `<p><strong>信息密度:</strong> ${rationale.information_density}</p>` : ''}
-                            ${rationale.novelty ? `<p><strong>新颖性:</strong> ${rationale.novelty}</p>` : ''}
-                        </div>
-                `;
+            // 动态生成评分理由
+            const rationaleFields = Object.keys(rationale);
+            if (rationaleFields.length > 0) {
+                let rationaleHtml = '<div class="rationale-section"><h5>评分理由</h5>';
+                rationaleFields.forEach(field => {
+                    const value = rationale[field];
+                    const fieldLabels = {
+                        'factual_novelty': '事实新颖性',
+                        'emotional_novelty': '情感新颖性',
+                        'emotion_novelty': '情感新颖性', // 可能的别名
+                        'information_density': '信息密度',
+                        'novelty': '新颖性',
+                        'density': '信息密度' // information_score.density 的别名
+                    };
+                    const label = fieldLabels[field] || field.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                    rationaleHtml += `<p><strong>${label}:</strong> ${value}</p>`;
+                });
+                rationaleHtml += '</div>';
+                html += rationaleHtml;
             }
             
             html += `
@@ -181,10 +234,24 @@ class DetailViewer {
         detailElement.innerHTML = html;
     }
 
-    getScoreClass(score) {
-        if (score >= 2) return 'score-high';
-        if (score >= 1) return 'score-medium';
-        return 'score-low';
+    getScoreClass(score, field = null) {
+        // 根据字段确定评分范围
+        let maxScore = 2; // 默认最大值
+        if (field === 'emotional_novelty' || field === 'emotion_novelty') {
+            maxScore = 1; // 情感新颖性范围是0-1
+        }
+        
+        // 根据评分范围和值返回CSS类
+        if (maxScore === 1) {
+            // 0-1范围：1为高，0为低
+            if (score >= 1) return 'score-high';
+            return 'score-low';
+        } else {
+            // 0-2范围：2为高，1为中，0为低
+            if (score >= 2) return 'score-high';
+            if (score >= 1) return 'score-medium';
+            return 'score-low';
+        }
     }
 
     getTotalScoreClass(score) {

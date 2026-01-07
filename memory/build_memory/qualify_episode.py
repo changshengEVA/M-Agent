@@ -31,10 +31,10 @@ EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "episodes"
 CONFIG_PATH = PROJECT_ROOT / "config" / "prompt" / "episode.yaml"
 
 def load_prompts() -> Dict:
-    """从 config/prompt/episode.yaml 加载 episode_information_scoring prompts"""
+    """从 config/prompt/episode.yaml 加载 scoring_sys prompts"""
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
-    return config.get('episode_information_scoring', {})
+    return config.get('scoring_sys', {})
 
 def ensure_directory(path: Path):
     """确保目录存在"""
@@ -147,19 +147,15 @@ def build_episode_with_content(episode_meta: Dict, dialogue_data: Dict) -> Dict:
     
     return episode_with_content
 
-def call_openai_for_qualification(episode_with_content: Dict, prompts: Dict) -> Dict:
+def call_openai_for_scoring(episode_with_content: Dict, system_prompt: str, user_prompt_template: str) -> Dict:
     """
-    调用 OpenAI 进行 episode information scoring。
-    返回包含 information score 结果的字典。
+    调用 OpenAI 进行单个评分维度的评分。
+    返回解析后的 JSON 结果。
     """
     from load_model.OpenAIcall import get_llm
     
     # 获取 LLM 实例，温度设为 0.1 以获得更确定性的输出
     llm = get_llm(model_temperature=0.1)
-    
-    # 构建完整的 prompt
-    system_prompt = prompts.get('system_prompt', '')
-    user_prompt_template = prompts.get('user_prompt', '')
     
     # 将 episode JSON 转换为字符串用于插入
     episode_str = json.dumps(episode_with_content, ensure_ascii=False, indent=2)
@@ -186,43 +182,76 @@ def call_openai_for_qualification(episode_with_content: Dict, prompts: Dict) -> 
         logger.error(f"调用 OpenAI 失败: {e}")
         raise
 
-def build_qualification_structure(dialogue_id: str, episode_id: str, openai_result: Dict) -> Dict:
+
+def call_openai_for_qualification(episode_with_content: Dict, scoring_sys: Dict) -> Dict:
+    """
+    调用 OpenAI 进行多个评分维度的评分。
+    依次按照 scoring_sys 中的内容分别打分，返回所有评分结果的字典。
+    """
+    scoring_results = {}
+    
+    for scoring_name, scoring_config in scoring_sys.items():
+        score_name = scoring_config.get('score_name', scoring_name)
+        system_prompt = scoring_config.get('system_prompt', '')
+        user_prompt = scoring_config.get('user_prompt', '')
+        
+        if not system_prompt or not user_prompt:
+            logger.warning(f"评分模块 {scoring_name} 缺少 system_prompt 或 user_prompt，跳过")
+            continue
+        
+        try:
+            result = call_openai_for_scoring(episode_with_content, system_prompt, user_prompt)
+            scoring_results[score_name] = result
+        except Exception as e:
+            logger.error(f"评分模块 {scoring_name} 失败: {e}")
+            # 继续处理其他评分模块
+            continue
+    
+    return scoring_results
+
+def build_qualification_structure(dialogue_id: str, episode_id: str, scoring_results: Dict) -> Dict:
     """
     构建最终的 qualification 结构，符合要求的格式。
-    适配新的 episode_information_scoring 输出结构。
+    只保留 scoring_sys 中定义的评分维度，不添加额外字段。
+    
+    Args:
+        dialogue_id: 对话ID
+        episode_id: 片段ID
+        scoring_results: 字典，键为 score_name，值为评分模块的原始输出
     """
-    # 从新的信息评分结构转换到 scene_potential_score 结构
-    information_score = openai_result.get("information_score", {})
-    density = information_score.get("density", 0)
-    novelty = information_score.get("novelty", 0)
+    scene_potential_score = {}
+    rationale = {}
     
-    # 计算总分（density + novelty，范围 0-4）
-    total_score = density + novelty
+    # 遍历所有评分结果，提取分数和理由
+    for score_name, result in scoring_results.items():
+        # 根据用户要求，字段名使用 score_name + "_novelty"
+        expected_field = f"{score_name}_novelty"
+        score_value = None
+        
+        # 尝试从预期字段获取分数
+        if expected_field in result and isinstance(result[expected_field], int):
+            score_value = result[expected_field]
+            scene_potential_score[expected_field] = score_value
+            rationale[expected_field] = result.get("rationale", "No rationale provided")
+        else:
+            # 如果预期字段不存在，尝试查找其他分数字段
+            for key, value in result.items():
+                if isinstance(value, int) and (key.endswith("_novelty") or key.endswith("_score")):
+                    score_value = value
+                    scene_potential_score[key] = score_value
+                    rationale[key] = result.get("rationale", "No rationale provided")
+                    break
+            if score_value is None:
+                # 如果没有找到分数字段，跳过该评分模块
+                logger.warning(f"评分模块 {score_name} 未找到分数字段，跳过")
     
-    # 构建 scene_potential_score 结构
-    # 只保留 information_density 和 novelty 字段，去掉其他未评分的字段
-    scene_potential_score = {
-        "information_density": density,
-        "novelty": novelty,
-        "total": total_score
-    }
+    # 如果没有任何评分结果，创建空结构
+    if not scene_potential_score:
+        scene_potential_score = {}
+        rationale = {}
     
-    # 基于总分计算决策
-    # 决策逻辑：总分 >= 3 为 scene_candidate，2 为 pending，<= 1 为 discard
-    if total_score >= 3:
-        decision = "scene_candidate"
-    elif total_score >= 2:
-        decision = "pending"
-    else:
-        decision = "discard"
-    
-    # 转换 rationale 结构
-    # 只保留 information_density 和 novelty 的解释，去掉其他未评分的字段
-    original_rationale = openai_result.get("rationale", {})
-    rationale = {
-        "information_density": original_rationale.get("density", "No rationale provided"),
-        "novelty": original_rationale.get("novelty", "No rationale provided")
-    }
+    # 决策字段暂时设为 pending（下游程序会动态检测）
+    decision = "pending"
     
     return {
         "episode_id": episode_id,
@@ -232,7 +261,6 @@ def build_qualification_structure(dialogue_id: str, episode_id: str, openai_resu
         "scene_potential_score": scene_potential_score,
         "decision": decision,
         "rationale": rationale
-        # 去掉 confidence 字段
     }
 
 def process_episode_file(episode_file: Path, prompts: Dict) -> bool:

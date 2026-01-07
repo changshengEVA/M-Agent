@@ -178,7 +178,17 @@ class EpisodePoolRenderer {
             return 0;
         }
         const score = qualification.scene_potential_score;
-        return score.total || 0;
+        
+        // 计算总分：将所有评分字段的值相加
+        // 支持多种评分字段：factual_novelty, emotional_novelty, information_density, novelty 等
+        let total = 0;
+        for (const [key, value] of Object.entries(score)) {
+            if (typeof value === 'number') {
+                total += value;
+            }
+        }
+        
+        return total;
     }
     
     // 从qualification中提取决策
@@ -310,7 +320,7 @@ class EpisodePoolRenderer {
             <div class="episode-element-decision ${decisionClass}"></div>
             <div class="episode-element-header">
                 <div class="episode-element-id">${episode.episode_id}</div>
-                <div class="episode-element-score ${scoreClass}">${episode.score}/4</div>
+                <div class="episode-element-score ${scoreClass}">${episode.score}/3</div>
             </div>
             <div class="episode-element-content">
                 <div>对话: ${episode.dialogue_id}</div>

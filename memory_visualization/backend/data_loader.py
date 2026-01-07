@@ -223,29 +223,67 @@ class MemoryDataLoader:
         return counts
     
     def _calculate_score_distribution(self) -> Dict[str, Dict[str, int]]:
-        """计算评分分布"""
-        distribution = {
-            "information_density": {"1": 0, "2": 0, "3": 0, "4": 0, "5": 0},
-            "novelty": {"1": 0, "2": 0, "3": 0, "4": 0, "5": 0},
-            "total": {"1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0, "10": 0}
-        }
+        """计算评分分布，动态检测 scene_potential_score 中的字段"""
+        # 首先收集所有可能的分数字段及其可能的值范围
+        # 我们遍历所有 qualifications 来发现字段
+        field_value_sets = {}
         
         for qualification_data in self.qualifications:
             qualifications = qualification_data.get("qualifications", [])
             for qual in qualifications:
                 score = qual.get("scene_potential_score", {})
-                
-                info_density = str(score.get("information_density", 0))
-                if info_density in distribution["information_density"]:
-                    distribution["information_density"][info_density] += 1
-                
-                novelty = str(score.get("novelty", 0))
-                if novelty in distribution["novelty"]:
-                    distribution["novelty"][novelty] += 1
-                
-                total = str(score.get("total", 0))
-                if total in distribution["total"]:
-                    distribution["total"][total] += 1
+                for field, value in score.items():
+                    if isinstance(value, (int, float)):
+                        # 确保字段在 field_value_sets 中
+                        if field not in field_value_sets:
+                            field_value_sets[field] = set()
+                        # 记录出现的值（转换为字符串以便作为键）
+                        field_value_sets[field].add(str(value))
+        
+        # 构建分布字典，每个字段包含其所有可能值的计数
+        distribution = {}
+        for field, value_set in field_value_sets.items():
+            # 确定值的范围（假设分数为0-5的整数，但动态适应）
+            # 为了简单起见，我们为每个出现的值创建一个桶
+            distribution[field] = {value: 0 for value in sorted(value_set, key=lambda x: int(x) if x.isdigit() else x)}
+        
+        # 如果没有发现任何字段，使用默认字段（向后兼容）
+        # 注意：根据实际数据，评分字段是 factual_novelty 和 emotional_novelty
+        # 但为了兼容性，我们保留旧的默认字段
+        if not distribution:
+            # 检查是否有任何实际的评分数据
+            has_actual_scores = False
+            for qualification_data in self.qualifications:
+                qualifications = qualification_data.get("qualifications", [])
+                for qual in qualifications:
+                    if qual.get("scene_potential_score"):
+                        has_actual_scores = True
+                        break
+                if has_actual_scores:
+                    break
+            
+            if has_actual_scores:
+                # 如果有实际评分数据但没有检测到字段，可能是数据结构问题
+                # 返回空分布而不是错误的默认值
+                distribution = {}
+            else:
+                # 完全没有评分数据时使用旧的默认字段
+                distribution = {
+                    "information_density": {"0": 0, "1": 0, "2": 0},
+                    "novelty": {"0": 0, "1": 0, "2": 0},
+                    "total": {"0": 0, "1": 0, "2": 0, "3": 0, "4": 0}
+                }
+        
+        # 重新遍历 qualifications 进行计数
+        for qualification_data in self.qualifications:
+            qualifications = qualification_data.get("qualifications", [])
+            for qual in qualifications:
+                score = qual.get("scene_potential_score", {})
+                for field, value in score.items():
+                    if isinstance(value, (int, float)):
+                        str_value = str(value)
+                        if field in distribution and str_value in distribution[field]:
+                            distribution[field][str_value] += 1
         
         return distribution
     
