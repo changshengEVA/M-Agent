@@ -7,7 +7,7 @@ Memory可视化后端主应用
 import json
 import logging
 import asyncio
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from datetime import datetime
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -85,6 +85,12 @@ class StatsResponse(BaseModel):
     episodes_by_dialogue: Dict[str, int]
     scenes_by_user: Dict[str, int]
     score_distribution: Dict[str, Dict[str, int]]
+    episode_situation_loaded: bool
+
+class EpisodeSituationResponse(BaseModel):
+    statistics: Dict[str, Any]
+    episodes: Dict[str, Dict[str, Any]]
+    metadata: Dict[str, Any]
 
 class DialogueDetailResponse(BaseModel):
     dialogue: Dict
@@ -228,6 +234,8 @@ async def root():
             <div class="endpoint"><code>GET /api/qualifications</code> - 获取所有qualifications</div>
             <div class="endpoint"><code>GET /api/scenes</code> - 获取所有scenes</div>
             <div class="endpoint"><code>GET /api/stats</code> - 获取统计信息</div>
+            <div class="endpoint"><code>GET /api/episode_situation</code> - 获取episode策略信息</div>
+            <div class="endpoint"><code>GET /api/episode_situation/{dialogue_id}/{episode_id}</code> - 获取特定episode的策略信息</div>
             <div class="endpoint"><code>GET /api/dialogue/{id}</code> - 获取特定dialogue及其详细信息</div>
             <div class="endpoint"><code>GET /api/episode/{dialogue_id}/{episode_id}</code> - 获取特定episode及其评分信息</div>
             <div class="endpoint"><code>GET /api/scene/{id}</code> - 获取特定scene信息</div>
@@ -337,6 +345,30 @@ async def get_stats():
     
     stats = data_loader.get_stats()
     return StatsResponse(**stats)
+
+@app.get("/api/episode_situation", response_model=EpisodeSituationResponse)
+async def get_episode_situation():
+    """获取episode_situation数据"""
+    if not data_loader:
+        return {"error": "数据加载器未初始化"}
+    
+    episode_situation = data_loader.get_episode_situation()
+    if not episode_situation:
+        return {"error": "episode_situation数据未加载"}
+    
+    return EpisodeSituationResponse(**episode_situation)
+
+@app.get("/api/episode_situation/{dialogue_id}/{episode_id}")
+async def get_episode_situation_by_ids(dialogue_id: str, episode_id: str):
+    """获取特定episode的situation信息"""
+    if not data_loader:
+        return {"error": "数据加载器未初始化"}
+    
+    situation = data_loader.get_episode_situation_by_ids(dialogue_id, episode_id)
+    if not situation:
+        return {"error": f"Episode '{episode_id}' 在dialogue '{dialogue_id}' 的situation信息不存在"}
+    
+    return situation
 
 @app.get("/api/dialogue/{dialogue_id}", response_model=DialogueDetailResponse)
 async def get_dialogue_detail(dialogue_id: str):

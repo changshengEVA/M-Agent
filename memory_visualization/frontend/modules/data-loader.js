@@ -6,12 +6,13 @@ class DataLoader {
 
     async loadAllData() {
         try {
-            const [statsRes, dialoguesRes, episodesRes, qualificationsRes, scenesRes] = await Promise.all([
+            const [statsRes, dialoguesRes, episodesRes, qualificationsRes, scenesRes, situationRes] = await Promise.all([
                 fetch(`${this.apiBaseUrl}/api/stats`),
                 fetch(`${this.apiBaseUrl}/api/dialogues`),
                 fetch(`${this.apiBaseUrl}/api/episodes`),
                 fetch(`${this.apiBaseUrl}/api/qualifications`),
-                fetch(`${this.apiBaseUrl}/api/scenes`)
+                fetch(`${this.apiBaseUrl}/api/scenes`),
+                fetch(`${this.apiBaseUrl}/api/episode_situation`)
             ]);
             
             if (!statsRes.ok || !dialoguesRes.ok || !episodesRes.ok || !qualificationsRes.ok || !scenesRes.ok) {
@@ -24,7 +25,15 @@ class DataLoader {
             const qualifications = await qualificationsRes.json();
             const scenes = await scenesRes.json();
             
-            return { stats, dialogues, episodes, qualifications, scenes };
+            // episode_situation是可选的，如果失败则返回空对象
+            let episodeSituation = {};
+            if (situationRes.ok) {
+                episodeSituation = await situationRes.json();
+            } else {
+                console.warn('加载episode_situation失败，将使用空数据');
+            }
+            
+            return { stats, dialogues, episodes, qualifications, scenes, episodeSituation };
             
         } catch (error) {
             console.error('加载数据失败:', error);

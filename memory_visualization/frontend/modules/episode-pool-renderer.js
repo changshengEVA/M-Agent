@@ -28,30 +28,34 @@ class EpisodePoolRenderer {
         }
     }
     
-    // 设置episodes和qualifications数据
-    setEpisodes(episodes, qualifications) {
+    // 设置episodes、qualifications和episode_situation数据
+    setEpisodes(episodes, qualifications, episodeSituation = null) {
         console.log('setEpisodes called with:', {
             episodesCount: episodes?.length || 0,
             qualificationsCount: qualifications?.length || 0,
+            episodeSituationLoaded: !!episodeSituation,
             qualificationsSample: qualifications?.[0]
         });
         
-        this.episodes = this.processEpisodes(episodes, qualifications);
+        this.episodes = this.processEpisodes(episodes, qualifications, episodeSituation);
         
         // 调试：检查处理后的episodes
         console.log('Processed episodes:', this.episodes.slice(0, 3).map(e => ({
             episode_id: e.episode_id,
             dialogue_id: e.dialogue_id,
             score: e.score,
-            decision: e.decision
+            decision: e.decision,
+            scene_available: e.scene_available,
+            kg_available: e.kg_available,
+            emo_available: e.emo_available
         })));
         
         this.applyFilters();
         this.updateStats();
     }
     
-    // 处理episodes数据，提取评分信息
-    processEpisodes(episodes, qualifications) {
+    // 处理episodes数据，提取评分信息和策略信息
+    processEpisodes(episodes, qualifications, episodeSituation = null) {
         const processed = [];
         
         // 扁平化episodes数据
@@ -60,17 +64,31 @@ class EpisodePoolRenderer {
         // 创建qualifications映射表：dialogue_id -> {episode_id -> qualification}
         const qualMap = this.createQualificationsMap(qualifications);
         
-        // 为每个episode提取评分信息
+        // 创建episode_situation映射表：episode_key -> situation
+        const situationMap = this.createSituationMap(episodeSituation);
+        
+        // 为每个episode提取评分信息和策略信息
         allEpisodes.forEach(episode => {
             const dialogueId = episode.dialogue_id;
             const episodeId = episode.episode_id;
+            const episodeKey = `${dialogueId}:${episodeId}`;
+            
             const qualification = this.findQualification(qualMap, dialogueId, episodeId);
+            const situation = situationMap[episodeKey] || {};
             
             const processedEpisode = {
                 ...episode,
                 score: this.extractScoreFromQualification(qualification),
                 decision: this.extractDecisionFromQualification(qualification),
-                qualification: qualification || {}
+                qualification: qualification || {},
+                // 策略信息字段
+                scene_available: situation.scene_available || false,
+                kg_available: situation.kg_available || false,
+                emo_available: situation.emo_available || false,
+                factual_novelty: situation.factual_novelty || 0,
+                emotional_novelty: situation.emotional_novelty || 0,
+                eligible: situation.eligible || false,
+                reason: situation.reason || 'unknown'
             };
             processed.push(processedEpisode);
         });
@@ -148,6 +166,26 @@ class EpisodePoolRenderer {
         }
         
         console.log('createQualificationsMap: final map keys', Object.keys(map));
+        return map;
+    }
+    
+    // 创建episode_situation映射表
+    createSituationMap(episodeSituation) {
+        const map = {};
+        
+        if (!episodeSituation || !episodeSituation.episodes) {
+            console.log('createSituationMap: episodeSituation is empty or missing episodes');
+            return map;
+        }
+        
+        console.log(`createSituationMap: processing ${Object.keys(episodeSituation.episodes).length} episode situations`);
+        
+        // 直接使用episode_key作为键
+        Object.entries(episodeSituation.episodes).forEach(([episodeKey, situation]) => {
+            map[episodeKey] = situation;
+        });
+        
+        console.log('createSituationMap: final map size', Object.keys(map).length);
         return map;
     }
     
@@ -303,7 +341,7 @@ class EpisodePoolRenderer {
     // 创建单个episode元素
     createEpisodeElement(episode) {
         const element = document.createElement('div');
-        element.className = `episode-element with-border bg-score-${episode.score}`;
+        element.className = `episode-element with-border`;
         element.dataset.episodeId = episode.episode_id;
         element.dataset.dialogueId = episode.dialogue_id;
         
@@ -313,21 +351,32 @@ class EpisodePoolRenderer {
             element.classList.add('selected');
         }
         
-        const scoreClass = `score-${episode.score}`;
-        const decisionClass = episode.decision === 'scene_candidate' ? 'decision-dot-candidate' : 'decision-dot-reject';
+        // 策略信息图标
+        const sceneIcon = episode.scene_available ? '<i class="fas fa-scene-icon" title="场景可用">🏞️</i>' : '';
+        const kgIcon = episode.kg_available ? '<i class="fas fa-kg-icon" title="知识图谱可用">🧠</i>' : '';
+        const emoIcon = episode.emo_available ? '<i class="fas fa-emo-icon" title="情感信息可用">😊</i>' : '';
+        const eligibleIcon = episode.eligible ? '<i class="fas fa-eligible-icon" title="合格">✅</i>' : '<i class="fas fa-ineligible-icon" title="不合格">❌</i>';
+        
+        // 新颖性指示器
+        const factualNoveltyClass = `novelty-${episode.factual_novelty}`;
+        const emotionalNoveltyClass = `novelty-${episode.emotional_novelty}`;
         
         element.innerHTML = `
-            <div class="episode-element-decision ${decisionClass}"></div>
             <div class="episode-element-header">
                 <div class="episode-element-id">${episode.episode_id}</div>
-                <div class="episode-element-score ${scoreClass}">${episode.score}/3</div>
             </div>
             <div class="episode-element-content">
                 <div>对话: ${episode.dialogue_id}</div>
                 <div>轮次: ${episode.turn_span?.[0] || 0} - ${episode.turn_span?.[1] || 0}</div>
             </div>
-            <div class="episode-element-dialogue">
-                ${episode.decision === 'scene_candidate' ? '候选' : '拒绝'}
+            <div class="episode-element-situation">
+                <div class="situation-icons">
+                    ${sceneIcon} ${kgIcon} ${emoIcon} ${eligibleIcon}
+                </div>
+                <div class="novelty-indicators">
+                    <span class="factual-novelty ${factualNoveltyClass}" title="事实新颖性: ${episode.factual_novelty}/2">F${episode.factual_novelty}</span>
+                    <span class="emotional-novelty ${emotionalNoveltyClass}" title="情感新颖性: ${episode.emotional_novelty}/1">E${episode.emotional_novelty}</span>
+                </div>
             </div>
         `;
         
@@ -365,19 +414,17 @@ class EpisodePoolRenderer {
     // 更新统计信息
     updateStats() {
         const total = this.filteredEpisodes.length;
-        const candidates = this.filteredEpisodes.filter(e => e.decision === 'scene_candidate').length;
-        const avgScore = total > 0 
-            ? (this.filteredEpisodes.reduce((sum, e) => sum + e.score, 0) / total).toFixed(1)
-            : '0.0';
+        const eligible = this.filteredEpisodes.filter(e => e.eligible).length;
+        const sceneAvailable = this.filteredEpisodes.filter(e => e.scene_available).length;
         
         // 更新DOM元素
         const totalElement = document.getElementById('episode-total');
-        const candidatesElement = document.getElementById('episode-candidates');
-        const avgScoreElement = document.getElementById('episode-avg-score');
+        const eligibleElement = document.getElementById('episode-candidates');
+        const sceneAvailableElement = document.getElementById('episode-avg-score');
         
         if (totalElement) totalElement.textContent = total;
-        if (candidatesElement) candidatesElement.textContent = candidates;
-        if (avgScoreElement) avgScoreElement.textContent = avgScore;
+        if (eligibleElement) eligibleElement.textContent = eligible;
+        if (sceneAvailableElement) sceneAvailableElement.textContent = sceneAvailable;
     }
     
     // 清除选中状态

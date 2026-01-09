@@ -37,6 +37,7 @@ class MemoryDataLoader:
         self.episodes: List[Dict] = []
         self.qualifications: List[Dict] = []
         self.scenes: List[Dict] = []
+        self.episode_situation: Dict[str, Any] = {}
         
         # 统计数据
         self.stats: Dict[str, Any] = {}
@@ -53,6 +54,7 @@ class MemoryDataLoader:
         self.episodes.clear()
         self.qualifications.clear()
         self.scenes.clear()
+        self.episode_situation.clear()
         
         # 加载dialogues
         dialogues_count = self._load_dialogues()
@@ -62,6 +64,9 @@ class MemoryDataLoader:
         
         # 加载scenes
         scenes_count = self._load_scenes()
+        
+        # 加载episode_situation
+        situation_loaded = self._load_episode_situation()
         
         # 计算统计数据
         self.stats = {
@@ -73,7 +78,8 @@ class MemoryDataLoader:
             "dialogues_by_user": self._count_dialogues_by_user(),
             "episodes_by_dialogue": self._count_episodes_by_dialogue(),
             "scenes_by_user": self._count_scenes_by_user(),
-            "score_distribution": self._calculate_score_distribution()
+            "score_distribution": self._calculate_score_distribution(),
+            "episode_situation_loaded": situation_loaded
         }
         
         logger.info(f"数据加载完成: {self.stats}")
@@ -196,6 +202,23 @@ class MemoryDataLoader:
         
         logger.info(f"加载了 {count} 个scenes")
         return count
+    
+    def _load_episode_situation(self) -> bool:
+        """加载episode_situation.json文件"""
+        situation_file = self.data_dir / "episodes" / "episode_situation.json"
+        
+        if not situation_file.exists():
+            logger.warning(f"Episode situation文件不存在: {situation_file}")
+            return False
+        
+        try:
+            with open(situation_file, 'r', encoding='utf-8') as f:
+                self.episode_situation = json.load(f)
+            logger.info(f"加载了episode_situation.json，包含 {len(self.episode_situation.get('episodes', {}))} 个episodes")
+            return True
+        except Exception as e:
+            logger.error(f"加载episode_situation文件失败 {situation_file}: {e}")
+            return False
     
     def _count_dialogues_by_user(self) -> Dict[str, int]:
         """按用户统计dialogues数量"""
@@ -389,3 +412,17 @@ class MemoryDataLoader:
             "episodes": episodes,
             "qualifications": qualifications
         }
+    
+    def get_episode_situation(self) -> Dict[str, Any]:
+        """获取episode_situation数据"""
+        return self.episode_situation
+    
+    def get_episode_situation_by_key(self, episode_key: str) -> Optional[Dict]:
+        """根据episode_key获取episode的situation信息"""
+        episodes = self.episode_situation.get("episodes", {})
+        return episodes.get(episode_key)
+    
+    def get_episode_situation_by_ids(self, dialogue_id: str, episode_id: str) -> Optional[Dict]:
+        """根据dialogue_id和episode_id获取episode的situation信息"""
+        episode_key = f"{dialogue_id}:{episode_id}"
+        return self.get_episode_situation_by_key(episode_key)

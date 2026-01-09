@@ -6,6 +6,7 @@ import ItemRenderer from './modules/item-renderer.js';
 import DetailViewer from './modules/detail-viewer.js';
 import SearchManager from './modules/search-manager.js';
 import EpisodePoolRenderer from './modules/episode-pool-renderer.js';
+import ChartManager from './modules/chart-manager.js';
 
 class MemoryVisualization {
     constructor() {
@@ -16,6 +17,7 @@ class MemoryVisualization {
         this.episodes = [];
         this.scenes = [];
         this.stats = {};
+        this.episodeSituation = {};
         
         // 初始化模块
         this.initModules();
@@ -44,12 +46,15 @@ class MemoryVisualization {
         this.episodePoolRenderer = new EpisodePoolRenderer(
             this.selectEpisode.bind(this)
         );
+        // 创建图表管理器
+        this.chartManager = new ChartManager();
     }
     
     init() {
         console.log('MemoryVisualization初始化开始');
         this.bindEvents();
         this.connectWebSocket();
+        this.initCharts();
         this.loadInitialData();
         console.log('MemoryVisualization初始化完成');
     }
@@ -128,21 +133,30 @@ class MemoryVisualization {
         this.uiUpdater.updateLastUpdateTime();
     }
     
+    // 初始化图表
+    initCharts() {
+        if (this.chartManager) {
+            this.chartManager.initCharts();
+        }
+    }
+    
     async loadInitialData() {
         try {
             this.uiUpdater.updateSystemStatus('正在加载数据...');
             
-            const { stats, dialogues, episodes, qualifications, scenes } = await this.dataLoader.loadAllData();
+            const { stats, dialogues, episodes, qualifications, scenes, episodeSituation } = await this.dataLoader.loadAllData();
             
             this.stats = stats;
             this.dialogues = dialogues;
             this.episodes = episodes;
             this.qualifications = qualifications;
             this.scenes = scenes;
+            this.episodeSituation = episodeSituation;
             
             // 更新UI
             this.uiUpdater.updateStats(this.stats, this.wsManager.isConnected);
             this.updateDataLists();
+            this.updateCharts();
             
             this.uiUpdater.updateSystemStatus('数据加载完成');
             this.uiUpdater.addUpdateLog('数据加载完成');
@@ -154,6 +168,17 @@ class MemoryVisualization {
         }
     }
     
+    // 更新图表
+    updateCharts() {
+        if (this.chartManager) {
+            // 更新策略分布图表
+            this.chartManager.updateStrategyDistribution(this.episodeSituation);
+            
+            // 更新用户分布图表
+            this.chartManager.updateUserDistribution(this.dialogues);
+        }
+    }
+    
     updateDataLists() {
         this.itemRenderer.renderDialoguesList(this.dialogues, 'dialogues-list');
         this.itemRenderer.renderEpisodesList(this.episodes, 'episodes-list');
@@ -161,7 +186,7 @@ class MemoryVisualization {
         
         // 渲染episode元素池
         if (this.episodePoolRenderer) {
-            this.episodePoolRenderer.setEpisodes(this.episodes, this.qualifications);
+            this.episodePoolRenderer.setEpisodes(this.episodes, this.qualifications, this.episodeSituation);
         }
     }
     
@@ -196,7 +221,15 @@ class MemoryVisualization {
         try {
             // 使用新的API获取episode详情（包含评分）
             const episodeDetail = await this.dataLoader.loadEpisodeDetail(dialogueId, episodeId);
-            this.detailViewer.displayEpisodeDetailWithScore(episodeDetail);
+            
+            // 获取episode的situation信息
+            let episodeSituation = null;
+            if (this.episodeSituation && this.episodeSituation.episodes) {
+                const episodeKey = `${dialogueId}:${episodeId}`;
+                episodeSituation = this.episodeSituation.episodes[episodeKey];
+            }
+            
+            this.detailViewer.displayEpisodeDetailWithScore(episodeDetail, episodeSituation);
         } catch (error) {
             console.error('显示episode详情失败:', error);
             // 如果新API失败，回退到旧的方法

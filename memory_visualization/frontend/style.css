@@ -182,6 +182,8 @@ header h1 i {
     background: var(--light-gray);
     border-radius: var(--border-radius);
     padding: 15px;
+    height: 250px; /* 固定高度 */
+    position: relative;
 }
 
 .chart-container h3 {
@@ -191,6 +193,12 @@ header h1 i {
     display: flex;
     align-items: center;
     gap: 8px;
+    height: 30px; /* 固定标题高度 */
+}
+
+.chart-container canvas {
+    width: 100% !important;
+    height: calc(100% - 30px) !important; /* 减去标题高度 */
 }
 
 /* 控制面板 */
@@ -952,4 +960,107 @@ footer span {
 
 .episode-element.with-border {
     border-left: 3px solid;
+}
+
+/* 策略信息样式 */
+.episode-element-situation {
+    margin-top: 4px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.6rem;
+}
+
+.situation-icons {
+    display: flex;
+    gap: 2px;
+}
+
+.situation-icons i {
+    font-size: 0.7rem;
+    opacity: 0.8;
+}
+
+.novelty-indicators {
+    display: flex;
+    gap: 2px;
+}
+
+.factual-novelty, .emotional-novelty {
+    padding: 1px 3px;
+    border-radius: 2px;
+    font-weight: bold;
+    font-size: 0.6rem;
+    min-width: 16px;
+    text-align: center;
+}
+
+/* 新颖性颜色 */
+.novelty-0 { background-color: #ef4444; color: white; } /* 红色 - 0分 */
+.novelty-1 { background-color: #f59e0b; color: white; } /* 黄色 - 1分 */
+.novelty-2 { background-color: #10b981; color: white; } /* 绿色 - 2分 */
+
+/* 详情面板中的策略信息样式 */
+.situation-info {
+    margin-top: 15px;
+}
+
+.situation-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: 15px;
+}
+
+.situation-item {
+    background: var(--light-gray);
+    border-radius: var(--border-radius);
+    padding: 10px;
+    text-align: center;
+}
+
+.situation-label {
+    font-size: 0.85rem;
+    color: var(--gray-color);
+    margin-bottom: 5px;
+}
+
+.situation-value {
+    font-size: 1.1rem;
+    font-weight: bold;
+    padding: 4px 8px;
+    border-radius: 4px;
+    display: inline-block;
+}
+
+.situation-true {
+    background-color: #10b981;
+    color: white;
+}
+
+.situation-false {
+    background-color: #ef4444;
+    color: white;
+}
+
+.situation-text {
+    background-color: #3a0ca3;
+    color: white;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+    .situation-grid {
+        grid-template-columns: repeat(2, 1fr);
+    }
+    
+    .episode-element-situation {
+        flex-direction: column;
+        gap: 2px;
+        align-items: flex-start;
+    }
+    
+    .novelty-indicators {
+        align-self: flex-end;
+    }
 }
