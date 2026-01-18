@@ -23,7 +23,7 @@ logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(le
 logger = logging.getLogger(__name__)
 
 # 路径配置
-EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "episodes"
+EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "episodes"
 
 def ensure_directory(path: Path):
     """确保目录存在"""

@@ -24,8 +24,8 @@ logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(le
 logger = logging.getLogger(__name__)
 
 # 路径配置
-DIALOGUES_ROOT = PROJECT_ROOT / "data" / "memory" / "dialogues"
-EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "episodes"
+DIALOGUES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "dialogues"
+EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "episodes"
 CONFIG_PATH = PROJECT_ROOT / "config" / "prompt" / "episode.yaml"
 
 def load_prompts() -> Dict:
