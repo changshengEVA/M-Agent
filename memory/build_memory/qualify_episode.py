@@ -40,14 +40,20 @@ def ensure_directory(path: Path):
     """确保目录存在"""
     path.mkdir(parents=True, exist_ok=True)
 
-def scan_episode_files() -> List[Path]:
+def scan_episode_files(episodes_root: Path = None) -> List[Path]:
     """
     扫描所有 episode 文件。
     返回所有找到的 episode 文件路径列表。
+    
+    Args:
+        episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
     """
+    if episodes_root is None:
+        episodes_root = EPISODES_ROOT
+    
     episode_files = []
     # 扫描 by_dialogue 目录
-    by_dialogue_dir = EPISODES_ROOT / "by_dialogue"
+    by_dialogue_dir = episodes_root / "by_dialogue"
     if not by_dialogue_dir.exists():
         return episode_files
     
@@ -77,32 +83,44 @@ def load_episodes(episode_file: Path) -> Dict:
     with open(episode_file, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-def find_dialogue_file(dialogue_id: str) -> Optional[Path]:
+def find_dialogue_file(dialogue_id: str, dialogues_root: Path = None) -> Optional[Path]:
     """
     根据 dialogue_id 查找对应的对话文件。
     搜索 dialogues 目录下的所有子目录。
+    
+    Args:
+        dialogue_id: 对话ID
+        dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
     """
-    # 搜索 by_user 目录
-    by_user_dir = DIALOGUES_ROOT / "by_user"
-    if by_user_dir.exists():
-        for user_dir in by_user_dir.iterdir():
+    if dialogues_root is None:
+        dialogues_root = DIALOGUES_ROOT
+    
+    # 搜索所有可能的目录结构
+    search_patterns = [
+        ("by_user", "*", "*"),      # by_user/{user_id}/{year-month}/
+        ("by_flipflop", "*", "*"),  # by_flipflop/{flipflop_id}/{year-month}/
+        ("", "*", "*"),             # 直接搜索根目录下的 {user_id}/{year-month}/
+    ]
+    
+    for base_dir, user_pattern, date_pattern in search_patterns:
+        search_dir = dialogues_root / base_dir
+        if not search_dir.exists():
+            continue
+            
+        # 遍历用户目录
+        for user_dir in search_dir.iterdir():
             if user_dir.is_dir():
+                # 遍历年月目录
                 for year_month_dir in user_dir.iterdir():
                     if year_month_dir.is_dir():
                         dialogue_file = year_month_dir / f"{dialogue_id}.json"
                         if dialogue_file.exists():
                             return dialogue_file
     
-    # 搜索 by_flipflop 目录
-    by_flipflop_dir = DIALOGUES_ROOT / "by_flipflop"
-    if by_flipflop_dir.exists():
-        for flipflop_dir in by_flipflop_dir.iterdir():
-            if flipflop_dir.is_dir():
-                for year_month_dir in flipflop_dir.iterdir():
-                    if year_month_dir.is_dir():
-                        dialogue_file = year_month_dir / f"{dialogue_id}.json"
-                        if dialogue_file.exists():
-                            return dialogue_file
+    # 如果没有找到，尝试递归搜索整个目录
+    for file_path in dialogues_root.rglob(f"{dialogue_id}.json"):
+        if file_path.is_file():
+            return file_path
     
     return None
 
@@ -263,7 +281,7 @@ def build_qualification_structure(dialogue_id: str, episode_id: str, scoring_res
         "rationale": rationale
     }
 
-def process_episode_file(episode_file: Path, prompts: Dict) -> bool:
+def process_episode_file(episode_file: Path, prompts: Dict, dialogues_root: Path = None) -> bool:
     """处理单个 episode 文件，生成 qualification"""
     try:
         # 加载 episodes
@@ -271,7 +289,7 @@ def process_episode_file(episode_file: Path, prompts: Dict) -> bool:
         dialogue_id = episode_data.get('dialogue_id', episode_file.parent.name)
         
         # 查找并加载对应的对话文件
-        dialogue_file = find_dialogue_file(dialogue_id)
+        dialogue_file = find_dialogue_file(dialogue_id, dialogues_root)
         if not dialogue_file:
             logger.error(f"找不到对话文件: {dialogue_id}")
             return False
@@ -320,15 +338,23 @@ def save_qualifications(qualifications: List[Dict], qualification_file: Path):
             "qualification_version": "v1"
         }, f, ensure_ascii=False, indent=2)
 
-def scan_and_qualify_episodes(use_tqdm: bool = True):
+def scan_and_qualify_episodes(use_tqdm: bool = True, dialogues_root: Path = None, episodes_root: Path = None):
     """
     主函数：扫描所有 episode 文件，为需要生成 qualification 的 episode 创建 qualification。
     
     Args:
         use_tqdm: 是否使用 tqdm 显示进度条
+        dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
+        episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
     """
+    # 确定使用的根目录
+    if episodes_root is None:
+        episodes_root = EPISODES_ROOT
+    if dialogues_root is None:
+        dialogues_root = DIALOGUES_ROOT
+    
     # 确保 episodes 根目录存在
-    ensure_directory(EPISODES_ROOT)
+    ensure_directory(episodes_root)
     
     # 加载 prompts
     prompts = load_prompts()
@@ -337,7 +363,7 @@ def scan_and_qualify_episodes(use_tqdm: bool = True):
         return
     
     # 扫描所有 episode 文件
-    episode_files = scan_episode_files()
+    episode_files = scan_episode_files(episodes_root)
     
     # 过滤需要处理的文件
     files_to_process = []
@@ -358,7 +384,7 @@ def scan_and_qualify_episodes(use_tqdm: bool = True):
     
     success_count = 0
     for episode_file in file_iter:
-        if process_episode_file(episode_file, prompts):
+        if process_episode_file(episode_file, prompts, dialogues_root):
             success_count += 1
     
     logger.info(f"成功处理 {success_count}/{len(files_to_process)} 个 episode 文件")

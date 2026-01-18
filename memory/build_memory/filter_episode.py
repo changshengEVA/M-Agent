@@ -29,14 +29,20 @@ def ensure_directory(path: Path):
     """确保目录存在"""
     path.mkdir(parents=True, exist_ok=True)
 
-def scan_qualification_files() -> List[Path]:
+def scan_qualification_files(episodes_root: Path = None) -> List[Path]:
     """
     扫描所有 qualification 文件。
     返回所有找到的 qualification 文件路径列表。
+    
+    Args:
+        episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
     """
+    if episodes_root is None:
+        episodes_root = EPISODES_ROOT
+    
     qualification_files = []
     # 扫描 by_dialogue 目录
-    by_dialogue_dir = EPISODES_ROOT / "by_dialogue"
+    by_dialogue_dir = episodes_root / "by_dialogue"
     if not by_dialogue_dir.exists():
         return qualification_files
     
@@ -203,15 +209,19 @@ def save_eligibility(results: List[Dict], dialogue_id: str, eligibility_file: Pa
         json.dump(eligibility_output, f, ensure_ascii=False, indent=2)
 
 
-def save_episode_situation(results: List[Dict], dialogue_id: str):
+def save_episode_situation(results: List[Dict], dialogue_id: str, episodes_root: Path = None):
     """
     保存 episode situation 数据到全局文件（统计总和形式）。
     
     Args:
         results: 包含完整 episode 信息的列表
         dialogue_id: 对话 ID
+        episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
     """
-    situation_file = EPISODES_ROOT / "episode_situation.json"
+    if episodes_root is None:
+        episodes_root = EPISODES_ROOT
+    
+    situation_file = episodes_root / "episode_situation.json"
     
     # 加载现有的 situation 数据（如果存在）
     existing_data = {}
@@ -353,7 +363,8 @@ def save_episode_situation(results: List[Dict], dialogue_id: str):
 def process_qualification_file(qualification_file: Path,
                                episode_version: str = "v1",
                                eligibility_version: str = "v1",
-                               force_update: bool = False) -> bool:
+                               force_update: bool = False,
+                               episodes_root: Path = None) -> bool:
     """处理单个 qualification 文件，生成 eligibility 并保存 situation"""
     try:
         # 加载 qualifications
@@ -387,7 +398,7 @@ def process_qualification_file(qualification_file: Path,
             logger.info(f"Eligibility file already exists for {dialogue_id}, skipping generation")
         
         # 总是保存 episode situation 数据（即使 eligibility 文件已存在）
-        save_episode_situation(results, dialogue_id)
+        save_episode_situation(results, dialogue_id, episodes_root)
         
         return True
         
@@ -400,7 +411,8 @@ def process_qualification_file(qualification_file: Path,
 def scan_and_filter_episodes(episode_version: str = "v1",
                              eligibility_version: str = "v1",
                              use_tqdm: bool = True,
-                             force_update_situation: bool = True):
+                             force_update_situation: bool = True,
+                             episodes_root: Path = None):
     """
     主函数：扫描所有 qualification 文件，为需要生成 eligibility 的对话创建 eligibility。
     
@@ -409,12 +421,17 @@ def scan_and_filter_episodes(episode_version: str = "v1",
         eligibility_version: eligibility 文件版本（默认 v1）
         use_tqdm: 是否使用 tqdm 显示进度条
         force_update_situation: 是否强制更新 episode_situation.json（即使 eligibility 文件已存在）
+        episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
     """
+    # 确定使用的根目录
+    if episodes_root is None:
+        episodes_root = EPISODES_ROOT
+    
     # 确保 episodes 根目录存在
-    ensure_directory(EPISODES_ROOT)
+    ensure_directory(episodes_root)
     
     # 扫描所有 qualification 文件
-    qualification_files = scan_qualification_files()
+    qualification_files = scan_qualification_files(episodes_root)
     
     # 如果强制更新 situation，则处理所有文件；否则只处理需要生成 eligibility 的文件
     if force_update_situation:
@@ -443,7 +460,8 @@ def scan_and_filter_episodes(episode_version: str = "v1",
             qualification_file,
             episode_version,
             eligibility_version,
-            force_update=force_update_situation
+            force_update=force_update_situation,
+            episodes_root=episodes_root
         ):
             success_count += 1
     

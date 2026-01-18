@@ -12,7 +12,7 @@ from typing import Dict, Any
 
 logger = logging.getLogger(__name__)
 
-def save_dialogue(dialogue: Dict[str, Any], output_dir: str, dialogues_by_data_dir: str = None) -> bool:
+def save_dialogue(dialogue: Dict[str, Any], output_dir: str, default_output_dir: str = None) -> bool:
     """
     保存 dialogue 到文件
     
@@ -20,17 +20,17 @@ def save_dialogue(dialogue: Dict[str, Any], output_dir: str, dialogues_by_data_d
     
     Args:
         dialogue: dialogue 字典
-        output_dir: 输出目录，如果为 None 则使用 dialogues_by_data_dir
-        dialogues_by_data_dir: 默认的输出目录配置
+        output_dir: 输出目录，如果为 None 则使用 default_output_dir
+        default_output_dir: 默认的输出目录配置
         
     Returns:
         成功返回 True，失败返回 False
     """
     if output_dir is None:
-        if dialogues_by_data_dir is None:
+        if default_output_dir is None:
             logger.error("未提供输出目录")
             return False
-        output_dir = dialogues_by_data_dir
+        output_dir = default_output_dir
     
     try:
         user_id = dialogue.get('user_id', 'unknown')

@@ -116,7 +116,7 @@ kg_strong_filter_v1: |
   You will be given a complete scene object in JSON format.
   All fields may be used as context, but only stable world facts may be extracted.
 
-  <json_string>
+  <txt_string>
 
   ━━━━━━━━━━━━━━━━━━
   Confidence Scoring

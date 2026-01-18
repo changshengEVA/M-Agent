@@ -38,35 +38,58 @@ def ensure_directory(path: Path):
     """确保目录存在"""
     path.mkdir(parents=True, exist_ok=True)
 
-def scan_dialogue_files() -> List[Path]:
+def scan_dialogue_files(dialogues_root: Path = None) -> List[Path]:
     """
     扫描所有对话文件。
     返回所有找到的对话文件路径列表。
+    
+    Args:
+        dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
     """
+    if dialogues_root is None:
+        dialogues_root = DIALOGUES_ROOT
+    
     dialogue_files = []
-    # 扫描 by_user 和 by_flipflop 目录
-    for user_dir in DIALOGUES_ROOT.iterdir():
-        if user_dir.is_dir():
-            for user_id_dir in user_dir.iterdir():
-                if user_id_dir.is_dir():
-                    for year_month_dir in user_id_dir.iterdir():
-                        if year_month_dir.is_dir():
-                            for file in year_month_dir.glob("*.json"):
-                                dialogue_files.append(file)
+    # 扫描所有可能的目录结构
+    # 1. 直接扫描根目录下的 {user_id}/{year-month}/ 结构
+    for user_id_dir in dialogues_root.iterdir():
+        if user_id_dir.is_dir():
+            # 检查是否是用户ID目录（跳过by_user, by_flipflop等特殊目录）
+            if user_id_dir.name in ["by_user", "by_flipflop", "by_data"]:
+                # 这些是旧的目录结构，也扫描它们以保持向后兼容
+                for sub_user_dir in user_id_dir.iterdir():
+                    if sub_user_dir.is_dir():
+                        for year_month_dir in sub_user_dir.iterdir():
+                            if year_month_dir.is_dir():
+                                for file in year_month_dir.glob("*.json"):
+                                    dialogue_files.append(file)
+            else:
+                # 新的目录结构：直接是用户ID目录
+                for year_month_dir in user_id_dir.iterdir():
+                    if year_month_dir.is_dir():
+                        for file in year_month_dir.glob("*.json"):
+                            dialogue_files.append(file)
     return dialogue_files
 
-def get_episode_path(dialogue_file: Path) -> Path:
+def get_episode_path(dialogue_file: Path, episodes_root: Path = None) -> Path:
     """
     根据对话文件路径生成对应的 episode 文件路径。
     格式: episodes/by_dialogue/{dialogue_id}/episodes_v1.json
+    
+    Args:
+        dialogue_file: 对话文件路径
+        episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
     """
+    if episodes_root is None:
+        episodes_root = EPISODES_ROOT
+    
     dialogue_id = dialogue_file.stem  # 例如 dlg_2025-12-23_21-53-05
-    episode_dir = EPISODES_ROOT / "by_dialogue" / dialogue_id
+    episode_dir = episodes_root / "by_dialogue" / dialogue_id
     return episode_dir / "episodes_v1.json"
 
-def dialogue_needs_episodes(dialogue_file: Path) -> bool:
+def dialogue_needs_episodes(dialogue_file: Path, episodes_root: Path = None) -> bool:
     """检查对话是否需要生成 episodes（episode 文件不存在）"""
-    episode_file = get_episode_path(dialogue_file)
+    episode_file = get_episode_path(dialogue_file, episodes_root)
     return not episode_file.exists()
 
 def load_dialogue(dialogue_file: Path) -> Dict:
@@ -131,7 +154,7 @@ def save_episodes(episode_data: Dict, episode_file: Path):
     with open(episode_file, 'w', encoding='utf-8') as f:
         json.dump(episode_data, f, ensure_ascii=False, indent=2)
 
-def process_dialogue_file(dialogue_file: Path, prompts: Dict) -> bool:
+def process_dialogue_file(dialogue_file: Path, prompts: Dict, episodes_root: Path = None) -> bool:
     """处理单个对话文件，生成 episodes"""
     try:
         # 加载对话
@@ -145,7 +168,7 @@ def process_dialogue_file(dialogue_file: Path, prompts: Dict) -> bool:
         episode_data = build_episode_structure(dialogue_id, openai_result)
         
         # 保存文件
-        episode_file = get_episode_path(dialogue_file)
+        episode_file = get_episode_path(dialogue_file, episodes_root)
         save_episodes(episode_data, episode_file)
         
         return True
@@ -153,15 +176,23 @@ def process_dialogue_file(dialogue_file: Path, prompts: Dict) -> bool:
         logger.error(f"处理对话文件 {dialogue_file} 失败: {e}")
         return False
 
-def scan_and_build_episodes(use_tqdm: bool = True):
+def scan_and_build_episodes(use_tqdm: bool = True, dialogues_root: Path = None, episodes_root: Path = None):
     """
     主函数：扫描所有对话文件，为需要生成 episodes 的对话创建 episodes。
     
     Args:
         use_tqdm: 是否使用 tqdm 显示进度条
+        dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
+        episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
     """
+    # 确定使用的根目录
+    if episodes_root is None:
+        episodes_root = EPISODES_ROOT
+    if dialogues_root is None:
+        dialogues_root = DIALOGUES_ROOT
+    
     # 确保 episodes 根目录存在
-    ensure_directory(EPISODES_ROOT)
+    ensure_directory(episodes_root)
     
     # 加载 prompts
     prompts = load_prompts()
@@ -170,12 +201,12 @@ def scan_and_build_episodes(use_tqdm: bool = True):
         return
     
     # 扫描所有对话文件
-    dialogue_files = scan_dialogue_files()
+    dialogue_files = scan_dialogue_files(dialogues_root)
     
     # 过滤需要处理的文件
     files_to_process = []
     for file in dialogue_files:
-        if dialogue_needs_episodes(file):
+        if dialogue_needs_episodes(file, episodes_root):
             files_to_process.append(file)
     
     if not files_to_process:
@@ -190,7 +221,7 @@ def scan_and_build_episodes(use_tqdm: bool = True):
     
     success_count = 0
     for dialogue_file in file_iter:
-        if process_dialogue_file(dialogue_file, prompts):
+        if process_dialogue_file(dialogue_file, prompts, episodes_root):
             success_count += 1
 
 if __name__ == "__main__":
