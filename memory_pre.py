@@ -25,13 +25,13 @@ except ImportError:
 # 导入工具函数
 try:
     from utils import save_dialogue
-    from utils.memory_build_utils import build_episodes_with_id, run_memory_build_for_id
+    from utils.memory_build_utils import build_episodes_with_id
     from memory.build_memory.form_kg_candidate import scan_and_form_kg_candidates
 except ImportError:
     # 如果导入失败，使用本地定义的函数（向后兼容）
     sys.path.append(os.path.dirname(os.path.abspath(__file__)))
     from utils.dialogue_utils import save_dialogue
-    from utils.memory_build_utils import build_episodes_with_id, run_memory_build_for_id
+    from utils.memory_build_utils import build_episodes_with_id
     from memory.build_memory.form_kg_candidate import scan_and_form_kg_candidates
 
 # 配置日志
@@ -217,7 +217,7 @@ def stage3_form_kg_candidates_for_id(process_id: str, prompt_version: str = "v1"
         return False
 
 
-def run_full_pipeline_for_id(process_id: str, prompt_version: str = "v1"):
+def run_full_kg_c_pipeline_for_id(process_id: str, prompt_version: str = "v1"):
     """
     为指定ID运行完整的数据构造流程
     
@@ -270,7 +270,7 @@ def main():
     logger.info("运行模式: full（完整三个阶段）")
     
     # 直接运行完整三个阶段的流程
-    success = run_full_pipeline_for_id(args.id, args.kg_prompt_version)
+    success = run_full_kg_c_pipeline_for_id(args.id, args.kg_prompt_version)
     
     if success:
         logger.info("=" * 50)
