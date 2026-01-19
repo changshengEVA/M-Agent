@@ -114,7 +114,12 @@ def build_kg_for_memory_id(memory_id: str = "test", base_path: str = "data/memor
             # 调用 LongMemorySystem.write_kg_facts 写入 KG 数据
             # write_kg_facts 期望的输入格式是包含 'facts' 字段的字典
             # 而 kg_candidate 已经包含 'facts' 字段，所以直接传递 kg_candidate
-            result = memory_system.write_kg_facts(kg_candidate)
+            # 同时传递源文件路径以启用自动清理（删除候选文件并更新episode）
+            result = memory_system.write_kg_facts(
+                facts_json=kg_candidate,
+                source_file=file_path,
+                auto_cleanup=True
+            )
             
             if result.get("success", False):
                 file_stats["success"] = True

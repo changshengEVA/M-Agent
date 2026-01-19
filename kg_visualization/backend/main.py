@@ -38,6 +38,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# 配置参数
+MEMORY_ID = "test"  # 默认使用test目录，可以通过环境变量修改
+
 # 全局变量
 data_loader: Optional[KGDataLoader] = None
 file_watcher: Optional[KGFileWatcher] = None
@@ -50,13 +53,14 @@ class EntityResponse(BaseModel):
     type: str
     confidence: float
     scenes: List[str]
+    attributes: List[Dict] = []
 
 class RelationResponse(BaseModel):
     subject: str
     relation: str
     object: str
     confidence: float
-    scene_id: str
+    scene_id: str = ""  # 新格式可能没有scene_id
 
 class SceneResponse(BaseModel):
     scene_id: str
@@ -144,16 +148,17 @@ async def startup_event():
     # 保存主事件循环引用
     main_event_loop = asyncio.get_running_loop()
     
-    # 初始化数据加载器 - 使用默认路径（会自动计算正确路径）
-    data_loader = KGDataLoader()
+    # 初始化数据加载器 - 使用新的数据目录结构
+    data_loader = KGDataLoader(memory_id=MEMORY_ID)
     
+    logger.info(f"Memory ID: {MEMORY_ID}")
     logger.info(f"数据目录: {data_loader.data_dir}")
     logger.info(f"目录是否存在: {data_loader.data_dir.exists()}")
     
     stats = data_loader.load_all_data()
     logger.info(f"初始数据加载完成: {stats}")
     
-    # 启动文件监控
+    # 启动文件监控 - 监控整个kg_data目录
     file_watcher = KGFileWatcher(
         data_dir=str(data_loader.data_dir),
         on_change_callback=on_file_change

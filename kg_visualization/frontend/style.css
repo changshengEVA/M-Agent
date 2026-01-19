@@ -312,7 +312,15 @@ h1 {
     background: #e74c3c;
 }
 
-.legend-color.mathematical_concept {
+.legend-color.location {
+    background: #2ecc71;
+}
+
+.legend-color.product {
+    background: #f39c12;
+}
+
+.legend-color.work {
     background: #9b59b6;
 }
 
@@ -396,4 +404,81 @@ footer code {
 
 .pulse {
     animation: pulse 1s infinite;
+}
+
+/* 选中信息样式 */
+.selected-info-content {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    font-size: 0.95rem;
+    line-height: 1.5;
+}
+
+.info-section {
+    margin-bottom: 10px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #eee;
+}
+
+.info-section:last-child {
+    border-bottom: none;
+    margin-bottom: 0;
+    padding-bottom: 0;
+}
+
+.info-section strong {
+    color: #2c3e50;
+    min-width: 100px;
+    display: inline-block;
+}
+
+.attributes-list {
+    margin-top: 10px;
+    margin-left: 20px;
+    max-height: 150px;
+    overflow-y: auto;
+    border: 1px solid #eaeaea;
+    border-radius: 5px;
+    padding: 10px;
+    background: #f9f9f9;
+}
+
+.attribute-item {
+    padding: 5px 0;
+    border-bottom: 1px dashed #ddd;
+    display: flex;
+    align-items: baseline;
+}
+
+.attribute-item:last-child {
+    border-bottom: none;
+}
+
+.attribute-index {
+    color: #7f8c8d;
+    font-size: 0.85rem;
+    min-width: 25px;
+}
+
+.attribute-field {
+    color: #3498db;
+    font-weight: 600;
+    min-width: 120px;
+}
+
+.attribute-value {
+    color: #2c3e50;
+    flex: 1;
+    word-break: break-word;
+}
+
+#selected-info {
+    min-height: 100px;
+    padding: 15px;
+    background: #f8f9fa;
+    border-radius: 5px;
+    border: 1px solid #eaeaea;
+    overflow-y: auto;
+    max-height: 300px;
+    white-space: normal;
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
 }

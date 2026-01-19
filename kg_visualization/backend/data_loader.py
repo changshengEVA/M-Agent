@@ -14,18 +14,20 @@ logger = logging.getLogger(__name__)
 
 class Entity:
     """实体类"""
-    def __init__(self, entity_id: str, entity_type: str, confidence: float, scenes: List[str]):
+    def __init__(self, entity_id: str, entity_type: str, confidence: float, scenes: List[str], attributes: List[Dict] = None):
         self.id = entity_id
         self.type = entity_type
         self.confidence = confidence
         self.scenes = scenes  # 包含该实体的scene列表
+        self.attributes = attributes or []  # 实体属性列表
     
     def to_dict(self):
         return {
             "id": self.id,
             "type": self.type,
             "confidence": self.confidence,
-            "scenes": self.scenes
+            "scenes": self.scenes,
+            "attributes": self.attributes
         }
 
 class Relation:
@@ -65,28 +67,28 @@ class Scene:
 class KGDataLoader:
     """知识图谱数据加载器"""
     
-    def __init__(self, data_dir: str = None):
+    def __init__(self, data_dir: str = None, memory_id: str = "test"):
         """
         初始化数据加载器
         
         Args:
-            data_dir: KG候选数据目录路径，如果为None则使用默认路径
+            data_dir: KG数据目录路径，如果为None则使用默认路径
+            memory_id: memory目录下的ID，默认为"test"
         """
         if data_dir is None:
             # 默认路径：相对于项目根目录（f:/AI/M-Agent）
             import os
             # 获取项目根目录（f:/AI/M-Agent）
-            # 当前文件在 f:/AI/M-Agent/kg_visualization/backend/data_loader.py
-            # 所以项目根目录是父目录的父目录
             current_file = os.path.abspath(__file__)
             backend_dir = os.path.dirname(current_file)
             kg_viz_dir = os.path.dirname(backend_dir)
             project_root = os.path.dirname(kg_viz_dir)  # f:/AI/M-Agent
-            data_dir = os.path.join(project_root, "data", "memory", "kg_candidates", "strong")
+            data_dir = os.path.join(project_root, "data", "memory", memory_id, "kg_data")
         
         self.data_dir = Path(data_dir)
         self.entities: Dict[str, Entity] = {}  # id -> Entity
         self.relations: List[Relation] = []
+        # 新格式没有scene信息，但为了兼容性保留空字典
         self.scenes: Dict[str, Scene] = {}
         
     def load_all_data(self) -> Dict:
@@ -105,12 +107,25 @@ class KGDataLoader:
         self.relations.clear()
         self.scenes.clear()
         
-        # 查找所有JSON文件
-        json_files = list(self.data_dir.glob("*.kg_candidate.json"))
-        logger.info(f"找到 {len(json_files)} 个KG候选文件")
+        # 加载实体文件
+        entity_dir = self.data_dir / "entity"
+        if entity_dir.exists():
+            entity_files = list(entity_dir.glob("*.json"))
+            logger.info(f"找到 {len(entity_files)} 个实体文件")
+            for file_path in entity_files:
+                self._load_entity_file(file_path)
+        else:
+            logger.warning(f"实体目录不存在: {entity_dir}")
         
-        for file_path in json_files:
-            self._load_single_file(file_path)
+        # 加载关系文件
+        relation_dir = self.data_dir / "relation"
+        if relation_dir.exists():
+            relation_files = list(relation_dir.glob("*.json"))
+            logger.info(f"找到 {len(relation_files)} 个关系文件")
+            for file_path in relation_files:
+                self._load_relation_file(file_path)
+        else:
+            logger.warning(f"关系目录不存在: {relation_dir}")
         
         # 统计信息
         stats = {
@@ -125,64 +140,57 @@ class KGDataLoader:
         logger.info(f"数据加载完成: {stats['total_entities']} 个实体, {stats['total_relations']} 个关系")
         return stats
     
-    def _load_single_file(self, file_path: Path):
-        """加载单个文件"""
+    def _load_entity_file(self, file_path: Path):
+        """加载实体文件"""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            scene_id = data.get("scene_id", file_path.stem)
-            user_id = data.get("user_id", "unknown")
-            generated_at = data.get("generated_at", "")
-            prompt_version = data.get("prompt_version", "")
+            entity_id = data.get("id")
+            if not entity_id:
+                # 尝试从文件名获取ID
+                entity_id = file_path.stem
             
-            # 保存scene信息
-            self.scenes[scene_id] = Scene(scene_id, user_id, generated_at, prompt_version)
+            entity_type = data.get("type", "unknown")
+            confidence = data.get("confidence", 0.0)
+            attributes = data.get("attributes", [])
             
-            # 处理实体
-            facts = data.get("facts", {})
-            entities = facts.get("entities", [])
-            for entity_data in entities:
-                entity_id = entity_data.get("id")
-                entity_type = entity_data.get("type", "unknown")
-                confidence = entity_data.get("confidence", 0.0)
+            if entity_id:
+                # 新格式没有scene信息，使用空列表
+                self.entities[entity_id] = Entity(
+                    entity_id=entity_id,
+                    entity_type=entity_type,
+                    confidence=confidence,
+                    scenes=[],  # 空列表，因为没有scene信息
+                    attributes=attributes  # 添加attributes字段
+                )
                 
-                if entity_id:
-                    if entity_id in self.entities:
-                        # 更新现有实体，添加scene到列表
-                        if scene_id not in self.entities[entity_id].scenes:
-                            self.entities[entity_id].scenes.append(scene_id)
-                        # 更新置信度为最高值
-                        if confidence > self.entities[entity_id].confidence:
-                            self.entities[entity_id].confidence = confidence
-                    else:
-                        # 创建新实体
-                        self.entities[entity_id] = Entity(
-                            entity_id=entity_id,
-                            entity_type=entity_type,
-                            confidence=confidence,
-                            scenes=[scene_id]
-                        )
-            
-            # 处理关系
-            relations = facts.get("relations", [])
-            for rel_data in relations:
-                subject = rel_data.get("subject")
-                relation = rel_data.get("relation")
-                obj = rel_data.get("object")
-                confidence = rel_data.get("confidence", 0.0)
-                
-                if subject and relation and obj:
-                    self.relations.append(Relation(
-                        subject=subject,
-                        relation=relation,
-                        object=obj,
-                        confidence=confidence,
-                        scene_id=scene_id
-                    ))
-                    
         except Exception as e:
-            logger.error(f"加载文件失败 {file_path}: {e}")
+            logger.error(f"加载实体文件失败 {file_path}: {e}")
+    
+    def _load_relation_file(self, file_path: Path):
+        """加载关系文件"""
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            subject = data.get("subject")
+            relation = data.get("relation")
+            obj = data.get("object")
+            confidence = data.get("confidence", 0.0)
+            
+            if subject and relation and obj:
+                # 新格式没有scene_id，使用空字符串
+                self.relations.append(Relation(
+                    subject=subject,
+                    relation=relation,
+                    object=obj,
+                    confidence=confidence,
+                    scene_id=""  # 空字符串，因为没有scene信息
+                ))
+                
+        except Exception as e:
+            logger.error(f"加载关系文件失败 {file_path}: {e}")
     
     def _get_entity_type_distribution(self) -> Dict[str, int]:
         """获取实体类型分布"""
@@ -232,12 +240,23 @@ class KGDataLoader:
         
         # 节点
         for entity in self.entities.values():
+            # 构建属性文本
+            attributes_text = ""
+            if entity.attributes:
+                attributes_text = "<br>属性: "
+                for attr in entity.attributes[:3]:  # 只显示前3个属性
+                    attributes_text += f"{attr.get('field', '')}: {attr.get('value', '')}; "
+                if len(entity.attributes) > 3:
+                    attributes_text += f"... (共{len(entity.attributes)}个)"
+            
             nodes.append({
                 "id": entity.id,
                 "label": entity.id,
                 "type": entity.type,
                 "confidence": entity.confidence,
-                "title": f"类型: {entity.type}<br>置信度: {entity.confidence}<br>出现在 {len(entity.scenes)} 个scenes"
+                "attributes": entity.attributes,  # 添加attributes字段
+                "scenes": entity.scenes,  # 添加scenes字段
+                "title": f"类型: {entity.type}<br>置信度: {entity.confidence}<br>出现在 {len(entity.scenes)} 个scenes{attributes_text}"
             })
         
         # 边
@@ -248,7 +267,8 @@ class KGDataLoader:
                 "to": relation.object,
                 "label": relation.relation,
                 "confidence": relation.confidence,
-                "title": f"关系: {relation.relation}<br>置信度: {relation.confidence}<br>Scene: {relation.scene_id}"
+                "scene_id": relation.scene_id,  # 添加scene_id字段
+                "title": f"关系: {relation.relation}<br>置信度: {relation.confidence}"
             })
         
         return {

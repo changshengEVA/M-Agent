@@ -23,7 +23,9 @@ from typing import Dict, List, Any, Optional, Union
 from memory.in_memory.utils.KG_utils import (
     save_entity,
     save_relation,
-    save_attribute
+    save_attribute,
+    delete_kg_candidate_file,
+    update_episode_kg_availability
 )
 from memory.in_memory.utils.sys_utils import load_kg
 # 配置日志
@@ -93,12 +95,20 @@ class LongMemorySystem:
         else:
             logger.warning(f"KG数据刷新失败: {self.kg_data.get('error', '未知错误')}")
     
-    def write_kg_facts(self, facts_json: Union[str, Dict]) -> Dict:
+    def write_kg_facts(
+        self,
+        facts_json: Union[str, Dict],
+        source_file: Optional[Union[str, Path]] = None,
+        auto_cleanup: bool = True
+    ) -> Dict:
         """
         向 data/memory/{id}/kg_data 写入新的KG信息
         
         Args:
             facts_json: KG事实的JSON字符串或字典，格式应与kg_candidate中的facts字段一致
+            source_file: 可选的源文件路径（KG候选文件），如果提供且auto_cleanup为True，
+                         则处理完成后删除该文件并更新对应episode的kg_available字段
+            auto_cleanup: 是否自动清理源文件和更新episode，默认为True
             
         Returns:
             包含处理结果的字典
@@ -168,6 +178,46 @@ class LongMemorySystem:
         
         # 刷新内存中的KG数据以保持一致性
         self._refresh_kg_data()
+        
+        # 自动清理逻辑
+        if source_file and auto_cleanup:
+            try:
+                source_path = Path(source_file) if isinstance(source_file, str) else source_file
+                if source_path.exists():
+                    # 加载源文件以获取episode_id和dialogue_id
+                    try:
+                        with open(source_path, 'r', encoding='utf-8') as f:
+                            source_data = json.load(f)
+                        episode_id = source_data.get('episode_id')
+                        dialogue_id = source_data.get('dialogue_id')
+                        
+                        if episode_id and dialogue_id:
+                            # 更新episode的kg_available为False
+                            update_success = update_episode_kg_availability(
+                                episode_id=episode_id,
+                                dialogue_id=dialogue_id,
+                                memory_root=self.memory_root,
+                                kg_available=False
+                            )
+                            if update_success:
+                                logger.info(f"已更新episode {episode_id} 的kg_available为False")
+                            else:
+                                logger.warning(f"更新episode {episode_id} 的kg_available失败")
+                        else:
+                            logger.warning(f"源文件中缺少episode_id或dialogue_id: {source_path}")
+                    except Exception as e:
+                        logger.error(f"读取源文件元数据失败 {source_path}: {e}")
+                    
+                    # 删除候选文件
+                    delete_success = delete_kg_candidate_file(source_path)
+                    if delete_success:
+                        logger.info(f"已删除KG候选文件: {source_path}")
+                    else:
+                        logger.warning(f"删除KG候选文件失败: {source_path}")
+                else:
+                    logger.warning(f"源文件不存在: {source_file}")
+            except Exception as e:
+                logger.error(f"自动清理过程中发生错误: {e}")
         
         return result
     

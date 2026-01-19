@@ -25,17 +25,21 @@ print("\n1. 测试数据加载器...")
 try:
     from backend.data_loader import KGDataLoader
     
-    data_dir = "../../data/memory/kg_candidates/strong"
+    # 使用新的数据目录
+    loader = KGDataLoader(memory_id="test")
+    data_dir = loader.data_dir
     print(f"数据目录: {data_dir}")
-    print(f"目录是否存在: {os.path.exists(data_dir)}")
+    print(f"目录是否存在: {data_dir.exists()}")
     
-    if os.path.exists(data_dir):
-        print("目录内容:")
-        for file in os.listdir(data_dir):
-            if file.endswith('.json'):
-                print(f"  - {file}")
+    if data_dir.exists():
+        print("目录结构:")
+        for item in data_dir.iterdir():
+            if item.is_dir():
+                print(f"  - {item.name}/")
+                for subitem in item.iterdir():
+                    if subitem.is_file() and subitem.suffix == '.json':
+                        print(f"    - {subitem.name}")
     
-    loader = KGDataLoader(data_dir)
     stats = loader.load_all_data()
     
     print(f"\n✅ 数据加载成功!")

@@ -12,10 +12,12 @@ let isConnected = false;
 
 // 节点类型颜色映射
 const NODE_COLORS = {
-    'person': '#3498db',
-    'organization': '#e74c3c',
-    'mathematical_concept': '#9b59b6',
-    'default': '#95a5a6'
+    'person': '#3498db',        // 蓝色 - 人物
+    'organization': '#e74c3c',  // 红色 - 组织
+    'location': '#2ecc71',      // 绿色 - 地点
+    'product': '#f39c12',       // 橙色 - 产品
+    'work': '#9b59b6',          // 紫色 - 作品
+    'unknown': '#95a5a6'        // 灰色 - 其他类型
 };
 
 // DOM加载完成后初始化
@@ -292,6 +294,44 @@ function updateStats(stats) {
 }
 
 /**
+ * 处理节点颜色
+ */
+function processNodeColors(nodes) {
+    return nodes.map(node => {
+        const color = NODE_COLORS[node.type] || NODE_COLORS.unknown;
+        return {
+            ...node,
+            color: {
+                background: color,
+                border: '#2c3e50',
+                highlight: {
+                    background: color,
+                    border: '#2c3e50'
+                }
+            },
+            shapeProperties: {
+                useBorderWithImage: true
+            }
+        };
+    });
+}
+
+/**
+ * 处理边颜色
+ */
+function processEdgeColors(edges) {
+    return edges.map(edge => {
+        return {
+            ...edge,
+            color: {
+                color: '#7f8c8d',
+                highlight: '#3498db'
+            }
+        };
+    });
+}
+
+/**
  * 更新图数据
  */
 function updateGraphData(data) {
@@ -300,11 +340,18 @@ function updateGraphData(data) {
     // 更新节点类型过滤选项
     updateNodeTypeFilter(data.nodes);
     
+    // 处理节点和边的颜色
+    const processedNodes = processNodeColors(data.nodes);
+    const processedEdges = processEdgeColors(data.edges);
+    
     // 创建或更新网络图
     if (!network) {
         createNetwork(data);
     } else {
-        network.setData(data);
+        network.setData({
+            nodes: processedNodes,
+            edges: processedEdges
+        });
     }
 }
 
@@ -350,35 +397,9 @@ function createNetwork(data) {
         }
     };
     
-    // 处理节点样式
-    const processedNodes = data.nodes.map(node => {
-        const color = NODE_COLORS[node.type] || NODE_COLORS.default;
-        return {
-            ...node,
-            color: {
-                background: color,
-                border: '#2c3e50',
-                highlight: {
-                    background: color,
-                    border: '#2c3e50'
-                }
-            },
-            shapeProperties: {
-                useBorderWithImage: true
-            }
-        };
-    });
-    
-    // 处理边样式
-    const processedEdges = data.edges.map(edge => {
-        return {
-            ...edge,
-            color: {
-                color: '#7f8c8d',
-                highlight: '#3498db'
-            }
-        };
-    });
+    // 处理节点和边的颜色
+    const processedNodes = processNodeColors(data.nodes);
+    const processedEdges = processEdgeColors(data.edges);
     
     // 创建网络
     network = new vis.Network(container, {
@@ -439,21 +460,43 @@ function displaySelectedInfo(item, type) {
     let info = '';
     
     if (type === 'node') {
-        info = `节点ID: ${item.id}\n`;
-        info += `类型: ${item.type}\n`;
-        info += `置信度: ${item.confidence}\n`;
+        info = `<div class="selected-info-content">`;
+        info += `<div class="info-section"><strong>节点ID:</strong> ${item.id}</div>`;
+        info += `<div class="info-section"><strong>类型:</strong> ${item.type}</div>`;
+        info += `<div class="info-section"><strong>置信度:</strong> ${item.confidence}</div>`;
         if (item.scenes) {
-            info += `出现在 ${item.scenes.length} 个场景中\n`;
+            info += `<div class="info-section"><strong>出现场景数:</strong> ${item.scenes.length}</div>`;
         }
+        
+        // 显示属性信息
+        if (item.attributes && item.attributes.length > 0) {
+            info += `<div class="info-section"><strong>属性信息:</strong></div>`;
+            info += `<div class="attributes-list">`;
+            item.attributes.forEach((attr, index) => {
+                const field = attr.field || '未知字段';
+                const value = attr.value || '未知值';
+                info += `<div class="attribute-item">`;
+                info += `<span class="attribute-index">${index + 1}.</span> `;
+                info += `<span class="attribute-field">${field}:</span> `;
+                info += `<span class="attribute-value">${value}</span>`;
+                info += `</div>`;
+            });
+            info += `</div>`;
+        } else {
+            info += `<div class="info-section"><strong>属性信息:</strong> 无</div>`;
+        }
+        info += `</div>`;
     } else if (type === 'edge') {
-        info = `关系: ${item.label}\n`;
-        info += `从: ${item.from}\n`;
-        info += `到: ${item.to}\n`;
-        info += `置信度: ${item.confidence}\n`;
-        info += `场景: ${item.scene_id || '未知'}\n`;
+        info = `<div class="selected-info-content">`;
+        info += `<div class="info-section"><strong>关系:</strong> ${item.label}</div>`;
+        info += `<div class="info-section"><strong>从:</strong> ${item.from}</div>`;
+        info += `<div class="info-section"><strong>到:</strong> ${item.to}</div>`;
+        info += `<div class="info-section"><strong>置信度:</strong> ${item.confidence}</div>`;
+        info += `<div class="info-section"><strong>场景:</strong> ${item.scene_id || '未知'}</div>`;
+        info += `</div>`;
     }
     
-    document.getElementById('selected-info').textContent = info;
+    document.getElementById('selected-info').innerHTML = info;
 }
 
 /**
@@ -506,9 +549,13 @@ function filterGraphByConfidence(threshold) {
     const filteredNodes = graphData.nodes.filter(node => node.confidence >= threshold);
     const filteredEdges = graphData.edges.filter(edge => edge.confidence >= threshold);
     
+    // 处理节点和边的颜色
+    const processedNodes = processNodeColors(filteredNodes);
+    const processedEdges = processEdgeColors(filteredEdges);
+    
     network.setData({
-        nodes: filteredNodes,
-        edges: filteredEdges
+        nodes: processedNodes,
+        edges: processedEdges
     });
 }
 
@@ -520,7 +567,13 @@ function filterGraphByType(selectedTypes) {
     
     // 如果选择了"全部类型"或没有选择任何类型，显示所有节点
     if (selectedTypes.includes('all') || selectedTypes.length === 0) {
-        network.setData(graphData);
+        // 处理节点和边的颜色
+        const processedNodes = processNodeColors(graphData.nodes);
+        const processedEdges = processEdgeColors(graphData.edges);
+        network.setData({
+            nodes: processedNodes,
+            edges: processedEdges
+        });
         return;
     }
     
@@ -529,13 +582,17 @@ function filterGraphByType(selectedTypes) {
     const filteredNodeIds = new Set(filteredNodes.map(node => node.id));
     
     // 过滤边（只保留两端节点都在过滤后集合中的边）
-    const filteredEdges = graphData.edges.filter(edge => 
+    const filteredEdges = graphData.edges.filter(edge =>
         filteredNodeIds.has(edge.from) && filteredNodeIds.has(edge.to)
     );
     
+    // 处理节点和边的颜色
+    const processedNodes = processNodeColors(filteredNodes);
+    const processedEdges = processEdgeColors(filteredEdges);
+    
     network.setData({
-        nodes: filteredNodes,
-        edges: filteredEdges
+        nodes: processedNodes,
+        edges: processedEdges
     });
 }
 

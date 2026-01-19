@@ -45,9 +45,15 @@ class KGFileEventHandler(FileSystemEventHandler):
             self._handle_change("deleted", event.src_path)
     
     def _is_kg_file(self, file_path: str) -> bool:
-        """检查是否为KG候选文件"""
+        """检查是否为KG数据文件"""
         path = Path(file_path)
-        return path.suffix == ".json" and "kg_candidate" in path.name
+        # 检查是否为JSON文件，并且在entity或relation目录中
+        if path.suffix != ".json":
+            return False
+        
+        # 检查文件路径是否包含entity或relation目录
+        path_str = str(path)
+        return "entity" in path_str or "relation" in path_str
     
     def _handle_change(self, change_type: str, file_path: str):
         """处理文件变化事件（带防抖）"""
@@ -78,7 +84,7 @@ class KGFileWatcher:
         """
         self.data_dir = Path(data_dir)
         self.on_change_callback = on_change_callback
-        self.observer: Optional[Observer] = None
+        self.observer = None
         self.event_handler: Optional[KGFileEventHandler] = None
     
     def start(self):
@@ -90,12 +96,13 @@ class KGFileWatcher:
         try:
             self.event_handler = KGFileEventHandler(self.data_dir, self.on_change_callback)
             self.observer = Observer()
-            self.observer.schedule(self.event_handler, str(self.data_dir), recursive=False)
+            # 递归监控，因为entity和relation是子目录
+            self.observer.schedule(self.event_handler, str(self.data_dir), recursive=True)
             self.observer.start()
             logger.info(f"✅ 开始监控目录: {self.data_dir}")
             logger.info(f"   目录路径: {self.data_dir.absolute()}")
-            logger.info(f"   监控模式: 非递归 (仅顶层目录)")
-            logger.info(f"   文件过滤器: *.json 且包含 'kg_candidate'")
+            logger.info(f"   监控模式: 递归 (包含子目录)")
+            logger.info(f"   文件过滤器: entity/*.json 和 relation/*.json")
             logger.info(f"   防抖时间: {self.event_handler.debounce_seconds}秒")
             return True
         except Exception as e:

@@ -453,6 +453,85 @@ def cleanup_kg_data(kg_data_dir: Path, confirm: bool = False) -> Dict:
         }
 
 
+def delete_kg_candidate_file(file_path: Path) -> bool:
+    """
+    删除KG候选文件
+    
+    Args:
+        file_path: KG候选文件路径
+        
+    Returns:
+        删除成功返回True，否则返回False
+    """
+    try:
+        if file_path.exists():
+            file_path.unlink()
+            logger.info(f"已删除KG候选文件: {file_path}")
+            return True
+        else:
+            logger.warning(f"KG候选文件不存在: {file_path}")
+            return False
+    except Exception as e:
+        logger.error(f"删除KG候选文件失败 {file_path}: {e}")
+        return False
+
+
+def update_episode_kg_availability(
+    episode_id: str,
+    dialogue_id: str,
+    memory_root: Path,
+    kg_available: bool = False
+) -> bool:
+    """
+    更新episode的eligibility文件中的kg_available字段
+    
+    Args:
+        episode_id: episode ID（如 "ep_001"）
+        dialogue_id: dialogue ID（如 "dlg_2025-10-21_22-24-25"）
+        memory_root: 记忆根目录（如 Path("data/memory/test")）
+        kg_available: 是否可用，默认为False
+        
+    Returns:
+        更新成功返回True，否则返回False
+    """
+    try:
+        # 构建eligibility文件路径
+        eligibility_file = (
+            memory_root / "episodes" / "by_dialogue" / dialogue_id / "eligibility_v1.json"
+        )
+        
+        if not eligibility_file.exists():
+            logger.warning(f"eligibility文件不存在: {eligibility_file}")
+            return False
+        
+        # 加载eligibility数据
+        with open(eligibility_file, 'r', encoding='utf-8') as f:
+            eligibility_data = json.load(f)
+        
+        # 查找对应的episode
+        updated = False
+        for result in eligibility_data.get("results", []):
+            if result.get("episode_id") == episode_id and result.get("dialogue_id") == dialogue_id:
+                result["kg_available"] = kg_available
+                updated = True
+                break
+        
+        if not updated:
+            logger.warning(f"未找到对应的episode: episode_id={episode_id}, dialogue_id={dialogue_id}")
+            return False
+        
+        # 保存更新后的文件
+        with open(eligibility_file, 'w', encoding='utf-8') as f:
+            json.dump(eligibility_data, f, ensure_ascii=False, indent=2)
+        
+        logger.info(f"已更新episode {episode_id} 的kg_available为 {kg_available}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"更新episode kg_availability失败: {e}")
+        return False
+
+
 if __name__ == "__main__":
     # 测试KG工具函数
     print("测试知识图谱工具函数")
