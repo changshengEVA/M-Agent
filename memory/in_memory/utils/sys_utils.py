@@ -263,6 +263,88 @@ def cleanup_memory_directory(memory_root: Path, confirm: bool = False) -> Dict:
         }
 
 
+def load_kg(kg_data_dir: Path) -> Dict:
+    """
+    加载知识图谱数据
+    
+    Args:
+        kg_data_dir: KG数据目录路径（包含entity和relation子目录）
+        
+    Returns:
+        包含KG数据的字典，格式为：
+        {
+            "success": True/False,
+            "entities": [实体数据列表],
+            "relations": [关系数据列表],
+            "attributes": [属性数据列表],
+            "stats": {
+                "entity_count": 实体数量,
+                "relation_count": 关系数量,
+                "attribute_count": 属性数量
+            }
+        }
+    """
+    try:
+        kg_entity_dir = kg_data_dir / "entity"
+        kg_relation_dir = kg_data_dir / "relation"
+        
+        entities = []
+        relations = []
+        attributes = []
+        
+        # 加载实体文件
+        if kg_entity_dir.exists():
+            for entity_file in kg_entity_dir.glob("*.json"):
+                try:
+                    with open(entity_file, 'r', encoding='utf-8') as f:
+                        entity_data = json.load(f)
+                    entities.append(entity_data)
+                    
+                    # 提取属性
+                    entity_attributes = entity_data.get('attributes', [])
+                    for attr in entity_attributes:
+                        # 确保属性包含实体ID
+                        if 'entity' not in attr:
+                            attr['entity'] = entity_data.get('id', 'unknown')
+                        attributes.append(attr)
+                except Exception as e:
+                    logger.warning(f"加载实体文件失败 {entity_file}: {e}")
+        
+        # 加载关系文件
+        if kg_relation_dir.exists():
+            for relation_file in kg_relation_dir.glob("*.json"):
+                try:
+                    with open(relation_file, 'r', encoding='utf-8') as f:
+                        relation_data = json.load(f)
+                    relations.append(relation_data)
+                except Exception as e:
+                    logger.warning(f"加载关系文件失败 {relation_file}: {e}")
+        
+        # 统计信息
+        stats = {
+            "entity_count": len(entities),
+            "relation_count": len(relations),
+            "attribute_count": len(attributes)
+        }
+        
+        return {
+            "success": True,
+            "entities": entities,
+            "relations": relations,
+            "attributes": attributes,
+            "stats": stats,
+            "kg_data_dir": str(kg_data_dir)
+        }
+        
+    except Exception as e:
+        logger.error(f"加载KG数据失败: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "kg_data_dir": str(kg_data_dir)
+        }
+
+
 if __name__ == "__main__":
     # 测试系统工具函数
     print("测试系统工具函数")

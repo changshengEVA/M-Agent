@@ -25,6 +25,7 @@ from memory.in_memory.utils.KG_utils import (
     save_relation,
     save_attribute
 )
+from memory.in_memory.utils.sys_utils import load_kg
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -54,6 +55,21 @@ class LongMemorySystem:
         # 确保目录存在
         self._ensure_directories()
         
+        # 加载现有的KG数据
+        self.kg_data = load_kg(self.kg_data_dir)
+        if self.kg_data["success"]:
+            self.entities = self.kg_data.get("entities", [])
+            self.relations = self.kg_data.get("relations", [])
+            self.attributes = self.kg_data.get("attributes", [])
+            self.kg_stats = self.kg_data.get("stats", {})
+            logger.info(f"KG数据加载成功: {self.kg_stats}")
+        else:
+            self.entities = []
+            self.relations = []
+            self.attributes = []
+            self.kg_stats = {}
+            logger.warning(f"KG数据加载失败: {self.kg_data.get('error', '未知错误')}")
+        
         logger.info(f"初始化长期记忆系统，记忆ID: {memory_id}")
         logger.info(f"KG候选目录: {self.kg_candidates_dir}")
         logger.info(f"KG数据目录: {self.kg_data_dir}")
@@ -64,6 +80,18 @@ class LongMemorySystem:
         self.kg_data_dir.mkdir(parents=True, exist_ok=True)
         self.kg_entity_dir.mkdir(parents=True, exist_ok=True)
         self.kg_relation_dir.mkdir(parents=True, exist_ok=True)
+    
+    def _refresh_kg_data(self):
+        """刷新内存中的KG数据（重新加载）"""
+        self.kg_data = load_kg(self.kg_data_dir)
+        if self.kg_data["success"]:
+            self.entities = self.kg_data.get("entities", [])
+            self.relations = self.kg_data.get("relations", [])
+            self.attributes = self.kg_data.get("attributes", [])
+            self.kg_stats = self.kg_data.get("stats", {})
+            logger.debug(f"KG数据刷新成功: {self.kg_stats}")
+        else:
+            logger.warning(f"KG数据刷新失败: {self.kg_data.get('error', '未知错误')}")
     
     def write_kg_facts(self, facts_json: Union[str, Dict]) -> Dict:
         """
@@ -137,6 +165,10 @@ class LongMemorySystem:
         }
         
         logger.info(f"KG事实写入完成: {stats}")
+        
+        # 刷新内存中的KG数据以保持一致性
+        self._refresh_kg_data()
+        
         return result
     
     def write_scene(self, scene_json: Union[str, Dict]) -> Dict:

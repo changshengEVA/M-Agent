@@ -19,7 +19,10 @@ try:
     from load_data import load_dialogues
 except ImportError:
     # 如果导入失败，使用本地定义的函数（向后兼容）
-    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    # 添加项目根目录到 sys.path（pipeline 目录的父目录）
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    sys.path.append(project_root)
     from load_data.dialog_history_loader import load_dialogues
 
 # 导入工具函数
@@ -29,7 +32,10 @@ try:
     from memory.build_memory.form_kg_candidate import scan_and_form_kg_candidates
 except ImportError:
     # 如果导入失败，使用本地定义的函数（向后兼容）
-    sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+    # 添加项目根目录到 sys.path（pipeline 目录的父目录）
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(script_dir)
+    sys.path.append(project_root)
     from utils.dialogue_utils import save_dialogue
     from utils.memory_build_utils import build_episodes_with_id
     from memory.build_memory.form_kg_candidate import scan_and_form_kg_candidates
@@ -39,7 +45,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 # 路径配置
-PROJECT_ROOT = Path(__file__).parent
+PROJECT_ROOT = Path(__file__).parent.parent
 
 
 def get_output_path(process_id: str, stage_name: str) -> Path:
@@ -49,9 +55,9 @@ def get_output_path(process_id: str, stage_name: str) -> Path:
         stage_name: 阶段名称（如 "dialogues", "episodes", "kg_candidates"）
         
     Returns:
-        输出目录路径
+        输出目录路径（基于项目根目录的绝对路径）
     """
-    return Path("data/memory") / process_id / stage_name
+    return PROJECT_ROOT / "data" / "memory" / process_id / stage_name
 
 
 def stage1_construct_dialogues_for_id(process_id: str):
