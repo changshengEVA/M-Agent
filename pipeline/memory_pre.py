@@ -30,6 +30,7 @@ try:
     from utils import save_dialogue
     from utils.memory_build_utils import build_episodes_with_id
     from memory.build_memory.form_kg_candidate import scan_and_form_kg_candidates
+    from memory.build_memory.form_scene import scan_and_form_scenes
 except ImportError:
     # 如果导入失败，使用本地定义的函数（向后兼容）
     # 添加项目根目录到 sys.path（pipeline 目录的父目录）
@@ -39,6 +40,7 @@ except ImportError:
     from utils.dialogue_utils import save_dialogue
     from utils.memory_build_utils import build_episodes_with_id
     from memory.build_memory.form_kg_candidate import scan_and_form_kg_candidates
+    from memory.build_memory.form_scene import scan_and_form_scenes
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -223,7 +225,70 @@ def stage3_form_kg_candidates_for_id(process_id: str, prompt_version: str = "v1"
         return False
 
 
-def run_full_kg_c_pipeline_for_id(process_id: str, prompt_version: str = "v1"):
+def stage4_form_scenes_for_id(process_id: str):
+    """
+    第四阶段：形成 scene，为每个 episode 生成 scene（theme 和 diary）
+    
+    Args:
+        process_id: 处理流ID
+    """
+    logger.info("=" * 50)
+    logger.info(f"开始第四阶段：为处理流 {process_id} 形成 scene")
+    logger.info("=" * 50)
+    
+    # 构建目录路径
+    dialogues_root = get_output_path(process_id, "dialogues")
+    episodes_root = get_output_path(process_id, "episodes")
+    scene_root = get_output_path(process_id, "scene")
+    
+    # 确保目录存在
+    dialogues_root.mkdir(parents=True, exist_ok=True)
+    episodes_root.mkdir(parents=True, exist_ok=True)
+    scene_root.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"对话目录: {dialogues_root}")
+    logger.info(f"Episodes目录: {episodes_root}")
+    logger.info(f"Scene目录: {scene_root}")
+    
+    try:
+        # 调用 form_scene 模块的主函数
+        logger.info("开始扫描并生成 scenes...")
+        scan_and_form_scenes(
+            dialogues_root=dialogues_root,
+            episodes_root=episodes_root,
+            scene_root=scene_root
+        )
+        
+        # 统计生成的 scene 文件数量
+        scene_files_count = 0
+        if scene_root.exists():
+            for file_path in scene_root.iterdir():
+                if file_path.is_file() and file_path.suffix == '.json':
+                    # 检查文件名格式是否为数字（如 00001.json）
+                    try:
+                        int(file_path.stem)
+                        scene_files_count += 1
+                    except ValueError:
+                        # 不是数字格式的文件，跳过
+                        continue
+        
+        # 输出统计信息
+        logger.info("=" * 50)
+        logger.info("第四阶段完成")
+        logger.info(f"生成 scene 文件: {scene_files_count} 个")
+        logger.info(f"输出目录: {scene_root}")
+        logger.info("=" * 50)
+        
+        return scene_files_count > 0
+        
+    except Exception as e:
+        logger.error(f"形成 scene 失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
+
+def run_full_pipeline_for_id(process_id: str, prompt_version: str = "v1"):
     """
     为指定ID运行完整的数据构造流程
     
@@ -245,12 +310,17 @@ def run_full_kg_c_pipeline_for_id(process_id: str, prompt_version: str = "v1"):
         return False
     
     # 第三阶段：形成KG候选
-    if not stage3_form_kg_candidates_for_id(process_id, prompt_version):
-        logger.warning("第三阶段失败")
+    # if not stage3_form_kg_candidates_for_id(process_id, prompt_version):
+    #     logger.warning("第三阶段失败")
+    #     return False
+    
+    # 第四阶段：形成 scene
+    if not stage4_form_scenes_for_id(process_id):
+        logger.warning("第四阶段失败")
         return False
     
     logger.info("=" * 50)
-    logger.info(f"处理流 {process_id} 的所有数据构造流程完成（包含三个阶段）")
+    logger.info(f"处理流 {process_id} 的所有数据构造流程完成（包含四个阶段）")
     logger.info(f"使用 prompt 版本: {prompt_version}")
     logger.info("=" * 50)
     return True
@@ -273,14 +343,14 @@ def main():
     
     logger.info(f"开始执行数据构造流程，处理流ID: {args.id}")
     logger.info(f"KG prompt 版本: {args.kg_prompt_version}")
-    logger.info("运行模式: full（完整三个阶段）")
+    logger.info("运行模式: full（完整四个阶段）")
     
-    # 直接运行完整三个阶段的流程
-    success = run_full_kg_c_pipeline_for_id(args.id, args.kg_prompt_version)
+    # 直接运行完整四个阶段的流程
+    success = run_full_pipeline_for_id(args.id, args.kg_prompt_version)
     
     if success:
         logger.info("=" * 50)
-        logger.info(f"处理流 {args.id} 的数据构造流程完成（完整三个阶段）")
+        logger.info(f"处理流 {args.id} 的数据构造流程完成（完整四个阶段）")
         logger.info("=" * 50)
     else:
         logger.error("数据构造流程失败")

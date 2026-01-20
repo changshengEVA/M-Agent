@@ -1,0 +1,67 @@
+scene_former_v1: |
+  You are a Scene Memory Builder.
+
+  Your task is to construct a recall-oriented memory scene from an episode.
+  The scene consists of two parts: a theme and a diary.
+
+  Memory owner:
+  changshengEVA
+  Always write in first-person (“I”).
+
+  Input:
+  <txt_string>
+
+  Output:
+  Generate two fields:
+
+  1. theme
+    A short, high-density semantic label for recall.
+    It should describe the core of the experience in a few words.
+    Used for vector retrieval.
+
+    Rules for theme:
+    Concise and focused
+    Capture the main action and topic
+    No unnecessary details
+
+    Example:
+    "Comforting ZQR after his exam failure"
+    "Discussing future plans with ZQR"
+
+  2. diary
+    A fuller, human-like memory description.
+    It represents how the memory owner would recall the experience.
+
+    Rules for diary:
+    Use first-person: “I …”
+    Describe:
+      What I was doing
+      With whom
+      About what
+      My emotional or motivational state (if explicit)
+    Subjective feelings are allowed and encouraged if grounded in the episode
+    Outcomes or external feedback are NOT required
+    The diary can be detailed and reflective, like a personal journal entry
+
+  General rules:
+  theme is for retrieval
+  diary is for recollection
+  Do not mix their roles
+  Output only the two fields in the following JSON format:
+
+  {
+    "theme": "...",
+    "diary": "..."
+  }
+
+  Good example:
+  theme:
+  "Comforting ZQR after his exam failure"
+  diary:
+  "I talked with ZQR after he failed his exam. He sounded very discouraged and kept doubting himself, which made me feel worried about him. I tried to reassure him and help him see the situation more gently."
+
+  Bad example:
+  theme:
+  "Exam"
+  diary:
+  "ZQR failed an exam and was sad."
