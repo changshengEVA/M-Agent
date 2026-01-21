@@ -23,6 +23,14 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# 导入 episode 状态管理器
+try:
+    from .episode_status_manager import get_status_manager
+except ImportError:
+    # 如果相对导入失败，尝试绝对导入
+    sys.path.insert(0, str(Path(__file__).parent))
+    from episode_status_manager import get_status_manager
+
 # 配置日志：只显示 WARNING 及以上级别，减少输出噪音
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -300,12 +308,36 @@ def save_kg_candidates_as_individual_files(kg_candidates: List[Dict], kg_candida
     
     return saved_files
 
+def extract_workflow_id_from_path(episodes_root: Path) -> str:
+    """
+    从 episodes 根目录路径中提取工作流 ID。
+    路径格式: .../data/memory/{workflow_id}/episodes
+    如果无法提取，返回 "default"。
+    """
+    try:
+        # 将路径转换为字符串并标准化
+        parts = episodes_root.parts
+        # 查找 "memory" 的索引
+        if "memory" in parts:
+            idx = parts.index("memory")
+            if idx + 1 < len(parts):
+                return parts[idx + 1]
+        # 如果找不到，尝试从路径名推断
+        # 假设 episodes_root 的父目录是 workflow_id
+        workflow_id = episodes_root.parent.name
+        if workflow_id and workflow_id != "episodes":
+            return workflow_id
+    except Exception:
+        pass
+    return "default"
+
 def process_eligibility_file(eligibility_file: Path,
                             prompts: Dict,
                             prompt_version: str = "v1",
                             dialogues_root: Path = None,
                             episodes_root: Path = None,
-                            kg_candidates_root: Path = None) -> bool:
+                            kg_candidates_root: Path = None,
+                            force_update: bool = False) -> bool:
     """
     处理单个 eligibility 文件，生成 kg_candidate（新格式：每个kg_candidate单独文件）
     
@@ -316,8 +348,19 @@ def process_eligibility_file(eligibility_file: Path,
         dialogues_root: 对话根目录
         episodes_root: episodes根目录
         kg_candidates_root: kg_candidates根目录（如果为None，则使用默认位置）
+        force_update: 是否强制更新，即使已生成也重新生成
     """
     try:
+        # 确定 episodes_root
+        if episodes_root is None:
+            episodes_root = EPISODES_ROOT
+        
+        # 提取工作流 ID
+        workflow_id = extract_workflow_id_from_path(episodes_root)
+        
+        # 获取状态管理器
+        status_manager = get_status_manager(workflow_id=workflow_id)
+        
         # 加载 eligibility
         eligibility_data = load_eligibility(eligibility_file)
         
@@ -354,9 +397,18 @@ def process_eligibility_file(eligibility_file: Path,
         
         # 为每个 kg_available episode 生成 kg_candidate
         kg_candidates = []
+        skipped_count = 0
+        
         for kg_ep in kg_available_episodes:
             episode_id = kg_ep["episode_id"]
             episode_meta = kg_ep["episode_meta"]
+            episode_key = f"{dialogue_id}:{episode_id}"
+            
+            # 检查是否已生成 kg_candidate
+            if not force_update and status_manager.is_kg_candidates_generated(episode_key):
+                logger.info(f"Episode {episode_key} 已生成 kg_candidate，跳过")
+                skipped_count += 1
+                continue
             
             # 构建包含完整内容的 episode
             episode_with_content = build_episode_with_content(episode_meta, dialogue_data)
@@ -393,7 +445,10 @@ def process_eligibility_file(eligibility_file: Path,
                 continue
         
         if not kg_candidates:
-            logger.info(f"对话 {dialogue_id} 没有成功生成任何 kg_candidate")
+            if skipped_count > 0:
+                logger.info(f"对话 {dialogue_id} 的所有 {skipped_count} 个 episode 已生成 kg_candidate，跳过")
+            else:
+                logger.info(f"对话 {dialogue_id} 没有成功生成任何 kg_candidate")
             return True
         
         # 保存 kg_candidate 文件（新格式：单独文件）
@@ -401,7 +456,15 @@ def process_eligibility_file(eligibility_file: Path,
             kg_candidates_root = get_kg_candidates_root(episodes_root)
         
         saved_files = save_kg_candidates_as_individual_files(kg_candidates, kg_candidates_root)
-        logger.info(f"为对话 {dialogue_id} 生成 {len(saved_files)} 个 kg_candidate 文件，保存到 {kg_candidates_root}，使用 prompt 版本: {prompt_version}")
+        
+        # 更新状态
+        for i, kg_candidate in enumerate(kg_candidates):
+            episode_id = kg_candidate["episode_id"]
+            episode_key = f"{dialogue_id}:{episode_id}"
+            kg_file = saved_files[i].name if i < len(saved_files) else f"unknown_{i}.json"
+            status_manager.mark_kg_candidates_generated(episode_key, kg_file, kg_candidate["generated_at"])
+        
+        logger.info(f"为对话 {dialogue_id} 生成 {len(saved_files)} 个 kg_candidate 文件，跳过 {skipped_count} 个已生成的，保存到 {kg_candidates_root}，使用 prompt 版本: {prompt_version}")
         
         return True
         
@@ -484,7 +547,8 @@ def scan_and_form_kg_candidates(prompt_version: str = "v1",
             prompt_version,
             dialogues_root,
             episodes_root,
-            kg_candidates_root
+            kg_candidates_root,
+            force_update=force_update
         ):
             success_count += 1
     

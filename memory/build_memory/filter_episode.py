@@ -258,20 +258,42 @@ def save_episode_situation(results: List[Dict], dialogue_id: str, episodes_root:
         # 使用组合键作为唯一标识：dialogue_id:episode_id
         episode_key = f"{dialogue_id}:{ep_id}"
         
-        # 保存完整的 episode 信息
-        existing_data["episodes"][episode_key] = {
-            "episode_key": episode_key,
-            "episode_id": ep_id,
-            "dialogue_id": dialogue_id,
-            "scene_available": result["scene_available"],
-            "kg_available": result["kg_available"],
-            "emo_available": result["emo_available"],
-            "factual_novelty": result["factual_novelty"],
-            "emotional_novelty": result["emotional_novelty"],
-            "eligible": result["eligible"],
-            "reason": result["reason"],
-            "updated_at": datetime.utcnow().isoformat() + "Z"
-        }
+        # 保存完整的 episode 信息，保留现有字段（如 scene_generated 等）
+        if episode_key in existing_data["episodes"]:
+            # 合并现有字段
+            existing_episode = existing_data["episodes"][episode_key]
+            # 更新基础字段
+            existing_episode.update({
+                "scene_available": result["scene_available"],
+                "kg_available": result["kg_available"],
+                "emo_available": result["emo_available"],
+                "factual_novelty": result["factual_novelty"],
+                "emotional_novelty": result["emotional_novelty"],
+                "eligible": result["eligible"],
+                "reason": result["reason"],
+                "updated_at": datetime.utcnow().isoformat() + "Z"
+            })
+            # 确保 episode_key, episode_id, dialogue_id 不变（但应该已经存在）
+            existing_episode["episode_key"] = episode_key
+            existing_episode["episode_id"] = ep_id
+            existing_episode["dialogue_id"] = dialogue_id
+            # 保留其他字段（如 scene_generated, scene_generated_at, scene_file 等）
+            existing_data["episodes"][episode_key] = existing_episode
+        else:
+            # 创建新条目
+            existing_data["episodes"][episode_key] = {
+                "episode_key": episode_key,
+                "episode_id": ep_id,
+                "dialogue_id": dialogue_id,
+                "scene_available": result["scene_available"],
+                "kg_available": result["kg_available"],
+                "emo_available": result["emo_available"],
+                "factual_novelty": result["factual_novelty"],
+                "emotional_novelty": result["emotional_novelty"],
+                "eligible": result["eligible"],
+                "reason": result["reason"],
+                "updated_at": datetime.utcnow().isoformat() + "Z"
+            }
     
     # 重新计算统计信息
     scene_available_keys = []

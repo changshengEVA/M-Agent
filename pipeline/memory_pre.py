@@ -310,9 +310,9 @@ def run_full_pipeline_for_id(process_id: str, prompt_version: str = "v1"):
         return False
     
     # 第三阶段：形成KG候选
-    # if not stage3_form_kg_candidates_for_id(process_id, prompt_version):
-    #     logger.warning("第三阶段失败")
-    #     return False
+    if not stage3_form_kg_candidates_for_id(process_id, prompt_version):
+        logger.warning("第三阶段失败")
+        return False
     
     # 第四阶段：形成 scene
     if not stage4_form_scenes_for_id(process_id):

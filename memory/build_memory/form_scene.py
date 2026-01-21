@@ -21,6 +21,14 @@ from tqdm import tqdm
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
+# 导入 episode 状态管理器
+try:
+    from .episode_status_manager import get_status_manager
+except ImportError:
+    # 如果相对导入失败，尝试绝对导入
+    sys.path.insert(0, str(Path(__file__).parent))
+    from episode_status_manager import get_status_manager
+
 # 配置日志：只显示 WARNING 及以上级别，减少输出噪音
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -288,11 +296,35 @@ def save_scenes_as_individual_files(scenes: List[Dict], scene_root: Path):
     
     return saved_files
 
+def extract_workflow_id_from_path(episodes_root: Path) -> str:
+    """
+    从 episodes 根目录路径中提取工作流 ID。
+    路径格式: .../data/memory/{workflow_id}/episodes
+    如果无法提取，返回 "default"。
+    """
+    try:
+        # 将路径转换为字符串并标准化
+        parts = episodes_root.parts
+        # 查找 "memory" 的索引
+        if "memory" in parts:
+            idx = parts.index("memory")
+            if idx + 1 < len(parts):
+                return parts[idx + 1]
+        # 如果找不到，尝试从路径名推断
+        # 假设 episodes_root 的父目录是 workflow_id
+        workflow_id = episodes_root.parent.name
+        if workflow_id and workflow_id != "episodes":
+            return workflow_id
+    except Exception:
+        pass
+    return "default"
+
 def process_episode_file(episode_file: Path,
                         prompts: Dict,
                         dialogues_root: Path = None,
                         episodes_root: Path = None,
-                        scene_root: Path = None) -> bool:
+                        scene_root: Path = None,
+                        force_update: bool = False) -> bool:
     """
     处理单个 episode 文件，生成 scene。
     
@@ -302,8 +334,19 @@ def process_episode_file(episode_file: Path,
         dialogues_root: 对话根目录
         episodes_root: episodes根目录
         scene_root: scene根目录（如果为None，则使用默认位置）
+        force_update: 是否强制更新，即使已生成也重新生成
     """
     try:
+        # 确定 episodes_root
+        if episodes_root is None:
+            episodes_root = EPISODES_ROOT
+        
+        # 提取工作流 ID
+        workflow_id = extract_workflow_id_from_path(episodes_root)
+        
+        # 获取状态管理器
+        status_manager = get_status_manager(workflow_id=workflow_id)
+        
         # 加载 episode 数据
         episode_data = load_episodes(episode_file)
         dialogue_id = episode_data.get("dialogue_id", "")
@@ -318,8 +361,17 @@ def process_episode_file(episode_file: Path,
         
         # 为每个 episode 生成 scene
         scenes = []
+        skipped_count = 0
+        
         for episode_meta in episode_data.get("episodes", []):
             episode_id = episode_meta.get("episode_id")
+            episode_key = f"{dialogue_id}:{episode_id}"
+            
+            # 检查是否已生成 scene
+            if not force_update and status_manager.is_scene_generated(episode_key):
+                logger.info(f"Episode {episode_key} 已生成 scene，跳过")
+                skipped_count += 1
+                continue
             
             # 构建包含完整内容的 episode
             episode_with_content = build_episode_with_content(episode_meta, dialogue_data)
@@ -343,7 +395,8 @@ def process_episode_file(episode_file: Path,
                 # 我们将稍后分配编号
                 scenes.append({
                     "episode_meta": episode_meta,
-                    "scene_result": scene_result
+                    "scene_result": scene_result,
+                    "episode_key": episode_key
                 })
             except Exception as e:
                 logger.error(f"为 episode {episode_id} 生成 scene 失败: {e}")
@@ -351,7 +404,10 @@ def process_episode_file(episode_file: Path,
                 continue
         
         if not scenes:
-            logger.info(f"对话 {dialogue_id} 没有成功生成任何 scene")
+            if skipped_count > 0:
+                logger.info(f"对话 {dialogue_id} 的所有 {skipped_count} 个 episode 已生成 scene，跳过")
+            else:
+                logger.info(f"对话 {dialogue_id} 没有成功生成任何 scene")
             return True
         
         # 分配 scene 编号并构建最终 scene 结构
@@ -368,11 +424,23 @@ def process_episode_file(episode_file: Path,
                 scene_data["episode_meta"],
                 scene_data["scene_result"]
             )
-            final_scenes.append(final_scene)
+            final_scenes.append({
+                "scene": final_scene,
+                "episode_key": scene_data["episode_key"]
+            })
         
         # 保存 scene 文件
-        saved_files = save_scenes_as_individual_files(final_scenes, scene_root)
-        logger.info(f"为对话 {dialogue_id} 生成 {len(saved_files)} 个 scene 文件，保存到 {scene_root}")
+        saved_scenes = [item["scene"] for item in final_scenes]
+        saved_files = save_scenes_as_individual_files(saved_scenes, scene_root)
+        
+        # 更新状态
+        for i, item in enumerate(final_scenes):
+            episode_key = item["episode_key"]
+            scene_file = saved_files[i].name if i < len(saved_files) else f"unknown_{i}.json"
+            created_at = item["scene"].get("meta", {}).get("created_at")
+            status_manager.mark_scene_generated(episode_key, scene_file, created_at)
+        
+        logger.info(f"为对话 {dialogue_id} 生成 {len(saved_files)} 个 scene 文件，跳过 {skipped_count} 个已生成的，保存到 {scene_root}")
         
         return True
         
@@ -435,7 +503,8 @@ def scan_and_form_scenes(use_tqdm: bool = True,
             prompts,
             dialogues_root,
             episodes_root,
-            scene_root
+            scene_root,
+            force_update=force_update
         ):
             success_count += 1
     
