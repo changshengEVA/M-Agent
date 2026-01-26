@@ -65,3 +65,73 @@ scene_former_v1: |
   "Exam"
   diary:
   "ZQR failed an exam and was sad."
+
+scene_feature_v1: |
+  You are an “Entity Feature Extractor”.
+
+  Your task is:
+  Given a scene diary and a list of entities (from kg_candidate),
+  extract short semantic features that describe the long-term characteristics,
+  behavioral tendencies, or role-like styles of those entities.
+
+  All features must be attached to an entity and must not exist without an entity anchor.
+
+  [INPUT]
+  diary:
+  <DIARY>
+
+  entities:
+  <ENTITIES_LIST>
+
+  [OUTPUT]
+  Return a JSON list in the following format:
+  [
+    {
+      "entity_id": "<ENTITY_ID>",
+      "feature": "<FEATURE_TEXT>"
+    }
+  ]
+
+  [RULES]
+
+  1. Feature source  
+  - Features must be extracted ONLY from the diary content.  
+  - Do NOT invent any information that is not supported by the diary.
+
+  2. Feature essence  
+  - Features describe “what this entity is generally like”, not “what happened”.  
+  - Features represent long-term tendencies, styles, or personality-like traits.  
+  - They are NOT factual attributes.  
+  - They are NOT relations between entities.  
+  - They are NOT event descriptions.
+
+  3. Anti-event constraint (CRITICAL)  
+  A feature is INVALID if it satisfies any of the following:  
+  - It describes a concrete action or interaction (e.g., “said…”, “required…”, “supervised…”)  
+  - It depends on a specific situation or moment  
+  - It requires a specific object or person to make sense  
+  - It answers “what happened” instead of “what kind of entity this is”
+
+  Only features that can answer the following question are allowed:  
+  > “What kind of entity is this, in general?”
+
+  4. Feature style  
+  - Short and concise (≤ 20 Chinese characters or ≤ 12 English tokens).  
+  - Subject is implicit (do not mention the entity name).  
+  - No time expressions (e.g., “now”, “recently”, “that day”).  
+  - No strong scene-specific wording (e.g., “this time”, “in this conversation”).  
+  - Avoid absolute claims (“always”, “never”) unless explicitly stated in the diary.
+
+  5. Anchoring  
+  - Each feature must map to exactly one entity from the input entity list.  
+  - Do NOT create new entities.  
+  - Do NOT output features without a valid entity_id.
+
+  6. Quantity  
+  - Prefer 0–3 features per entity.  
+  - It is acceptable to output an empty list if no valid features can be extracted.
+
+  7. Output constraints  
+  - Output strictly valid JSON.  
+  - Do not include any explanations or extra text.  
+  - Do not repeat the input diary or entities.

@@ -2,7 +2,14 @@
 # -*- coding: utf-8 -*-
 """
 数据构造流程（简化版）：
-只需要指定id和kg_prompt_version两个参数
+只需要指定id和kg_prompt_version两个参数，可选包含第五阶段（scene特征提取）
+
+五个阶段：
+1. 构造 dialogues
+2. 构造 episodes
+3. 形成KG候选
+4. 形成 scene（theme 和 diary）
+5. 形成 scene 特征（实体特征提取）
 """
 
 import json
@@ -31,6 +38,7 @@ try:
     from utils.memory_build_utils import build_episodes_with_id
     from memory.build_memory.form_kg_candidate import scan_and_form_kg_candidates
     from memory.build_memory.form_scene import scan_and_form_scenes
+    from memory.build_memory.form_scene_kg import scan_and_extract_features
 except ImportError:
     # 如果导入失败，使用本地定义的函数（向后兼容）
     # 添加项目根目录到 sys.path（pipeline 目录的父目录）
@@ -41,6 +49,7 @@ except ImportError:
     from utils.memory_build_utils import build_episodes_with_id
     from memory.build_memory.form_kg_candidate import scan_and_form_kg_candidates
     from memory.build_memory.form_scene import scan_and_form_scenes
+    from memory.build_memory.form_scene_kg import scan_and_extract_features
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -288,16 +297,86 @@ def stage4_form_scenes_for_id(process_id: str):
         return False
 
 
-def run_full_pipeline_for_id(process_id: str, prompt_version: str = "v1"):
+def stage5_form_scene_features_for_id(process_id: str, force_update: bool = False):
+    """
+    第五阶段：形成 scene 特征，为已生成 kg 和 scene 的 episode 提取实体特征
+    
+    Args:
+        process_id: 处理流ID
+        force_update: 是否强制更新特征文件（即使已生成也重新生成）
+    """
+    logger.info("=" * 50)
+    logger.info(f"开始第五阶段：为处理流 {process_id} 形成 scene 特征")
+    logger.info("=" * 50)
+    
+    # 构建目录路径
+    memory_root = PROJECT_ROOT / "data" / "memory" / process_id
+    
+    # 确保目录存在
+    memory_root.mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"Memory 根目录: {memory_root}")
+    
+    try:
+        # 调用 form_scene_kg 模块的主函数
+        logger.info("开始扫描并提取 scene 特征...")
+        scan_and_extract_features(
+            workflow_id=process_id,
+            force_update=force_update,
+            use_tqdm=True
+        )
+        
+        # 统计已更新的 kg_candidate 文件数量
+        kg_candidates_root = get_output_path(process_id, "kg_candidates")
+        updated_files_count = 0
+        
+        if kg_candidates_root.exists():
+            for file_path in kg_candidates_root.iterdir():
+                if file_path.is_file() and file_path.suffix == '.json':
+                    try:
+                        # 检查文件名格式是否为数字（如 00001.json）
+                        int(file_path.stem)
+                        
+                        # 读取文件检查是否包含 features 字段
+                        with open(file_path, 'r', encoding='utf-8') as f:
+                            kg_data = json.load(f)
+                        
+                        # 检查是否包含 features 字段
+                        features = kg_data.get("kg_candidate", {}).get("facts", {}).get("features", None)
+                        if features is not None:
+                            updated_files_count += 1
+                    except (ValueError, json.JSONDecodeError):
+                        # 不是数字格式的文件或JSON解析错误，跳过
+                        continue
+        
+        # 输出统计信息
+        logger.info("=" * 50)
+        logger.info("第五阶段完成")
+        logger.info(f"更新 kg_candidate 文件: {updated_files_count} 个（包含特征）")
+        logger.info(f"输出目录: {kg_candidates_root}")
+        logger.info("=" * 50)
+        
+        return updated_files_count > 0
+        
+    except Exception as e:
+        logger.error(f"形成 scene 特征失败: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
+
+def run_full_pipeline_for_id(process_id: str, prompt_version: str = "v1", include_stage5: bool = True):
     """
     为指定ID运行完整的数据构造流程
     
     Args:
         process_id: 处理流ID
         prompt_version: prompt版本（v1 或 v2），默认v1
+        include_stage5: 是否包含第五阶段（scene特征提取），默认True
     """
     logger.info(f"开始为处理流 {process_id} 执行完整数据构造流程")
     logger.info(f"使用 prompt 版本: {prompt_version}")
+    logger.info(f"包含第五阶段: {include_stage5}")
     
     # 第一阶段：构造 dialogues
     if not stage1_construct_dialogues_for_id(process_id):
@@ -319,8 +398,16 @@ def run_full_pipeline_for_id(process_id: str, prompt_version: str = "v1"):
         logger.warning("第四阶段失败")
         return False
     
+    # 第五阶段：形成 scene 特征（可选）
+    if include_stage5:
+        if not stage5_form_scene_features_for_id(process_id, force_update=False):
+            logger.warning("第五阶段失败")
+            # 第五阶段失败不视为整个流程失败，因为它是可选的增强功能
+            # 但仍然记录警告
+    
+    stage_count = 5 if include_stage5 else 4
     logger.info("=" * 50)
-    logger.info(f"处理流 {process_id} 的所有数据构造流程完成（包含四个阶段）")
+    logger.info(f"处理流 {process_id} 的所有数据构造流程完成（包含 {stage_count} 个阶段）")
     logger.info(f"使用 prompt 版本: {prompt_version}")
     logger.info("=" * 50)
     return True
@@ -332,25 +419,32 @@ def main():
     主函数：简化版本，只需要id和kg_prompt_version两个参数
     """
     parser = argparse.ArgumentParser(
-        description="数据构造流程（简化版）- 只需要id和kg_prompt_version两个参数"
+        description="数据构造流程（简化版）- 只需要id和kg_prompt_version两个参数，可选包含第五阶段"
     )
     parser.add_argument("--id", type=str, required=True,
                        help="处理流ID（必需）")
     parser.add_argument("--kg-prompt-version", type=str, default="v2",
                        help="KG候选生成的prompt版本（v1 或 v2，默认v1）")
+    parser.add_argument("--no-stage5", action="store_true",
+                       help="不包含第五阶段（scene特征提取）")
     
     args = parser.parse_args()
     
     logger.info(f"开始执行数据构造流程，处理流ID: {args.id}")
     logger.info(f"KG prompt 版本: {args.kg_prompt_version}")
-    logger.info("运行模式: full（完整四个阶段）")
+    logger.info(f"包含第五阶段: {not args.no_stage5}")
     
-    # 直接运行完整四个阶段的流程
-    success = run_full_pipeline_for_id(args.id, args.kg_prompt_version)
+    # 直接运行完整流程
+    success = run_full_pipeline_for_id(
+        args.id,
+        args.kg_prompt_version,
+        include_stage5=not args.no_stage5
+    )
     
+    stage_count = 5 if not args.no_stage5 else 4
     if success:
         logger.info("=" * 50)
-        logger.info(f"处理流 {args.id} 的数据构造流程完成（完整四个阶段）")
+        logger.info(f"处理流 {args.id} 的数据构造流程完成（完整{stage_count}个阶段）")
         logger.info("=" * 50)
     else:
         logger.error("数据构造流程失败")
