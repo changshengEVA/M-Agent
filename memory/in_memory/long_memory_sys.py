@@ -28,6 +28,7 @@ from memory.in_memory.utils.KG_utils import (
     update_episode_kg_availability
 )
 from memory.in_memory.utils.sys_utils import load_kg
+from memory.in_memory.utils import scene_utils
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ class LongMemorySystem:
         self.kg_data_dir = self.memory_root / "kg_data"
         self.kg_entity_dir = self.kg_data_dir / "entity"
         self.kg_relation_dir = self.kg_data_dir / "relation"
+        self.scenes_dir = self.memory_root / "scenes_data"
         
         # 确保目录存在
         self._ensure_directories()
@@ -75,6 +77,7 @@ class LongMemorySystem:
         logger.info(f"初始化长期记忆系统，记忆ID: {memory_id}")
         logger.info(f"KG候选目录: {self.kg_candidates_dir}")
         logger.info(f"KG数据目录: {self.kg_data_dir}")
+        logger.info(f"场景目录: {self.scenes_dir}")
     
     def _ensure_directories(self):
         """确保所有必要的目录都存在"""
@@ -82,6 +85,7 @@ class LongMemorySystem:
         self.kg_data_dir.mkdir(parents=True, exist_ok=True)
         self.kg_entity_dir.mkdir(parents=True, exist_ok=True)
         self.kg_relation_dir.mkdir(parents=True, exist_ok=True)
+        self.scenes_dir.mkdir(parents=True, exist_ok=True)
     
     def _refresh_kg_data(self):
         """刷新内存中的KG数据（重新加载）"""
@@ -107,8 +111,8 @@ class LongMemorySystem:
         Args:
             facts_json: KG事实的JSON字符串或字典，格式应与kg_candidate中的facts字段一致
             source_file: 可选的源文件路径（KG候选文件），如果提供且auto_cleanup为True，
-                         则处理完成后删除该文件并更新对应episode的kg_available字段
-            auto_cleanup: 是否自动清理源文件和更新episode，默认为True
+                         则处理完成后删除该文件（注意：不再更新kg_available字段，由episode_situation.json控制）
+            auto_cleanup: 是否自动清理源文件，默认为True
             
         Returns:
             包含处理结果的字典
@@ -178,86 +182,131 @@ class LongMemorySystem:
         
         # 刷新内存中的KG数据以保持一致性
         self._refresh_kg_data()
-        
-        # 自动清理逻辑
-        if source_file and auto_cleanup:
-            try:
-                source_path = Path(source_file) if isinstance(source_file, str) else source_file
-                if source_path.exists():
-                    # 加载源文件以获取episode_id和dialogue_id
-                    try:
-                        with open(source_path, 'r', encoding='utf-8') as f:
-                            source_data = json.load(f)
-                        episode_id = source_data.get('episode_id')
-                        dialogue_id = source_data.get('dialogue_id')
-                        
-                        if episode_id and dialogue_id:
-                            # 更新episode的kg_available为False
-                            update_success = update_episode_kg_availability(
-                                episode_id=episode_id,
-                                dialogue_id=dialogue_id,
-                                memory_root=self.memory_root,
-                                kg_available=False
-                            )
-                            if update_success:
-                                logger.info(f"已更新episode {episode_id} 的kg_available为False")
-                            else:
-                                logger.warning(f"更新episode {episode_id} 的kg_available失败")
-                        else:
-                            logger.warning(f"源文件中缺少episode_id或dialogue_id: {source_path}")
-                    except Exception as e:
-                        logger.error(f"读取源文件元数据失败 {source_path}: {e}")
-                    
-                    # 删除候选文件
-                    delete_success = delete_kg_candidate_file(source_path)
-                    if delete_success:
-                        logger.info(f"已删除KG候选文件: {source_path}")
-                    else:
-                        logger.warning(f"删除KG候选文件失败: {source_path}")
-                else:
-                    logger.warning(f"源文件不存在: {source_file}")
-            except Exception as e:
-                logger.error(f"自动清理过程中发生错误: {e}")
-        
         return result
     
     def write_scene(self, scene_json: Union[str, Dict]) -> Dict:
         """
-        写入场景信息（保留为空接口）
+        写入场景信息，并将theme编码到FAISS索引
         
         Args:
-            scene_json: 场景信息的JSON字符串或字典
+            scene_json: 场景信息的JSON字符串或字典，应包含scene_id, theme, diary等字段
             
         Returns:
             包含处理结果的字典
         """
-        logger.info("write_scene接口（保留为空）被调用")
-        return {
-            "success": True,
-            "message": "write_scene接口目前为空实现",
-            "note": "此接口保留为未来扩展"
-        }
+        logger.info("开始写入场景信息")
+        
+        # 解析输入
+        if isinstance(scene_json, str):
+            try:
+                scene_data = json.loads(scene_json)
+            except json.JSONDecodeError as e:
+                error_msg = f"解析JSON字符串失败: {e}"
+                logger.error(error_msg)
+                return {"success": False, "error": error_msg}
+        else:
+            scene_data = scene_json
+        
+        # 验证必要字段
+        scene_id = scene_data.get('scene_id')
+        theme = scene_data.get('theme', '')
+        diary = scene_data.get('diary', '')
+        
+        if not scene_id:
+            error_msg = "scene_data缺少'scene_id'字段"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
+        
+        # 调用scene_utils保存场景
+        try:
+            result = scene_utils.save_scene(scene_data, self.scenes_dir)
+            
+            # 确保结果格式与现有接口兼容
+            if result.get("success"):
+                return {
+                    "success": True,
+                    "message": "场景写入完成",
+                    "scene_id": scene_id,
+                    "scene_file": result.get("scene_file", ""),
+                    "faiss_indexed": result.get("faiss_indexed", False),
+                    "faiss_message": result.get("faiss_message", ""),
+                    "memory_id": self.memory_id,
+                    "scenes_dir": str(self.scenes_dir)
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.get("message", "未知错误"),
+                    "scene_id": scene_id,
+                    "memory_id": self.memory_id
+                }
+                
+        except Exception as e:
+            error_msg = f"写入场景失败: {e}"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
     
     def recall_scene(self, query: str, top_k: int = 5) -> Dict:
         """
-        回忆场景（保留为空接口）
+        回忆场景：按照diary进行召回
         
         Args:
-            query: 查询字符串
+            query: 查询字符串（diary文本）
             top_k: 返回结果的数量
             
         Returns:
             包含查询结果的字典
         """
-        logger.info(f"recall_scene接口（保留为空）被调用: query='{query}', top_k={top_k}")
-        return {
-            "success": True,
-            "message": "recall_scene接口目前为空实现",
-            "query": query,
-            "top_k": top_k,
-            "results": [],
-            "note": "此接口保留为未来扩展"
-        }
+        logger.info(f"开始回忆场景: query='{query}', top_k={top_k}")
+        
+        if not query or not query.strip():
+            return {
+                "success": False,
+                "error": "查询字符串不能为空",
+                "query": query,
+                "top_k": top_k,
+                "results": []
+            }
+        
+        # 调用scene_utils搜索场景
+        try:
+            search_results = scene_utils.search_scenes(query, self.scenes_dir, top_k)
+            
+            # 转换结果为兼容格式
+            formatted_results = []
+            for result in search_results:
+                scene_data = result.get("scene_data", {})
+                formatted_results.append({
+                    "scene_id": scene_data.get("scene_id", ""),
+                    "theme": scene_data.get("theme", ""),
+                    "diary": scene_data.get("diary", ""),
+                    "similarity": result.get("similarity", 0.0),
+                    "rank": result.get("rank", 0),
+                    "metadata": scene_data.get("meta", {}),
+                    "search_metadata": result.get("search_metadata", {})
+                })
+            
+            return {
+                "success": True,
+                "message": f"找到 {len(formatted_results)} 个匹配的场景",
+                "query": query,
+                "top_k": top_k,
+                "results": formatted_results,
+                "results_count": len(formatted_results),
+                "memory_id": self.memory_id,
+                "scenes_dir": str(self.scenes_dir)
+            }
+            
+        except Exception as e:
+            error_msg = f"回忆场景失败: {e}"
+            logger.error(error_msg)
+            return {
+                "success": False,
+                "error": error_msg,
+                "query": query,
+                "top_k": top_k,
+                "results": []
+            }
     
     def query_kg(self, pattern: Union[str, Dict]) -> Dict:
         """

@@ -373,6 +373,17 @@ def process_episode_file(episode_file: Path,
                 skipped_count += 1
                 continue
             
+            # 检查 scene_available 状态
+            episode_status = status_manager.get_episode(episode_key)
+            if episode_status is None:
+                logger.warning(f"Episode {episode_key} 未在 episode_situation.json 中找到，跳过")
+                skipped_count += 1
+                continue
+            if not episode_status.get("scene_available", False):
+                logger.info(f"Episode {episode_key} scene_available 为 False，跳过")
+                skipped_count += 1
+                continue
+            
             # 构建包含完整内容的 episode
             episode_with_content = build_episode_with_content(episode_meta, dialogue_data)
             
