@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-知识图谱可视化后端主应用
-提供REST API和WebSocket实时更新
+三维知识图谱可视化后端主应用
+提供REST API和WebSocket实时更新（支持三层结构）
 """
 
 import json
@@ -16,7 +16,7 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from data_loader import KGDataLoader
+from enhanced_data_loader import EnhancedKGDataLoader
 from file_watcher import KGFileWatcher
 
 # 配置日志
@@ -27,7 +27,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # 创建FastAPI应用
-app = FastAPI(title="知识图谱可视化API", version="1.0.0")
+app = FastAPI(title="三维知识图谱可视化API", version="1.0.0")
 
 # 配置CORS
 app.add_middleware(
@@ -40,47 +40,65 @@ app.add_middleware(
 
 # 配置参数
 import os
-MEMORY_ID = os.environ.get("KG_MEMORY_ID", "test2")  # 默认使用test目录，可以通过环境变量修改
+MEMORY_ID = os.environ.get("KG_MEMORY_ID", "test2")  # 默认使用test2目录
 
 # 全局变量
-data_loader: Optional[KGDataLoader] = None
+data_loader: Optional[EnhancedKGDataLoader] = None
 file_watcher: Optional[KGFileWatcher] = None
 connected_clients: List[WebSocket] = []
 main_event_loop: Optional[asyncio.AbstractEventLoop] = None
 current_memory_id: str = MEMORY_ID
 
 # Pydantic模型
-class EntityResponse(BaseModel):
+class Entity3DResponse(BaseModel):
     id: str
     type: str
     confidence: float
-    scenes: List[str]
-    attributes: List[Dict] = []
+    features: List[Dict]
+    sources: List[Dict]
 
-class RelationResponse(BaseModel):
-    subject: str
-    relation: str
-    object: str
+class FeatureResponse(BaseModel):
+    id: str
+    entity_id: str
+    feature: str
+    sources: List[Dict]
     confidence: float
-    scene_id: str = ""  # 新格式可能没有scene_id
 
 class SceneResponse(BaseModel):
-    scene_id: str
-    user_id: str
+    id: str
+    dialogue_id: str
+    episode_id: str
     generated_at: str
     prompt_version: str
+    file_number: Optional[int] = None
 
-class StatsResponse(BaseModel):
-    total_scenes: int
+class EdgeResponse(BaseModel):
+    id: str
+    from_id: str
+    to_id: str
+    type: str
+    confidence: float
+    label: Optional[str] = None
+
+class Graph3DResponse(BaseModel):
+    entities: List[Dict]
+    features: List[Dict]
+    scenes: List[Dict]
+    horizontal_edges: List[Dict]
+    vertical_edges: List[Dict]
+    stats: Dict
+
+class Stats3DResponse(BaseModel):
     total_entities: int
-    total_relations: int
+    total_features: int
+    total_scenes: int
+    total_horizontal_edges: int
+    total_vertical_edges: int
     entity_types: Dict[str, int]
-    relation_types: Dict[str, int]
+    feature_distribution: Dict[str, int]
+    scene_distribution: Dict[str, int]
     loaded_at: str
-
-class GraphDataResponse(BaseModel):
-    nodes: List[Dict]
-    edges: List[Dict]
+    memory_id: str
 
 class MemoryInfoResponse(BaseModel):
     current_memory_id: str
@@ -104,15 +122,12 @@ def on_file_change(change_type: str, file_path: str):
         logger.info(f"数据重新加载完成: {stats}")
         
         # 通知所有连接的客户端（使用线程安全的方式）
-        # 使用保存的主事件循环引用
         if main_event_loop:
             try:
-                # 使用线程安全的方式在主事件循环中运行协程
                 future = asyncio.run_coroutine_threadsafe(
                     notify_clients_about_update(change_type, file_path),
                     main_event_loop
                 )
-                # 可选：等待结果或处理异常
                 try:
                     future.result(timeout=5)
                     logger.debug("客户端通知发送成功")
@@ -198,13 +213,13 @@ async def startup_event():
     """应用启动时初始化"""
     global data_loader, file_watcher, main_event_loop, current_memory_id
     
-    logger.info("启动知识图谱可视化后端...")
+    logger.info("启动三维知识图谱可视化后端...")
     
     # 保存主事件循环引用
     main_event_loop = asyncio.get_running_loop()
     
-    # 初始化数据加载器 - 使用新的数据目录结构
-    data_loader = KGDataLoader(memory_id=MEMORY_ID)
+    # 初始化增强数据加载器
+    data_loader = EnhancedKGDataLoader(memory_id=MEMORY_ID)
     current_memory_id = MEMORY_ID
     
     logger.info(f"Memory ID: {MEMORY_ID}")
@@ -232,7 +247,7 @@ async def shutdown_event():
     """应用关闭时清理"""
     global file_watcher
     
-    logger.info("关闭知识图谱可视化后端...")
+    logger.info("关闭三维知识图谱可视化后端...")
     
     if file_watcher:
         file_watcher.stop()
@@ -253,7 +268,7 @@ async def root():
     return """
     <html>
         <head>
-            <title>知识图谱可视化API</title>
+            <title>三维知识图谱可视化API</title>
             <style>
                 body { font-family: Arial, sans-serif; margin: 40px; }
                 h1 { color: #333; }
@@ -262,81 +277,89 @@ async def root():
             </style>
         </head>
         <body>
-            <h1>知识图谱可视化API</h1>
+            <h1>三维知识图谱可视化API</h1>
             <p>后端服务正在运行。可用端点：</p>
-            <div class="endpoint"><code>GET /api/nodes</code> - 获取所有实体节点</div>
-            <div class="endpoint"><code>GET /api/edges</code> - 获取所有关系边</div>
-            <div class="endpoint"><code>GET /api/scenes</code> - 获取所有scene信息</div>
-            <div class="endpoint"><code>GET /api/stats</code> - 获取统计信息</div>
-            <div class="endpoint"><code>GET /api/graph</code> - 获取图数据（用于可视化）</div>
-            <div class="endpoint"><code>GET /api/entity/{id}</code> - 获取特定实体信息</div>
+            <div class="endpoint"><code>GET /api/3d/graph</code> - 获取三维图数据</div>
+            <div class="endpoint"><code>GET /api/3d/stats</code> - 获取三维统计信息</div>
+            <div class="endpoint"><code>GET /api/3d/entity/{id}</code> - 获取实体详细信息</div>
+            <div class="endpoint"><code>GET /api/3d/feature/{id}</code> - 获取特征详细信息</div>
+            <div class="endpoint"><code>GET /api/3d/scene/{id}</code> - 获取场景详细信息</div>
+            <div class="endpoint"><code>GET /api/memory/info</code> - 获取memory信息</div>
+            <div class="endpoint"><code>POST /api/memory/switch/{id}</code> - 切换memory</div>
             <div class="endpoint"><code>WS /ws</code> - WebSocket连接（实时更新）</div>
-            <p>前端界面: <a href="/frontend/index.html">/frontend/index.html</a></p>
+            <p>三维前端界面: <a href="/3d_frontend/index.html">/3d_frontend/index.html</a></p>
+            <p>二维前端界面: <a href="/frontend/index.html">/frontend/index.html</a></p>
         </body>
     </html>
     """
 
-@app.get("/api/nodes", response_model=List[EntityResponse])
-async def get_nodes():
-    """获取所有实体节点"""
+@app.get("/api/3d/graph", response_model=Graph3DResponse)
+async def get_3d_graph_data():
+    """获取三维图数据（用于前端可视化）"""
     if not data_loader:
-        return []
-    return data_loader.get_all_entities()
-
-@app.get("/api/edges", response_model=List[RelationResponse])
-async def get_edges():
-    """获取所有关系边"""
-    if not data_loader:
-        return []
-    return data_loader.get_all_relations()
-
-@app.get("/api/scenes", response_model=List[SceneResponse])
-async def get_scenes():
-    """获取所有scene信息"""
-    if not data_loader:
-        return []
-    return data_loader.get_all_scenes()
-
-@app.get("/api/stats", response_model=StatsResponse)
-async def get_stats():
-    """获取统计信息"""
-    if not data_loader:
-        return StatsResponse(
-            total_scenes=0,
-            total_entities=0,
-            total_relations=0,
-            entity_types={},
-            relation_types={},
-            loaded_at=datetime.now().isoformat()
+        return Graph3DResponse(
+            entities=[], features=[], scenes=[],
+            horizontal_edges=[], vertical_edges=[], stats={}
         )
     
-    # 重新加载数据以获取最新统计
-    stats = data_loader.load_all_data()
-    return StatsResponse(**stats)
+    graph_data = data_loader.get_3d_graph_data()
+    return Graph3DResponse(**graph_data)
 
-@app.get("/api/graph", response_model=GraphDataResponse)
-async def get_graph_data():
-    """获取图数据（用于前端可视化）"""
+@app.get("/api/3d/stats", response_model=Stats3DResponse)
+async def get_3d_stats():
+    """获取三维统计信息"""
     if not data_loader:
-        return GraphDataResponse(nodes=[], edges=[])
-    return GraphDataResponse(**data_loader.get_graph_data())
+        return Stats3DResponse(
+            total_entities=0,
+            total_features=0,
+            total_scenes=0,
+            total_horizontal_edges=0,
+            total_vertical_edges=0,
+            entity_types={},
+            feature_distribution={},
+            scene_distribution={},
+            loaded_at=datetime.now().isoformat(),
+            memory_id=current_memory_id
+        )
+    
+    stats = data_loader.load_all_data()
+    return Stats3DResponse(**stats)
 
-@app.get("/api/entity/{entity_id}")
-async def get_entity(entity_id: str):
-    """获取特定实体信息及其相关关系"""
+@app.get("/api/3d/entity/{entity_id}")
+async def get_3d_entity(entity_id: str):
+    """获取实体详细信息（包含特征和场景）"""
     if not data_loader:
         return {"error": "数据加载器未初始化"}
     
-    entity = data_loader.get_entity_by_id(entity_id)
-    if not entity:
+    entity_details = data_loader.get_entity_details(entity_id)
+    if not entity_details:
         return {"error": f"实体 '{entity_id}' 不存在"}
     
-    relations = data_loader.get_relations_for_entity(entity_id)
+    return entity_details
+
+@app.get("/api/3d/feature/{feature_id}")
+async def get_3d_feature(feature_id: str):
+    """获取特征详细信息"""
+    if not data_loader:
+        return {"error": "数据加载器未初始化"}
     
-    return {
-        "entity": entity,
-        "relations": relations
-    }
+    feature_details = data_loader.get_feature_details(feature_id)
+    if not feature_details:
+        return {"error": f"特征 '{feature_id}' 不存在"}
+    
+    return feature_details
+
+@app.get("/api/3d/scene/{scene_id}")
+async def get_3d_scene(scene_id: str):
+    """获取场景详细信息"""
+    if not data_loader:
+        return {"error": "数据加载器未初始化"}
+    
+    scene_details = data_loader.get_scene_details(scene_id)
+    if not scene_details:
+        return {"error": f"场景 '{scene_id}' 不存在"}
+    
+    return scene_details
 
 @app.get("/api/memory/info", response_model=MemoryInfoResponse)
 async def get_memory_info():
@@ -372,7 +395,7 @@ async def switch_memory(memory_id: str):
             logger.info("已停止当前文件监控")
         
         # 创建新的数据加载器
-        new_data_loader = KGDataLoader(memory_id=memory_id)
+        new_data_loader = EnhancedKGDataLoader(memory_id=memory_id)
         
         # 检查数据目录是否存在
         if not new_data_loader.data_dir.exists():
@@ -446,7 +469,7 @@ async def websocket_endpoint(websocket: WebSocket):
                 "type": "initial_data",
                 "timestamp": datetime.now().isoformat(),
                 "stats": data_loader.load_all_data(),
-                "graph": data_loader.get_graph_data(),
+                "graph": data_loader.get_3d_graph_data(),
                 "current_memory_id": current_memory_id
             }
             await websocket.send_json(initial_data)
@@ -468,9 +491,16 @@ async def websocket_endpoint(websocket: WebSocket):
 
 # 挂载前端静态文件
 import os
+# 三维前端
+frontend_3d_dir = os.path.join(os.path.dirname(__file__), "../3d_frontend")
+if os.path.exists(frontend_3d_dir):
+    app.mount("/3d_frontend", StaticFiles(directory=frontend_3d_dir, html=True), name="3d_frontend")
+
+# 二维前端（保持兼容）
 frontend_dir = os.path.join(os.path.dirname(__file__), "../frontend")
-app.mount("/frontend", StaticFiles(directory=frontend_dir, html=True), name="frontend")
+if os.path.exists(frontend_dir):
+    app.mount("/frontend", StaticFiles(directory=frontend_dir, html=True), name="frontend")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8001, log_level="info")

@@ -152,7 +152,9 @@ def process_single_kg_candidate(file_path: Path, kg_entity_dir: Path, kg_relatio
             "relations_processed": 0,
             "relations_saved": 0,
             "attributes_processed": 0,
-            "attributes_saved": 0
+            "attributes_saved": 0,
+            "features_processed": 0,
+            "features_saved": 0
         }
         
         # 处理实体
@@ -176,9 +178,16 @@ def process_single_kg_candidate(file_path: Path, kg_entity_dir: Path, kg_relatio
             if save_attribute(attribute, kg_entity_dir):
                 stats["attributes_saved"] += 1
         
+        # 处理特征
+        features = facts.get('features', [])
+        for feature in features:
+            stats["features_processed"] += 1
+            if save_feature(feature, kg_entity_dir):
+                stats["features_saved"] += 1
+        
         # 返回结果
         return {
-            "success": stats["entities_saved"] > 0 or stats["relations_saved"] > 0 or stats["attributes_saved"] > 0,
+            "success": stats["entities_saved"] > 0 or stats["relations_saved"] > 0 or stats["attributes_saved"] > 0 or stats["features_saved"] > 0,
             "message": f"处理KG候选文件完成: {file_path.name}",
             "file_path": str(file_path),
             "stats": stats
@@ -194,13 +203,14 @@ def process_single_kg_candidate(file_path: Path, kg_entity_dir: Path, kg_relatio
         }
 
 
-def save_entity(entity_data: Dict, kg_entity_dir: Path) -> bool:
+def save_entity(entity_data: Dict, kg_entity_dir: Path, source_info: Optional[Dict] = None) -> bool:
     """
     保存实体到文件
     
     Args:
         entity_data: 实体数据，包含 id, type, confidence 等字段
         kg_entity_dir: 实体目录路径
+        source_info: 来源信息，包含 dialogue_id, episode_id 等字段
         
     Returns:
         保存成功返回True，否则返回False
@@ -225,12 +235,34 @@ def save_entity(entity_data: Dict, kg_entity_dir: Path) -> bool:
                 # 如果读取失败，创建新文件
                 existing_data = {}
         
-        # 合并数据（简单的覆盖策略，实际可能需要更复杂的合并逻辑）
-        merged_data = {**existing_data, **entity_data}
+        # 确保 sources 字段存在
+        if 'sources' not in existing_data:
+            existing_data['sources'] = []
+        
+        # 添加来源信息（如果提供）
+        if source_info:
+            # 检查是否已存在相同来源（考虑dialogue_id, episode_id和scene_id）
+            source_found = False
+            for source in existing_data['sources']:
+                # 如果所有关键字段都匹配，则认为是相同来源
+                if (source.get('dialogue_id') == source_info.get('dialogue_id') and
+                    source.get('episode_id') == source_info.get('episode_id') and
+                    source.get('scene_id') == source_info.get('scene_id')):
+                    source_found = True
+                    break
+            
+            if not source_found:
+                existing_data['sources'].append(source_info)
+        
+        # 合并基本数据（保留现有数据，用新数据更新）
+        # 注意：不覆盖 sources 字段
+        for key, value in entity_data.items():
+            if key != 'sources':
+                existing_data[key] = value
         
         # 保存实体文件
         with open(entity_file, 'w', encoding='utf-8') as f:
-            json.dump(merged_data, f, ensure_ascii=False, indent=2)
+            json.dump(existing_data, f, ensure_ascii=False, indent=2)
         
         logger.debug(f"保存实体: {entity_id} -> {entity_file}")
         return True
@@ -240,18 +272,38 @@ def save_entity(entity_data: Dict, kg_entity_dir: Path) -> bool:
         return False
 
 
-def save_relation(relation_data: Dict, kg_relation_dir: Path) -> bool:
+def save_relation(relation_data: Dict, kg_relation_dir: Path, source_info: Optional[Dict] = None) -> bool:
     """
     保存关系到文件
     
     Args:
         relation_data: 关系数据，包含 subject, relation, object, confidence 等字段
         kg_relation_dir: 关系目录路径
+        source_info: 来源信息，包含 dialogue_id, episode_id 等字段
         
     Returns:
         保存成功返回True，否则返回False
     """
     try:
+        # 添加来源信息到关系数据
+        if source_info:
+            # 确保 sources 字段存在
+            if 'sources' not in relation_data:
+                relation_data['sources'] = []
+            
+            # 检查是否已存在相同来源（考虑dialogue_id, episode_id和scene_id）
+            source_found = False
+            for source in relation_data['sources']:
+                # 如果所有关键字段都匹配，则认为是相同来源
+                if (source.get('dialogue_id') == source_info.get('dialogue_id') and
+                    source.get('episode_id') == source_info.get('episode_id') and
+                    source.get('scene_id') == source_info.get('scene_id')):
+                    source_found = True
+                    break
+            
+            if not source_found:
+                relation_data['sources'].append(source_info)
+        
         # 生成唯一的关系文件名
         relation_filename = generate_relation_filename()
         relation_file = kg_relation_dir / relation_filename
@@ -273,13 +325,14 @@ def save_relation(relation_data: Dict, kg_relation_dir: Path) -> bool:
         return False
 
 
-def save_attribute(attribute_data: Dict, kg_entity_dir: Path) -> bool:
+def save_attribute(attribute_data: Dict, kg_entity_dir: Path, source_info: Optional[Dict] = None) -> bool:
     """
     保存属性到对应的实体文件
     
     Args:
         attribute_data: 属性数据，包含 entity, field, value, confidence 等字段
         kg_entity_dir: 实体目录路径
+        source_info: 来源信息，包含 dialogue_id, episode_id 等字段
         
     Returns:
         保存成功返回True，否则返回False
@@ -289,6 +342,25 @@ def save_attribute(attribute_data: Dict, kg_entity_dir: Path) -> bool:
         if not entity_id:
             logger.warning("属性数据缺少 'entity' 字段")
             return False
+        
+        # 添加来源信息到属性数据
+        if source_info:
+            # 确保 sources 字段存在
+            if 'sources' not in attribute_data:
+                attribute_data['sources'] = []
+            
+            # 检查是否已存在相同来源（考虑dialogue_id, episode_id和scene_id）
+            source_found = False
+            for source in attribute_data['sources']:
+                # 如果所有关键字段都匹配，则认为是相同来源
+                if (source.get('dialogue_id') == source_info.get('dialogue_id') and
+                    source.get('episode_id') == source_info.get('episode_id') and
+                    source.get('scene_id') == source_info.get('scene_id')):
+                    source_found = True
+                    break
+            
+            if not source_found:
+                attribute_data['sources'].append(source_info)
         
         # 清理实体名称作为文件名
         sanitized_name = sanitize_entity_name(entity_id)
@@ -316,6 +388,20 @@ def save_attribute(attribute_data: Dict, kg_entity_dir: Path) -> bool:
         attribute_found = False
         for attr in existing_data['attributes']:
             if attr.get('field') == field:
+                # 合并来源信息
+                if source_info and 'sources' in attr:
+                    # 检查是否已存在相同来源（考虑dialogue_id, episode_id和scene_id）
+                    existing_source_found = False
+                    for source in attr['sources']:
+                        if (source.get('dialogue_id') == source_info.get('dialogue_id') and
+                            source.get('episode_id') == source_info.get('episode_id') and
+                            source.get('scene_id') == source_info.get('scene_id')):
+                            existing_source_found = True
+                            break
+                    
+                    if not existing_source_found:
+                        attr['sources'].append(source_info)
+                
                 # 更新现有属性
                 attr.update(attribute_data)
                 attribute_found = True
@@ -334,6 +420,103 @@ def save_attribute(attribute_data: Dict, kg_entity_dir: Path) -> bool:
         
     except Exception as e:
         logger.error(f"保存属性失败: {e}")
+        return False
+
+
+def save_feature(feature_data: Dict, kg_entity_dir: Path, source_info: Optional[Dict] = None) -> bool:
+    """
+    保存特征到对应的实体文件
+    
+    Args:
+        feature_data: 特征数据，包含 entity_id, feature 等字段
+        kg_entity_dir: 实体目录路径
+        source_info: 来源信息，包含 dialogue_id, episode_id 等字段
+        
+    Returns:
+        保存成功返回True，否则返回False
+    """
+    try:
+        entity_id = feature_data.get('entity_id')
+        if not entity_id:
+            logger.warning("特征数据缺少 'entity_id' 字段")
+            return False
+        
+        # 添加来源信息到特征数据
+        if source_info:
+            # 确保 sources 字段存在
+            if 'sources' not in feature_data:
+                feature_data['sources'] = []
+            
+            # 检查是否已存在相同来源（考虑dialogue_id, episode_id和scene_id）
+            source_found = False
+            for source in feature_data['sources']:
+                # 如果所有关键字段都匹配，则认为是相同来源
+                if (source.get('dialogue_id') == source_info.get('dialogue_id') and
+                    source.get('episode_id') == source_info.get('episode_id') and
+                    source.get('scene_id') == source_info.get('scene_id')):
+                    source_found = True
+                    break
+            
+            if not source_found:
+                feature_data['sources'].append(source_info)
+        
+        # 清理实体名称作为文件名
+        sanitized_name = sanitize_entity_name(entity_id)
+        entity_file = kg_entity_dir / f"{sanitized_name}.json"
+        
+        # 加载现有实体数据
+        existing_data = {}
+        if entity_file.exists():
+            try:
+                with open(entity_file, 'r', encoding='utf-8') as f:
+                    existing_data = json.load(f)
+            except Exception:
+                # 如果读取失败，创建新数据
+                existing_data = {}
+        
+        # 确保 features 字段存在
+        if 'features' not in existing_data:
+            existing_data['features'] = []
+        
+        # 添加新特征
+        feature_text = feature_data.get('feature')
+        
+        # 检查是否已存在相同特征
+        feature_found = False
+        for feat in existing_data['features']:
+            if feat.get('feature') == feature_text and feat.get('entity_id') == entity_id:
+                # 合并来源信息
+                if source_info and 'sources' in feat:
+                    # 检查是否已存在相同来源（考虑dialogue_id, episode_id和scene_id）
+                    existing_source_found = False
+                    for source in feat['sources']:
+                        if (source.get('dialogue_id') == source_info.get('dialogue_id') and
+                            source.get('episode_id') == source_info.get('episode_id') and
+                            source.get('scene_id') == source_info.get('scene_id')):
+                            existing_source_found = True
+                            break
+                    
+                    if not existing_source_found:
+                        feat['sources'].append(source_info)
+                
+                # 更新现有特征
+                feat.update(feature_data)
+                feature_found = True
+                break
+        
+        if not feature_found:
+            # 添加新特征
+            existing_data['features'].append(feature_data)
+        
+        # 保存更新后的实体文件
+        with open(entity_file, 'w', encoding='utf-8') as f:
+            json.dump(existing_data, f, ensure_ascii=False, indent=2)
+        
+        logger.debug(f"保存特征: {entity_id} -> {feature_text}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"保存特征失败: {e}")
         return False
 
 

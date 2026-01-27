@@ -1,0 +1,231 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>三维知识图谱可视化</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/libs/stats.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🌐 三维知识图谱可视化</h1>
+            <p class="subtitle">实体-特征-场景三层立体可视化系统</p>
+            <div class="connection-status">
+                <span id="connection-status" class="status-disconnected">● 连接中...</span>
+                <span id="last-update">最后更新: --</span>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <div class="left-panel">
+                <div class="stats-panel">
+                    <h2>📈 统计信息</h2>
+                    <div class="stats-grid">
+                        <div class="stat-card">
+                            <div class="stat-value" id="stat-entities">0</div>
+                            <div class="stat-label">实体节点</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="stat-features">0</div>
+                            <div class="stat-label">特征节点</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="stat-scenes">0</div>
+                            <div class="stat-label">场景节点</div>
+                        </div>
+                        <div class="stat-card">
+                            <div class="stat-value" id="stat-connections">0</div>
+                            <div class="stat-label">垂直连接</div>
+                        </div>
+                    </div>
+                    
+                    <div class="layer-info">
+                        <h3>📊 层级信息</h3>
+                        <div class="layer-stats">
+                            <div class="layer-item">
+                                <span class="layer-color entity-layer"></span>
+                                <span>实体层 (z=0)</span>
+                                <span id="layer-entities-count">0</span>
+                            </div>
+                            <div class="layer-item">
+                                <span class="layer-color feature-layer"></span>
+                                <span>特征层 (z=100)</span>
+                                <span id="layer-features-count">0</span>
+                            </div>
+                            <div class="layer-item">
+                                <span class="layer-color scene-layer"></span>
+                                <span>场景层 (z=200)</span>
+                                <span id="layer-scenes-count">0</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="controls-panel">
+                    <h2>⚙️ 控制面板</h2>
+                    
+                    <div class="control-group">
+                        <label for="memory-select">Memory ID:</label>
+                        <select id="memory-select">
+                            <option value="">加载中...</option>
+                        </select>
+                        <button id="memory-switch-btn">切换</button>
+                        <div class="memory-info">
+                            <span id="current-memory">当前: 未知</span>
+                        </div>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="confidence-filter">置信度阈值:</label>
+                        <input type="range" id="confidence-filter" min="0" max="1" step="0.1" value="0">
+                        <span id="confidence-value">0.0</span>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label>层级控制:</label>
+                        <div class="layer-controls">
+                            <label><input type="checkbox" id="toggle-entity-layer" checked> 显示实体层</label>
+                            <label><input type="checkbox" id="toggle-feature-layer" checked> 显示特征层</label>
+                            <label><input type="checkbox" id="toggle-scene-layer" checked> 显示场景层</label>
+                        </div>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label>连接线:</label>
+                        <div class="connection-controls">
+                            <label><input type="checkbox" id="toggle-horizontal-edges" checked> 水平关系</label>
+                            <label><input type="checkbox" id="toggle-vertical-edges" checked> 垂直连接</label>
+                        </div>
+                    </div>
+                    
+                    <div class="control-group">
+                        <label for="search-node">搜索节点:</label>
+                        <input type="text" id="search-node" placeholder="输入节点ID...">
+                        <button id="search-btn">搜索</button>
+                    </div>
+                    
+                    <div class="control-group">
+                        <button id="reset-view-btn">🗺️ 重置视图</button>
+                        <button id="export-btn">📷 导出截图</button>
+                        <button id="toggle-stats-btn">📊 显示性能</button>
+                    </div>
+                </div>
+
+                <div class="updates-panel">
+                    <h2>🔄 实时更新日志</h2>
+                    <div class="updates-list" id="updates-list">
+                        <div class="update-item">等待更新...</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="visualization-panel">
+                <div class="graph-header">
+                    <h2>🌐 三维知识图谱</h2>
+                    <div class="graph-controls">
+                        <button id="toggle-rotation">🔄 自动旋转</button>
+                        <button id="toggle-grid">📐 显示网格</button>
+                        <button id="toggle-axes">🧭 显示坐标轴</button>
+                    </div>
+                </div>
+                <div id="knowledge-graph-3d"></div>
+            </div>
+
+            <div class="right-panel">
+                <div class="graph-info">
+                    <div class="info-section">
+                        <h3>📝 选中的节点信息</h3>
+                        <div id="selected-info">点击图中的节点查看详细信息</div>
+                    </div>
+                    <div class="info-section">
+                        <h3>🎯 图例</h3>
+                        <div class="legend">
+                            <div class="legend-item">
+                                <span class="legend-color person"></span> 人物 (person)
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color organization"></span> 组织 (organization)
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color location"></span> 地点 (location)
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color product"></span> 产品 (product)
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color work"></span> 作品 (work)
+                            </div>
+                            <div class="legend-item">
+                                <span class="legend-color unknown"></span> 其他类型
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div class="camera-info">
+                    <h3>📷 摄像机信息</h3>
+                    <div class="camera-stats">
+                        <div class="camera-stat">
+                            <span class="stat-label">位置 (x, y, z):</span>
+                            <span id="camera-position">(0, 0, 0)</span>
+                        </div>
+                        <div class="camera-stat">
+                            <span class="stat-label">目标 (x, y, z):</span>
+                            <span id="camera-target">(0, 0, 0)</span>
+                        </div>
+                        <div class="camera-stat">
+                            <span class="stat-label">距离:</span>
+                            <span id="camera-distance">0</span>
+                        </div>
+                        <div class="camera-stat">
+                            <span class="stat-label">角度 (θ, φ):</span>
+                            <span id="camera-angles">(0°, 0°)</span>
+                        </div>
+                        <div class="camera-stat">
+                            <span class="stat-label">视野 (FOV):</span>
+                            <span id="camera-fov">60°</span>
+                        </div>
+                    </div>
+                    
+                    <div class="camera-controls">
+                        <h4>初始角度设置</h4>
+                        <div class="control-group">
+                            <label for="initial-angle-theta">水平角 θ:</label>
+                            <input type="range" id="initial-angle-theta" min="0" max="360" step="1" value="45">
+                            <span id="theta-value">45°</span>
+                        </div>
+                        <div class="control-group">
+                            <label for="initial-angle-phi">垂直角 φ:</label>
+                            <input type="range" id="initial-angle-phi" min="10" max="170" step="1" value="60">
+                            <span id="phi-value">60°</span>
+                        </div>
+                        <div class="control-group">
+                            <label for="initial-distance">距离:</label>
+                            <input type="range" id="initial-distance" min="100" max="1000" step="10" value="500">
+                            <span id="distance-value">500</span>
+                        </div>
+                        <button id="apply-camera-settings">应用设置</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer>
+            <p>数据源: <code>data/memory/kg_data/</code> | 后端API: <span id="api-status">未连接</span></p>
+            <p>系统状态: <span id="system-status">初始化中...</span></p>
+        </footer>
+    </div>
+
+    <!-- 性能监控面板 -->
+    <div id="stats-panel" style="position: fixed; top: 10px; right: 10px; display: none;"></div>
+
+    <script src="js/three-scene.js"></script>
+    <script src="js/data-loader.js"></script>
+    <script src="js/ui-manager.js"></script>
+    <script src="js/main.js"></script>
+</body>
+</html>

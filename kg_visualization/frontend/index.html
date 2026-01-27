@@ -50,6 +50,18 @@
 
                 <div class="controls-panel">
                     <h2>⚙️ 控制面板</h2>
+                    
+                    <div class="control-group">
+                        <label for="memory-select">Memory ID:</label>
+                        <select id="memory-select">
+                            <option value="">加载中...</option>
+                        </select>
+                        <button id="memory-switch-btn">切换</button>
+                        <div class="memory-info">
+                            <span id="current-memory">当前: 未知</span>
+                        </div>
+                    </div>
+                    
                     <div class="control-group">
                         <label for="confidence-filter">置信度阈值:</label>
                         <input type="range" id="confidence-filter" min="0" max="1" step="0.1" value="0">

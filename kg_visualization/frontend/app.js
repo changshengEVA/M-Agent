@@ -86,6 +86,9 @@ function initApplication() {
  * 初始化UI组件
  */
 function initUIComponents() {
+    // Memory选择功能
+    document.getElementById('memory-switch-btn').addEventListener('click', switchMemory);
+    
     // 置信度滑块
     const confidenceSlider = document.getElementById('confidence-filter');
     const confidenceValue = document.getElementById('confidence-value');
@@ -111,6 +114,9 @@ function initUIComponents() {
     document.getElementById('toggle-physics').addEventListener('click', togglePhysics);
     document.getElementById('toggle-labels').addEventListener('click', toggleLabels);
     document.getElementById('export-btn').addEventListener('click', exportGraphImage);
+    
+    // 加载memory信息
+    loadMemoryInfo();
 }
 
 /**
@@ -765,9 +771,165 @@ function checkConnectionStatus() {
     }
 }
 
+/**
+ * 加载memory信息
+ */
+async function loadMemoryInfo() {
+    try {
+        const response = await fetch('/api/memory/info');
+        const data = await response.json();
+        
+        updateMemoryUI(data);
+        addUpdateLog(`Memory信息加载完成，当前: ${data.current_memory_id}`, 'success');
+    } catch (error) {
+        console.error('加载memory信息失败:', error);
+        addUpdateLog('加载memory信息失败', 'error');
+    }
+}
+
+/**
+ * 更新memory UI
+ */
+function updateMemoryUI(memoryInfo) {
+    // 更新当前memory显示
+    document.getElementById('current-memory').textContent = `当前: ${memoryInfo.current_memory_id}`;
+    
+    // 更新下拉选择框
+    const select = document.getElementById('memory-select');
+    select.innerHTML = '';
+    
+    // 添加选项
+    memoryInfo.available_memory_ids.forEach(memoryId => {
+        const option = document.createElement('option');
+        option.value = memoryId;
+        option.textContent = memoryId;
+        if (memoryId === memoryInfo.current_memory_id) {
+            option.selected = true;
+        }
+        select.appendChild(option);
+    });
+    
+    // 如果没有选项，添加默认选项
+    if (memoryInfo.available_memory_ids.length === 0) {
+        const option = document.createElement('option');
+        option.value = '';
+        option.textContent = '无可用memory';
+        select.appendChild(option);
+    }
+}
+
+/**
+ * 切换memory
+ */
+async function switchMemory() {
+    const select = document.getElementById('memory-select');
+    const memoryId = select.value;
+    
+    if (!memoryId) {
+        alert('请选择要切换的memory ID');
+        return;
+    }
+    
+    // 获取当前memory ID
+    const currentMemory = document.getElementById('current-memory').textContent.replace('当前: ', '');
+    if (memoryId === currentMemory) {
+        addUpdateLog(`已经是当前memory: ${memoryId}`, 'info');
+        return;
+    }
+    
+    try {
+        addUpdateLog(`正在切换到memory: ${memoryId}...`, 'info');
+        updateSystemStatus(`正在切换到 ${memoryId}...`);
+        
+        const response = await fetch(`/api/memory/switch/${memoryId}`, {
+            method: 'POST'
+        });
+        
+        const result = await response.json();
+        
+        if (result.success) {
+            addUpdateLog(`成功切换到memory: ${memoryId}`, 'success');
+            updateSystemStatus(`已切换到 ${memoryId}`);
+            
+            // 更新UI
+            document.getElementById('current-memory').textContent = `当前: ${memoryId}`;
+            
+            // 重新加载数据
+            loadInitialData();
+            
+            // 更新footer数据源显示
+            updateDataSourceInfo(memoryId);
+        } else {
+            addUpdateLog(`切换失败: ${result.message}`, 'error');
+            updateSystemStatus('切换失败');
+            alert(`切换失败: ${result.message}`);
+        }
+    } catch (error) {
+        console.error('切换memory失败:', error);
+        addUpdateLog(`切换失败: ${error.message}`, 'error');
+        updateSystemStatus('切换失败');
+        alert(`切换失败: ${error.message}`);
+    }
+}
+
+/**
+ * 更新数据源信息显示
+ */
+function updateDataSourceInfo(memoryId) {
+    const footer = document.querySelector('footer p');
+    if (footer) {
+        footer.innerHTML = `数据源: <code>data/memory/${memoryId}/kg_data/</code> | 后端API: <span id="api-status">已连接</span>`;
+    }
+}
+
+/**
+ * 处理WebSocket消息中的memory切换
+ */
+function handleMemorySwitched(data) {
+    console.log('收到memory切换通知:', data);
+    
+    // 更新当前memory显示
+    document.getElementById('current-memory').textContent = `当前: ${data.new_memory_id}`;
+    
+    // 更新下拉选择框
+    const select = document.getElementById('memory-select');
+    for (let i = 0; i < select.options.length; i++) {
+        if (select.options[i].value === data.new_memory_id) {
+            select.options[i].selected = true;
+            break;
+        }
+    }
+    
+    // 更新数据源信息
+    updateDataSourceInfo(data.new_memory_id);
+    
+    // 重新加载数据
+    loadInitialData();
+    
+    addUpdateLog(`Memory已切换到: ${data.new_memory_id}`, 'success');
+}
+
+// 修改handleWebSocketMessage函数以支持memory_switched消息
+function handleWebSocketMessage(data) {
+    switch (data.type) {
+        case 'initial_data':
+            handleInitialData(data);
+            break;
+        case 'data_updated':
+            handleDataUpdated(data);
+            break;
+        case 'memory_switched':
+            handleMemorySwitched(data);
+            break;
+        default:
+            console.log('未知消息类型:', data.type);
+    }
+}
+
 // 导出全局函数供HTML调用
 window.searchNode = searchNode;
 window.resetNetworkView = resetNetworkView;
 window.togglePhysics = togglePhysics;
 window.toggleLabels = toggleLabels;
 window.exportGraphImage = exportGraphImage;
+window.switchMemory = switchMemory;

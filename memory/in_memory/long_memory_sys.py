@@ -24,6 +24,7 @@ from memory.in_memory.utils.KG_utils import (
     save_entity,
     save_relation,
     save_attribute,
+    save_feature,
     delete_kg_candidate_file,
     update_episode_kg_availability
 )
@@ -101,7 +102,7 @@ class LongMemorySystem:
     
     def write_kg_facts(
         self,
-        facts_json: Union[str, Dict],
+        candidate_data: Union[str, Dict],
         source_file: Optional[Union[str, Path]] = None,
         auto_cleanup: bool = True
     ) -> Dict:
@@ -109,7 +110,7 @@ class LongMemorySystem:
         向 data/memory/{id}/kg_data 写入新的KG信息
         
         Args:
-            facts_json: KG事实的JSON字符串或字典，格式应与kg_candidate中的facts字段一致
+            candidate_data: 完整的KG候选数据（JSON字符串或字典），包含 dialogue_id, episode_id, kg_candidate 等字段
             source_file: 可选的源文件路径（KG候选文件），如果提供且auto_cleanup为True，
                          则处理完成后删除该文件（注意：不再更新kg_available字段，由episode_situation.json控制）
             auto_cleanup: 是否自动清理源文件，默认为True
@@ -120,23 +121,84 @@ class LongMemorySystem:
         logger.info("开始写入KG事实")
         
         # 解析输入
-        if isinstance(facts_json, str):
+        if isinstance(candidate_data, str):
             try:
-                facts_data = json.loads(facts_json)
+                full_data = json.loads(candidate_data)
             except json.JSONDecodeError as e:
                 error_msg = f"解析JSON字符串失败: {e}"
                 logger.error(error_msg)
                 return {"success": False, "error": error_msg}
         else:
-            facts_data = facts_json
+            full_data = candidate_data
         
-        # 验证数据结构
-        if 'facts' not in facts_data:
-            error_msg = "输入数据缺少 'facts' 字段"
+        # 提取来源信息
+        dialogue_id = full_data.get('dialogue_id')
+        episode_id = full_data.get('episode_id')
+        
+        # 获取scene_id
+        scene_id = None
+        if dialogue_id and episode_id:
+            try:
+                # 构建episode_key
+                episode_key = f"{dialogue_id}:{episode_id}"
+                
+                # 加载episode_situation.json
+                episode_situation_file = self.memory_root / "episodes" / "episode_situation.json"
+                if episode_situation_file.exists():
+                    with open(episode_situation_file, 'r', encoding='utf-8') as f:
+                        episode_situation_data = json.load(f)
+                    
+                    # 查找对应的episode
+                    episode_info = episode_situation_data.get('episodes', {}).get(episode_key)
+                    if episode_info:
+                        scene_file = episode_info.get('scene_file')
+                        if scene_file:
+                            # 加载scene文件获取scene_id
+                            scene_file_path = self.memory_root / "scene" / scene_file
+                            if scene_file_path.exists():
+                                with open(scene_file_path, 'r', encoding='utf-8') as f:
+                                    scene_data = json.load(f)
+                                scene_id = scene_data.get('scene_id')
+                                logger.info(f"找到scene_id: {scene_id} (来自scene文件: {scene_file})")
+                            else:
+                                logger.warning(f"scene文件不存在: {scene_file_path}")
+                        else:
+                            logger.warning(f"episode {episode_key} 没有scene_file字段")
+                    else:
+                        logger.warning(f"在episode_situation.json中找不到episode: {episode_key}")
+                else:
+                    logger.warning(f"episode_situation.json文件不存在: {episode_situation_file}")
+            except Exception as e:
+                logger.error(f"获取scene_id失败: {e}")
+        
+        # 构建来源信息
+        source_info = None
+        if dialogue_id and episode_id:
+            source_info = {
+                'dialogue_id': dialogue_id,
+                'episode_id': episode_id,
+                'scene_id': scene_id,
+                'file_number': full_data.get('file_number'),
+                'generated_at': full_data.get('generated_at'),
+                'prompt_version': full_data.get('prompt_version'),
+                'prompt_key': full_data.get('prompt_key')
+            }
+        else:
+            logger.warning("候选数据缺少 dialogue_id 或 episode_id 字段，将不记录来源信息")
+        
+        # 提取kg_candidate数据
+        kg_candidate = full_data.get('kg_candidate', {})
+        if not kg_candidate:
+            error_msg = "输入数据缺少 'kg_candidate' 字段"
             logger.error(error_msg)
             return {"success": False, "error": error_msg}
         
-        facts = facts_data['facts']
+        # 提取facts数据
+        facts = kg_candidate.get('facts', {})
+        if not facts:
+            error_msg = "kg_candidate数据缺少 'facts' 字段"
+            logger.error(error_msg)
+            return {"success": False, "error": error_msg}
         
         # 统计信息
         stats = {
@@ -145,29 +207,38 @@ class LongMemorySystem:
             "relations_processed": 0,
             "relations_saved": 0,
             "attributes_processed": 0,
-            "attributes_saved": 0
+            "attributes_saved": 0,
+            "features_processed": 0,
+            "features_saved": 0
         }
         
         # 处理实体
         entities = facts.get('entities', [])
         for entity in entities:
             stats["entities_processed"] += 1
-            if save_entity(entity, self.kg_entity_dir):
+            if save_entity(entity, self.kg_entity_dir, source_info):
                 stats["entities_saved"] += 1
         
         # 处理关系
         relations = facts.get('relations', [])
         for relation in relations:
             stats["relations_processed"] += 1
-            if save_relation(relation, self.kg_relation_dir):
+            if save_relation(relation, self.kg_relation_dir, source_info):
                 stats["relations_saved"] += 1
         
         # 处理属性
         attributes = facts.get('attributes', [])
         for attribute in attributes:
             stats["attributes_processed"] += 1
-            if save_attribute(attribute, self.kg_entity_dir):
+            if save_attribute(attribute, self.kg_entity_dir, source_info):
                 stats["attributes_saved"] += 1
+        
+        # 处理特征
+        features = facts.get('features', [])
+        for feature in features:
+            stats["features_processed"] += 1
+            if save_feature(feature, self.kg_entity_dir, source_info):
+                stats["features_saved"] += 1
         
         # 返回结果
         result = {
@@ -175,7 +246,8 @@ class LongMemorySystem:
             "message": "KG事实写入完成",
             "stats": stats,
             "memory_id": self.memory_id,
-            "kg_data_dir": str(self.kg_data_dir)
+            "kg_data_dir": str(self.kg_data_dir),
+            "source_info": source_info
         }
         
         logger.info(f"KG事实写入完成: {stats}")
