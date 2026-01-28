@@ -152,10 +152,10 @@ def extract_entities_from_kg_candidates(kg_data: Dict) -> List[str]:
     
     return entities
 
-def call_llm_for_features(diary: str, entities: List[str], prompt_template: str) -> List[Dict]:
+def call_llm_for_features(diary: str, entities: List[str], prompt_template: str, scene_id: str) -> List[Dict]:
     """
     调用 LLM 进行特征提取。
-    返回解析后的 JSON 列表，格式为 [{"entity_id": "...", "feature": "..."}, ...]
+    返回解析后的 JSON 列表，格式为 [{"entity_id": "...", "feature": "...", "scene_id": "..."}, ...]
     """
     from load_model.OpenAIcall import get_llm
     
@@ -183,6 +183,10 @@ def call_llm_for_features(diary: str, entities: List[str], prompt_template: str)
         for item in result:
             if not isinstance(item, dict) or "entity_id" not in item or "feature" not in item:
                 raise ValueError(f"列表项格式不正确: {item}")
+        
+        # 为每个特征添加 scene_id
+        for item in result:
+            item["scene_id"] = scene_id
         
         return result
     except json.JSONDecodeError as e:
@@ -269,14 +273,19 @@ def process_episode(episode_info: Dict,
             logger.error(f"Episode {episode_key} 缺少 kg_candidate_file 字段")
             return False
         
-        # 加载 scene 文件并提取 diary
+        # 加载 scene 文件并提取 diary 和 scene_id
         scene_root = get_scene_root(memory_root)
         scene_data = load_scene_file(scene_root, scene_file_name)
         diary = extract_diary_from_scene(scene_data)
+        scene_id = scene_data.get("scene_id", "")
         
         if not diary:
             logger.error(f"Scene 文件 {scene_file_name} 中没有 diary 字段")
             return False
+        
+        if not scene_id:
+            logger.warning(f"Scene 文件 {scene_file_name} 中没有 scene_id 字段，使用默认值")
+            scene_id = f"scene_{scene_file_name.replace('.json', '')}"
         
         # 加载 kg_candidates 文件并提取实体列表
         kg_candidates_root = get_kg_candidates_root(memory_root)
@@ -297,7 +306,7 @@ def process_episode(episode_info: Dict,
                 return False
             
             # 调用 LLM 生成特征
-            features = call_llm_for_features(diary, entities, prompt_template)
+            features = call_llm_for_features(diary, entities, prompt_template, scene_id)
         
         # 将特征添加到 kg_candidates 数据中
         kg_data_with_features = add_features_to_kg_candidates(kg_data, features)
