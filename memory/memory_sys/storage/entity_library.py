@@ -4,7 +4,8 @@
 实体库管理模块
 
 负责实体库的加载、保存和实体匹配功能
-实体库结构：JSON列表，每个条目包含：
+实体库结构：每个实体保存在单独的JSON文件中，文件名为实体ID
+文件内容格式：
 {
     "ID": "实体名称",
     "alias_names": ["别名1", "别名2", ...],
@@ -71,9 +72,9 @@ class EntityLibrary:
         初始化实体库
         
         Args:
-            library_path: 实体库文件路径
+            library_path: 实体库目录路径（不再是单个文件）
         """
-        self.library_path = Path(library_path)
+        self.library_dir = Path(library_path)
         self.entities: Dict[str, EntityRecord] = {}  # ID -> EntityRecord
         self.name_to_id: Dict[str, str] = {}  # 名称（包括别名）-> ID
         self.embeddings: Dict[str, List[float]] = {}  # ID -> 嵌入向量
@@ -83,65 +84,221 @@ class EntityLibrary:
     
     def _load_or_init(self) -> None:
         """加载或初始化实体库"""
-        if self.library_path.exists():
-            try:
-                with open(self.library_path, 'r', encoding='utf-8') as f:
-                    library_data = json.load(f)
-                
-                if not isinstance(library_data, list):
-                    logger.warning(f"实体库文件格式错误，应为列表，实际为 {type(library_data)}，重新初始化")
-                    library_data = []
-                
-                # 加载实体记录
-                for item in library_data:
-                    try:
-                        record = EntityRecord.from_dict(item)
-                        if record.id:
-                            self.entities[record.id] = record
-                            # 建立名称到ID的映射
-                            for name in record.get_all_names():
-                                self.name_to_id[name] = record.id
-                            # 存储嵌入向量
-                            if record.embedding:
-                                self.embeddings[record.id] = record.embedding
-                    except Exception as e:
-                        logger.warning(f"加载实体记录失败: {item}, 错误: {e}")
-                
-                logger.info(f"加载实体库成功，共 {len(self.entities)} 个实体")
-                
-            except Exception as e:
-                logger.error(f"加载实体库文件失败 {self.library_path}: {e}")
-                self._init_empty_library()
-        else:
+        # 如果路径是文件（旧格式），尝试迁移
+        if self.library_dir.exists() and self.library_dir.is_file():
+            logger.warning(f"检测到旧格式的实体库文件: {self.library_dir}")
+            self._migrate_from_old_format()
+            return
+        
+        # 确保目录存在
+        self.library_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 加载目录中的所有实体文件
+        try:
+            entity_files = list(self.library_dir.glob("*.json"))
+            logger.info(f"在目录 {self.library_dir} 中找到 {len(entity_files)} 个实体文件")
+            
+            for entity_file in entity_files:
+                try:
+                    with open(entity_file, 'r', encoding='utf-8') as f:
+                        entity_data = json.load(f)
+                    
+                    record = EntityRecord.from_dict(entity_data)
+                    if record.id:
+                        # 验证文件名与实体ID匹配
+                        expected_filename = f"{record.id}.json"
+                        if entity_file.name != expected_filename:
+                            logger.warning(f"实体文件名不匹配: {entity_file.name} (应为 {expected_filename})")
+                            # 可以重命名文件，但暂时只记录警告
+                        
+                        self.entities[record.id] = record
+                        # 建立名称到ID的映射
+                        for name in record.get_all_names():
+                            self.name_to_id[name] = record.id
+                        # 存储嵌入向量
+                        if record.embedding:
+                            self.embeddings[record.id] = record.embedding
+                            
+                except Exception as e:
+                    logger.warning(f"加载实体文件失败 {entity_file}: {e}")
+                    continue
+            
+            logger.info(f"加载实体库成功，共 {len(self.entities)} 个实体")
+            
+        except Exception as e:
+            logger.error(f"加载实体库目录失败 {self.library_dir}: {e}")
             self._init_empty_library()
+    
+    def _migrate_from_old_format(self) -> None:
+        """从旧格式（单个JSON文件）迁移到新格式（每个实体一个文件）"""
+        try:
+            old_file = self.library_dir
+            library_dir = old_file.parent / "entity_library"
+            
+            logger.info(f"从旧格式迁移实体库: {old_file} -> {library_dir}")
+            
+            # 检查文件是否为空或无效
+            if old_file.stat().st_size == 0:
+                logger.warning(f"旧实体库文件为空: {old_file}")
+                # 创建空目录并删除旧文件
+                library_dir.mkdir(parents=True, exist_ok=True)
+                old_file.unlink()
+                self.library_dir = library_dir
+                self._init_empty_library()
+                return
+            
+            # 读取旧文件
+            try:
+                with open(old_file, 'r', encoding='utf-8') as f:
+                    library_data = json.load(f)
+            except json.JSONDecodeError as e:
+                logger.warning(f"旧实体库文件JSON格式无效: {old_file}, 错误: {e}")
+                # 创建空目录并删除旧文件
+                library_dir.mkdir(parents=True, exist_ok=True)
+                old_file.unlink()
+                self.library_dir = library_dir
+                self._init_empty_library()
+                return
+            
+            if not isinstance(library_data, list):
+                logger.warning(f"旧实体库文件格式错误，应为列表，实际为 {type(library_data)}")
+                library_data = []
+            
+            # 创建新目录
+            library_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 保存每个实体到单独文件
+            migrated_count = 0
+            for item in library_data:
+                try:
+                    record = EntityRecord.from_dict(item)
+                    if record.id:
+                        entity_file = library_dir / f"{record.id}.json"
+                        with open(entity_file, 'w', encoding='utf-8') as f:
+                            json.dump(record.to_dict(), f, ensure_ascii=False, indent=2)
+                        
+                        self.entities[record.id] = record
+                        # 建立名称到ID的映射
+                        for name in record.get_all_names():
+                            self.name_to_id[name] = record.id
+                        # 存储嵌入向量
+                        if record.embedding:
+                            self.embeddings[record.id] = record.embedding
+                        
+                        migrated_count += 1
+                            
+                except Exception as e:
+                    logger.warning(f"迁移实体记录失败: {item}, 错误: {e}")
+            
+            # 更新库目录路径
+            self.library_dir = library_dir
+            
+            # 备份旧文件（如果迁移成功）
+            if migrated_count > 0:
+                backup_file = old_file.with_suffix('.json.backup')
+                try:
+                    old_file.rename(backup_file)
+                    logger.info(f"旧实体库文件已备份到: {backup_file}")
+                except Exception as e:
+                    logger.warning(f"备份旧文件失败: {e}")
+            else:
+                # 没有成功迁移，直接删除旧文件
+                try:
+                    old_file.unlink()
+                    logger.info(f"删除无效的旧实体库文件: {old_file}")
+                except Exception as e:
+                    logger.warning(f"删除旧文件失败: {e}")
+            
+            logger.info(f"实体库迁移完成，共迁移 {migrated_count} 个实体")
+            
+        except Exception as e:
+            logger.error(f"迁移实体库失败: {e}")
+            # 如果迁移失败，尝试使用目录名
+            try:
+                library_dir = self.library_dir.parent / "entity_library"
+                library_dir.mkdir(parents=True, exist_ok=True)
+                self.library_dir = library_dir
+                self._init_empty_library()
+            except Exception:
+                self._init_empty_library()
     
     def _init_empty_library(self) -> None:
         """初始化空实体库"""
         self.entities = {}
         self.name_to_id = {}
         self.embeddings = {}
+        # 确保目录存在
+        self.library_dir.mkdir(parents=True, exist_ok=True)
         logger.info("初始化空实体库")
     
     def save(self) -> bool:
-        """保存实体库到文件"""
+        """保存实体库到目录（每个实体一个文件）"""
         try:
-            # 准备保存数据
-            library_data = []
-            for record in self.entities.values():
-                library_data.append(record.to_dict())
-            
             # 确保目录存在
-            self.library_path.parent.mkdir(parents=True, exist_ok=True)
+            self.library_dir.mkdir(parents=True, exist_ok=True)
             
-            # 保存文件
-            with open(self.library_path, 'w', encoding='utf-8') as f:
-                json.dump(library_data, f, ensure_ascii=False, indent=2)
+            # 获取目录中现有的所有实体文件
+            existing_files = set(f.name for f in self.library_dir.glob("*.json"))
+            saved_files = set()
             
-            logger.info(f"保存实体库成功，共 {len(library_data)} 个实体")
+            # 保存每个实体到单独文件
+            for record in self.entities.values():
+                entity_file = self.library_dir / f"{record.id}.json"
+                try:
+                    with open(entity_file, 'w', encoding='utf-8') as f:
+                        json.dump(record.to_dict(), f, ensure_ascii=False, indent=2)
+                    saved_files.add(entity_file.name)
+                    logger.debug(f"保存实体文件: {entity_file.name}")
+                except Exception as e:
+                    logger.error(f"保存实体文件失败 {entity_file}: {e}")
+                    return False
+            
+            # 删除不再存在的实体文件
+            files_to_delete = existing_files - saved_files
+            for filename in files_to_delete:
+                file_path = self.library_dir / filename
+                try:
+                    file_path.unlink()
+                    logger.info(f"删除不再存在的实体文件: {filename}")
+                except Exception as e:
+                    logger.warning(f"删除实体文件失败 {file_path}: {e}")
+            
+            logger.info(f"保存实体库成功，共 {len(self.entities)} 个实体")
             return True
             
         except Exception as e:
-            logger.error(f"保存实体库失败 {self.library_path}: {e}")
+            logger.error(f"保存实体库失败 {self.library_dir}: {e}")
+            return False
+    
+    def save_entity(self, entity_id: str) -> bool:
+        """
+        保存单个实体到文件
+        
+        Args:
+            entity_id: 实体ID
+            
+        Returns:
+            是否成功保存
+        """
+        if entity_id not in self.entities:
+            logger.warning(f"实体不存在，无法保存: {entity_id}")
+            return False
+        
+        try:
+            record = self.entities[entity_id]
+            entity_file = self.library_dir / f"{entity_id}.json"
+            
+            # 确保目录存在
+            self.library_dir.mkdir(parents=True, exist_ok=True)
+            
+            with open(entity_file, 'w', encoding='utf-8') as f:
+                json.dump(record.to_dict(), f, ensure_ascii=False, indent=2)
+            
+            logger.debug(f"保存单个实体文件: {entity_file.name}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"保存单个实体文件失败 {entity_id}: {e}")
             return False
     
     def entity_exists(self, entity_name: str) -> bool:

@@ -35,15 +35,15 @@ class KGManager:
         # 初始化存储模块
         entity_dir = self.kg_data_dir / "entity"
         relation_dir = self.kg_data_dir / "relation"
-        library_path = self.kg_data_dir / "entity_library.json"
+        library_dir = self.kg_data_dir / "entity_library"  # 改为目录
         
         self.entity_storage = EntityStorage(entity_dir)
         self.relation_storage = RelationStorage(relation_dir)
         self.feature_attribute_storage = FeatureAttributeStorage(self.entity_storage)
         self.source_manager = SourceManager()
         
-        # 初始化实体库
-        self.entity_library = EntityLibrary(library_path)
+        # 初始化实体库（现在使用目录）
+        self.entity_library = EntityLibrary(library_dir)
         
         # 初始化模型（延迟加载）
         self.embed_model = None
@@ -61,7 +61,7 @@ class KGManager:
         logger.info(f"初始化KG管理器，数据目录: {self.kg_data_dir}")
         logger.info(f"实体目录: {entity_dir}")
         logger.info(f"关系目录: {relation_dir}")
-        logger.info(f"实体库路径: {library_path}")
+        logger.info(f"实体库目录: {library_dir}")
     
     def _load_models(self):
         """加载嵌入模型和LLM模型（延迟加载）"""

@@ -50,13 +50,12 @@ def test_entity_library():
     """测试实体库类"""
     print("\n测试 EntityLibrary 类...")
     
-    # 创建临时文件
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-        library_path = f.name
-    
-    try:
+    # 创建临时目录
+    with tempfile.TemporaryDirectory() as temp_dir:
+        library_dir = Path(temp_dir) / "entity_library"
+        
         # 初始化实体库
-        library = EntityLibrary(library_path)
+        library = EntityLibrary(library_dir)
         
         # 测试添加实体
         assert library.add_entity("实体1", [0.1, 0.2, 0.3]) == True
@@ -88,17 +87,19 @@ def test_entity_library():
         # 测试保存和重新加载
         assert library.save() == True
         
+        # 检查文件是否创建
+        entity1_file = library_dir / "实体1.json"
+        entity2_file = library_dir / "实体2.json"
+        assert entity1_file.exists()
+        assert entity2_file.exists()
+        
         # 创建新的库实例加载数据
-        library2 = EntityLibrary(library_path)
+        library2 = EntityLibrary(library_dir)
         assert library2.entity_exists("实体1") == True
         assert library2.entity_exists("别名1") == True
         assert library2.get_entity_id("别名1") == "实体1"
         
         print("EntityLibrary 测试通过!")
-        
-    finally:
-        # 清理临时文件
-        os.unlink(library_path)
 
 def test_kg_manager_integration():
     """测试KGManager集成"""
