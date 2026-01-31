@@ -40,7 +40,7 @@ app.add_middleware(
 
 # 配置参数
 import os
-MEMORY_ID = os.environ.get("KG_MEMORY_ID", "test2")  # 默认使用test2目录
+MEMORY_ID = os.environ.get("KG_MEMORY_ID", "test3")  # 默认使用test2目录
 
 # 全局变量
 data_loader: Optional[EnhancedKGDataLoader] = None
