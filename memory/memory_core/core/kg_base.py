@@ -8,7 +8,7 @@ workflow 只能通过该类调用 core 能力。
 """
 
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pathlib import Path
 
 from .repo_context import RepoContext
@@ -420,6 +420,16 @@ class KGBase:
             实体数量
         """
         return len(self.repos.entity.list_ids())
+    
+    def list_entity_ids(self) -> List[str]:
+        """
+        获取所有实体ID列表
+        
+        Returns:
+            实体ID列表
+        """
+        logger.debug("KGBase: 获取所有实体ID列表")
+        return self.repos.entity.list_ids()
     
     def get_relation_count(self) -> int:
         """
