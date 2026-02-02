@@ -448,16 +448,6 @@ class EntityResolutionService:
         self.entity_library.clear()
         logger.info("清空实体库")
     
-    def reload_from_kg(self) -> bool:
-        """
-        重新从 KG 加载实体库
-        
-        注意：此方法已弃用，请使用 align_library_with_kg_entities 进行增量同步
-        或 clear_library() 后从 data_path 重新加载
-        """
-        logger.warning("reload_from_kg 方法已弃用，请使用 align_library_with_kg_entities 进行增量同步")
-        return False
-    
     def align_library_with_kg_entities(self, kg_entity_list: List[str]) -> Dict[str, Any]:
         """
         对齐Library数据与KG实体数据列表

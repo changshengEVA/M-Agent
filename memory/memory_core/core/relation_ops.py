@@ -232,6 +232,120 @@ def delete_relations_of_entity(
         }
 
 
+def add_relation(
+    subject: str,
+    relation: str,
+    object: str,
+    repos: RepoContext,
+    confidence: float = 1.0,
+    source_info: Optional[Dict[str, Any]] = None
+) -> CoreResult:
+    """
+    添加一条关系
+    
+    在 KG 中创建一条新的关系边，连接两个实体。
+    
+    Args:
+        subject: 主语实体 ID
+        relation: 关系类型
+        object: 宾语实体 ID
+        repos: 持久化操作组件集合
+        confidence: 关系置信度，默认 1.0
+        source_info: 来源信息（可选）
+        
+    Returns:
+        CoreResult 结构:
+        {
+            "success": bool,
+            "changed": bool,          # KG 是否发生结构变化
+            "details": dict           # 包含关系详情
+        }
+    """
+    logger.info(f"开始添加关系: {subject} -[{relation}]-> {object}")
+    
+    # 检查主语实体是否存在
+    if not repos.entity.exists(subject):
+        return {
+            "success": False,
+            "changed": False,
+            "details": {
+                "error": f"主语实体不存在: {subject}",
+                "operation": "add_relation"
+            }
+        }
+    
+    # 检查宾语实体是否存在
+    if not repos.entity.exists(object):
+        return {
+            "success": False,
+            "changed": False,
+            "details": {
+                "error": f"宾语实体不存在: {object}",
+                "operation": "add_relation"
+            }
+        }
+    
+    # 检查是否指向自身
+    if subject == object:
+        logger.warning(f"关系主语和宾语相同: {subject}")
+        # 允许自环关系，但记录警告
+    
+    try:
+        # 构建关系记录
+        relation_record: Dict[str, Any] = {
+            "subject": subject,
+            "relation": relation,
+            "object": object,
+            "confidence": confidence
+        }
+        
+        # 添加来源信息
+        if source_info:
+            relation_record["sources"] = [source_info]
+        
+        # 保存关系
+        success = repos.relation.save(relation_record)
+        
+        if success:
+            logger.info(f"关系添加成功: {subject} -[{relation}]-> {object}")
+            return {
+                "success": True,
+                "changed": True,
+                "details": {
+                    "operation": "add_relation",
+                    "subject": subject,
+                    "relation": relation,
+                    "object": object,
+                    "confidence": confidence,
+                    "relation_id": relation_record.get("id", "unknown")
+                }
+            }
+        else:
+            logger.warning(f"关系保存失败: {subject} -[{relation}]-> {object}")
+            return {
+                "success": False,
+                "changed": False,
+                "details": {
+                    "error": "关系仓库保存失败",
+                    "operation": "add_relation",
+                    "subject": subject,
+                    "relation": relation,
+                    "object": object
+                }
+            }
+            
+    except Exception as e:
+        logger.error(f"添加关系失败 {subject} -[{relation}]-> {object}: {e}")
+        return {
+            "success": False,
+            "changed": False,
+            "details": {
+                "error": str(e),
+                "operation": "add_relation"
+            }
+        }
+
+
 def _get_entity_relations(
     entity_id: str,
     repos: RepoContext

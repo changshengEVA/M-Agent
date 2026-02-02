@@ -20,7 +20,8 @@ from .entity_ops import (
 )
 from .relation_ops import (
     redirect_relations as core_redirect_relations,
-    delete_relations_of_entity as core_delete_relations_of_entity
+    delete_relations_of_entity as core_delete_relations_of_entity,
+    add_relation as core_add_relation
 )
 from .content_ops import (
     append_feature as core_append_feature,
@@ -242,6 +243,39 @@ class KGBase:
         return core_delete_relations_of_entity(
             entity_id=entity_id,
             repos=self.repos,
+            source_info=source_info
+        )
+    
+    def add_relation(
+        self,
+        subject: str,
+        relation: str,
+        object: str,
+        confidence: float = 1.0,
+        source_info: Optional[Dict[str, Any]] = None
+    ) -> CoreResult:
+        """
+        添加一条关系
+        
+        在 KG 中创建一条新的关系边，连接两个实体。
+        
+        Args:
+            subject: 主语实体 ID
+            relation: 关系类型
+            object: 宾语实体 ID
+            confidence: 关系置信度，默认 1.0
+            source_info: 来源信息（可选）
+            
+        Returns:
+            CoreResult 结构
+        """
+        logger.info(f"KGBase: 添加关系 {subject} -[{relation}]-> {object}")
+        return core_add_relation(
+            subject=subject,
+            relation=relation,
+            object=object,
+            repos=self.repos,
+            confidence=confidence,
             source_info=source_info
         )
     
