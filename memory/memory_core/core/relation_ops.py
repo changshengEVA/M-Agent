@@ -289,8 +289,36 @@ def add_relation(
     if subject == object:
         logger.warning(f"关系主语和宾语相同: {subject}")
         # 允许自环关系，但记录警告
-    
     try:
+        # 检查是否已存在相同的关系（同样的主谓宾）
+        existing_relations = repos.relation.find_by_subject(subject)
+        duplicate_relation = None
+        for rel in existing_relations:
+            if rel.get('relation') == relation and rel.get('object') == object:
+                duplicate_relation = rel
+                break
+        
+        if duplicate_relation:
+            # 关系已存在，不重复添加
+            logger.info(f"关系已存在，跳过重复添加: {subject} -[{relation}]-> {object}")
+            
+            # 可选：合并来源信息和更新置信度
+            # 这里可以添加合并逻辑，但为了简单起见，我们只返回成功但 changed=False
+            
+            return {
+                "success": True,
+                "changed": False,
+                "details": {
+                    "operation": "add_relation",
+                    "subject": subject,
+                    "relation": relation,
+                    "object": object,
+                    "confidence": confidence,
+                    "existing_relation_id": duplicate_relation.get("id", "unknown"),
+                    "message": "关系已存在，未重复添加"
+                }
+            }
+        
         # 构建关系记录
         relation_record: Dict[str, Any] = {
             "subject": subject,
@@ -333,6 +361,7 @@ def add_relation(
                     "object": object
                 }
             }
+            
             
     except Exception as e:
         logger.error(f"添加关系失败 {subject} -[{relation}]-> {object}: {e}")

@@ -187,7 +187,7 @@ class MemoryCore:
         Returns:
             操作结果字典
         """
-        from memory.memory_core.workflow.load_dialogue_data import load_from_dialogue_json
+        from .workflow.load_dialogue_data import load_from_dialogue_json
         
         logger.info("调用 load_from_dialogue_json 接口")
         return load_from_dialogue_json(
@@ -206,7 +206,7 @@ class MemoryCore:
         Returns:
             操作结果字典
         """
-        from memory.memory_core.workflow.load_dialogue_data import load_from_dialogue_path
+        from .workflow.load_dialogue_data import load_from_dialogue_path
         
         logger.info(f"调用 load_from_dialogue_path 接口，路径: {path}")
         return load_from_dialogue_path(
