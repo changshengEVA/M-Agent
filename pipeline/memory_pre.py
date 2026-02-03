@@ -20,6 +20,10 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from pathlib import Path
 import sys
+# 配置日志
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
 
 # 导入数据加载模块
 try:
@@ -51,9 +55,6 @@ except ImportError:
     from memory.build_memory.form_scene import scan_and_form_scenes
     from memory.build_memory.form_scene_kg import scan_and_extract_features
 
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
 
 # 路径配置
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -71,19 +72,26 @@ def get_output_path(process_id: str, stage_name: str) -> Path:
     return PROJECT_ROOT / "data" / "memory" / process_id / stage_name
 
 
-def stage1_construct_dialogues_for_id(process_id: str):
+def stage1_construct_dialogues_for_id(process_id: str, data_source: str = None, loader_type: str = "auto"):
     """
     第一阶段：构造 dialogues 并保存到 data/memory/{id}/dialogues 目录
     
     Args:
         process_id: 处理流ID
+        data_source: 数据源路径（文件或目录），如果为 None 则使用默认路径
+        loader_type: 加载器类型，可选值：
+                    - "auto": 自动检测（默认）
+                    - "realtalk": 强制使用 realtalk 加载器
+                    - "default": 强制使用默认加载器
     """
     logger.info("=" * 50)
     logger.info(f"开始第一阶段：为处理流 {process_id} 构造 dialogues")
+    logger.info(f"数据源: {data_source if data_source else '默认'}")
+    logger.info(f"加载器类型: {loader_type}")
     logger.info("=" * 50)
     
     # 1. 加载 dialogue 列表
-    dialogues = load_dialogues()
+    dialogues = load_dialogues(data_source, loader_type)
     if not dialogues:
         logger.error("没有加载到 dialogue 数据，退出")
         return False
@@ -117,20 +125,22 @@ def stage1_construct_dialogues_for_id(process_id: str):
     return successful_count > 0
 
 
-def stage2_construct_episodes_for_id(process_id: str):
+def stage2_construct_episodes_for_id(process_id: str, memory_owner_name: str = "changshengEVA"):
     """
     第二阶段：构造 episodes 并保存到 data/memory/{id}/episodes 目录
     
     Args:
         process_id: 处理流ID
+        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
     """
     logger.info("=" * 50)
     logger.info(f"开始第二阶段：为处理流 {process_id} 构造 episodes")
+    logger.info(f"记忆所有者名称: {memory_owner_name}")
     logger.info("=" * 50)
     
     # 使用新的工具函数构建 episodes
     logger.info(f"调用新的 memory build 方法构建 episodes...")
-    if not build_episodes_with_id(process_id, str(PROJECT_ROOT)):
+    if not build_episodes_with_id(process_id, str(PROJECT_ROOT), memory_owner_name):
         logger.error("构建 episodes 失败")
         return False
     
@@ -161,23 +171,26 @@ def stage2_construct_episodes_for_id(process_id: str):
     logger.info(f"生成 episodes 文件: {episode_files_count} 个")
     logger.info(f"生成 qualifications 文件: {qualification_files_count} 个")
     logger.info(f"生成 eligibility 文件: {eligibility_files_count} 个")
+    logger.info(f"记忆所有者名称: {memory_owner_name}")
     logger.info(f"输出目录: {episodes_root}")
     logger.info("=" * 50)
     
     return episode_files_count > 0
 
 
-def stage3_form_kg_candidates_for_id(process_id: str, prompt_version: str = "v1"):
+def stage3_form_kg_candidates_for_id(process_id: str, prompt_version: str = "v1", memory_owner_name: str = "changshengEVA"):
     """
     第三阶段：形成KG候选，为kg_available为true的episode生成kg_candidate
     
     Args:
         process_id: 处理流ID
         prompt_version: prompt版本（v1 或 v2），默认v1
+        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
     """
     logger.info("=" * 50)
     logger.info(f"开始第三阶段：为处理流 {process_id} 形成KG候选")
     logger.info(f"使用 prompt 版本: {prompt_version}")
+    logger.info(f"记忆所有者名称: {memory_owner_name}")
     logger.info("=" * 50)
     
     # 构建目录路径
@@ -201,7 +214,8 @@ def stage3_form_kg_candidates_for_id(process_id: str, prompt_version: str = "v1"
             prompt_version=prompt_version,
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
-            kg_candidates_root=kg_candidates_root
+            kg_candidates_root=kg_candidates_root,
+            memory_owner_name=memory_owner_name
         )
         
         # 统计生成的 kg_candidate 文件数量
@@ -222,6 +236,7 @@ def stage3_form_kg_candidates_for_id(process_id: str, prompt_version: str = "v1"
         logger.info("第三阶段完成")
         logger.info(f"生成 kg_candidate 文件: {kg_candidate_files_count} 个")
         logger.info(f"使用 prompt 版本: {prompt_version}")
+        logger.info(f"记忆所有者名称: {memory_owner_name}")
         logger.info(f"输出目录: {kg_candidates_root}")
         logger.info("=" * 50)
         
@@ -234,15 +249,17 @@ def stage3_form_kg_candidates_for_id(process_id: str, prompt_version: str = "v1"
         return False
 
 
-def stage4_form_scenes_for_id(process_id: str):
+def stage4_form_scenes_for_id(process_id: str, memory_owner_name: str = "changshengEVA"):
     """
     第四阶段：形成 scene，为每个 episode 生成 scene（theme 和 diary）
     
     Args:
         process_id: 处理流ID
+        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
     """
     logger.info("=" * 50)
     logger.info(f"开始第四阶段：为处理流 {process_id} 形成 scene")
+    logger.info(f"记忆所有者名称: {memory_owner_name}")
     logger.info("=" * 50)
     
     # 构建目录路径
@@ -265,7 +282,8 @@ def stage4_form_scenes_for_id(process_id: str):
         scan_and_form_scenes(
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
-            scene_root=scene_root
+            scene_root=scene_root,
+            memory_owner_name=memory_owner_name
         )
         
         # 统计生成的 scene 文件数量
@@ -285,6 +303,7 @@ def stage4_form_scenes_for_id(process_id: str):
         logger.info("=" * 50)
         logger.info("第四阶段完成")
         logger.info(f"生成 scene 文件: {scene_files_count} 个")
+        logger.info(f"记忆所有者名称: {memory_owner_name}")
         logger.info(f"输出目录: {scene_root}")
         logger.info("=" * 50)
         
@@ -297,16 +316,18 @@ def stage4_form_scenes_for_id(process_id: str):
         return False
 
 
-def stage5_form_scene_features_for_id(process_id: str, force_update: bool = False):
+def stage5_form_scene_features_for_id(process_id: str, force_update: bool = False, memory_owner_name: str = "changshengEVA"):
     """
     第五阶段：形成 scene 特征，为已生成 kg 和 scene 的 episode 提取实体特征
     
     Args:
         process_id: 处理流ID
         force_update: 是否强制更新特征文件（即使已生成也重新生成）
+        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
     """
     logger.info("=" * 50)
     logger.info(f"开始第五阶段：为处理流 {process_id} 形成 scene 特征")
+    logger.info(f"记忆所有者名称: {memory_owner_name}")
     logger.info("=" * 50)
     
     # 构建目录路径
@@ -323,7 +344,8 @@ def stage5_form_scene_features_for_id(process_id: str, force_update: bool = Fals
         scan_and_extract_features(
             workflow_id=process_id,
             force_update=force_update,
-            use_tqdm=True
+            use_tqdm=True,
+            memory_owner_name=memory_owner_name
         )
         
         # 统计已更新的 kg_candidate 文件数量
@@ -353,6 +375,7 @@ def stage5_form_scene_features_for_id(process_id: str, force_update: bool = Fals
         logger.info("=" * 50)
         logger.info("第五阶段完成")
         logger.info(f"更新 kg_candidate 文件: {updated_files_count} 个（包含特征）")
+        logger.info(f"记忆所有者名称: {memory_owner_name}")
         logger.info(f"输出目录: {kg_candidates_root}")
         logger.info("=" * 50)
         
@@ -365,42 +388,53 @@ def stage5_form_scene_features_for_id(process_id: str, force_update: bool = Fals
         return False
 
 
-def run_full_pipeline_for_id(process_id: str, prompt_version: str = "v1", include_stage5: bool = True):
+def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_type: str = "auto",
+                           prompt_version: str = "v1", include_stage5: bool = True,
+                           memory_owner_name: str = "changshengEVA"):
     """
     为指定ID运行完整的数据构造流程
     
     Args:
         process_id: 处理流ID
+        data_source: 数据源路径（文件或目录），如果为 None 则使用默认路径
+        loader_type: 加载器类型，可选值：
+                    - "auto": 自动检测（默认）
+                    - "realtalk": 强制使用 realtalk 加载器
+                    - "default": 强制使用默认加载器
         prompt_version: prompt版本（v1 或 v2），默认v1
         include_stage5: 是否包含第五阶段（scene特征提取），默认True
+        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
     """
     logger.info(f"开始为处理流 {process_id} 执行完整数据构造流程")
+    logger.info(f"数据源: {data_source if data_source else '默认'}")
+    logger.info(f"加载器类型: {loader_type}")
     logger.info(f"使用 prompt 版本: {prompt_version}")
     logger.info(f"包含第五阶段: {include_stage5}")
+    logger.info(f"记忆所有者名称: {memory_owner_name}")
     
-    # 第一阶段：构造 dialogues
-    if not stage1_construct_dialogues_for_id(process_id):
-        logger.warning("第一阶段失败，跳过后续阶段")
-        return False
+    # # 第一阶段：构造 dialogues
+    # if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
+    #     logger.warning("第一阶段失败，跳过后续阶段")
+    #     return False
     
-    # 第二阶段：构造 episodes
-    if not stage2_construct_episodes_for_id(process_id):
-        logger.warning("第二阶段失败，跳过第三阶段")
-        return False
+    # # 第二阶段：构造 episodes
+    # if not stage2_construct_episodes_for_id(process_id, memory_owner_name):
+    #     logger.warning("第二阶段失败，跳过第三阶段")
+    #     return False
     
     # 第三阶段：形成KG候选
-    if not stage3_form_kg_candidates_for_id(process_id, prompt_version):
+    if not stage3_form_kg_candidates_for_id(process_id, prompt_version, memory_owner_name):
         logger.warning("第三阶段失败")
         return False
     
     # 第四阶段：形成 scene
-    if not stage4_form_scenes_for_id(process_id):
+    if not stage4_form_scenes_for_id(process_id, memory_owner_name):
         logger.warning("第四阶段失败")
         return False
     
     # 第五阶段：形成 scene 特征（可选）
     if include_stage5:
-        if not stage5_form_scene_features_for_id(process_id, force_update=False):
+        if not stage5_form_scene_features_for_id(process_id, force_update=False, memory_owner_name=memory_owner_name):
             logger.warning("第五阶段失败")
             # 第五阶段失败不视为整个流程失败，因为它是可选的增强功能
             # 但仍然记录警告
@@ -408,7 +442,10 @@ def run_full_pipeline_for_id(process_id: str, prompt_version: str = "v1", includ
     stage_count = 5 if include_stage5 else 4
     logger.info("=" * 50)
     logger.info(f"处理流 {process_id} 的所有数据构造流程完成（包含 {stage_count} 个阶段）")
+    logger.info(f"数据源: {data_source if data_source else '默认'}")
+    logger.info(f"加载器类型: {loader_type}")
     logger.info(f"使用 prompt 版本: {prompt_version}")
+    logger.info(f"记忆所有者名称: {memory_owner_name}")
     logger.info("=" * 50)
     return True
 
@@ -416,35 +453,44 @@ def run_full_pipeline_for_id(process_id: str, prompt_version: str = "v1", includ
 def main():
     import argparse
     """
-    主函数：简化版本，只需要id和kg_prompt_version两个参数
+    主函数：支持数据源和加载器类型参数
     """
     parser = argparse.ArgumentParser(
-        description="数据构造流程（简化版）- 只需要id和kg_prompt_version两个参数，可选包含第五阶段"
+        description="数据构造流程 - 支持指定数据源和加载器类型"
     )
     parser.add_argument("--id", type=str, required=True,
                        help="处理流ID（必需）")
-    parser.add_argument("--kg-prompt-version", type=str, default="v2",
+    parser.add_argument("--data-source", type=str, default=None,
+                       help="数据源路径（文件或目录），如果未指定则使用默认路径")
+    parser.add_argument("--loader-type", type=str, default="auto",
+                       choices=["auto", "realtalk", "default"],
+                       help="加载器类型：auto（自动检测，默认）, realtalk（强制使用realtalk加载器）, default（强制使用默认加载器）")
+    parser.add_argument("--kg-prompt-version", type=str, default="v1",
                        help="KG候选生成的prompt版本（v1 或 v2，默认v1）")
     parser.add_argument("--no-stage5", action="store_true",
                        help="不包含第五阶段（scene特征提取）")
+    parser.add_argument("--memory-owner-name", type=str, default="changshengEVA",
+                       help="记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符（默认：changshengEVA）")
     
     args = parser.parse_args()
-    
-    logger.info(f"开始执行数据构造流程，处理流ID: {args.id}")
-    logger.info(f"KG prompt 版本: {args.kg_prompt_version}")
-    logger.info(f"包含第五阶段: {not args.no_stage5}")
     
     # 直接运行完整流程
     success = run_full_pipeline_for_id(
         args.id,
-        args.kg_prompt_version,
-        include_stage5=not args.no_stage5
+        data_source=args.data_source,
+        loader_type=args.loader_type,
+        prompt_version=args.kg_prompt_version,
+        include_stage5=not args.no_stage5,
+        memory_owner_name=args.memory_owner_name
     )
     
     stage_count = 5 if not args.no_stage5 else 4
     if success:
         logger.info("=" * 50)
         logger.info(f"处理流 {args.id} 的数据构造流程完成（完整{stage_count}个阶段）")
+        logger.info(f"数据源: {args.data_source if args.data_source else '默认'}")
+        logger.info(f"加载器类型: {args.loader_type}")
+        logger.info(f"记忆所有者名称: {args.memory_owner_name}")
         logger.info("=" * 50)
     else:
         logger.error("数据构造流程失败")
@@ -452,3 +498,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+##测试私有数据：        python ./pipeline/memory_pre.py --id testdefault 
+##测试realtalk数据      python ./pipeline/memory_pre.py --id testrt --data-source data\REALTALK\data\Chat_1_Emi_Elise.json --loader-type realtalk --memory-owner-name Emi

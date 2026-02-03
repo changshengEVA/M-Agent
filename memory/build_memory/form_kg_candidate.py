@@ -40,10 +40,17 @@ DIALOGUES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "dialogues"
 EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "episodes"
 CONFIG_PATH = PROJECT_ROOT / "config" / "prompt" / "kg_filter.yaml"
 
-def load_prompts() -> Dict:
-    """从 config/prompt/kg_filter.yaml 加载 prompts"""
+def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict:
+    """从 config/prompt/kg_filter.yaml 加载 prompts，并替换 <memory_owner_name> 占位符"""
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
+    
+    # 替换 prompts 中的 <memory_owner_name> 占位符
+    if isinstance(config, dict):
+        for key, value in config.items():
+            if isinstance(value, str):
+                config[key] = value.replace('<memory_owner_name>', memory_owner_name)
+    
     return config
 
 
@@ -337,18 +344,20 @@ def process_eligibility_file(eligibility_file: Path,
                             dialogues_root: Path = None,
                             episodes_root: Path = None,
                             kg_candidates_root: Path = None,
-                            force_update: bool = False) -> bool:
+                            force_update: bool = False,
+                            memory_owner_name: str = "changshengEVA") -> bool:
     """
     处理单个 eligibility 文件，生成 kg_candidate（新格式：每个kg_candidate单独文件）
     
     Args:
         eligibility_file: eligibility 文件路径
-        prompts: prompt 模板字典
+        prompts: prompt 模板字典（已替换 <memory_owner_name> 占位符）
         prompt_version: prompt 版本（v1 或 v2）
         dialogues_root: 对话根目录
         episodes_root: episodes根目录
         kg_candidates_root: kg_candidates根目录（如果为None，则使用默认位置）
         force_update: 是否强制更新，即使已生成也重新生成
+        memory_owner_name: 记忆所有者名称，用于替换 prompt 中的占位符
     """
     try:
         # 确定 episodes_root
@@ -479,7 +488,8 @@ def scan_and_form_kg_candidates(prompt_version: str = "v1",
                                 force_update: bool = False,
                                 dialogues_root: Path = None,
                                 episodes_root: Path = None,
-                                kg_candidates_root: Path = None):
+                                kg_candidates_root: Path = None,
+                                memory_owner_name: str = "changshengEVA"):
     """
     主函数：扫描所有 eligibility 文件，为需要生成 kg_candidate 的对话创建 kg_candidate。
     使用新格式：每个kg_candidate保存为单独文件。
@@ -491,6 +501,7 @@ def scan_and_form_kg_candidates(prompt_version: str = "v1",
         dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
         episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
         kg_candidates_root: kg_candidates根目录，如果为None则使用默认位置（episodes_root/../kg_candidates）
+        memory_owner_name: 记忆所有者名称，用于替换 prompt 中的占位符
     """
     # 确定使用的根目录
     if episodes_root is None:
@@ -503,8 +514,8 @@ def scan_and_form_kg_candidates(prompt_version: str = "v1",
     # 确保 episodes 根目录存在
     ensure_directory(episodes_root)
     
-    # 加载 prompts
-    prompts = load_prompts()
+    # 加载 prompts，并替换 <memory_owner_name> 占位符
+    prompts = load_prompts(memory_owner_name=memory_owner_name)
     if not prompts:
         logger.error("未找到 kg_filter prompts")
         return
@@ -548,7 +559,8 @@ def scan_and_form_kg_candidates(prompt_version: str = "v1",
             dialogues_root,
             episodes_root,
             kg_candidates_root,
-            force_update=force_update
+            force_update=force_update,
+            memory_owner_name=memory_owner_name
         ):
             success_count += 1
     

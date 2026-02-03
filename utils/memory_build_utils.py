@@ -12,13 +12,14 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-def build_episodes_with_id(process_id: str, project_root: str = None):
+def build_episodes_with_id(process_id: str, project_root: str = None, memory_owner_name: str = "changshengEVA"):
     """
     使用指定的处理ID构建 episodes，生成到 data/memory/{id}/ 目录下
     
     Args:
         process_id: 处理流的ID标识
         project_root: 项目根目录，如果为None则使用当前文件所在目录的父目录的父目录
+        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
     
     Returns:
         成功返回 True，失败返回 False
@@ -39,6 +40,7 @@ def build_episodes_with_id(process_id: str, project_root: str = None):
         logger.info(f"开始为处理流 {process_id} 构建 episodes")
         logger.info(f"对话目录: {dialogues_root}")
         logger.info(f"Episodes目录: {episodes_root}")
+        logger.info(f"记忆所有者名称: {memory_owner_name}")
         
         # 1. 构建 episodes
         logger.info("开始构建 episodes...")
@@ -46,7 +48,8 @@ def build_episodes_with_id(process_id: str, project_root: str = None):
         scan_and_build_episodes(
             use_tqdm=True,
             dialogues_root=dialogues_root,
-            episodes_root=episodes_root
+            episodes_root=episodes_root,
+            memory_owner_name=memory_owner_name
         )
         
         # 2. 评分 qualifications
@@ -55,7 +58,8 @@ def build_episodes_with_id(process_id: str, project_root: str = None):
         scan_and_qualify_episodes(
             use_tqdm=True,
             dialogues_root=dialogues_root,
-            episodes_root=episodes_root
+            episodes_root=episodes_root,
+            memory_owner_name=memory_owner_name
         )
         
         # 3. 过滤 eligibility
@@ -78,13 +82,14 @@ def build_episodes_with_id(process_id: str, project_root: str = None):
         logger.error(traceback.format_exc())
         return False
 
-def build_episodes_custom(dialogues_root: Path, episodes_root: Path):
+def build_episodes_custom(dialogues_root: Path, episodes_root: Path, memory_owner_name: str = "changshengEVA"):
     """
     使用自定义目录构建 episodes
     
     Args:
         dialogues_root: 对话根目录
         episodes_root: episodes根目录
+        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
     
     Returns:
         成功返回 True，失败返回 False
@@ -93,6 +98,7 @@ def build_episodes_custom(dialogues_root: Path, episodes_root: Path):
         logger.info(f"开始使用自定义目录构建 episodes")
         logger.info(f"对话目录: {dialogues_root}")
         logger.info(f"Episodes目录: {episodes_root}")
+        logger.info(f"记忆所有者名称: {memory_owner_name}")
         
         # 确保目录存在
         dialogues_root.mkdir(parents=True, exist_ok=True)
@@ -104,7 +110,8 @@ def build_episodes_custom(dialogues_root: Path, episodes_root: Path):
         scan_and_build_episodes(
             use_tqdm=True,
             dialogues_root=dialogues_root,
-            episodes_root=episodes_root
+            episodes_root=episodes_root,
+            memory_owner_name=memory_owner_name
         )
         
         # 2. 评分 qualifications
@@ -113,7 +120,8 @@ def build_episodes_custom(dialogues_root: Path, episodes_root: Path):
         scan_and_qualify_episodes(
             use_tqdm=True,
             dialogues_root=dialogues_root,
-            episodes_root=episodes_root
+            episodes_root=episodes_root,
+            memory_owner_name=memory_owner_name
         )
         
         # 3. 过滤 eligibility

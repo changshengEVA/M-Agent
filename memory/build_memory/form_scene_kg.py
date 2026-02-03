@@ -36,10 +36,17 @@ logger = logging.getLogger(__name__)
 # 路径配置
 CONFIG_PATH = PROJECT_ROOT / "config" / "prompt" / "scene.yaml"
 
-def load_prompts() -> Dict:
-    """从 config/prompt/scene.yaml 加载 prompts"""
+def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict:
+    """从 config/prompt/scene.yaml 加载 prompts，并替换 <memory_owner_name> 占位符"""
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
+    
+    # 替换 prompts 中的 <memory_owner_name> 占位符
+    if isinstance(config, dict):
+        for key, value in config.items():
+            if isinstance(value, str):
+                config[key] = value.replace('<memory_owner_name>', memory_owner_name)
+    
     return config
 
 def ensure_directory(path: Path):
@@ -325,7 +332,8 @@ def process_episode(episode_info: Dict,
 
 def scan_and_extract_features(workflow_id: str = "test2",
                              force_update: bool = False,
-                             use_tqdm: bool = True):
+                             use_tqdm: bool = True,
+                             memory_owner_name: str = "changshengEVA"):
     """
     主函数：扫描所有符合条件的 episode，提取特征。
     
@@ -333,6 +341,7 @@ def scan_and_extract_features(workflow_id: str = "test2",
         workflow_id: 工作流 ID，对应 data/memory/{workflow_id} 目录
         force_update: 是否强制更新特征文件（即使已生成也重新生成）
         use_tqdm: 是否使用 tqdm 显示进度条
+        memory_owner_name: 记忆所有者名称，用于替换 prompt 中的占位符
     """
     # 获取 memory 根目录
     memory_root = get_memory_root(workflow_id)
@@ -350,8 +359,8 @@ def scan_and_extract_features(workflow_id: str = "test2",
     
     episode_situation = load_episode_situation(episode_situation_path)
     
-    # 加载 prompts
-    prompts = load_prompts()
+    # 加载 prompts，并替换 <memory_owner_name> 占位符
+    prompts = load_prompts(memory_owner_name=memory_owner_name)
     if not prompts:
         logger.error("未找到 scene prompts")
         return

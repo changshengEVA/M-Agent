@@ -16,7 +16,7 @@ def save_dialogue(dialogue: Dict[str, Any], output_dir: str, default_output_dir:
     """
     保存 dialogue 到文件
     
-    文件路径: {output_dir}/{user_id}/{year}-{month}/{dialogue_id}.json
+    文件路径: {output_dir}/{year}-{month}/{dialogue_id}.json
     
     Args:
         dialogue: dialogue 字典
@@ -48,8 +48,7 @@ def save_dialogue(dialogue: Dict[str, Any], output_dir: str, default_output_dir:
             year_month = 'unknown'
         
         # 创建目录
-        user_dir = os.path.join(output_dir, user_id)
-        year_month_dir = os.path.join(user_dir, year_month)
+        year_month_dir = os.path.join(output_dir, year_month)
         os.makedirs(year_month_dir, exist_ok=True)
         
         # 保存文件

@@ -10,7 +10,7 @@ kg_strong_filter_v1: |
   System Context
 
   Memory owner:
-  changshengEVA
+  <memory_owner_name>
 
   Core philosophy:
   The Knowledge Graph represents stable elements of the real world.
@@ -44,7 +44,7 @@ kg_strong_filter_v1: |
   For scenes written in first-person perspective:
 
   Any attribute or fact expressed as “I”, “me”, or “my”
-  MUST be attributed to the memory owner (changshengEVA).
+  MUST be attributed to the memory owner (<memory_owner_name>).
 
   Do NOT assign first-person attributes to:
 
@@ -188,11 +188,11 @@ kg_strong_filter_v2: |
 
   ━━━━━━━━━━━━━━━━━━
   Memory Owner
-  changshengEVA
+  <memory_owner_name>
 
   For scenes written in first-person:
 
-  * “I / me / my” always refers to changshengEVA.
+  * “I / me / my” always refers to <memory_owner_name>.
   * Never assign first-person attributes to any other entity.
 
   ━━━━━━━━━━━━━━━━━━

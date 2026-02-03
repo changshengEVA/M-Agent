@@ -30,11 +30,22 @@ DIALOGUES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "dialogues"
 EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "episodes"
 CONFIG_PATH = PROJECT_ROOT / "config" / "prompt" / "episode.yaml"
 
-def load_prompts() -> Dict:
-    """从 config/prompt/episode.yaml 加载 scoring_sys prompts"""
+def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict:
+    """从 config/prompt/episode.yaml 加载 scoring_sys prompts，并替换 <memory_owner_name> 占位符"""
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
-    return config.get('scoring_sys', {})
+    prompts = config.get('scoring_sys', {})
+    # 替换 prompts 中的 <memory_owner_name> 占位符
+    if isinstance(prompts, dict):
+        for key, value in prompts.items():
+            if isinstance(value, str):
+                prompts[key] = value.replace('<memory_owner_name>', memory_owner_name)
+            elif isinstance(value, dict):
+                # 处理嵌套字典（例如 scoring_sys 中的各个评分维度）
+                for sub_key, sub_value in value.items():
+                    if isinstance(sub_value, str):
+                        value[sub_key] = sub_value.replace('<memory_owner_name>', memory_owner_name)
+    return prompts
 
 def ensure_directory(path: Path):
     """确保目录存在"""
@@ -281,7 +292,7 @@ def build_qualification_structure(dialogue_id: str, episode_id: str, scoring_res
         "rationale": rationale
     }
 
-def process_episode_file(episode_file: Path, prompts: Dict, dialogues_root: Path = None) -> bool:
+def process_episode_file(episode_file: Path, prompts: Dict, dialogues_root: Path = None, memory_owner_name: str = "changshengEVA") -> bool:
     """处理单个 episode 文件，生成 qualification"""
     try:
         # 加载 episodes
@@ -338,7 +349,7 @@ def save_qualifications(qualifications: List[Dict], qualification_file: Path):
             "qualification_version": "v1"
         }, f, ensure_ascii=False, indent=2)
 
-def scan_and_qualify_episodes(use_tqdm: bool = True, dialogues_root: Path = None, episodes_root: Path = None):
+def scan_and_qualify_episodes(use_tqdm: bool = True, dialogues_root: Path = None, episodes_root: Path = None, memory_owner_name: str = "changshengEVA"):
     """
     主函数：扫描所有 episode 文件，为需要生成 qualification 的 episode 创建 qualification。
     
@@ -346,6 +357,7 @@ def scan_and_qualify_episodes(use_tqdm: bool = True, dialogues_root: Path = None
         use_tqdm: 是否使用 tqdm 显示进度条
         dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
         episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
+        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
     """
     # 确定使用的根目录
     if episodes_root is None:
@@ -356,8 +368,8 @@ def scan_and_qualify_episodes(use_tqdm: bool = True, dialogues_root: Path = None
     # 确保 episodes 根目录存在
     ensure_directory(episodes_root)
     
-    # 加载 prompts
-    prompts = load_prompts()
+    # 加载 prompts，并替换占位符
+    prompts = load_prompts(memory_owner_name)
     if not prompts:
         logger.error("未找到 episode_information_scoring prompts")
         return
@@ -384,7 +396,7 @@ def scan_and_qualify_episodes(use_tqdm: bool = True, dialogues_root: Path = None
     
     success_count = 0
     for episode_file in file_iter:
-        if process_episode_file(episode_file, prompts, dialogues_root):
+        if process_episode_file(episode_file, prompts, dialogues_root, memory_owner_name):
             success_count += 1
     
     logger.info(f"成功处理 {success_count}/{len(files_to_process)} 个 episode 文件")

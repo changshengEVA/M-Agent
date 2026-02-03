@@ -5,8 +5,8 @@ scene_former_v1: |
   The scene consists of two parts: a theme and a diary.
 
   Memory owner:
-  changshengEVA
-  Always write in first-person (“I”).
+  <memory_owner_name>
+  Always write in first-person ("I").
 
   Input:
   <txt_string>

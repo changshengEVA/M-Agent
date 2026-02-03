@@ -28,11 +28,17 @@ DIALOGUES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "dialogues"
 EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "episodes"
 CONFIG_PATH = PROJECT_ROOT / "config" / "prompt" / "episode.yaml"
 
-def load_prompts() -> Dict:
-    """从 config/prompt.yaml 加载 prompts"""
+def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict:
+    """从 config/prompt.yaml 加载 prompts，并替换 <memory_owner_name> 占位符"""
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
-    return config.get('dialogue_segmentation', {})
+    prompts = config.get('dialogue_segmentation', {})
+    # 替换 prompts 中的 <memory_owner_name> 占位符
+    if isinstance(prompts, dict):
+        for key, value in prompts.items():
+            if isinstance(value, str):
+                prompts[key] = value.replace('<memory_owner_name>', memory_owner_name)
+    return prompts
 
 def ensure_directory(path: Path):
     """确保目录存在"""
@@ -43,6 +49,11 @@ def scan_dialogue_files(dialogues_root: Path = None) -> List[Path]:
     扫描所有对话文件。
     返回所有找到的对话文件路径列表。
     
+    支持多种目录结构：
+    1. 新的扁平结构: {dialogues_root}/{year-month}/{dialogue_id}.json
+    2. 旧的用户ID结构: {dialogues_root}/{user_id}/{year-month}/{dialogue_id}.json
+    3. 特殊的旧结构: {dialogues_root}/by_user/{user_id}/{year-month}/{dialogue_id}.json 等
+    
     Args:
         dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
     """
@@ -50,25 +61,23 @@ def scan_dialogue_files(dialogues_root: Path = None) -> List[Path]:
         dialogues_root = DIALOGUES_ROOT
     
     dialogue_files = []
-    # 扫描所有可能的目录结构
-    # 1. 直接扫描根目录下的 {user_id}/{year-month}/ 结构
-    for user_id_dir in dialogues_root.iterdir():
-        if user_id_dir.is_dir():
-            # 检查是否是用户ID目录（跳过by_user, by_flipflop等特殊目录）
-            if user_id_dir.name in ["by_user", "by_flipflop", "by_data"]:
-                # 这些是旧的目录结构，也扫描它们以保持向后兼容
-                for sub_user_dir in user_id_dir.iterdir():
-                    if sub_user_dir.is_dir():
-                        for year_month_dir in sub_user_dir.iterdir():
-                            if year_month_dir.is_dir():
-                                for file in year_month_dir.glob("*.json"):
-                                    dialogue_files.append(file)
-            else:
-                # 新的目录结构：直接是用户ID目录
-                for year_month_dir in user_id_dir.iterdir():
-                    if year_month_dir.is_dir():
-                        for file in year_month_dir.glob("*.json"):
-                            dialogue_files.append(file)
+    import re
+    
+    # 年月目录的正则表达式 (例如 "2025-10", "2026-01")
+    year_month_pattern = re.compile(r'^\d{4}-\d{2}$')
+    
+    # 递归扫描所有目录，查找符合年月格式的目录
+    for root_dir in [dialogues_root]:
+        # 使用 rglob 递归遍历所有目录
+        for dir_path in root_dir.rglob('*'):
+            if dir_path.is_dir() and year_month_pattern.match(dir_path.name):
+                # 找到年月目录，收集其中的 JSON 文件
+                for file in dir_path.glob('*.json'):
+                    dialogue_files.append(file)
+    
+    # 去重（理论上不需要，但为了安全）
+    dialogue_files = list(set(dialogue_files))
+    
     return dialogue_files
 
 def get_episode_path(dialogue_file: Path, episodes_root: Path = None) -> Path:
@@ -154,7 +163,7 @@ def save_episodes(episode_data: Dict, episode_file: Path):
     with open(episode_file, 'w', encoding='utf-8') as f:
         json.dump(episode_data, f, ensure_ascii=False, indent=2)
 
-def process_dialogue_file(dialogue_file: Path, prompts: Dict, episodes_root: Path = None) -> bool:
+def process_dialogue_file(dialogue_file: Path, prompts: Dict, episodes_root: Path = None, memory_owner_name: str = "changshengEVA") -> bool:
     """处理单个对话文件，生成 episodes"""
     try:
         # 加载对话
@@ -176,7 +185,7 @@ def process_dialogue_file(dialogue_file: Path, prompts: Dict, episodes_root: Pat
         logger.error(f"处理对话文件 {dialogue_file} 失败: {e}")
         return False
 
-def scan_and_build_episodes(use_tqdm: bool = True, dialogues_root: Path = None, episodes_root: Path = None):
+def scan_and_build_episodes(use_tqdm: bool = True, dialogues_root: Path = None, episodes_root: Path = None, memory_owner_name: str = "changshengEVA"):
     """
     主函数：扫描所有对话文件，为需要生成 episodes 的对话创建 episodes。
     
@@ -184,6 +193,7 @@ def scan_and_build_episodes(use_tqdm: bool = True, dialogues_root: Path = None, 
         use_tqdm: 是否使用 tqdm 显示进度条
         dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
         episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
+        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
     """
     # 确定使用的根目录
     if episodes_root is None:
@@ -194,8 +204,8 @@ def scan_and_build_episodes(use_tqdm: bool = True, dialogues_root: Path = None, 
     # 确保 episodes 根目录存在
     ensure_directory(episodes_root)
     
-    # 加载 prompts
-    prompts = load_prompts()
+    # 加载 prompts，并替换占位符
+    prompts = load_prompts(memory_owner_name)
     if not prompts:
         logger.error("未找到 dialogue_segmentation prompts")
         return
@@ -221,7 +231,7 @@ def scan_and_build_episodes(use_tqdm: bool = True, dialogues_root: Path = None, 
     
     success_count = 0
     for dialogue_file in file_iter:
-        if process_dialogue_file(dialogue_file, prompts, episodes_root):
+        if process_dialogue_file(dialogue_file, prompts, episodes_root, memory_owner_name):
             success_count += 1
 
 if __name__ == "__main__":

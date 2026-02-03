@@ -38,10 +38,17 @@ DIALOGUES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "dialogues"
 EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "episodes"
 CONFIG_PATH = PROJECT_ROOT / "config" / "prompt" / "scene.yaml"
 
-def load_prompts() -> Dict:
-    """从 config/prompt/scene.yaml 加载 prompts"""
+def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict:
+    """从 config/prompt/scene.yaml 加载 prompts，并替换 <memory_owner_name> 占位符"""
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
+    
+    # 替换 prompts 中的 <memory_owner_name> 占位符
+    if isinstance(config, dict):
+        for key, value in config.items():
+            if isinstance(value, str):
+                config[key] = value.replace('<memory_owner_name>', memory_owner_name)
+    
     return config
 
 def ensure_directory(path: Path):
@@ -465,7 +472,8 @@ def scan_and_form_scenes(use_tqdm: bool = True,
                         force_update: bool = False,
                         dialogues_root: Path = None,
                         episodes_root: Path = None,
-                        scene_root: Path = None):
+                        scene_root: Path = None,
+                        memory_owner_name: str = "changshengEVA"):
     """
     主函数：扫描所有 episode 文件，为需要生成 scene 的对话创建 scene。
     
@@ -475,6 +483,7 @@ def scan_and_form_scenes(use_tqdm: bool = True,
         dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
         episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
         scene_root: scene根目录，如果为None则使用默认位置（episodes_root/../scene）
+        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
     """
     # 确定使用的根目录
     if episodes_root is None:
@@ -488,7 +497,7 @@ def scan_and_form_scenes(use_tqdm: bool = True,
     ensure_directory(scene_root)
     
     # 加载 prompts
-    prompts = load_prompts()
+    prompts = load_prompts(memory_owner_name)
     if not prompts:
         logger.error("未找到 scene prompts")
         return

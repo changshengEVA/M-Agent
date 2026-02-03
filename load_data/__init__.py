@@ -4,5 +4,16 @@
 """
 
 from .dialog_history_loader import load_dialog_history, load_dialogues
+from .realtalk_history_loader import (
+    load_realtalk_history,
+    load_realtalk_dialogues,
+    load_realtalk_dialogues_from_directory
+)
 
-__all__ = ['load_dialog_history', 'load_dialogues']
+__all__ = [
+    'load_dialog_history',
+    'load_dialogues',
+    'load_realtalk_history',
+    'load_realtalk_dialogues',
+    'load_realtalk_dialogues_from_directory'
+]

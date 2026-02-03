@@ -168,16 +168,17 @@ def construct_dialogue_from_entry(entry: Dict[str, Any]) -> Optional[Dict[str, A
         logger.error(f"构造 dialogue 时出错: {e}")
         return None
 
-def load_dialogues(file_path: str = None) -> List[Dict[str, Any]]:
+def load_default_dialogues(file_path: str = None) -> List[Dict[str, Any]]:
     """
-    加载并构造 dialogue 列表
+    使用默认加载器加载并构造 dialogue 列表
     
     Args:
-        file_path: JSON 文件路径，如果为 None 则使用默认路径
+        file_path: JSON 文件路径，如果为 None 则使用默认路径。
         
     Returns:
         dialogue 列表，每个元素是构造好的 dialogue 字典
     """
+    logger.info(f"使用默认加载器: {file_path}")
     raw_data = load_dialog_history(file_path)
     dialogues = []
     
@@ -188,6 +189,68 @@ def load_dialogues(file_path: str = None) -> List[Dict[str, Any]]:
     
     logger.info(f"成功构造 {len(dialogues)} 个 dialogue（原始数据 {len(raw_data)} 条）")
     return dialogues
+
+
+def load_dialogues(file_path: str = None, loader_type: str = "auto") -> List[Dict[str, Any]]:
+    """
+    统一的 dialogue 加载接口，根据 loader_type 调用不同的加载器
+    
+    Args:
+        file_path: JSON 文件路径，如果为 None 则使用默认路径。
+        loader_type: 加载器类型，可选值：
+                    - "auto": 自动检测（默认）
+                    - "realtalk": 强制使用 realtalk 加载器
+                    - "default": 强制使用默认加载器
+        
+    Returns:
+        dialogue 列表，每个元素是构造好的 dialogue 字典
+    """
+    # 检测是否为 realtalk 数据
+    def is_realtalk_path(path: str) -> bool:
+        if path is None:
+            return False
+        path_lower = path.lower()
+        if "realtalk" in path_lower:
+            return True
+        import os
+        filename = os.path.basename(path)
+        if filename.startswith("Chat_") and filename.endswith(".json"):
+            return True
+        return False
+    
+    # 根据 loader_type 决定使用哪个加载器
+    if loader_type == "realtalk":
+        # 强制使用 realtalk 加载器
+        if file_path and os.path.isdir(file_path):
+            from .realtalk_history_loader import load_realtalk_dialogues_from_directory
+            logger.info(f"使用 realtalk 目录加载器: {file_path}")
+            return load_realtalk_dialogues_from_directory(file_path)
+        else:
+            from .realtalk_history_loader import load_realtalk_dialogues
+            logger.info(f"使用 realtalk 文件加载器: {file_path}")
+            return load_realtalk_dialogues(file_path)
+    
+    elif loader_type == "default":
+        # 强制使用默认加载器
+        return load_default_dialogues(file_path)
+    
+    else:  # loader_type == "auto" 或未知类型
+        # 自动检测
+        # 如果 file_path 是目录，检查目录名
+        if file_path and os.path.isdir(file_path):
+            # 检查目录是否包含 "REALTALK"
+            if "REALTALK" in file_path.upper():
+                from .realtalk_history_loader import load_realtalk_dialogues_from_directory
+                logger.info(f"检测到 realtalk 目录，使用 realtalk 加载器: {file_path}")
+                return load_realtalk_dialogues_from_directory(file_path)
+        
+        if is_realtalk_path(file_path):
+            from .realtalk_history_loader import load_realtalk_dialogues
+            logger.info(f"检测到 realtalk 文件，使用 realtalk 加载器: {file_path}")
+            return load_realtalk_dialogues(file_path)
+        
+        # 否则使用默认加载器
+        return load_default_dialogues(file_path)
 
 if __name__ == "__main__":
     # 测试代码
