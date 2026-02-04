@@ -16,16 +16,8 @@ from memory.memory_core.services_bank.entity_resolution.service import (
     create_default_resolution_service
 )
 
-# 尝试导入 load_model 中的 OpenAI 模型函数
-try:
-    from load_model.OpenAIcall import get_llm, get_embed_model
-except ImportError:
-    # 如果导入失败，提供占位函数
-    def get_llm(model_temperature: float = 0.0) -> Callable[[str], str]:
-        raise ImportError("load_model.OpenAIcall 未安装，请确保 load_model 模块可用")
-    
-    def get_embed_model() -> Callable[[str], List[float]]:
-        raise ImportError("load_model.OpenAIcall 未安装，请确保 load_model 模块可用")
+# 导入 load_model 中的 OpenAI 模型函数
+from load_model.OpenAIcall import get_llm, get_embed_model
 
 logger = logging.getLogger(__name__)
 

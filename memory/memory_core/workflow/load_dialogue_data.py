@@ -10,8 +10,10 @@
 
 import json
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, List, Optional
+from tqdm import tqdm
 
 from memory.memory_core.core.kg_base import KGBase
 from memory.memory_core.services_bank.entity_resolution.service import EntityResolutionService
@@ -132,14 +134,20 @@ def load_from_dialogue_json(
             continue
         
         try:
-            # 追加特征到实体
+            # 追加特征到实体，符合 FeatureRecord 模式
+            # 构建来源信息
+            source_info = {
+                "dialogue_id": dialogue_id,
+                "episode_id": episode_id,
+                "scene_id": scene_id,
+                "generated_at": feature_data.get("timestamp") or datetime.utcnow().isoformat() + "Z"
+            }
+            
             feature_record = {
                 "feature": feature_text,
                 "scene_id": scene_id,
-                "episode_id": episode_id,
-                "dialogue_id": dialogue_id,
-                "timestamp": feature_data.get("timestamp"),
-                "confidence": feature_data.get("confidence", 1.0)
+                "confidence": feature_data.get("confidence", 1.0),
+                "sources": [source_info]
             }
             
             append_result = kg_base.append_feature(
@@ -183,15 +191,20 @@ def load_from_dialogue_json(
             continue
         
         try:
-            # 追加属性到实体
+            # 追加属性到实体，符合 AttributeRecord 模式
+            # 构建来源信息
+            source_info = {
+                "dialogue_id": dialogue_id,
+                "episode_id": episode_id,
+                "scene_id": attribute_data.get("scene_id"),
+                "generated_at": attribute_data.get("timestamp") or datetime.utcnow().isoformat() + "Z"
+            }
+            
             attribute_record = {
                 "field": field,
                 "value": value,
                 "confidence": confidence,
-                "scene_id": attribute_data.get("scene_id"),
-                "episode_id": episode_id,
-                "dialogue_id": dialogue_id,
-                "timestamp": attribute_data.get("timestamp")
+                "sources": [source_info]
             }
             
             append_result = kg_base.append_attribute(
@@ -316,7 +329,8 @@ def load_from_dialogue_json(
 def load_from_dialogue_path(
     path: Path,
     kg_base: KGBase,
-    entity_resolution_service: EntityResolutionService
+    entity_resolution_service: EntityResolutionService,
+    use_tqdm: bool = True
 ) -> Dict[str, Any]:
     """
     从对话数据目录加载所有文件到 KG
@@ -370,7 +384,8 @@ def load_from_dialogue_path(
     }
     
     # 逐个处理文件
-    for json_file in sorted(json_files):
+    j_files = tqdm(sorted(json_files)) if use_tqdm else sorted(json_files)
+    for json_file in j_files:
         logger.info(f"处理文件: {json_file.name}")
         
         try:

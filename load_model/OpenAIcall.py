@@ -23,12 +23,12 @@ def get_llm(model_temperature: float):
     def llm(prompt):
         # 使用 chat completion，将 prompt 作为用户消息
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",  # 或根据 API 支持的其他模型
+            model="gpt-4.1",  # 或根据 API 支持的其他模型
             messages=[
                 {"role": "user", "content": prompt}
             ],
             temperature=model_temperature,
-            max_tokens=500,  # 增加 token 限制以容纳 JSON 输出
+            max_tokens=1500,  # 增加 token 限制以容纳 JSON 输出
             top_p=1,
             frequency_penalty=0,
             presence_penalty=0

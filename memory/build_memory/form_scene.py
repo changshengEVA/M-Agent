@@ -236,7 +236,7 @@ def call_openai_for_scene(episode_with_content: Dict, prompt_template: str) -> D
         logger.error(f"调用 OpenAI 失败: {e}")
         raise
 
-def build_scene_structure(scene_number: int, episode_meta: Dict, scene_result: Dict) -> Dict:
+def build_scene_structure(scene_number: int, episode_meta: Dict, scene_result: Dict, memory_owner_name: str = "changshengEVA") -> Dict:
     """
     构建最终的 scene 结构，符合要求的格式。
     
@@ -244,6 +244,7 @@ def build_scene_structure(scene_number: int, episode_meta: Dict, scene_result: D
         scene_number: scene 编号（用于生成 scene_id）
         episode_meta: episode 元数据（包含 episode_id, dialogue_id, turn_span）
         scene_result: 包含 theme 和 diary 的字典
+        memory_owner_name: 记忆所有者的名称，用于 meta 字段
         
     Returns:
         完整的 scene 数据字典
@@ -270,7 +271,7 @@ def build_scene_structure(scene_number: int, episode_meta: Dict, scene_result: D
         },
         "meta": {
             "created_at": datetime.utcnow().isoformat() + "Z",
-            "memory_owner": "changshengEVA",
+            "memory_owner": memory_owner_name,
             "language": language
         },
         "theme": scene_result.get("theme", ""),
@@ -331,7 +332,8 @@ def process_episode_file(episode_file: Path,
                         dialogues_root: Path = None,
                         episodes_root: Path = None,
                         scene_root: Path = None,
-                        force_update: bool = False) -> bool:
+                        force_update: bool = False,
+                        memory_owner_name: str = "changshengEVA") -> bool:
     """
     处理单个 episode 文件，生成 scene。
     
@@ -342,6 +344,7 @@ def process_episode_file(episode_file: Path,
         episodes_root: episodes根目录
         scene_root: scene根目录（如果为None，则使用默认位置）
         force_update: 是否强制更新，即使已生成也重新生成
+        memory_owner_name: 记忆所有者的名称，用于 scene 的 meta 字段
     """
     try:
         # 确定 episodes_root
@@ -440,7 +443,8 @@ def process_episode_file(episode_file: Path,
             final_scene = build_scene_structure(
                 scene_number,
                 scene_data["episode_meta"],
-                scene_data["scene_result"]
+                scene_data["scene_result"],
+                memory_owner_name=memory_owner_name
             )
             final_scenes.append({
                 "scene": final_scene,
@@ -524,7 +528,8 @@ def scan_and_form_scenes(use_tqdm: bool = True,
             dialogues_root,
             episodes_root,
             scene_root,
-            force_update=force_update
+            force_update=force_update,
+            memory_owner_name=memory_owner_name
         ):
             success_count += 1
     

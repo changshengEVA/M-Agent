@@ -7,7 +7,7 @@ from memory.memory_core.memory_system import MemoryCore
 from load_model.OpenAIcall import get_embed_model,get_llm
 
 memory_core = MemoryCore(
-    workflow_id="test4",
+    workflow_id="testrt",
     llm_func=get_llm(0.0),
     embed_func=get_embed_model(),
     llm_temperature=0.0,
@@ -23,4 +23,4 @@ print(f"  KG统计: {kg_stats}")
 er_stats = memory_core.get_entity_resolution_stats()
 print(f"  实体解析统计: {er_stats}")
 
-memory_core.load_from_dialogue_path(Path("data/memory/test4/kg_candidates"))
+memory_core.load_from_dialogue_path(Path("data/memory/testrt/kg_candidates"))

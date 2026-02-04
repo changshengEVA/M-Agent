@@ -215,6 +215,23 @@ class EnhancedKGDataLoader:
                     feature_text = feature_data.get("feature", "")
                     feature_sources = feature_data.get("sources", [])
                     
+                    # 如果feature本身包含场景信息，将其转换为source格式
+                    scene_id = feature_data.get("scene_id")
+                    episode_id = feature_data.get("episode_id")
+                    dialogue_id = feature_data.get("dialogue_id")
+                    timestamp = feature_data.get("timestamp")
+                    
+                    if scene_id and not feature_sources:
+                        # 创建source对象
+                        source_info = {
+                            "scene_id": scene_id,
+                            "episode_id": episode_id or "",
+                            "dialogue_id": dialogue_id or "",
+                            "timestamp": timestamp,
+                            "confidence": feature_data.get("confidence", confidence)
+                        }
+                        feature_sources = [source_info]
+                    
                     if feature_text:
                         # 生成特征ID
                         feature_id = f"{entity_id}_feature_{i}"

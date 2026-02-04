@@ -251,6 +251,31 @@ def filter_kg_available_episodes(eligibility_data: Dict, episode_data: Dict) -> 
     
     return kg_available_episodes
 
+def episode_to_plain_text(episode_with_content: Dict) -> str:
+    """
+    将 episode 内容转换为纯文本对话格式。
+    每行格式为 "speaker: text"
+    如果 text 中已经包含说话人前缀，则去除重复前缀。
+    """
+    turns = episode_with_content.get('turns', [])
+    lines = []
+    for turn in turns:
+        speaker = turn.get('speaker', 'Unknown')
+        text = turn.get('text', '').strip()
+        
+        # 去除文本中可能重复的说话人前缀
+        # 检查文本是否以 "speaker:" 或 "speaker：" 开头（英文或中文冒号）
+        prefix1 = f"{speaker}:"
+        prefix2 = f"{speaker}："
+        if text.startswith(prefix1):
+            text = text[len(prefix1):].strip()
+        elif text.startswith(prefix2):
+            text = text[len(prefix2):].strip()
+        
+        lines.append(f"{speaker}: {text}")
+    return '\n'.join(lines)
+
+
 def call_openai_for_kg_candidate(episode_with_content: Dict, prompt_template: str) -> Dict:
     """
     调用 OpenAI 进行 kg_candidate 提取。
@@ -261,8 +286,8 @@ def call_openai_for_kg_candidate(episode_with_content: Dict, prompt_template: st
     # 获取 LLM 实例，温度设为 0.1 以获得更确定性的输出
     llm = get_llm(model_temperature=0.1)
     
-    # 将 episode JSON 转换为字符串用于插入
-    episode_str = json.dumps(episode_with_content, ensure_ascii=False, indent=2)
+    # 将 episode 转换为纯文本对话
+    episode_str = episode_to_plain_text(episode_with_content)
     full_prompt = prompt_template.replace('<txt_string>', episode_str)
     
     try:

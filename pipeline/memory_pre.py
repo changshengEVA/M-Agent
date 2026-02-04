@@ -412,15 +412,15 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
     logger.info(f"包含第五阶段: {include_stage5}")
     logger.info(f"记忆所有者名称: {memory_owner_name}")
     
-    # # 第一阶段：构造 dialogues
-    # if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
-    #     logger.warning("第一阶段失败，跳过后续阶段")
-    #     return False
+    # 第一阶段：构造 dialogues
+    if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
+        logger.warning("第一阶段失败，跳过后续阶段")
+        return False
     
-    # # 第二阶段：构造 episodes
-    # if not stage2_construct_episodes_for_id(process_id, memory_owner_name):
-    #     logger.warning("第二阶段失败，跳过第三阶段")
-    #     return False
+    # 第二阶段：构造 episodes
+    if not stage2_construct_episodes_for_id(process_id, memory_owner_name):
+        logger.warning("第二阶段失败，跳过第三阶段")
+        return False
     
     # 第三阶段：形成KG候选
     if not stage3_form_kg_candidates_for_id(process_id, prompt_version, memory_owner_name):

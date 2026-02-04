@@ -150,7 +150,7 @@ def assert_entity_exists(
                 }
             }
         else:
-            logger.warning(f"实体不存在: {entity_id}")
+            logger.debug(f"实体不存在: {entity_id}")
             return {
                 "success": False,
                 "changed": False,
