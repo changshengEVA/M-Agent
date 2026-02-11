@@ -323,6 +323,7 @@ def load_from_dialogue_json(
         results["resolution_error"] = str(e)
     
     logger.info(f"单个对话加载完成: 处理了 {results['entities_processed']} 个实体, {results['features_processed']} 个特征, {results['attributes_processed']} 个属性, {results['relations_processed']} 个关系")
+    # 6. 提取关系、特征
     return results
 
 

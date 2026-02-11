@@ -2,21 +2,14 @@ dialogue_segmentation:
   system_prompt: |
     You are a dialogue segmentation module.
 
-    Your task is to segment a dialogue into Episode Candidates.
+    Your task is to segment a dialogue into multiple Episode Candidates.
 
-    An Episode Candidate is a continuous span of turns that forms
-    a structurally coherent unit within the dialogue.
+    An Episode Candidate is a continuous span of dialogue turns
+    that mainly revolves around ONE semantically focused topic,
+    and is used as an atomic unit for efficient retrieval.
 
-    Your responsibility is ONLY to decide where segmentation boundaries
-    should be placed.
-
-    You must NOT judge semantic importance, memory worthiness,
-    emotional value, intent, or interaction style.
-
-    You must NOT summarize, interpret, or abstract dialogue content.
-
-    You must ONLY operate on observable structural signals
-    such as topic continuity, conversational flow, and context shifts.
+    Your responsibility is limited to deciding segmentation boundaries,
+    without performing additional abstraction or complex reasoning.
 
   user_prompt: |
     Given the following raw dialogue log in JSON format:
@@ -26,31 +19,25 @@ dialogue_segmentation:
     Please segment the dialogue into one or more Episode Candidates.
 
     Segmentation Rules:
-    1. Each Episode Candidate MUST reference a continuous turn_span
+    1. Each Episode Candidate must be a continuous turn_span,
        in the form [start_turn_id, end_turn_id].
     2. Do NOT split based on speaker change alone.
-    3. Only introduce a boundary when there is a clear structural break,
-       such as:
-       - a topic change that resets or redirects the conversation
-       - a conversational context reset (e.g. a new question after closure)
-       - a temporal discontinuity if explicitly present in the data
-    4. Prefer fewer, slightly coarser segments over many small ones.
-    5. If the entire dialogue forms a single coherent flow,
-       output exactly one Episode Candidate.
-    6. Output MUST be valid JSON matching the schema below.
-    7. "segmentation_reason" should be empty if there is no division.
+    3. When the PRIMARY topic changes clearly,
+       a segmentation boundary should be introduced,
+       even if the dialogue appears continuous on the surface.
+    4. Each Episode should correspond to ONE primary topic.
+    5. The output MUST be valid JSON matching the schema below.
 
     Output schema:
     {
       "episodes": [
         {
           "episode_id": "ep_001",
+          "topic":"<what topic does the episode focus on>"
           "dialogue_id": "<same as input>",
-          "turn_span": [start_turn_id, end_turn_id],
-          "segmentation_reason": [
-            "<one or more of: topic_shift | context_reset | temporal_gap | conversational_closure | other>"
-          ]
-        }
+          "turn_span": [start_turn_id, end_turn_id]
+        },
+        ...
       ]
     }
 
