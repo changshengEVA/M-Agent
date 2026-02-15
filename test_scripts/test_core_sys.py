@@ -16,8 +16,8 @@ memory_core = MemoryCore(
     use_threshold=True
 )
 # 获取统计信息
-kg_stats = memory_core.get_kg_stats()
-print(f"  KG统计: {kg_stats}")
+# kg_stats = memory_core.get_kg_stats()
+# print(f"  KG统计: {kg_stats}")
         
 # 获取实体解析统计
 er_stats = memory_core.get_entity_resolution_stats()

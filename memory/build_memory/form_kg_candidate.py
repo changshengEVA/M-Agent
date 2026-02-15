@@ -45,11 +45,19 @@ def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict:
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     
-    # 替换 prompts 中的 <memory_owner_name> 占位符
-    if isinstance(config, dict):
-        for key, value in config.items():
-            if isinstance(value, str):
-                config[key] = value.replace('<memory_owner_name>', memory_owner_name)
+    def replace_placeholders(obj, owner_name):
+        """递归替换对象中的 <memory_owner_name> 占位符"""
+        if isinstance(obj, str):
+            return obj.replace('<memory_owner_name>', owner_name)
+        elif isinstance(obj, dict):
+            return {k: replace_placeholders(v, owner_name) for k, v in obj.items()}
+        elif isinstance(obj, list):
+            return [replace_placeholders(item, owner_name) for item in obj]
+        else:
+            return obj
+    
+    # 递归替换所有占位符
+    config = replace_placeholders(config, memory_owner_name)
     
     return config
 
@@ -276,10 +284,57 @@ def episode_to_plain_text(episode_with_content: Dict) -> str:
     return '\n'.join(lines)
 
 
-def call_openai_for_kg_candidate(episode_with_content: Dict, prompt_template: str) -> Dict:
+def call_openai_for_kg_candidate(episode_with_content: Dict, prompt_template) -> Dict:
     """
     调用 OpenAI 进行 kg_candidate 提取。
+    支持 v1/v2（字符串模板）和 v3（字典模板，三段式提取）。
     返回解析后的 JSON 结果。
+    """
+    # 判断 prompt_template 类型
+    if isinstance(prompt_template, dict):
+        # v3 三段式提取
+        return extract_kg_candidate_v3(episode_with_content, prompt_template)
+    elif isinstance(prompt_template, str):
+        # v1/v2 单次提取
+        from load_model.OpenAIcall import get_llm
+        
+        # 获取 LLM 实例，温度设为 0.1 以获得更确定性的输出
+        llm = get_llm(model_temperature=0.1)
+        
+        # 将 episode 转换为纯文本对话
+        episode_str = episode_to_plain_text(episode_with_content)
+        full_prompt = prompt_template.replace('<txt_string>', episode_str)
+        
+        try:
+            response_text = llm(full_prompt)
+            # 解析 JSON 响应
+            # 响应可能包含额外的文本，尝试提取 JSON 部分
+            json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+            if json_match:
+                response_text = json_match.group(0)
+            
+            result = json.loads(response_text)
+            return result
+        except json.JSONDecodeError as e:
+            logger.error(f"解析 OpenAI 响应失败: {e}")
+            logger.error(f"响应文本: {response_text[:500]}...")
+            raise
+        except Exception as e:
+            logger.error(f"调用 OpenAI 失败: {e}")
+            raise
+    else:
+        raise ValueError(f"不支持的 prompt_template 类型: {type(prompt_template)}")
+
+
+def extract_kg_candidate_v3(episode_with_content: Dict, prompt_dict: Dict) -> Dict:
+    """
+    使用 v3 三段式 prompt 提取 kg_candidate。
+    流程：
+    1. 实体提取 (entity_extraction)
+    2. 关系提取 (relation_extraction)，使用实体列表
+    3. 属性提取 (attribution_extraction)，使用实体列表和记忆所有者
+    
+    返回合并后的 kg_candidate，格式与 v1/v2 兼容。
     """
     from load_model.OpenAIcall import get_llm
     
@@ -288,25 +343,95 @@ def call_openai_for_kg_candidate(episode_with_content: Dict, prompt_template: st
     
     # 将 episode 转换为纯文本对话
     episode_str = episode_to_plain_text(episode_with_content)
-    full_prompt = prompt_template.replace('<txt_string>', episode_str)
     
+    # 提取记忆所有者名称（从 episode 中获取或使用默认值）
+    memory_owner_name = episode_with_content.get('dialogue_content', {}).get('user_id', 'changshengEVA')
+    
+    # 1. 实体提取
+    entity_prompt = prompt_dict.get('entity_extraction', '')
+    if not entity_prompt:
+        raise ValueError("v3 prompt 字典中缺少 'entity_extraction' 字段")
+    
+    entity_full_prompt = entity_prompt.replace('<txt_string>', episode_str)
     try:
-        response_text = llm(full_prompt)
-        # 解析 JSON 响应
-        # 响应可能包含额外的文本，尝试提取 JSON 部分
-        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if json_match:
-            response_text = json_match.group(0)
-        
-        result = json.loads(response_text)
-        return result
-    except json.JSONDecodeError as e:
-        logger.error(f"解析 OpenAI 响应失败: {e}")
-        logger.error(f"响应文本: {response_text[:500]}...")
-        raise
+        entity_response = llm(entity_full_prompt)
+        entity_json_match = re.search(r'\{.*\}', entity_response, re.DOTALL)
+        if entity_json_match:
+            entity_response = entity_json_match.group(0)
+        entity_result = json.loads(entity_response)
     except Exception as e:
-        logger.error(f"调用 OpenAI 失败: {e}")
+        logger.error(f"实体提取失败: {e}")
         raise
+    
+    # 提取实体列表
+    entities = entity_result.get('entities', [])
+    
+    # 2. 关系提取（需要实体列表作为输入）
+    relation_prompt = prompt_dict.get('relation_extraction', '')
+    if relation_prompt:
+        # 替换占位符
+        relation_full_prompt = relation_prompt.replace('<txt_string>', episode_str)
+        relation_full_prompt = relation_full_prompt.replace('<entity_list_json>', json.dumps(entities, ensure_ascii=False))
+        
+        try:
+            relation_response = llm(relation_full_prompt)
+            relation_json_match = re.search(r'\{.*\}', relation_response, re.DOTALL)
+            if relation_json_match:
+                relation_response = relation_json_match.group(0)
+            relation_result = json.loads(relation_response)
+        except Exception as e:
+            logger.error(f"关系提取失败: {e}")
+            relation_result = {"relations": []}
+    else:
+        relation_result = {"relations": []}
+    
+    # 3. 属性提取（需要实体列表和记忆所有者作为输入）
+    attribution_prompt = prompt_dict.get('attribution_extraction', '')
+    if attribution_prompt:
+        # 替换占位符
+        attribution_full_prompt = attribution_prompt.replace('<txt_string>', episode_str)
+        attribution_full_prompt = attribution_full_prompt.replace('<entity_list_json>', json.dumps(entities, ensure_ascii=False))
+        attribution_full_prompt = attribution_full_prompt.replace('<memory_owner_name>', memory_owner_name)
+        
+        try:
+            attribution_response = llm(attribution_full_prompt)
+            attribution_json_match = re.search(r'\{.*\}', attribution_response, re.DOTALL)
+            if attribution_json_match:
+                attribution_response = attribution_json_match.group(0)
+            attribution_result = json.loads(attribution_response)
+        except Exception as e:
+            logger.error(f"属性提取失败: {e}")
+            attribution_result = {"attributes": []}
+    else:
+        attribution_result = {"attributes": []}
+    
+    # 后处理：确保属性只引用实体列表中的实体
+    valid_entity_ids = {entity['id'] for entity in entities}
+    filtered_attributes = []
+    for attr in attribution_result.get("attributes", []):
+        if attr.get('entity') in valid_entity_ids:
+            filtered_attributes.append(attr)
+        else:
+            logger.warning(f"属性引用了不存在的实体 '{attr.get('entity')}'，已过滤")
+    
+    # 后处理：确保关系只引用实体列表中的实体
+    filtered_relations = []
+    for rel in relation_result.get("relations", []):
+        if rel.get('subject') in valid_entity_ids and rel.get('object') in valid_entity_ids:
+            filtered_relations.append(rel)
+        else:
+            logger.warning(f"关系引用了不存在的实体 '{rel.get('subject')}' -> '{rel.get('object')}'，已过滤")
+    
+    # 合并结果，格式与 v1/v2 兼容（包含 "facts" 键）
+    merged_result = {
+        "facts": {
+            "entities": entities,
+            "relations": filtered_relations,
+            "attributes": filtered_attributes
+        }
+    }
+    
+    return merged_result
 
 def save_kg_candidates_as_individual_files(kg_candidates: List[Dict], kg_candidates_root: Path):
     """

@@ -342,3 +342,188 @@ kg_strong_filter_v2: |
   * Do NOT include generic foods or objects.
   * Structural correctness is more important than coverage.
   * The KG must remain sparse, conservative, and mergeable.
+
+kg_strong_filter_v3:
+  entity_extraction: |
+    You are a Knowledge Graph Entity Extractor.
+
+    Your task is to extract ONLY conservative, stable real-world entities from a single dialogue scene.
+
+    ━━━━━━━━━━━━━━━━━━
+    Allowed Entity Types (STRICT)
+
+    person       : specific named individual
+    organization : companies, schools, institutions, labs, brands
+    location     : countries, cities, buildings, named places
+    product      : specific identifiable product models
+    work         : named books, movies, games, papers, projects
+    event        : uniquely named historical or large-scale public events
+
+    No other types allowed.
+
+    ━━━━━━━━━━━━━━━━━━
+    Entity Admission Rules (ALL must hold)
+
+    1. Exists independently of this dialogue.
+    2. Has a stable identity that could be referred to again.
+    3. Not dependent on conversational context.
+    4. Not a role reference (e.g., brother, teacher, colleague).
+    5. Not abstract (e.g., happiness, improvement, plan).
+    6. Not a generic object or food (e.g., laptop, coffee, book without name).
+    7. If type = event:
+      - Must be uniquely named
+      - Must be historically or publicly recognized
+      - Not a recurring generic holiday instance (e.g., "2026 Spring Festival")
+
+    If uncertain, omit.
+
+    Note about dialogue participants:
+    - Dialogue participants (speakers) who are named individuals (e.g., "Emi", "elise") are considered persons and should be extracted as entities.
+    - Generic role names like "User", "Assistant", "System" are not considered named individuals and should not be extracted.
+    - A speaker's existence is independent of the dialogue; they are real-world persons.
+
+    ━━━━━━━━━━━━━━━━━━
+    Input
+    <txt_string>
+
+    ━━━━━━━━━━━━━━━━━━
+    Output Format
+
+    {
+      "entities": [
+        {
+          "id": "<ENTITY_ID>",
+          "type": "<TYPE>",
+          "confidence": 0.0-1.0
+        }
+      ]
+    }
+
+    Return empty list if none valid.
+
+  relation_extraction: |
+    You are a Knowledge Graph Relation Extractor.
+
+    Your task is to extract ONLY stable real-world relations between the given entities.
+
+    You must NOT create new entities.
+
+    ━━━━━━━━━━━━━━━━━━
+    Rules
+
+    Extract a relation ONLY if:
+
+    1. Both subject and object are in the provided entity list.
+    2. The relation describes a stable real-world relationship.
+    3. The relation is not a dialogue action.
+    4. The relation is not temporary.
+    5. The relation would still hold outside this conversation.
+
+    Allowed relation examples:
+    - works_at
+    - member_of
+    - located_in
+    - produced_by
+    - author_of
+    - held_in
+    - is_part_of
+    - founded_by
+
+    Do NOT extract:
+    - talked_with
+    - discussed
+    - suggested
+    - emotional interactions
+    - one-time events
+    - temporary cooperation
+
+    If no stable relation exists, return empty list.
+
+    ━━━━━━━━━━━━━━━━━━
+    Input
+
+    Original text:
+    <txt_string>
+
+    Entities:
+    <entity_list_json>
+
+    ━━━━━━━━━━━━━━━━━━
+    Output
+
+    {
+      "relations": [
+        {
+          "subject": "<ENTITY_ID>",
+          "relation": "<RELATION>",
+          "object": "<ENTITY_ID>",
+          "confidence": 0.0-1.0
+        }
+      ]
+    }
+
+  attribution_extraction: |
+    You are a Knowledge Graph Attribute Extractor.
+
+    Your task is to extract stable attributes for entities.
+
+    Do NOT create new entities.
+    Attributes must attach only to entities in the provided list.
+
+    ━━━━━━━━━━━━━━━━━━
+    Rules
+
+    Extract attributes ONLY when:
+
+    1. The trait is long-term or stable.
+    2. It is explicitly stated.
+    3. It is not temporary.
+    4. It is not emotional or situational.
+    5. It is not sensitive private data.
+    6. It describes intrinsic or long-term characteristics of the entity.
+
+    Allowed examples:
+    - profession
+    - nationality
+    - birth_date
+    - long-term hobby
+    - stable preference
+    - stable skill
+    - founding_year
+    - headquarters_location
+
+    Not allowed:
+    - temporary emotions
+    - short-term plans
+    - dialogue performance
+    - health details
+    - situational states
+
+    If uncertain, omit.
+
+    ━━━━━━━━━━━━━━━━━━
+    Input
+
+    Original text:
+    <txt_string>
+
+    Entities:
+    <entity_list_json>
+
+    ━━━━━━━━━━━━━━━━━━
+    Output
+
+    {
+      "attributes": [
+        {
+          "entity": "<ENTITY_ID>",
+          "field": "<FIELD>",
+          "value": "<VALUE>",
+          "confidence": 0.0-1.0
+        }
+      ]
+    }
+
+
+
+

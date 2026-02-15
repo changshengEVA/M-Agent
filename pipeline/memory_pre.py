@@ -412,32 +412,32 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
     logger.info(f"包含第五阶段: {include_stage5}")
     logger.info(f"记忆所有者名称: {memory_owner_name}")
     
-    # 第一阶段：构造 dialogues
-    if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
-        logger.warning("第一阶段失败，跳过后续阶段")
-        return False
+    # # 第一阶段：构造 dialogues
+    # if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
+    #     logger.warning("第一阶段失败，跳过后续阶段")
+    #     return False
     
-    # 第二阶段：构造 episodes
-    if not stage2_construct_episodes_for_id(process_id, memory_owner_name):
-        logger.warning("第二阶段失败，跳过第三阶段")
-        return False
+    # # 第二阶段：构造 episodes
+    # if not stage2_construct_episodes_for_id(process_id, memory_owner_name):
+    #     logger.warning("第二阶段失败，跳过第三阶段")
+    #     return False
     
     # 第三阶段：形成KG候选
     if not stage3_form_kg_candidates_for_id(process_id, prompt_version, memory_owner_name):
         logger.warning("第三阶段失败")
         return False
     
-    # 第四阶段：形成 scene
-    if not stage4_form_scenes_for_id(process_id, memory_owner_name):
-        logger.warning("第四阶段失败")
-        return False
+    # # 第四阶段：形成 scene
+    # if not stage4_form_scenes_for_id(process_id, memory_owner_name):
+    #     logger.warning("第四阶段失败")
+    #     return False
     
-    # 第五阶段：形成 scene 特征（可选）
-    if include_stage5:
-        if not stage5_form_scene_features_for_id(process_id, force_update=False, memory_owner_name=memory_owner_name):
-            logger.warning("第五阶段失败")
-            # 第五阶段失败不视为整个流程失败，因为它是可选的增强功能
-            # 但仍然记录警告
+    # # 第五阶段：形成 scene 特征（可选）
+    # if include_stage5:
+    #     if not stage5_form_scene_features_for_id(process_id, force_update=False, memory_owner_name=memory_owner_name):
+    #         logger.warning("第五阶段失败")
+    #         # 第五阶段失败不视为整个流程失败，因为它是可选的增强功能
+    #         # 但仍然记录警告
     
     stage_count = 5 if include_stage5 else 4
     logger.info("=" * 50)
@@ -465,8 +465,8 @@ def main():
     parser.add_argument("--loader-type", type=str, default="auto",
                        choices=["auto", "realtalk", "default"],
                        help="加载器类型：auto（自动检测，默认）, realtalk（强制使用realtalk加载器）, default（强制使用默认加载器）")
-    parser.add_argument("--kg-prompt-version", type=str, default="v1",
-                       help="KG候选生成的prompt版本（v1 或 v2，默认v1）")
+    parser.add_argument("--kg-prompt-version", type=str, default="v3",
+                       help="KG候选生成的prompt版本（v1 或 v2，默认v2）")
     parser.add_argument("--no-stage5", action="store_true",
                        help="不包含第五阶段（scene特征提取）")
     parser.add_argument("--memory-owner-name", type=str, default="changshengEVA",
