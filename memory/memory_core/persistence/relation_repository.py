@@ -341,3 +341,111 @@ class RelationRepository:
         
         logger.info(f"实体端点更新完成: {result}")
         return result
+    
+    def find_by_entities(
+        self,
+        entity1_id: str,
+        entity2_id: str
+    ) -> List[RelationRecord]:
+        """
+        查找两个实体之间的所有关系
+        
+        返回所有连接 entity1_id 和 entity2_id 的关系（双向），
+        即 subject=entity1_id 且 object=entity2_id，或者
+        subject=entity2_id 且 object=entity1_id。
+        
+        Args:
+            entity1_id: 第一个实体ID
+            entity2_id: 第二个实体ID
+            
+        Returns:
+            两个实体之间的所有关系记录列表
+        """
+        if not self.relation_dir.exists():
+            return []
+        
+        relations = []
+        for relation_file in self.relation_dir.glob("*.json"):
+            try:
+                with open(relation_file, 'r', encoding='utf-8') as f:
+                    relation_data = json.load(f)
+                
+                subject = relation_data.get('subject')
+                obj = relation_data.get('object')
+                
+                # 检查是否匹配两个实体（不考虑方向）
+                if ((subject == entity1_id and obj == entity2_id) or
+                    (subject == entity2_id and obj == entity1_id)):
+                    if validate_relation_data(relation_data):
+                        relations.append(relation_data)
+            except Exception as e:
+                logger.warning(f"读取关系文件失败 {relation_file}: {e}")
+                continue
+        
+        logger.debug(f"找到实体 {entity1_id} 和 {entity2_id} 之间的 {len(relations)} 个关系")
+        return relations
+    
+    def delete_by_entities(
+        self,
+        entity1_id: str,
+        entity2_id: str
+    ) -> Dict[str, Any]:
+        """
+        删除两个实体之间的所有关系
+        
+        删除所有连接 entity1_id 和 entity2_id 的关系（双向）。
+        
+        Args:
+            entity1_id: 第一个实体ID
+            entity2_id: 第二个实体ID
+            
+        Returns:
+            执行结果字典，包含删除的关系数量和详细信息
+        """
+        if not self.relation_dir.exists():
+            return {
+                "success": True,
+                "message": "关系目录不存在，无需删除",
+                "deleted_count": 0,
+                "deleted_relations": []
+            }
+        
+        deleted_relations = []
+        failed_deletions = []
+        
+        for relation_file in self.relation_dir.glob("*.json"):
+            try:
+                with open(relation_file, 'r', encoding='utf-8') as f:
+                    relation_data = json.load(f)
+                
+                subject = relation_data.get('subject')
+                obj = relation_data.get('object')
+                relation_id = relation_file.stem
+                
+                # 检查是否匹配两个实体（不考虑方向）
+                if ((subject == entity1_id and obj == entity2_id) or
+                    (subject == entity2_id and obj == entity1_id)):
+                    # 删除关系文件
+                    relation_file.unlink()
+                    deleted_relations.append({
+                        "relation_id": relation_id,
+                        "subject": subject,
+                        "relation": relation_data.get('relation'),
+                        "object": obj
+                    })
+            except Exception as e:
+                logger.warning(f"处理关系文件 {relation_file} 时出错: {e}")
+                failed_deletions.append(relation_file.stem)
+                continue
+        
+        result = {
+            "success": True,
+            "message": f"成功删除实体 {entity1_id} 和 {entity2_id} 之间的所有关系",
+            "deleted_count": len(deleted_relations),
+            "failed_count": len(failed_deletions),
+            "deleted_relations": deleted_relations,
+            "failed_relations": failed_deletions
+        }
+        
+        logger.info(f"删除实体间关系完成: {result}")
+        return result

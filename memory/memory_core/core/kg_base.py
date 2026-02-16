@@ -21,7 +21,10 @@ from .entity_ops import (
 from .relation_ops import (
     redirect_relations as core_redirect_relations,
     delete_relations_of_entity as core_delete_relations_of_entity,
-    add_relation as core_add_relation
+    add_relation as core_add_relation,
+    find_relations_by_entities as core_find_relations_by_entities,
+    delete_all_relations_by_entities as core_delete_all_relations_by_entities,
+    delete_relation as core_delete_relation
 )
 from .content_ops import (
     append_feature as core_append_feature,
@@ -272,6 +275,84 @@ class KGBase:
             object=object,
             repos=self.repos,
             confidence=confidence,
+            source_info=source_info
+        )
+    
+    def find_relations_by_entities(
+        self,
+        entity1_id: str,
+        entity2_id: str,
+        source_info: Optional[Dict[str, Any]] = None
+    ) -> CoreResult:
+        """
+        查找两个实体之间的所有关系
+        
+        输入两个实体ID，返回两个实体之间的所有关系。
+        
+        Args:
+            entity1_id: 第一个实体ID
+            entity2_id: 第二个实体ID
+            source_info: 来源信息（当前阶段不使用）
+            
+        Returns:
+            CoreResult 结构
+        """
+        logger.info(f"KGBase: 查找实体间关系 {entity1_id} <-> {entity2_id}")
+        return core_find_relations_by_entities(
+            entity1_id=entity1_id,
+            entity2_id=entity2_id,
+            repos=self.repos,
+            source_info=source_info
+        )
+    
+    def delete_all_relations_by_entities(
+        self,
+        entity1_id: str,
+        entity2_id: str,
+        source_info: Optional[Dict[str, Any]] = None
+    ) -> CoreResult:
+        """
+        删除两个实体之间的所有关系
+        
+        输入两个实体ID，删除两个实体之间的所有关系。
+        
+        Args:
+            entity1_id: 第一个实体ID
+            entity2_id: 第二个实体ID
+            source_info: 来源信息（当前阶段不使用）
+            
+        Returns:
+            CoreResult 结构
+        """
+        logger.info(f"KGBase: 删除实体间关系 {entity1_id} <-> {entity2_id}")
+        return core_delete_all_relations_by_entities(
+            entity1_id=entity1_id,
+            entity2_id=entity2_id,
+            repos=self.repos,
+            source_info=source_info
+        )
+    
+    def delete_relation(
+        self,
+        relation_id: str,
+        source_info: Optional[Dict[str, Any]] = None
+    ) -> CoreResult:
+        """
+        删除指定关系
+        
+        输入关系ID，删除这条关系。
+        
+        Args:
+            relation_id: 关系ID
+            source_info: 来源信息（当前阶段不使用）
+            
+        Returns:
+            CoreResult 结构
+        """
+        logger.info(f"KGBase: 删除关系 {relation_id}")
+        return core_delete_relation(
+            relation_id=relation_id,
+            repos=self.repos,
             source_info=source_info
         )
     

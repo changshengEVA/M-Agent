@@ -397,3 +397,236 @@ def _get_entity_relations(
         "incoming": incoming,
         "all": outgoing + incoming
     }
+
+
+def find_relations_by_entities(
+    entity1_id: str,
+    entity2_id: str,
+    repos: RepoContext,
+    source_info: Optional[Dict[str, Any]] = None
+) -> CoreResult:
+    """
+    查找两个实体之间的所有关系
+    
+    输入两个实体ID，返回两个实体之间的所有关系（双向）。
+    
+    Args:
+        entity1_id: 第一个实体ID
+        entity2_id: 第二个实体ID
+        repos: 持久化操作组件集合
+        source_info: 来源信息（当前阶段不使用）
+        
+    Returns:
+        CoreResult 结构:
+        {
+            "success": bool,
+            "changed": bool,          # 总是 False，因为只是查询
+            "details": dict           # 包含关系列表
+        }
+    """
+    logger.info(f"开始查找实体间关系: {entity1_id} <-> {entity2_id}")
+    
+    # 检查实体是否存在（可选，但为了完整性）
+    if not repos.entity.exists(entity1_id):
+        return {
+            "success": False,
+            "changed": False,
+            "details": {
+                "error": f"实体不存在: {entity1_id}",
+                "operation": "find_relations_by_entities"
+            }
+        }
+    
+    if not repos.entity.exists(entity2_id):
+        return {
+            "success": False,
+            "changed": False,
+            "details": {
+                "error": f"实体不存在: {entity2_id}",
+                "operation": "find_relations_by_entities"
+            }
+        }
+    
+    try:
+        # 使用关系仓库的新方法
+        relations = repos.relation.find_by_entities(entity1_id, entity2_id)
+        
+        logger.info(f"找到 {len(relations)} 个关系在实体 {entity1_id} 和 {entity2_id} 之间")
+        
+        return {
+            "success": True,
+            "changed": False,
+            "details": {
+                "operation": "find_relations_by_entities",
+                "entity1_id": entity1_id,
+                "entity2_id": entity2_id,
+                "relation_count": len(relations),
+                "relations": relations
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"查找实体间关系失败 {entity1_id} <-> {entity2_id}: {e}")
+        return {
+            "success": False,
+            "changed": False,
+            "details": {
+                "error": str(e),
+                "operation": "find_relations_by_entities"
+            }
+        }
+
+
+def delete_all_relations_by_entities(
+    entity1_id: str,
+    entity2_id: str,
+    repos: RepoContext,
+    source_info: Optional[Dict[str, Any]] = None
+) -> CoreResult:
+    """
+    删除两个实体之间的所有关系
+    
+    输入两个实体ID，删除两个实体之间的所有关系（双向）。
+    
+    Args:
+        entity1_id: 第一个实体ID
+        entity2_id: 第二个实体ID
+        repos: 持久化操作组件集合
+        source_info: 来源信息（当前阶段不使用）
+        
+    Returns:
+        CoreResult 结构:
+        {
+            "success": bool,
+            "changed": bool,          # 如果删除了关系则为 True
+            "details": dict           # 包含删除详情
+        }
+    """
+    logger.info(f"开始删除实体间关系: {entity1_id} <-> {entity2_id}")
+    
+    # 检查实体是否存在（可选，但为了完整性）
+    if not repos.entity.exists(entity1_id):
+        return {
+            "success": False,
+            "changed": False,
+            "details": {
+                "error": f"实体不存在: {entity1_id}",
+                "operation": "delete_all_relations_by_entities"
+            }
+        }
+    
+    if not repos.entity.exists(entity2_id):
+        return {
+            "success": False,
+            "changed": False,
+            "details": {
+                "error": f"实体不存在: {entity2_id}",
+                "operation": "delete_all_relations_by_entities"
+            }
+        }
+    
+    try:
+        # 使用关系仓库的新方法
+        result = repos.relation.delete_by_entities(entity1_id, entity2_id)
+        
+        if result.get("success", False):
+            changed = result.get("deleted_count", 0) > 0
+            
+            logger.info(f"删除实体间关系完成: {entity1_id} <-> {entity2_id}, 删除了 {result.get('deleted_count', 0)} 个关系")
+            
+            return {
+                "success": True,
+                "changed": changed,
+                "details": {
+                    "operation": "delete_all_relations_by_entities",
+                    "entity1_id": entity1_id,
+                    "entity2_id": entity2_id,
+                    **result
+                }
+            }
+        else:
+            return {
+                "success": False,
+                "changed": False,
+                "details": {
+                    "error": "关系仓库删除失败",
+                    "operation": "delete_all_relations_by_entities",
+                    "entity1_id": entity1_id,
+                    "entity2_id": entity2_id
+                }
+            }
+        
+    except Exception as e:
+        logger.error(f"删除实体间关系失败 {entity1_id} <-> {entity2_id}: {e}")
+        return {
+            "success": False,
+            "changed": False,
+            "details": {
+                "error": str(e),
+                "operation": "delete_all_relations_by_entities"
+            }
+        }
+
+
+def delete_relation(
+    relation_id: str,
+    repos: RepoContext,
+    source_info: Optional[Dict[str, Any]] = None
+) -> CoreResult:
+    """
+    删除指定关系
+    
+    输入关系ID，删除这条关系。
+    
+    Args:
+        relation_id: 关系ID
+        repos: 持久化操作组件集合
+        source_info: 来源信息（当前阶段不使用）
+        
+    Returns:
+        CoreResult 结构:
+        {
+            "success": bool,
+            "changed": bool,          # 如果删除了关系则为 True
+            "details": dict           # 包含删除详情
+        }
+    """
+    logger.info(f"开始删除关系: {relation_id}")
+    
+    try:
+        # 使用关系仓库的 delete 方法
+        success = repos.relation.delete(relation_id)
+        
+        if success:
+            logger.info(f"关系删除成功: {relation_id}")
+            return {
+                "success": True,
+                "changed": True,
+                "details": {
+                    "operation": "delete_relation",
+                    "relation_id": relation_id,
+                    "message": "关系删除成功"
+                }
+            }
+        else:
+            logger.warning(f"关系删除失败: {relation_id}")
+            return {
+                "success": False,
+                "changed": False,
+                "details": {
+                    "error": "关系不存在或删除失败",
+                    "operation": "delete_relation",
+                    "relation_id": relation_id
+                }
+            }
+        
+    except Exception as e:
+        logger.error(f"删除关系失败 {relation_id}: {e}")
+        return {
+            "success": False,
+            "changed": False,
+            "details": {
+                "error": str(e),
+                "operation": "delete_relation"
+            }
+        }
