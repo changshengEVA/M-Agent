@@ -8,6 +8,7 @@
 """
 
 import logging
+import uuid
 from typing import Dict, Any, Optional
 
 from .repo_context import RepoContext
@@ -466,9 +467,13 @@ def add_entity(
         }
     
     try:
+        # 生成唯一UID
+        entity_uid = str(uuid.uuid4())
+        
         # 创建最小合法实体结构
         entity_data = {
             "id": entity_id,
+            "uid": entity_uid,
             "sources": [],
             "features": [],
             "attributes": []
@@ -484,13 +489,14 @@ def add_entity(
         
         # 保存实体
         if repos.entity.save(entity_data):
-            logger.info(f"实体创建成功: {entity_id}")
+            logger.info(f"实体创建成功: {entity_id}, UID: {entity_uid}")
             return {
                 "success": True,
                 "changed": True,
                 "details": {
                     "operation": "add_entity",
                     "entity_id": entity_id,
+                    "entity_uid": entity_uid,
                     "entity_type": entity_type,
                     "has_features": False,
                     "has_attributes": False

@@ -47,6 +47,7 @@ class AttributeRecord(TypedDict, total=False):
 class EntityData(TypedDict, total=False):
     """实体数据结构"""
     id: str  # 实体ID，也是文件名（不含.json后缀）
+    uid: str  # 实体唯一标识符（UUID），用于内部引用
     type: str  # 实体类型，如"person"、"organization"、"location"
     confidence: float  # 实体整体置信度，0.0-1.0
     sources: List[SourceInfo]  # 实体来源信息
@@ -331,6 +332,9 @@ def validate_entity_data(data: Dict[str, Any]) -> bool:
         if not isinstance(data.get('id', ''), str):
             return False
         
+        if 'uid' in data and not isinstance(data['uid'], str):
+            return False
+        
         if 'type' in data and not isinstance(data['type'], str):
             return False
         
@@ -467,6 +471,7 @@ def validate_attribute_record(data: Dict[str, Any]) -> bool:
 
 EXAMPLE_ENTITY_DATA: EntityData = {
     "id": "ZQR",
+    "uid": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "type": "person",
     "confidence": 1.0,
     "sources": [

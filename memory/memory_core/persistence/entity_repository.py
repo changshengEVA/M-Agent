@@ -9,6 +9,7 @@
 
 import json
 import logging
+import uuid
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple, Union
 
@@ -132,6 +133,11 @@ class EntityRepository:
             保存成功返回True，否则返回False
         """
         try:
+            # 确保实体有UID（向后兼容）
+            if 'uid' not in entity_data:
+                entity_data['uid'] = str(uuid.uuid4())
+                logger.info(f"为实体 {entity_data.get('id', 'unknown')} 生成UID: {entity_data['uid']}")
+            
             # 验证数据格式
             if not validate_entity_data(entity_data):
                 logger.warning("实体数据格式验证失败")
