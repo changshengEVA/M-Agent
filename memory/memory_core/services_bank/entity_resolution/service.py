@@ -70,7 +70,6 @@ class EntityResolutionService:
         self,
         llm_func: Callable[[str], str],
         embed_func: Callable[[str], List[float]],
-        kg_base: KGBase,
         similarity_threshold: float = 0.7,
         top_k: int = 3,
         use_threshold: bool = True,
@@ -82,27 +81,17 @@ class EntityResolutionService:
         Args:
             llm_func: LLM函数，接收prompt返回回答
             embed_func: 嵌入向量生成函数，接收文本返回嵌入向量
-            kg_base: KGBase实例，用于获取KG数据和执行合并操作（必需参数）
             similarity_threshold: 向量相似度阈值
             top_k: 返回前K个候选
             use_threshold: 是否使用阈值模式
             data_path: 实体库数据文件路径，如果提供则从该路径加载数据
         """
-        if kg_base is None:
-            raise ValueError("kg_base 参数是必需的，不能为 None")
-        
         # 初始化实体库，传入embed_func和data_path
         self.entity_library = EntityLibrary(embed_func=embed_func, data_path=data_path)
         self.strategies: List[ResolutionStrategy] = []
         self.llm_func = llm_func
         self.embed_func = embed_func
-        self.kg_base = kg_base
         self.data_path = data_path
-        
-        # 使用KGBase实例创建数据提供函数和合并回调
-        self.kg_data_provider = self._create_kg_data_provider_from_kg_base(kg_base)
-        self.kg_merge_callback = self._create_kg_merge_callback_from_kg_base(kg_base)
-        logger.info(f"使用 KGBase 实例: {kg_base}")
         
         # 初始化默认策略（单一策略）
         self._init_default_strategy(
@@ -113,70 +102,57 @@ class EntityResolutionService:
         
         logger.info("初始化 EntityResolutionService")
     
-    def _create_kg_data_provider_from_kg_base(self, kg_base: KGBase) -> Callable[[], Dict[str, Any]]:
+    def on_entity_merged(self, source_id: str, target_id: str, **kwargs) -> None:
         """
-        从 KGBase 实例创建数据提供函数
+        监听实体合并事件
+        
+        当 MemoryCore 执行实体合并时调用此方法，用于更新 EntityLibrary
         
         Args:
-            kg_base: KGBase 实例
-            
-        Returns:
-            数据提供函数
+            source_id: 源实体ID（将被合并）
+            target_id: 目标实体ID（保留）
+            **kwargs: 其他参数（如合并结果等）
         """
-        def kg_data_provider() -> Dict[str, Any]:
-            try:
-                # 获取所有实体ID
-                entity_ids = kg_base.list_entity_ids()
+        logger.info(f"收到实体合并事件: {source_id} -> {target_id}")
+        
+        try:
+            # 检查目标实体是否在 EntityLibrary 中
+            if target_id not in self.entity_library.entities:
+                # 如果目标实体不在 Library 中，先添加它
+                logger.info(f"目标实体 {target_id} 不在 EntityLibrary 中，先添加")
+                add_success = self.entity_library.add_entity(
+                    entity_id=target_id,
+                    canonical_name=target_id,
+                    metadata={
+                        "added_via": "entity_merge_event",
+                        "source_entity": source_id,
+                        "timestamp": time.time()
+                    }
+                )
                 
-                # 构建实体数据列表
-                entities = []
-                for entity_id in entity_ids:
-                    # 尝试获取实体信息
-                    try:
-                        # 这里可以扩展为获取更多实体信息
-                        entities.append({
-                            "id": entity_id,
-                            "name": entity_id,  # 默认使用ID作为名称
-                            "type": None,  # 可以扩展为获取实体类型
-                            "metadata": {}
-                        })
-                    except Exception as e:
-                        logger.warning(f"获取实体信息失败 {entity_id}: {e}")
-                        # 即使失败也添加基本ID信息
-                        entities.append({
-                            "id": entity_id,
-                            "name": entity_id,
-                            "type": None,
-                            "metadata": {"error": str(e)}
-                        })
-                
-                return {"entities": entities}
-            except Exception as e:
-                logger.error(f"从 KGBase 获取数据失败: {e}")
-                return {"entities": []}
-        
-        return kg_data_provider
-    
-    def _create_kg_merge_callback_from_kg_base(self, kg_base: KGBase) -> Callable[[str, str], Dict[str, Any]]:
-        """
-        从 KGBase 实例创建合并回调函数
-        
-        Args:
-            kg_base: KGBase 实例
+                if not add_success:
+                    logger.warning(f"无法添加目标实体到 EntityLibrary: {target_id}")
+                    return
             
-        Returns:
-            合并回调函数
-        """
-        def kg_merge_callback(source_id: str, target_id: str) -> Dict[str, Any]:
-            try:
-                # 调用 KGBase 的 merge_entities 方法
-                result = kg_base.merge_entities(target_id=target_id, source_id=source_id)
-                return result
-            except Exception as e:
-                logger.error(f"调用 KGBase.merge_entities 失败 {source_id} -> {target_id}: {e}")
-                return {"success": False, "error": str(e)}
-        
-        return kg_merge_callback
+            # 更新 EntityLibrary：将源实体ID添加为目标实体的别名
+            success = self.entity_library.add_alias(
+                entity_id=target_id,
+                alias=source_id
+            )
+            
+            if success:
+                logger.info(f"EntityLibrary 更新成功: {source_id} 作为 {target_id} 的别名")
+            else:
+                # 如果添加别名失败，可能是别名已存在或其他原因
+                # 检查源实体是否已经在 Library 中
+                if source_id in self.entity_library.entities:
+                    # 如果源实体在 Library 中，可能需要更新其记录
+                    logger.info(f"源实体 {source_id} 已在 EntityLibrary 中，可能需要特殊处理")
+                
+                logger.warning(f"EntityLibrary 更新失败: {source_id} -> {target_id}")
+                
+        except Exception as e:
+            logger.error(f"处理实体合并事件时出错: {e}")
     
     def _init_default_strategy(
         self,
@@ -337,23 +313,10 @@ class EntityResolutionService:
                 else:
                     logger.warning(f"EntityLibrary 添加别名失败: {decision.source_entity_id} -> {decision.target_entity_id}")
                 
-                # 2. 调用 KG 合并回调（如果提供）
-                if self.kg_merge_callback:
-                    try:
-                        kg_result = self.kg_merge_callback(
-                            decision.source_entity_id, 
-                            decision.target_entity_id
-                        )
-                        result.kg_operation_performed = True
-                        result.kg_operation_result = kg_result
-                        
-                        if kg_result.get("success", False):
-                            logger.info(f"KG 合并实体成功: {decision.source_entity_id} -> {decision.target_entity_id}")
-                        else:
-                            logger.warning(f"KG 合并实体失败: {decision.source_entity_id} -> {decision.target_entity_id}, 结果: {kg_result}")
-                    except Exception as e:
-                        logger.error(f"调用 KG 合并回调失败: {e}")
-                        result.error = f"kg_callback_error: {e}"
+                # 2. 不再调用 KG 合并回调，由 MemoryCore 负责执行合并
+                # 只更新 EntityLibrary，不执行 KG 操作
+                logger.info(f"实体判定为等价: {decision.source_entity_id} -> {decision.target_entity_id}")
+                logger.info("KG 合并操作将由 MemoryCore 执行")
                 
                 result.applied = True
                 return result
@@ -553,7 +516,6 @@ class EntityResolutionService:
 def create_default_resolution_service(
     llm_func: Callable[[str], str],
     embed_func: Callable[[str], List[float]],
-    kg_base: KGBase,
     similarity_threshold: float = 0.7,
     top_k: int = 3,
     use_threshold: bool = True,
@@ -565,7 +527,6 @@ def create_default_resolution_service(
     Args:
         llm_func: LLM函数，接收prompt返回回答
         embed_func: 嵌入向量生成函数，接收文本返回嵌入向量
-        kg_base: KGBase实例，用于获取KG数据和执行合并操作（必需参数）
         similarity_threshold: 向量相似度阈值
         top_k: 返回前K个候选
         use_threshold: 是否使用阈值模式
@@ -574,21 +535,13 @@ def create_default_resolution_service(
     Returns:
         EntityResolutionService 实例
     """
-    if kg_base is None:
-        raise ValueError("kg_base 参数是必需的，不能为 None")
-    
     service = EntityResolutionService(
         llm_func=llm_func,
         embed_func=embed_func,
-        kg_base=kg_base,
         similarity_threshold=similarity_threshold,
         top_k=top_k,
         use_threshold=use_threshold,
         data_path=data_path
     )
-    
-    # 注意：不再自动从 KG 初始化实体库
-    # 如果需要从 KG 同步实体，请使用 service.align_library_with_kg_entities(kg_entity_list)
-    # 其中 kg_entity_list 可以通过 kg_base.list_entity_ids() 获取
     
     return service

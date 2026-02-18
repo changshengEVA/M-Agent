@@ -84,8 +84,14 @@ class MemoryCore:
         # 3. 初始化 LLM 和 Embed 函数
         self.llm_func, self.embed_func = self._init_llm_embed(llm_func, embed_func)
         
-        # 4. 初始化 EntityResolutionService
+        # 4. 初始化服务注册列表
+        self.services = []
+        
+        # 5. 初始化 EntityResolutionService（不再传入kg_base）
         self.entity_resolution_service = self._init_entity_resolution_service()
+        
+        # 6. 注册 entity_resolution_service
+        self.register_service(self.entity_resolution_service)
         
         logger.info("MemoryCore 初始化完成")
     
@@ -122,11 +128,10 @@ class MemoryCore:
         """初始化 EntityResolutionService 实例"""
         logger.info("初始化 EntityResolutionService")
         
-        # 使用便捷函数创建默认服务
+        # 使用便捷函数创建默认服务（不再传入kg_base）
         service = create_default_resolution_service(
             llm_func=self.llm_func,
             embed_func=self.embed_func,
-            kg_base=self.kg_base,
             similarity_threshold=self.similarity_threshold,
             top_k=self.top_k,
             use_threshold=self.use_threshold,
@@ -185,7 +190,8 @@ class MemoryCore:
         return load_from_dialogue_json(
             json_data=json_data,
             kg_base=self.kg_base,
-            entity_resolution_service=self.entity_resolution_service
+            entity_resolution_service=self.entity_resolution_service,
+            memory_core=self  # 传递 MemoryCore 实例
         )
     
     def load_from_dialogue_path(self, path: Path) -> Dict[str, Any]:
@@ -204,8 +210,120 @@ class MemoryCore:
         return load_from_dialogue_path(
             path=path,
             kg_base=self.kg_base,
-            entity_resolution_service=self.entity_resolution_service
+            entity_resolution_service=self.entity_resolution_service,
+            memory_core=self  # 传递 MemoryCore 实例
         )
+    
+    # ============================================================================
+    # 服务注册与事件广播
+    # ============================================================================
+    
+    def register_service(self, service: Any) -> None:
+        """
+        注册服务
+        
+        Args:
+            service: 服务实例，需要实现事件处理接口（如 on_entity_merged）
+        """
+        self.services.append(service)
+        logger.info(f"注册服务: {service.__class__.__name__}")
+    
+    def merge_entities(self, source_id: str, target_id: str) -> Dict[str, Any]:
+        """
+        统一 merge 入口
+        
+        MemoryCore 成为唯一结构修改入口，执行 KG 合并并广播事件
+        
+        Args:
+            source_id: 源实体ID（将被合并）
+            target_id: 目标实体ID（保留）
+            
+        Returns:
+            KG 合并操作结果
+        """
+        logger.info(f"执行实体合并: {source_id} -> {target_id}")
+        
+        # 调用 KGBase 执行合并（注意参数顺序：target_id, source_id）
+        result = self.kg_base.merge_entities(target_id=target_id, source_id=source_id)
+        
+        # 如果合并成功，广播事件
+        if result.get("success", False):
+            self._notify_services("entity_merged", source_id=source_id, target_id=target_id, result=result)
+        
+        return result
+    
+    def _notify_services(self, event_name: str, **kwargs) -> None:
+        """
+        事件广播函数
+        
+        通知所有注册的服务处理事件
+        
+        Args:
+            event_name: 事件名称（如 "entity_merged"）
+            **kwargs: 事件参数
+        """
+        logger.info(f"广播事件: {event_name}, 参数: {kwargs}")
+        
+        for service in self.services:
+            handler_name = f"on_{event_name}"
+            if hasattr(service, handler_name):
+                try:
+                    handler = getattr(service, handler_name)
+                    handler(**kwargs)
+                    logger.debug(f"服务 {service.__class__.__name__} 处理事件 {event_name} 成功")
+                except Exception as e:
+                    logger.error(f"服务 {service.__class__.__name__} 处理事件 {event_name} 时出错: {e}")
+    
+    def resolve_entity(self, entity_id: str, context: Optional[Dict[str, Any]] = None) -> Any:
+        """
+        接管实体解析流程
+        
+        新增：统一解析入口，由 MemoryCore 协调解析与合并
+        
+        Args:
+            entity_id: 待解析的实体ID
+            context: 上下文信息
+            
+        Returns:
+            解析判定结果
+        """
+        logger.info(f"MemoryCore 接管实体解析: {entity_id}")
+        
+        # 调用 EntityResolutionService 进行判定
+        decision = self.entity_resolution_service.resolve_entity(entity_id, context)
+        
+        # 如果判定为等价实体，执行合并
+        if decision.is_same_as_existing() and decision.target_entity_id:
+            logger.info(f"判定为等价实体，执行合并: {decision.source_entity_id} -> {decision.target_entity_id}")
+            
+            # 先应用判定结果（更新 EntityLibrary）
+            apply_result = self.entity_resolution_service.apply_decision(decision)
+            
+            # 执行 KG 合并
+            merge_result = self.merge_entities(
+                source_id=decision.source_entity_id,
+                target_id=decision.target_entity_id
+            )
+            
+            # 返回组合结果
+            return {
+                "decision": decision,
+                "apply_result": apply_result,
+                "merge_result": merge_result
+            }
+        
+        # 如果是新建实体，只应用判定结果
+        elif decision.is_new_entity():
+            logger.info(f"判定为新建实体: {decision.source_entity_id}")
+            apply_result = self.entity_resolution_service.apply_decision(decision)
+            return {
+                "decision": decision,
+                "apply_result": apply_result,
+                "merge_result": None
+            }
+        
+        # 其他情况
+        return {"decision": decision}
     
     # ============================================================================
     # 辅助方法
@@ -224,7 +342,8 @@ class MemoryCore:
         kg_stats = self.get_kg_stats()
         return (f"MemoryCore(workflow_id={self.workflow_id}, "
                 f"entities={kg_stats['entity_count']}, "
-                f"relations={kg_stats['relation_count']})")
+                f"relations={kg_stats['relation_count']}, "
+                f"services={len(self.services)})")
 
 
 # 便捷函数

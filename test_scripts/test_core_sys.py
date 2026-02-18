@@ -11,7 +11,7 @@ memory_core = MemoryCore(
     llm_func=get_llm(0.0),
     embed_func=get_embed_model(),
     llm_temperature=0.0,
-    similarity_threshold=0.7,
+    similarity_threshold=0.9,
     top_k=3,
     use_threshold=True
 )
