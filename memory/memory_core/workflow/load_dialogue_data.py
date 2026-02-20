@@ -17,6 +17,7 @@ from tqdm import tqdm
 
 from memory.memory_core.core.kg_base import KGBase
 from memory.memory_core.services_bank.entity_resolution.service import EntityResolutionService
+from memory.memory_core.memory_system import MemoryCore
 
 logger = logging.getLogger(__name__)
 
@@ -291,48 +292,12 @@ def load_from_dialogue_json(
                 "error": str(e)
             })
     
-    # 5. 调用实体解析扫描
-    logger.info("开始实体解析扫描")
-    try:
-        # 获取当前 KG 中的所有实体
-        kg_entity_list = kg_base.list_entity_ids()
-        
-        if kg_entity_list:
-            resolution_stats = None
-            
-            # 如果有 memory_core，使用其 resolve_entity 方法
-            if memory_core and hasattr(memory_core, 'resolve_entity'):
-                logger.info("使用 MemoryCore.resolve_entity 进行实体解析")
-                resolution_stats = _align_with_memory_core(memory_core, kg_entity_list)
-            else:
-                # 回退到旧的 align_library_with_kg_entities 方法
-                logger.info("使用 EntityResolutionService.align_library_with_kg_entities 进行实体解析")
-                resolution_stats = entity_resolution_service.align_library_with_kg_entities(kg_entity_list)
-            
-            results["resolution_stats"] = resolution_stats
-            results["resolution_applied"] = True
-            logger.info(f"实体解析扫描完成: {resolution_stats}")
-            
-            if save == True:
-                # 保存 Library 数据到文件
-                try:
-                    if hasattr(entity_resolution_service, 'data_path') and entity_resolution_service.data_path:
-                        save_success = entity_resolution_service.entity_library.save_to_path(entity_resolution_service.data_path)
-                        if save_success:
-                            logger.info(f"Library 数据已保存到: {entity_resolution_service.data_path}")
-                        else:
-                            logger.warning(f"Library 数据保存失败: {entity_resolution_service.data_path}")
-                    else:
-                        logger.debug("未配置 data_path，跳过 Library 保存")
-                except Exception as save_e:
-                    logger.warning(f"保存 Library 数据时出错: {save_e}")
-        else:
-            logger.info("KG 中暂无实体，跳过实体解析扫描")
-            results["resolution_applied"] = False
-            
-    except Exception as e:
-        logger.error(f"实体解析扫描时出错: {e}")
-        results["resolution_error"] = str(e)
+    # 5. 实体解析（事件驱动）
+    # 根据重构原则，Workflow 只负责数据输入，不进行全量扫描解析
+    # 实体解析将由 MemoryCore 在接收到 ENTITY_ADDED 事件时自动触发
+    logger.info("跳过全量实体解析扫描（事件驱动模式）")
+    results["resolution_applied"] = False
+    results["resolution_note"] = "事件驱动模式：实体解析由 MemoryCore 在 ENTITY_ADDED 事件时自动触发"
     
     logger.info(f"单个对话加载完成: 处理了 {results['entities_processed']} 个实体, {results['features_processed']} 个特征, {results['attributes_processed']} 个属性, {results['relations_processed']} 个关系")
     # 6. 提取关系、特征
@@ -343,7 +308,7 @@ def load_from_dialogue_path(
     path: Path,
     kg_base: KGBase,
     entity_resolution_service: EntityResolutionService,
-    memory_core: Optional[Any] = None,
+    memory_core: MemoryCore,
     use_tqdm: bool = True
 ) -> Dict[str, Any]:
     """
@@ -454,46 +419,29 @@ def load_from_dialogue_path(
             })
             results["files_failed"] += 1
     
-    # 所有文件处理完成后，调用实体解析扫描
-    logger.info("所有文件处理完成，开始实体解析扫描")
-    try:
-        kg_entity_list = kg_base.list_entity_ids()
-        
-        if kg_entity_list:
-            resolution_stats = None
-            
-            # 如果有 memory_core，使用其 resolve_entity 方法
-            if memory_core and hasattr(memory_core, 'resolve_entity'):
-                logger.info("使用 MemoryCore.resolve_entity 进行实体解析")
-                resolution_stats = _align_with_memory_core(memory_core, kg_entity_list)
-            else:
-                # 回退到旧的 align_library_with_kg_entities 方法
-                logger.info("使用 EntityResolutionService.align_library_with_kg_entities 进行实体解析")
-                resolution_stats = entity_resolution_service.align_library_with_kg_entities(kg_entity_list)
-            
-            results["resolution_stats"] = resolution_stats
+    # 所有文件处理完成后，执行统一的 Resolution Pass
+    # 根据重构原则，加载阶段结束后，统一执行一次 Resolution Pass
+    # 禁止在加载过程中进行解析
+    if memory_core and hasattr(memory_core, 'run_entity_resolution_pass'):
+        logger.info("开始执行统一的 Resolution Pass")
+        try:
+            resolution_result = memory_core.run_entity_resolution_pass()
             results["resolution_applied"] = True
-            logger.info(f"实体解析扫描完成: {resolution_stats}")
+            results["resolution_result"] = resolution_result
+            results["resolution_note"] = "显式 Resolution Pass 模式：加载完成后统一执行解析阶段"
             
-            # 保存 Library 数据到文件
-            try:
-                if hasattr(entity_resolution_service, 'data_path') and entity_resolution_service.data_path:
-                    save_success = entity_resolution_service.entity_library.save_to_path(entity_resolution_service.data_path)
-                    if save_success:
-                        logger.info(f"Library 数据已保存到: {entity_resolution_service.data_path}")
-                    else:
-                        logger.warning(f"Library 数据保存失败: {entity_resolution_service.data_path}")
-                else:
-                    logger.debug("未配置 data_path，跳过 Library 保存")
-            except Exception as save_e:
-                logger.warning(f"保存 Library 数据时出错: {save_e}")
-        else:
-            logger.info("KG 中暂无实体，跳过实体解析扫描")
+            logger.info(f"Resolution Pass 完成: "
+                       f"总计 {resolution_result.get('total_decisions', 0)} 个决策, "
+                       f"合并 {resolution_result.get('merged', 0)} 个实体")
+        except Exception as e:
+            logger.error(f"执行 Resolution Pass 时出错: {e}")
             results["resolution_applied"] = False
-            
-    except Exception as e:
-        logger.error(f"实体解析扫描时出错: {e}")
-        results["resolution_error"] = str(e)
+            results["resolution_error"] = str(e)
+            results["resolution_note"] = f"Resolution Pass 执行失败: {e}"
+    else:
+        logger.info("未提供 MemoryCore 实例或缺少 run_entity_resolution_pass 方法，跳过 Resolution Pass")
+        results["resolution_applied"] = False
+        results["resolution_note"] = "未执行 Resolution Pass（需要 MemoryCore 实例）"
     
     logger.info(f"目录加载完成: 处理了 {results['files_processed']} 个文件, "
                 f"{results['total_entities_processed']} 个实体, "
@@ -504,108 +452,3 @@ def load_from_dialogue_path(
     results["success"] = results["files_failed"] == 0
     return results
 
-
-def _align_with_memory_core(memory_core: Any, kg_entity_list: List[str]) -> Dict[str, Any]:
-    """
-    使用 MemoryCore 对齐实体库与 KG 实体
-    
-    替代 EntityResolutionService.align_library_with_kg_entities 的新实现
-    
-    Args:
-        memory_core: MemoryCore 实例
-        kg_entity_list: KG 中的实体ID列表
-        
-    Returns:
-        对齐操作的结果统计
-    """
-    logger.info(f"使用 MemoryCore 对齐实体库，KG实体数量: {len(kg_entity_list)}")
-    
-    # 获取 EntityResolutionService 实例
-    entity_resolution_service = memory_core.entity_resolution_service
-    entity_library = entity_resolution_service.entity_library
-    
-    # 获取Library中所有实体ID
-    library_entity_ids = set(entity_library.entities.keys())
-    kg_entity_set = set(kg_entity_list)
-    
-    # 1. 找出Library中存在但KG中不存在的实体
-    library_only = library_entity_ids - kg_entity_set
-    removed_count = 0
-    
-    # 删除这些实体
-    for entity_id in library_only:
-        try:
-            # 从Library中删除实体
-            if entity_id in entity_library.entities:
-                # 需要先删除名称映射
-                record = entity_library.entities[entity_id]
-                for name in record.get_all_names():
-                    if name in entity_library.name_to_entity:
-                        del entity_library.name_to_entity[name]
-                
-                # 删除实体记录
-                del entity_library.entities[entity_id]
-                
-                # 删除embedding
-                if entity_id in entity_library.embeddings:
-                    del entity_library.embeddings[entity_id]
-                
-                removed_count += 1
-                logger.debug(f"删除Library中存在但KG中不存在的实体: {entity_id}")
-        except Exception as e:
-            logger.warning(f"删除实体失败 {entity_id}: {e}")
-    
-    # 2. 找出KG中存在但Library中不存在的实体
-    kg_only = kg_entity_set - library_entity_ids
-    kg_only_list = list(kg_only)
-    
-    logger.info(f"对齐结果: Library中存在但KG中不存在 {len(library_only)} 个, KG中存在但Library中不存在 {len(kg_only)} 个")
-    
-    # 3. 对KG中存在但Library中不存在的实体进行逐个解析
-    resolved_results = []
-    for entity_id in kg_only_list:
-        try:
-            # 使用 MemoryCore.resolve_entity 进行解析（这会自动处理合并）
-            result = memory_core.resolve_entity(entity_id)
-            
-            # 提取解析结果信息
-            decision = result.get("decision")
-            resolution_type = decision.resolution_type.value if decision else "UNKNOWN"
-            success = True  # 假设成功，因为resolve_entity会处理错误
-            
-            resolved_results.append({
-                "entity_id": entity_id,
-                "resolution_type": resolution_type,
-                "success": success,
-                "error": None
-            })
-            
-            logger.debug(f"处理KG中存在但Library中不存在的实体: {entity_id} -> {resolution_type}")
-        except Exception as e:
-            logger.error(f"处理实体失败 {entity_id}: {e}")
-            resolved_results.append({
-                "entity_id": entity_id,
-                "resolution_type": "ERROR",
-                "success": False,
-                "error": str(e)
-            })
-    
-    # 统计结果
-    success_count = sum(1 for r in resolved_results if r["success"])
-    
-    result_stats = {
-        "kg_entity_count": len(kg_entity_list),
-        "library_entity_count_before": len(library_entity_ids),
-        "library_entity_count_after": entity_library.get_entity_count(),
-        "removed_from_library": removed_count,
-        "new_from_kg": len(kg_only_list),
-        "resolved_success": success_count,
-        "resolved_failed": len(resolved_results) - success_count,
-        "removed_entities": list(library_only),
-        "new_entities": kg_only_list,
-        "resolution_results": resolved_results,
-        "method": "memory_core_resolve_entity"
-    }
-    
-    logger.info(f"MemoryCore 对齐完成: 删除 {removed_count} 个实体, 新增 {len(kg_only_list)} 个实体, 成功解析 {success_count} 个")
-    return result_stats

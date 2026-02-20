@@ -35,6 +35,8 @@ class EntityRecord:
     embedding: Optional[List[float]] = None  # 实体名称的嵌入向量
     entity_type: Optional[str] = None  # 实体类型
     metadata: Dict[str, Any] = field(default_factory=dict)  # 其他元数据
+    resolved: bool = False  # 是否已经解析过
+    last_decision: Optional[Dict[str, Any]] = None  # 最近一次解析结果
     
     def get_all_names(self) -> List[str]:
         """获取所有名称（包括规范化名称和别名）"""
@@ -48,6 +50,17 @@ class EntityRecord:
             self.aliases.append(alias)
             return True
         return False
+    
+    def mark_as_resolved(self, decision: Optional[Dict[str, Any]] = None) -> None:
+        """标记实体为已解析"""
+        self.resolved = True
+        if decision:
+            self.last_decision = decision
+    
+    def mark_as_unresolved(self) -> None:
+        """标记实体为未解析"""
+        self.resolved = False
+        self.last_decision = None
 
 
 class EntityLibrary:
@@ -78,8 +91,10 @@ class EntityLibrary:
         从指定路径加载实体库数据
         
         支持两种数据格式：
-        1. 单个JSON文件（包含实体数据）
+        1. 单个JSON文件（包含单个实体数据）
         2. 目录（包含多个JSON文件，每个文件对应一个实体）
+        
+        注意：不再支持包含实体列表的单个JSON文件格式
         
         Args:
             data_path: 数据文件或目录路径
@@ -136,72 +151,26 @@ class EntityLibrary:
     
     def save_to_path(self, data_path: str) -> bool:
         """
-        将实体库数据保存到指定路径
-        
-        支持两种保存格式：
-        1. 单个JSON文件（包含所有实体数据）
-        2. 目录（每个实体保存为一个JSON文件）
+        将实体库数据保存到指定目录（每个实体一个JSON文件）
         
         Args:
-            data_path: 数据文件或目录路径
+            data_path: 目录路径
             
         Returns:
             是否成功保存
         """
-        logger.info(f"开始将实体库数据保存到路径: {data_path}")
+        logger.info(f"开始将实体库数据保存到目录: {data_path}")
         
         if not self.entities:
             logger.warning("实体库为空，无需保存")
             return False
         
         try:
-            if data_path.endswith('.json'):
-                # 保存为单个JSON文件
-                return self._save_to_single_json_file(data_path)
-            else:
-                # 保存为目录（每个实体一个文件）
-                return self._save_to_directory(data_path)
+            # 保存为目录（每个实体一个文件）
+            return self._save_to_directory(data_path)
                 
         except Exception as e:
-            logger.error(f"保存实体库数据到路径失败: {e}")
-            return False
-    
-    def _save_to_single_json_file(self, file_path: str) -> bool:
-        """
-        将实体库数据保存到单个JSON文件
-        
-        Args:
-            file_path: JSON文件路径
-            
-        Returns:
-            是否成功保存
-        """
-        try:
-            # 准备要保存的数据
-            entities_data = []
-            for entity_id, record in self.entities.items():
-                entity_data = {
-                    "ID": record.entity_id,
-                    "name": record.canonical_name,
-                    "alias_names": record.aliases,
-                    "embedding": record.embedding,
-                    "entity_type": record.entity_type,
-                    "metadata": record.metadata
-                }
-                entities_data.append(entity_data)
-            
-            # 创建目录（如果不存在）
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            
-            # 写入文件
-            with open(file_path, 'w', encoding='utf-8') as f:
-                json.dump(entities_data, f, ensure_ascii=False, indent=2)
-            
-            logger.info(f"实体库数据保存到单个JSON文件完成: {file_path}, 共 {len(entities_data)} 个实体")
-            return True
-            
-        except Exception as e:
-            logger.error(f"保存到单个JSON文件失败 {file_path}: {e}")
+            logger.error(f"保存实体库数据到目录失败: {e}")
             return False
     
     def _save_to_directory(self, dir_path: str) -> bool:
@@ -232,7 +201,9 @@ class EntityLibrary:
                     "alias_names": record.aliases,
                     "embedding": record.embedding,
                     "entity_type": record.entity_type,
-                    "metadata": record.metadata
+                    "metadata": record.metadata,
+                    "resolved": record.resolved,
+                    "last_decision": record.last_decision
                 }
                 
                 # 写入文件
@@ -250,7 +221,9 @@ class EntityLibrary:
     
     def _load_from_json_file(self, file_path: str) -> bool:
         """
-        从单个JSON文件加载实体数据
+        从单个JSON文件加载实体数据（单个实体对象格式）
+        
+        注意：不再支持实体列表格式，只支持单个实体对象格式
         
         Args:
             file_path: JSON文件路径
@@ -262,106 +235,60 @@ class EntityLibrary:
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
-            # 解析实体数据
-            # 格式1: 单个实体对象（如参考数据格式）
-            if isinstance(data, dict):
-                entity_id = data.get('ID') or data.get('id')
-                if not entity_id:
-                    logger.warning(f"JSON文件中未找到实体ID: {file_path}")
-                    return False
-                
-                # 获取规范化名称
-                canonical_name = data.get('name', entity_id)
-                
-                # 获取别名列表
-                aliases = data.get('alias_names', [])
-                if not isinstance(aliases, list):
-                    aliases = []
-                
-                # 获取embedding
-                embedding = data.get('embedding')
-                if embedding and not isinstance(embedding, list):
-                    embedding = None
-                
-                # 创建实体记录
-                record = EntityRecord(
-                    entity_id=entity_id,
-                    canonical_name=canonical_name,
-                    aliases=aliases,
-                    embedding=embedding,
-                    entity_type=data.get('entity_type'),
-                    metadata=data.get('metadata', {})
-                )
-                
-                # 添加到索引
-                self.entities[entity_id] = record
-                
-                # 建立名称到实体的映射
-                for name in record.get_all_names():
-                    if name in self.name_to_entity:
-                        logger.debug(f"名称冲突: {name} 已映射到 {self.name_to_entity[name]}, 现在也映射到 {entity_id}")
-                    self.name_to_entity[name] = entity_id
-                
-                # 存储嵌入向量
-                if record.embedding:
-                    self.embeddings[entity_id] = record.embedding
-                
-                logger.debug(f"从文件加载实体: {entity_id} ({canonical_name})")
-                return True
-            
-            # 格式2: 实体列表
-            elif isinstance(data, list):
-                success_count = 0
-                for entity_data in data:
-                    if isinstance(entity_data, dict):
-                        entity_id = entity_data.get('ID') or entity_data.get('id')
-                        if not entity_id:
-                            continue
-                        
-                        # 获取规范化名称
-                        canonical_name = entity_data.get('name', entity_id)
-                        
-                        # 获取别名列表
-                        aliases = entity_data.get('alias_names', [])
-                        if not isinstance(aliases, list):
-                            aliases = []
-                        
-                        # 获取embedding
-                        embedding = entity_data.get('embedding')
-                        if embedding and not isinstance(embedding, list):
-                            embedding = None
-                        
-                        # 创建实体记录
-                        record = EntityRecord(
-                            entity_id=entity_id,
-                            canonical_name=canonical_name,
-                            aliases=aliases,
-                            embedding=embedding,
-                            entity_type=entity_data.get('entity_type'),
-                            metadata=entity_data.get('metadata', {})
-                        )
-                        
-                        # 添加到索引
-                        self.entities[entity_id] = record
-                        
-                        # 建立名称到实体的映射
-                        for name in record.get_all_names():
-                            if name in self.name_to_entity:
-                                logger.debug(f"名称冲突: {name} 已映射到 {self.name_to_entity[name]}, 现在也映射到 {entity_id}")
-                            self.name_to_entity[name] = entity_id
-                        
-                        # 存储嵌入向量
-                        if record.embedding:
-                            self.embeddings[entity_id] = record.embedding
-                        
-                        success_count += 1
-                
-                logger.debug(f"从文件加载 {success_count} 个实体: {file_path}")
-                return success_count > 0
-            
-            else:
-                logger.warning(f"不支持的JSON格式: {file_path}")
+            # 只支持单个实体对象格式
+            if not isinstance(data, dict):
+                logger.warning(f"不支持的JSON格式（期望字典，得到{type(data).__name__}）: {file_path}")
                 return False
+            
+            entity_id = data.get('ID') or data.get('id')
+            if not entity_id:
+                logger.warning(f"JSON文件中未找到实体ID: {file_path}")
+                return False
+            
+            # 获取规范化名称
+            canonical_name = data.get('name', entity_id)
+            
+            # 获取别名列表
+            aliases = data.get('alias_names', [])
+            if not isinstance(aliases, list):
+                aliases = []
+            
+            # 获取embedding
+            embedding = data.get('embedding')
+            if embedding and not isinstance(embedding, list):
+                embedding = None
+            
+            # 获取解析状态（向后兼容，默认为False）
+            resolved = data.get('resolved', False)
+            last_decision = data.get('last_decision')
+            
+            # 创建实体记录
+            record = EntityRecord(
+                entity_id=entity_id,
+                canonical_name=canonical_name,
+                aliases=aliases,
+                embedding=embedding,
+                entity_type=data.get('entity_type'),
+                metadata=data.get('metadata', {}),
+                resolved=resolved,
+                last_decision=last_decision
+            )
+            
+            # 添加到索引
+            self.entities[entity_id] = record
+            
+            # 建立名称到实体的映射
+            for name in record.get_all_names():
+                if name in self.name_to_entity:
+                    logger.debug(f"名称冲突: {name} 已映射到 {self.name_to_entity[name]}, 现在也映射到 {entity_id}")
+                self.name_to_entity[name] = entity_id
+            
+            # 存储嵌入向量
+            if record.embedding:
+                self.embeddings[entity_id] = record.embedding
+            
+            logger.debug(f"从文件加载实体: {entity_id} ({canonical_name})")
+            return True
                 
         except Exception as e:
             logger.error(f"加载JSON文件失败 {file_path}: {e}")
@@ -429,84 +356,20 @@ class EntityLibrary:
             
             self.last_rebuild_time = time.time()
             logger.info(f"从 KG 重建实体派生索引完成，共 {entity_count} 个实体")
-            logger.info(f"注意：别名列表初始为空，embedding需要通过API初始化")
+            
+            # 自动初始化所有实体的embedding（如果提供了embed_func）
+            if self.embed_func and entity_count > 0:
+                logger.info("开始自动初始化所有实体的embedding...")
+                init_results = self.init_all_embeddings()
+                success_count = sum(1 for success in init_results.values() if success)
+                logger.info(f"自动初始化embedding完成，成功 {success_count}/{entity_count} 个实体")
+            else:
+                logger.info(f"注意：别名列表初始为空，embedding需要通过API初始化")
+            
             return True
             
         except Exception as e:
             logger.error(f"从 KG 重建实体派生索引失败: {e}")
-            return False
-    
-    def rebuild_from_kg_base(self, kg_base: Any) -> bool:
-        """
-        从 KGBase 实例重建实体派生索引
-        
-        使用 KGBase 的 list_entity_ids() 方法获取实体ID列表
-        
-        Args:
-            kg_base: KGBase 实例
-            
-        Returns:
-            是否成功重建
-        """
-        logger.info("开始从 KGBase 重建实体派生索引")
-        
-        try:
-            # 清空现有索引
-            self.entities.clear()
-            self.name_to_entity.clear()
-            self.embeddings.clear()
-            
-            # 使用 KGBase 获取实体ID列表
-            try:
-                entity_ids = kg_base.list_entity_ids()
-            except AttributeError:
-                logger.error("KGBase 实例没有 list_entity_ids() 方法")
-                return False
-            except Exception as e:
-                logger.error(f"调用 KGBase.list_entity_ids() 失败: {e}")
-                return False
-            
-            if not entity_ids:
-                logger.warning("KGBase 返回空实体ID列表")
-                return False
-            
-            entity_count = 0
-            for entity_id in entity_ids:
-                try:
-                    # 获取规范化名称（使用实体ID作为名称）
-                    canonical_name = entity_id
-                    
-                    # 创建实体记录（别名列表初始为空，embedding为None）
-                    record = EntityRecord(
-                        entity_id=entity_id,
-                        canonical_name=canonical_name,
-                        aliases=[],  # 别名列表初始为空
-                        embedding=None,  # embedding通过API初始化
-                        entity_type=None,  # 可以扩展为从KGBase获取实体类型
-                        metadata={}  # 可以扩展为从KGBase获取元数据
-                    )
-                    
-                    # 添加到索引
-                    self.entities[entity_id] = record
-                    
-                    # 只建立规范化名称到实体的映射（不处理别名）
-                    if canonical_name in self.name_to_entity:
-                        logger.debug(f"名称冲突: {canonical_name} 已映射到 {self.name_to_entity[canonical_name]}, 现在也映射到 {entity_id}")
-                    self.name_to_entity[canonical_name] = entity_id
-                    
-                    entity_count += 1
-                    
-                except Exception as e:
-                    logger.warning(f"处理实体失败 {entity_id}: {e}")
-                    continue
-            
-            self.last_rebuild_time = time.time()
-            logger.info(f"从 KGBase 重建实体派生索引完成，共 {entity_count} 个实体")
-            logger.info(f"注意：别名列表初始为空，embedding需要通过API初始化")
-            return True
-            
-        except Exception as e:
-            logger.error(f"从 KGBase 重建实体派生索引失败: {e}")
             return False
     
     def search(self, query: str, max_results: int = 10) -> List[Tuple[str, float, str]]:
@@ -539,10 +402,11 @@ class EntityLibrary:
         return results[:max_results]
     
     def search_by_embedding(
-        self, 
-        embedding: List[float], 
+        self,
+        embedding: List[float],
         threshold: float = 0.7,
-        top_k: int = 5
+        top_k: int = 5,
+        exclude_unresolved: bool = True
     ) -> List[Tuple[str, float]]:
         """
         基于嵌入向量搜索相似实体
@@ -551,6 +415,7 @@ class EntityLibrary:
             embedding: 查询嵌入向量
             threshold: 相似度阈值
             top_k: 返回前K个结果
+            exclude_unresolved: 是否排除未解析的实体（默认True，只匹配已解析实体）
             
         Returns:
             相似实体列表，每个元素为 (entity_id, 相似度)
@@ -562,6 +427,12 @@ class EntityLibrary:
         for entity_id, entity_embedding in self.embeddings.items():
             if not entity_embedding:
                 continue
+            
+            # 如果 exclude_unresolved 为 True，检查实体是否已解析
+            if exclude_unresolved:
+                record = self.entities.get(entity_id)
+                if not record or not record.resolved:
+                    continue  # 跳过未解析的实体
             
             # 计算余弦相似度
             similarity = self._cosine_similarity(embedding, entity_embedding)
@@ -639,7 +510,8 @@ class EntityLibrary:
             return {}
         
         results = {}
-        for entity_id in self.entities:
+        from tqdm import tqdm
+        for entity_id in tqdm(self.entities,desc = "重建KGのembed"):
             results[entity_id] = self.init_entity_embedding(entity_id)
         
         success_count = sum(1 for success in results.values() if success)
@@ -681,9 +553,12 @@ class EntityLibrary:
                 logger.debug(f"名称冲突: {name} 已映射到 {self.name_to_entity[name]}, 现在也映射到 {entity_id}")
             self.name_to_entity[name] = entity_id
         
-        # 存储嵌入向量
+        # 存储嵌入向量（如果提供了embedding）
         if record.embedding:
             self.embeddings[entity_id] = record.embedding
+        # 如果没有提供embedding，但有embed_func，则自动初始化
+        elif self.embed_func and record.embedding is None:
+            self.init_entity_embedding(entity_id)
         
         logger.info(f"添加新实体到索引: {entity_id} ({canonical_name})")
         return True
@@ -738,6 +613,22 @@ class EntityLibrary:
         self.embeddings.clear()
         self.last_rebuild_time = 0.0
         logger.info("清空 EntityLibrary")
+    
+    def reset_all_resolution_flags(self) -> None:
+        """
+        将所有实体的解析标记清零为False
+        
+        遍历所有实体记录，将resolved字段设置为False，并清空last_decision。
+        用于重新开始实体解析流程。
+        """
+        reset_count = 0
+        for record in self.entities.values():
+            if record.resolved:
+                record.resolved = False
+                record.last_decision = None
+                reset_count += 1
+        
+        logger.info(f"重置所有实体解析标记完成，共重置 {reset_count} 个实体的解析状态")
     
     def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
         """计算余弦相似度"""

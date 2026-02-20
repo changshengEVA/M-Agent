@@ -56,7 +56,8 @@ class KGBase:
         self,
         entity_dir: Path,
         relation_dir: Path,
-        repos: Optional[RepoContext] = None
+        repos: Optional[RepoContext] = None,
+        event_bus: Optional["EventBus"] = None
     ):
         """
         初始化 KGBase
@@ -65,9 +66,11 @@ class KGBase:
             entity_dir: 实体文件目录路径
             relation_dir: 关系文件目录路径
             repos: 可选的 RepoContext 实例，如果为 None 则自动创建
+            event_bus: 可选的事件总线实例，用于发布事件
         """
         self.entity_dir = entity_dir
         self.relation_dir = relation_dir
+        self.event_bus = event_bus
         
         # 创建或使用提供的 RepoContext
         if repos is None:
@@ -79,6 +82,17 @@ class KGBase:
             self.repos = repos
         
         logger.info(f"初始化 KGBase: 实体目录={entity_dir}, 关系目录={relation_dir}")
+    
+    def _publish_event(self, event_type: str, payload: Dict[str, Any]):
+        """
+        发布事件到事件总线（如果存在）
+        
+        Args:
+            event_type: 事件类型字符串
+            payload: 事件负载字典
+        """
+        if self.event_bus is not None:
+            self.event_bus.publish(event_type, payload)
     
     # ============================================================================
     # 实体操作接口（对外暴露的方法）
@@ -104,12 +118,15 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 创建实体 {entity_id}")
-        return core_add_entity(
+        result = core_add_entity(
             entity_id=entity_id,
             repos=self.repos,
             entity_type=entity_type,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("ENTITY_ADDED", {"entity_id": entity_id})
+        return result
     
     def merge_entities(
         self,
@@ -132,12 +149,15 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 合并实体 {source_id} -> {target_id}")
-        return core_merge_entities(
+        result = core_merge_entities(
             target_id=target_id,
             source_id=source_id,
             repos=self.repos,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("ENTITY_MERGED", {"target_id": target_id, "source_id": source_id})
+        return result
     
     def delete_entity(
         self,
@@ -157,11 +177,14 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 删除实体 {entity_id}")
-        return core_delete_entity_and_edges(
+        result = core_delete_entity_and_edges(
             entity_id=entity_id,
             repos=self.repos,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("ENTITY_DELETED", {"entity_id": entity_id})
+        return result
     
     def rename_entity(
         self,
@@ -183,12 +206,15 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 重命名实体 {old_id} -> {new_id}")
-        return core_rename_entity(
+        result = core_rename_entity(
             old_id=old_id,
             new_id=new_id,
             repos=self.repos,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("ENTITY_RENAMED", {"old_id": old_id, "new_id": new_id})
+        return result
     
     # ============================================================================
     # 关系操作接口
@@ -214,12 +240,15 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 重定向关系端点 {old_entity_id} -> {new_entity_id}")
-        return core_redirect_relations(
+        result = core_redirect_relations(
             old_entity_id=old_entity_id,
             new_entity_id=new_entity_id,
             repos=self.repos,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("RELATIONS_REDIRECTED", {"old_entity_id": old_entity_id, "new_entity_id": new_entity_id})
+        return result
     
     def delete_relations_of_entity(
         self,
@@ -239,11 +268,14 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 删除实体关系 {entity_id}")
-        return core_delete_relations_of_entity(
+        result = core_delete_relations_of_entity(
             entity_id=entity_id,
             repos=self.repos,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("RELATION_DELETED", {"entity_id": entity_id})
+        return result
     
     def add_relation(
         self,
@@ -269,7 +301,7 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 添加关系 {subject} -[{relation}]-> {object}")
-        return core_add_relation(
+        result = core_add_relation(
             subject=subject,
             relation=relation,
             object=object,
@@ -277,6 +309,9 @@ class KGBase:
             confidence=confidence,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("RELATION_ADDED", {"subject": subject, "relation": relation, "object": object})
+        return result
     
     def find_relations_by_entities(
         self,
@@ -325,12 +360,15 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 删除实体间关系 {entity1_id} <-> {entity2_id}")
-        return core_delete_all_relations_by_entities(
+        result = core_delete_all_relations_by_entities(
             entity1_id=entity1_id,
             entity2_id=entity2_id,
             repos=self.repos,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("RELATION_DELETED", {"entity1_id": entity1_id, "entity2_id": entity2_id})
+        return result
     
     def delete_relation(
         self,
@@ -350,11 +388,14 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 删除关系 {relation_id}")
-        return core_delete_relation(
+        result = core_delete_relation(
             relation_id=relation_id,
             repos=self.repos,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("RELATION_DELETED", {"relation_id": relation_id})
+        return result
     
     # ============================================================================
     # 内容操作接口
@@ -378,12 +419,15 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 向实体 {entity_id} 追加特征")
-        return core_append_feature(
+        result = core_append_feature(
             entity_id=entity_id,
             feature_record=feature_record,
             repos=self.repos,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("ENTITY_UPDATED", {"entity_id": entity_id})
+        return result
     
     def append_attribute(
         self,
@@ -403,12 +447,15 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 向实体 {entity_id} 追加属性")
-        return core_append_attribute(
+        result = core_append_attribute(
             entity_id=entity_id,
             attribute_record=attribute_record,
             repos=self.repos,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("ENTITY_UPDATED", {"entity_id": entity_id})
+        return result
     
     def move_features(
         self,
@@ -430,12 +477,15 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 迁移特征 {from_entity} -> {to_entity}")
-        return core_move_features(
+        result = core_move_features(
             from_entity=from_entity,
             to_entity=to_entity,
             repos=self.repos,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("ENTITY_UPDATED", {"from_entity": from_entity, "to_entity": to_entity})
+        return result
     
     def move_attributes(
         self,
@@ -457,12 +507,15 @@ class KGBase:
             CoreResult 结构
         """
         logger.info(f"KGBase: 迁移属性 {from_entity} -> {to_entity}")
-        return core_move_attributes(
+        result = core_move_attributes(
             from_entity=from_entity,
             to_entity=to_entity,
             repos=self.repos,
             source_info=source_info
         )
+        if result.get("success"):
+            self._publish_event("ENTITY_UPDATED", {"from_entity": from_entity, "to_entity": to_entity})
+        return result
     
     # ============================================================================
     # 完整性维护接口

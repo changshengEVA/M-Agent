@@ -111,7 +111,7 @@ class AliasThenEmbeddingLLMStrategy(ResolutionStrategy):
         
         logger.info(f"初始化 {self.name}: threshold={similarity_threshold}, top_k={top_k}, use_threshold={use_threshold}")
     
-    def _alias_match(self, entity_id: str, entity_library: EntityLibrary) -> Optional[str]:
+    def _alias_match(self, entity_id: str, entity_library: EntityLibrary, exclude_unresolved=False) -> Optional[str]:
         """
         别名匹配
         
@@ -124,8 +124,12 @@ class AliasThenEmbeddingLLMStrategy(ResolutionStrategy):
         if entity_library.name_exists(entity_id):
             # 获取对应的实体记录
             record = entity_library.get_entity_by_name(entity_id)
-            if record:
-                return record.entity_id
+            if exclude_unresolved:
+                if record and record.resolved:
+                    return record.entity_id
+            else:
+                if record:
+                    return record.entity_id
         
         return None
     
@@ -142,39 +146,40 @@ class AliasThenEmbeddingLLMStrategy(ResolutionStrategy):
         Returns:
             相似实体列表，每个元素为 (entity_id, 相似度)
         """
-        # 生成entity_id的embedding
-        try:
-            query_embedding = self.embed_func(entity_id)
-        except Exception as e:
-            logger.error(f"生成entity_id的embedding失败 {entity_id}: {e}")
-            return []
+        # 首先尝试从 library 中获取实体的 embedding
+        query_embedding = None
+        
+        # 检查实体是否在 library 中
+        if entity_id in entity_library.embeddings:
+            query_embedding = entity_library.embeddings[entity_id]
+            logger.debug(f"从 library 中获取实体 embedding: {entity_id}")
+        else:
+            # 如果实体不在 library 中，尝试调用 init_entity_embedding 生成并保存
+            logger.info(f"实体 {entity_id} 没有 embedding，尝试初始化")
+            
+            # 调用 library 的 init_entity_embedding 方法
+            success = entity_library.init_entity_embedding(entity_id)
+            if success:
+                query_embedding = entity_library.embeddings.get(entity_id)
+                logger.info(f"初始化实体 embedding 成功: {entity_id}")
+            else:
+                logger.warning(f"初始化实体 embedding 失败: {entity_id}")
+                return []
         
         if not query_embedding:
-            logger.warning(f"生成entity_id的embedding为空: {entity_id}")
+            logger.warning(f"实体 embedding 为空: {entity_id}")
             return []
         
-        # 获取实体库中所有有embedding的实体
-        candidate_entities = []
-        for entity_id_in_lib, embedding in entity_library.embeddings.items():
-            if embedding:
-                # 计算余弦相似度
-                similarity = self._cosine_similarity(query_embedding, embedding)
-                candidate_entities.append((entity_id_in_lib, similarity))
+        # 使用 library 的 search_by_embedding 方法进行搜索
+        # 注意：使用 exclude_unresolved=True 防止实体解析成自己（self-match）
+        candidate_entities = entity_library.search_by_embedding(
+            embedding=query_embedding,
+            threshold=self.similarity_threshold if self.use_threshold else 0.0,
+            top_k=self.top_k,
+            exclude_unresolved=True  # 只匹配已解析的实体，防止 self-match
+        )
         
-        if not candidate_entities:
-            return []
-        
-        # 按相似度排序
-        candidate_entities.sort(key=lambda x: x[1], reverse=True)
-        
-        # 根据模式筛选候选
-        if self.use_threshold:
-            # 阈值模式：返回超过阈值的候选
-            filtered = [c for c in candidate_entities if c[1] >= self.similarity_threshold]
-            return filtered[:self.top_k]  # 即使使用阈值模式，也限制返回数量
-        else:
-            # topk模式：返回前k个候选
-            return candidate_entities[:self.top_k]
+        return candidate_entities
     
     def _llm_judgment(
         self, 
@@ -283,27 +288,6 @@ class AliasThenEmbeddingLLMStrategy(ResolutionStrategy):
         logger.warning(f"无法解析LLM响应: {response}")
         return None
     
-    def _cosine_similarity(self, vec1: List[float], vec2: List[float]) -> float:
-        """计算余弦相似度"""
-        if not vec1 or not vec2:
-            return 0.0
-        
-        # 确保向量长度相同
-        min_len = min(len(vec1), len(vec2))
-        v1 = np.array(vec1[:min_len])
-        v2 = np.array(vec2[:min_len])
-        
-        # 计算余弦相似度
-        dot_product = np.dot(v1, v2)
-        norm1 = np.linalg.norm(v1)
-        norm2 = np.linalg.norm(v2)
-        
-        if norm1 == 0 or norm2 == 0:
-            return 0.0
-        
-        similarity = dot_product / (norm1 * norm2)
-        return float(similarity)
-    
     def resolve(
         self, 
         entity_id: str, 
@@ -322,7 +306,7 @@ class AliasThenEmbeddingLLMStrategy(ResolutionStrategy):
         logger.info(f"开始解析实体: {entity_id}")
         
         # 1. 别名匹配
-        alias_match_target = self._alias_match(entity_id, entity_library)
+        alias_match_target = self._alias_match(entity_id, entity_library, exclude_unresolved=True)
         if alias_match_target:
             logger.info(f"别名匹配成功: {entity_id} -> {alias_match_target}")
             return create_same_as_existing_decision(

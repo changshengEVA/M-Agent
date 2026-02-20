@@ -15,6 +15,8 @@ from memory.memory_core.services_bank.entity_resolution.service import (
     EntityResolutionService,
     create_default_resolution_service
 )
+from memory.memory_core.system.event_bus import EventBus
+from memory.memory_core.system.event_types import EventType
 
 # 导入 load_model 中的 OpenAI 模型函数
 from load_model.OpenAIcall import get_llm, get_embed_model
@@ -78,20 +80,28 @@ class MemoryCore:
         logger.info(f"关系目录: {self.relation_dir}")
         logger.info(f"实体库路径: {self.entity_library_path}")
         
-        # 2. 初始化 KGBase
+        # 2. 初始化 EventBus
+        self.event_bus = EventBus()
+        logger.info("EventBus 初始化完成")
+        
+        # 3. 初始化 KGBase（传入 event_bus）
         self.kg_base = self._init_kg_base()
         
-        # 3. 初始化 LLM 和 Embed 函数
+        # 4. 初始化 LLM 和 Embed 函数
         self.llm_func, self.embed_func = self._init_llm_embed(llm_func, embed_func)
         
-        # 4. 初始化服务注册列表
-        self.services = []
-        
-        # 5. 初始化 EntityResolutionService（不再传入kg_base）
+        # 5. 初始化 EntityResolutionService并进行注册
         self.entity_resolution_service = self._init_entity_resolution_service()
-        
-        # 6. 注册 entity_resolution_service
         self.register_service(self.entity_resolution_service)
+
+        self.feature_search = None
+        
+        # 8. 根据重构原则，MemoryCore 不再注册自身到 EventBus
+        # 不再监听 ENTITY_ADDED 事件来自动触发解析
+        # 解析将由显式的 Resolution Pass 调度
+        
+        # 9. 发布系统初始化事件
+        self.event_bus.publish(EventType.SYSTEM_INITIALIZED, {})
         
         logger.info("MemoryCore 初始化完成")
     
@@ -100,7 +110,8 @@ class MemoryCore:
         logger.info(f"初始化 KGBase: entity_dir={self.entity_dir}, relation_dir={self.relation_dir}")
         return KGBase(
             entity_dir=self.entity_dir,
-            relation_dir=self.relation_dir
+            relation_dir=self.relation_dir,
+            event_bus=self.event_bus
         )
     
     def _init_llm_embed(
@@ -144,31 +155,84 @@ class MemoryCore:
         return service
     
     def _align_entity_library_with_kg(self, service: EntityResolutionService) -> None:
-        """对齐实体库与 KG 中的实体"""
+        """
+        初始化 EntityLibrary 与 KG 的同步
+        
+        比对 library 和 kg_data 中的内容，如果对不上就直接调用 library 中的 rebuild_from_kg 进行重建，
+        然后再用 resolve_unresolved_entities，这样就对齐了。
+        """
         try:
-            kg_entity_list = self.kg_base.list_entity_ids()
-            logger.info(f"KG 中有 {len(kg_entity_list)} 个实体，开始对齐实体库")
+            # 1. 获取 KG 中的所有实体 ID
+            kg_entity_ids = set(self.kg_base.list_entity_ids())
+            logger.info(f"KG 中有 {len(kg_entity_ids)} 个实体")
             
-            if kg_entity_list:
-                stats = service.align_library_with_kg_entities(kg_entity_list)
-                logger.info(f"实体库对齐完成: {stats}")
+            # 2. 获取 EntityLibrary 中的所有实体 ID
+            library_entity_ids = set()
+            for entity_id in service.entity_library.entities.keys():
+                library_entity_ids.add(entity_id)
+            logger.info(f"EntityLibrary 中有 {len(library_entity_ids)} 个实体")
+            
+            # 3. 比较两者是否一致
+            if kg_entity_ids == library_entity_ids:
+                logger.info("EntityLibrary 与 KG 实体一致，无需重建")
                 
-                # 保存 Library 数据到文件
+                # 尝试加载已有的 Library 数据
                 try:
                     if hasattr(service, 'data_path') and service.data_path:
-                        save_success = service.entity_library.save_to_path(service.data_path)
-                        if save_success:
-                            logger.info(f"Library 数据已保存到: {service.data_path}")
+                        load_success = service.entity_library.load_from_path(service.data_path)
+                        if load_success:
+                            logger.info(f"EntityLibrary 从文件加载成功: {service.data_path}")
                         else:
-                            logger.warning(f"Library 数据保存失败: {service.data_path}")
+                            logger.info(f"EntityLibrary 文件不存在或加载失败，将从头构建: {service.data_path}")
                     else:
-                        logger.debug("未配置 data_path，跳过 Library 保存")
-                except Exception as save_e:
-                    logger.warning(f"保存 Library 数据时出错: {save_e}")
+                        logger.debug("未配置 data_path，EntityLibrary 将从头构建")
+                except Exception as load_e:
+                    logger.warning(f"加载 EntityLibrary 数据时出错: {load_e}")
+                    
             else:
-                logger.info("KG 中暂无实体，跳过对齐")
+                logger.warning(f"EntityLibrary 与 KG 实体不一致，需要重建")
+                logger.info(f"KG 中有但 Library 中没有的实体: {kg_entity_ids - library_entity_ids}")
+                logger.info(f"Library 中有但 KG 中没有的实体: {library_entity_ids - kg_entity_ids}")
+                
+                # 4. 构建 kg_data 用于重建
+                kg_data = {"entities": []}
+                for entity_id in kg_entity_ids:
+                    success, entity_data = self.kg_base.repos.entity.load(entity_id)
+                    if success:
+                        # 确保实体数据包含必要的字段
+                        entity_info = {
+                            "id": entity_id,
+                            "name": entity_data.get("name", entity_id),
+                            "type": entity_data.get("type"),
+                            "metadata": entity_data.get("metadata", {})
+                        }
+                        kg_data["entities"].append(entity_info)
+                    else:
+                        logger.warning(f"无法加载实体 {entity_id} 的详细信息")
+                
+                # 5. 调用 rebuild_from_kg 进行重建
+                logger.info(f"开始从 KG 重建 EntityLibrary，共 {len(kg_data['entities'])} 个实体")
+                rebuild_success = service.entity_library.rebuild_from_kg(kg_data)
+                if rebuild_success:
+                    logger.info("EntityLibrary 重建成功")
+                    
+                    # 6. 调用 resolve_unresolved_entities 对齐
+                    logger.info("开始解析未解析的实体以完成对齐")
+                    decisions = service.resolve_unresolved_entities()
+                    logger.info(f"解析完成，共 {len(decisions)} 个决策")
+                    
+                    # 保存重建后的 Library 数据
+                    if hasattr(service, 'data_path') and service.data_path:
+                        save_success = service.save_library()
+                        if save_success:
+                            logger.info(f"EntityLibrary 数据保存成功: {service.data_path}")
+                        else:
+                            logger.warning(f"EntityLibrary 数据保存失败: {service.data_path}")
+                else:
+                    logger.error("EntityLibrary 重建失败")
+                    
         except Exception as e:
-            logger.warning(f"对齐实体库时出错: {e}")
+            logger.warning(f"初始化 EntityLibrary 同步时出错: {e}")
     
     # ============================================================================
     # 公开接口
@@ -214,116 +278,105 @@ class MemoryCore:
             memory_core=self  # 传递 MemoryCore 实例
         )
     
+    def search_feature_by_entity_id():
+        
+        pass
     # ============================================================================
     # 服务注册与事件广播
     # ============================================================================
     
     def register_service(self, service: Any) -> None:
         """
-        注册服务
+        注册服务到 EventBus
         
         Args:
-            service: 服务实例，需要实现事件处理接口（如 on_entity_merged）
+            service: 服务实例，必须是 BaseService 的子类
         """
-        self.services.append(service)
-        logger.info(f"注册服务: {service.__class__.__name__}")
+        # 验证服务是 BaseService 的子类
+        if hasattr(service, 'get_subscribed_events') and hasattr(service, 'handle_event'):
+            self.event_bus.register(service)
+            logger.info(f"注册服务到 EventBus: {service.__class__.__name__}")
+        else:
+            logger.warning(f"服务 {service.__class__.__name__} 不是 BaseService 子类，无法注册到 EventBus")
     
-    def merge_entities(self, source_id: str, target_id: str) -> Dict[str, Any]:
+    
+    def run_entity_resolution_pass(self) -> Dict[str, Any]:
         """
-        统一 merge 入口
+        执行实体解析阶段（Resolution Pass）
         
-        MemoryCore 成为唯一结构修改入口，执行 KG 合并并广播事件
+        行为如下：
+        Step 1：调用 entity_resolution_service.resolve_unresolved_entities()
+        Step 2：MemoryCore 根据 decision 决定是否执行 merge
+        Step 3：不要手动更新 Library。merge 会触发 ENTITY_MERGED event，
+                Service Listener 会自动同步 Library。
         
-        Args:
-            source_id: 源实体ID（将被合并）
-            target_id: 目标实体ID（保留）
-            
         Returns:
-            KG 合并操作结果
+            解析阶段执行结果
         """
-        logger.info(f"执行实体合并: {source_id} -> {target_id}")
+        logger.info("开始执行实体解析阶段（Resolution Pass）")
         
-        # 调用 KGBase 执行合并（注意参数顺序：target_id, source_id）
-        result = self.kg_base.merge_entities(target_id=target_id, source_id=source_id)
+        # Step 1: 获取解析决策
+        decisions = self.entity_resolution_service.resolve_unresolved_entities()
+        logger.info(f"获取到 {len(decisions)} 个解析决策")
         
-        # 如果合并成功，广播事件
-        if result.get("success", False):
-            self._notify_services("entity_merged", source_id=source_id, target_id=target_id, result=result)
+        results = {
+            "total_decisions": len(decisions),
+            "same_as_existing": 0,
+            "new_entities": 0,
+            "merged": 0,
+            "merge_errors": [],
+            "decisions": []
+        }
         
-        return result
-    
-    def _notify_services(self, event_name: str, **kwargs) -> None:
-        """
-        事件广播函数
-        
-        通知所有注册的服务处理事件
-        
-        Args:
-            event_name: 事件名称（如 "entity_merged"）
-            **kwargs: 事件参数
-        """
-        logger.info(f"广播事件: {event_name}, 参数: {kwargs}")
-        
-        for service in self.services:
-            handler_name = f"on_{event_name}"
-            if hasattr(service, handler_name):
+        # Step 2: 根据 decision 决定是否执行 merge
+        for decision in decisions:
+            decision_dict = decision.to_dict()
+            results["decisions"].append(decision_dict)
+            
+            if decision.is_same_as_existing() and decision.target_entity_id:
+                results["same_as_existing"] += 1
+                
+                # 执行 KG 合并
                 try:
-                    handler = getattr(service, handler_name)
-                    handler(**kwargs)
-                    logger.debug(f"服务 {service.__class__.__name__} 处理事件 {event_name} 成功")
+                    logger.info(f"执行实体合并: {decision.source_entity_id} -> {decision.target_entity_id}")
+                    merge_result = self.kg_base.merge_entities(
+                        target_id=decision.target_entity_id,
+                        source_id=decision.source_entity_id
+                    )
+                    
+                    if merge_result.get("success", False):
+                        results["merged"] += 1
+                        logger.info(f"实体合并成功: {decision.source_entity_id} -> {decision.target_entity_id}")
+                    else:
+                        error_msg = f"合并失败: {merge_result.get('error', 'unknown')}"
+                        results["merge_errors"].append({
+                            "source": decision.source_entity_id,
+                            "target": decision.target_entity_id,
+                            "error": error_msg
+                        })
+                        logger.warning(f"实体合并失败: {error_msg}")
+                        
                 except Exception as e:
-                    logger.error(f"服务 {service.__class__.__name__} 处理事件 {event_name} 时出错: {e}")
-    
-    def resolve_entity(self, entity_id: str, context: Optional[Dict[str, Any]] = None) -> Any:
-        """
-        接管实体解析流程
+                    error_msg = f"合并异常: {str(e)}"
+                    results["merge_errors"].append({
+                        "source": decision.source_entity_id,
+                        "target": decision.target_entity_id,
+                        "error": error_msg
+                    })
+                    logger.error(f"实体合并异常: {e}")
+                    
+            elif decision.is_new_entity():
+                results["new_entities"] += 1
+                logger.info(f"新建实体判定: {decision.source_entity_id}（不执行任何操作）")
         
-        新增：统一解析入口，由 MemoryCore 协调解析与合并
+        # Step 3: 不要手动更新 Library（由事件驱动自动同步）
+        logger.info(f"解析阶段完成: 总计 {results['total_decisions']} 个决策, "
+                   f"等价实体 {results['same_as_existing']} 个, "
+                   f"新建实体 {results['new_entities']} 个, "
+                   f"成功合并 {results['merged']} 个")
         
-        Args:
-            entity_id: 待解析的实体ID
-            context: 上下文信息
-            
-        Returns:
-            解析判定结果
-        """
-        logger.info(f"MemoryCore 接管实体解析: {entity_id}")
-        
-        # 调用 EntityResolutionService 进行判定
-        decision = self.entity_resolution_service.resolve_entity(entity_id, context)
-        
-        # 如果判定为等价实体，执行合并
-        if decision.is_same_as_existing() and decision.target_entity_id:
-            logger.info(f"判定为等价实体，执行合并: {decision.source_entity_id} -> {decision.target_entity_id}")
-            
-            # 先应用判定结果（更新 EntityLibrary）
-            apply_result = self.entity_resolution_service.apply_decision(decision)
-            
-            # 执行 KG 合并
-            merge_result = self.merge_entities(
-                source_id=decision.source_entity_id,
-                target_id=decision.target_entity_id
-            )
-            
-            # 返回组合结果
-            return {
-                "decision": decision,
-                "apply_result": apply_result,
-                "merge_result": merge_result
-            }
-        
-        # 如果是新建实体，只应用判定结果
-        elif decision.is_new_entity():
-            logger.info(f"判定为新建实体: {decision.source_entity_id}")
-            apply_result = self.entity_resolution_service.apply_decision(decision)
-            return {
-                "decision": decision,
-                "apply_result": apply_result,
-                "merge_result": None
-            }
-        
-        # 其他情况
-        return {"decision": decision}
+        results["success"] = len(results["merge_errors"]) == 0
+        return results
     
     # ============================================================================
     # 辅助方法

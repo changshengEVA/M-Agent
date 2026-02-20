@@ -22,13 +22,24 @@ from dataclasses import dataclass, field
 try:
     # 尝试相对导入（当作为包的一部分时）
     from .decision import ResolutionDecision, ResolutionType
-    from .library import EntityLibrary
+    from .library import EntityLibrary, EntityRecord
     from .strategies import ResolutionStrategy, AliasThenEmbeddingLLMStrategy
 except ImportError:
     # 回退到直接导入（当直接运行时）
     from decision import ResolutionDecision, ResolutionType
-    from library import EntityLibrary
+    from library import EntityLibrary, EntityRecord
     from strategies import ResolutionStrategy, AliasThenEmbeddingLLMStrategy
+
+# 导入事件总线相关模块
+try:
+    from memory.memory_core.services_bank.base_service import BaseService
+    from memory.memory_core.system.event_types import EventType
+except ImportError:
+    # 回退到相对导入
+    import sys
+    sys.path.append("..")
+    from base_service import BaseService
+    from system.event_types import EventType
 
 # 类型检查时导入KGBase，避免循环导入
 if TYPE_CHECKING:
@@ -63,7 +74,7 @@ class ResolutionResult:
         }
 
 
-class EntityResolutionService:
+class EntityResolutionService(BaseService):
     """实体解析服务"""
     
     def __init__(
@@ -101,6 +112,45 @@ class EntityResolutionService:
         )
         
         logger.info("初始化 EntityResolutionService")
+    
+    def get_subscribed_events(self):
+        """
+        返回监听的 EventType 列表
+        
+        实体解析服务需要监听实体添加、合并和重命名事件，以便更新 EntityLibrary。
+        """
+        return [
+            EventType.ENTITY_ADDED,
+            EventType.ENTITY_MERGED,
+            EventType.ENTITY_RENAMED,
+        ]
+    
+    def handle_event(self, event_type: str, payload: dict) -> None:
+        """
+        处理事件
+        
+        Args:
+            event_type: 事件类型字符串
+            payload: 事件负载字典
+        """
+        self._log_event_handling(event_type, payload)
+        
+        if event_type == EventType.ENTITY_MERGED:
+            source_id = payload.get("source_id")
+            target_id = payload.get("target_id")
+            if source_id and target_id:
+                self.on_entity_merged(source_id, target_id)
+        elif event_type == EventType.ENTITY_ADDED:
+            entity_id = payload.get("entity_id")
+            if entity_id:
+                self.on_entity_added(entity_id)
+        elif event_type == EventType.ENTITY_RENAMED:
+            old_id = payload.get("old_id")
+            new_id = payload.get("new_id")
+            if old_id and new_id:
+                self.on_entity_renamed(old_id, new_id)
+        else:
+            logger.debug(f"EntityResolutionService 忽略未处理事件: {event_type}")
     
     def on_entity_merged(self, source_id: str, target_id: str, **kwargs) -> None:
         """
@@ -153,6 +203,116 @@ class EntityResolutionService:
                 
         except Exception as e:
             logger.error(f"处理实体合并事件时出错: {e}")
+    
+    def on_entity_added(self, entity_id: str) -> None:
+        """
+        监听实体添加事件
+        
+        当 KG 中添加新实体时，仅同步状态到 EntityLibrary，不触发解析。
+        
+        Args:
+            entity_id: 新添加的实体ID
+        """
+        logger.info(f"收到实体添加事件，同步到 EntityLibrary: {entity_id}")
+        
+        try:
+            # 检查实体是否已在 EntityLibrary 中
+            if not self.entity_library.entity_exists(entity_id):
+                # 添加实体到 EntityLibrary
+                success = self.entity_library.add_entity(
+                    entity_id=entity_id,
+                    canonical_name=entity_id,
+                    metadata={
+                        "added_via": "entity_added_event",
+                        "timestamp": time.time()
+                    }
+                )
+                
+                if success:
+                    # 标记实体为未解析状态
+                    record = self.entity_library.get_entity(entity_id)
+                    if record:
+                        record.mark_as_unresolved()
+                        logger.info(f"实体已添加到 EntityLibrary 并标记为未解析: {entity_id}")
+                    else:
+                        logger.warning(f"无法获取新添加的实体记录: {entity_id}")
+                else:
+                    logger.warning(f"无法添加实体到 EntityLibrary: {entity_id}")
+            else:
+                # 实体已存在，确保标记为未解析状态
+                record = self.entity_library.get_entity(entity_id)
+                if record:
+                    record.mark_as_unresolved()
+                    logger.info(f"实体已存在，标记为未解析: {entity_id}")
+                else:
+                    logger.warning(f"实体存在但无法获取记录: {entity_id}")
+                
+        except Exception as e:
+            logger.error(f"处理实体添加事件时出错 {entity_id}: {e}")
+    
+    def on_entity_renamed(self, old_id: str, new_id: str) -> None:
+        """
+        监听实体重命名事件
+        
+        当 KG 中实体重命名时，更新 EntityLibrary 以保持同步。
+        
+        Args:
+            old_id: 原实体 ID
+            new_id: 新实体 ID
+        """
+        logger.info(f"收到实体重命名事件: {old_id} -> {new_id}")
+        
+        # 检查原实体是否在 EntityLibrary 中
+        if old_id not in self.entity_library.entities:
+            logger.debug(f"原实体 {old_id} 不在 EntityLibrary 中，跳过")
+            return
+        
+        try:
+            # 获取原实体记录
+            old_record = self.entity_library.entities[old_id]
+            
+            # 创建新实体记录，继承原记录的所有属性
+            new_record = EntityRecord(
+                entity_id=new_id,
+                canonical_name=new_id,  # 使用新ID作为规范化名称
+                aliases=old_record.aliases.copy(),
+                embedding=old_record.embedding,
+                entity_type=old_record.entity_type,
+                metadata=old_record.metadata.copy(),
+                resolved=old_record.resolved,
+                last_decision=old_record.last_decision
+            )
+            
+            # 将 old_id 添加为新实体的别名
+            new_record.aliases.append(old_id)
+            
+            # 从索引中移除原实体
+            del self.entity_library.entities[old_id]
+            
+            # 从名称映射中移除原实体的所有名称
+            for name in old_record.get_all_names():
+                if name in self.entity_library.name_to_entity and self.entity_library.name_to_entity[name] == old_id:
+                    del self.entity_library.name_to_entity[name]
+            
+            # 从嵌入向量映射中移除原实体
+            if old_id in self.entity_library.embeddings:
+                del self.entity_library.embeddings[old_id]
+            
+            # 添加新实体到索引
+            self.entity_library.entities[new_id] = new_record
+            
+            # 建立新实体的名称映射
+            for name in new_record.get_all_names():
+                self.entity_library.name_to_entity[name] = new_id
+            
+            # 添加嵌入向量
+            if new_record.embedding:
+                self.entity_library.embeddings[new_id] = new_record.embedding
+            
+            logger.info(f"EntityLibrary 更新成功: {old_id} -> {new_id}")
+            
+        except Exception as e:
+            logger.error(f"处理实体重命名事件失败 {old_id} -> {new_id}: {e}")
     
     def _init_default_strategy(
         self,
@@ -242,166 +402,6 @@ class EntityResolutionService:
                 timestamp=time.time()
             )
     
-    def apply_decision(self, decision: ResolutionDecision) -> ResolutionResult:
-        """
-        应用解析判定结果
-        
-        根据判定结果更新 EntityLibrary，并在必要时调用 KG 操作
-        
-        Args:
-            decision: 解析判定结果
-            
-        Returns:
-            ResolutionResult 应用结果
-        """
-        logger.info(f"开始应用解析判定: {decision}")
-        
-        result = ResolutionResult(decision=decision)
-        
-        try:
-            if decision.is_new_entity():
-                # 新建实体
-                logger.info(f"新建实体: {decision.source_entity_id}")
-                
-                # 1. 更新 EntityLibrary（不修改KG_data本体）
-                success = self.entity_library.add_entity(
-                    entity_id=decision.source_entity_id,
-                    canonical_name=decision.source_entity_id,
-                    metadata={
-                        "resolution_strategy": decision.strategy_name,
-                        "resolution_confidence": decision.confidence,
-                        "resolution_timestamp": decision.timestamp
-                    }
-                )
-                
-                if success:
-                    result.library_updated = True
-                    logger.info(f"EntityLibrary 更新成功: {decision.source_entity_id}")
-                    
-                    # 2. 为新实体生成embedding
-                    if self.embed_func:
-                        try:
-                            embedding = self.embed_func(decision.source_entity_id)
-                            if embedding:
-                                # 更新实体的embedding
-                                record = self.entity_library.get_entity(decision.source_entity_id)
-                                if record:
-                                    record.embedding = embedding
-                                    self.entity_library.embeddings[decision.source_entity_id] = embedding
-                                    logger.info(f"新实体embedding生成成功: {decision.source_entity_id}")
-                        except Exception as e:
-                            logger.warning(f"为新实体生成embedding失败: {e}")
-                else:
-                    logger.warning(f"EntityLibrary 更新失败: {decision.source_entity_id}")
-                
-                result.applied = True
-                return result
-            
-            elif decision.is_same_as_existing() and decision.target_entity_id:
-                # 等价实体
-                logger.info(f"等价实体: {decision.source_entity_id} -> {decision.target_entity_id}")
-                
-                # 1. 更新 EntityLibrary（添加别名）
-                success = self.entity_library.add_alias(
-                    entity_id=decision.target_entity_id,
-                    alias=decision.source_entity_id
-                )
-                
-                if success:
-                    result.library_updated = True
-                    logger.info(f"EntityLibrary 添加别名成功: {decision.source_entity_id} -> {decision.target_entity_id}")
-                else:
-                    logger.warning(f"EntityLibrary 添加别名失败: {decision.source_entity_id} -> {decision.target_entity_id}")
-                
-                # 2. 不再调用 KG 合并回调，由 MemoryCore 负责执行合并
-                # 只更新 EntityLibrary，不执行 KG 操作
-                logger.info(f"实体判定为等价: {decision.source_entity_id} -> {decision.target_entity_id}")
-                logger.info("KG 合并操作将由 MemoryCore 执行")
-                
-                result.applied = True
-                return result
-            
-            else:
-                # 无效的判定结果
-                error_msg = f"无效的判定结果: {decision}"
-                logger.error(error_msg)
-                result.error = error_msg
-                return result
-            
-        except Exception as e:
-            error_msg = f"应用解析判定失败: {e}"
-            logger.error(error_msg)
-            result.error = error_msg
-            return result
-    
-    def resolve_and_apply(
-        self, 
-        entity_id: str, 
-        context: Optional[Dict[str, Any]] = None
-    ) -> ResolutionResult:
-        """
-        解析并应用实体
-        
-        组合 resolve_entity 和 apply_decision 的便捷方法
-        
-        Args:
-            entity_id: 待解析的实体ID
-            context: 上下文信息
-            
-        Returns:
-            ResolutionResult 完整结果
-        """
-        # 1. 解析实体
-        decision = self.resolve_entity(entity_id, context)
-        
-        # 2. 应用判定结果
-        result = self.apply_decision(decision)
-        
-        return result
-    
-    def batch_resolve_and_apply(
-        self, 
-        entity_ids: List[str], 
-        contexts: Optional[List[Dict[str, Any]]] = None
-    ) -> List[ResolutionResult]:
-        """
-        批量解析并应用实体
-        
-        Args:
-            entity_ids: 实体ID列表
-            contexts: 上下文信息列表（可选，与 entity_ids 一一对应）
-            
-        Returns:
-            ResolutionResult 结果列表
-        """
-        results = []
-        
-        for i, entity_id in enumerate(entity_ids):
-            context = contexts[i] if contexts and i < len(contexts) else None
-            
-            try:
-                result = self.resolve_and_apply(entity_id, context)
-                results.append(result)
-                
-                logger.info(f"批量处理进度: {i+1}/{len(entity_ids)} - {entity_id} -> {result.decision.resolution_type.value}")
-                
-            except Exception as e:
-                logger.error(f"批量处理实体失败 {entity_id}: {e}")
-                error_result = ResolutionResult(
-                    decision=ResolutionDecision(
-                        resolution_type=ResolutionType.NEW_ENTITY,
-                        source_entity_id=entity_id,
-                        strategy_name="BatchError",
-                        confidence=0.0,
-                        evidence={"error": str(e)},
-                        timestamp=time.time()
-                    ),
-                    error=str(e)
-                )
-                results.append(error_result)
-        
-        return results
-    
     def get_library_stats(self) -> Dict[str, Any]:
         """获取实体库统计信息"""
         return self.entity_library.get_stats()
@@ -411,105 +411,152 @@ class EntityResolutionService:
         self.entity_library.clear()
         logger.info("清空实体库")
     
-    def align_library_with_kg_entities(self, kg_entity_list: List[str]) -> Dict[str, Any]:
+    def save_library(self) -> bool:
         """
-        对齐Library数据与KG实体数据列表
+        保存实体库数据到文件
         
-        执行以下操作：
-        1. 删掉Library中存在的但是KG的entity_list中不存在的
-        2. 标记搜罗entity_list中存在的但是Library中不存在的为一个列表
-        3. 对这个列表依次进行逐个的resolve_and_apply操作
-        
-        Args:
-            kg_entity_list: KG中的实体ID列表
-            
         Returns:
-            对齐操作的结果统计
+            是否成功保存
         """
-        logger.info(f"开始对齐Library与KG实体列表，KG实体数量: {len(kg_entity_list)}")
+        if not self.data_path:
+            logger.warning("未配置 data_path，无法保存实体库数据")
+            return False
         
-        # 获取Library中所有实体ID
-        library_entity_ids = set(self.entity_library.entities.keys())
-        kg_entity_set = set(kg_entity_list)
+        try:
+            success = self.entity_library.save_to_path(self.data_path)
+            if success:
+                logger.info(f"实体库数据保存成功: {self.data_path}")
+            else:
+                logger.warning(f"实体库数据保存失败: {self.data_path}")
+            return success
+        except Exception as e:
+            logger.error(f"保存实体库数据时出错: {e}")
+            return False
+    
+    def resolve_unresolved_entities(self) -> List[ResolutionDecision]:
+        """
+        批量解析未解析的实体
         
-        # 1. 找出Library中存在但KG中不存在的实体
-        library_only = library_entity_ids - kg_entity_set
-        removed_count = 0
+        遍历 EntityLibrary 中所有实体，找到 resolved == False 的实体，
+        调用策略进行解析，保存解析结果，并标记为已解析。
         
-        # 删除这些实体
-        for entity_id in library_only:
+        返回解析建议集合（proposal），不执行任何 KG 修改。
+        
+        Returns:
+            List[ResolutionDecision] 解析建议列表
+        """
+        logger.info("开始批量解析未解析的实体")
+        
+        decisions = []
+        
+        if not self.strategies:
+            logger.warning("未配置解析策略，无法解析")
+            return decisions
+        
+        # 使用第一个策略进行解析
+        strategy = self.strategies[0]
+        
+        # 首先统计未解析实体的总数
+        unresolved_entities = []
+        for entity_id, record in self.entity_library.entities.items():
+            if not record.resolved:
+                unresolved_entities.append((entity_id, record))
+        
+        total_unresolved = len(unresolved_entities)
+        logger.info(f"发现 {total_unresolved} 个未解析实体需要处理")
+        
+        if total_unresolved == 0:
+            logger.info("没有未解析的实体需要处理")
+            return decisions
+        
+        # 使用 tqdm 显示进度条
+        try:
+            from tqdm import tqdm
+            
+            # 配置 tqdm 以确保进度条能正确显示
+            # 使用 ascii 进度条确保在不同终端中都能显示
+            # 设置 mininterval 以减少刷新频率，避免与日志冲突
+            tqdm_kwargs = {
+                "desc": "解析实体",
+                "unit": "实体",
+                "total": total_unresolved,
+                "ascii": True,  # 使用 ASCII 字符确保兼容性
+                "mininterval": 0.5,  # 最小刷新间隔
+                "bar_format": "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
+            }
+            
+            # 创建进度条迭代器
+            progress_iterator = tqdm(unresolved_entities, **tqdm_kwargs)
+            
+        except ImportError:
+            logger.warning("tqdm 未安装，使用简单进度显示")
+            # 回退到简单枚举
+            progress_iterator = unresolved_entities
+        
+        # 使用进度条迭代器遍历未解析实体
+        for entity_id, record in progress_iterator:
             try:
-                # 从Library中删除实体
-                if entity_id in self.entity_library.entities:
-                    # 需要先删除名称映射
-                    record = self.entity_library.entities[entity_id]
-                    for name in record.get_all_names():
-                        if name in self.entity_library.name_to_entity:
-                            del self.entity_library.name_to_entity[name]
-                    
-                    # 删除实体记录
-                    del self.entity_library.entities[entity_id]
-                    
-                    # 删除embedding
-                    if entity_id in self.entity_library.embeddings:
-                        del self.entity_library.embeddings[entity_id]
-                    
-                    removed_count += 1
-                    logger.debug(f"删除Library中存在但KG中不存在的实体: {entity_id}")
+                # 更新进度条描述，显示当前处理的实体
+                if hasattr(progress_iterator, "set_description"):
+                    progress_iterator.set_description(f"解析: {entity_id[:20]}...")
+                
+                # 调用策略进行解析
+                decision = strategy.resolve(entity_id, self.entity_library, context=None)
+                decision.timestamp = time.time()
+                decision.source_entity_id = entity_id
+                
+                # 保存 decision 到 last_decision
+                record.last_decision = decision.to_dict()
+                
+                # 标记为已解析
+                record.mark_as_resolved(record.last_decision)
+                
+                # 添加到返回列表
+                decisions.append(decision)
+                
+                # 更新进度条后描述
+                if hasattr(progress_iterator, "set_postfix"):
+                    result_type = decision.resolution_type.value[:10]
+                    progress_iterator.set_postfix(result=result_type, conf=f"{decision.confidence:.2f}")
+                
             except Exception as e:
-                logger.warning(f"删除实体失败 {entity_id}: {e}")
+                logger.error(f"解析实体失败 {entity_id}: {e}")
+                # 创建一个错误决策
+                error_decision = ResolutionDecision(
+                    resolution_type=ResolutionType.NEW_ENTITY,
+                    source_entity_id=entity_id,
+                    strategy_name=strategy.name,
+                    confidence=0.0,
+                    evidence={"error": str(e)},
+                    timestamp=time.time()
+                )
+                decisions.append(error_decision)
+                
+                # 更新进度条显示错误
+                if hasattr(progress_iterator, "set_postfix"):
+                    progress_iterator.set_postfix(error="失败")
         
-        # 2. 找出KG中存在但Library中不存在的实体
-        kg_only = kg_entity_set - library_entity_ids
-        kg_only_list = list(kg_only)
+        logger.info(f"批量解析完成，共解析 {len(decisions)} 个实体")
         
-        logger.info(f"对齐结果: Library中存在但KG中不存在 {len(library_only)} 个, KG中存在但Library中不存在 {len(kg_only)} 个")
+        # 解析完成后自动存档
+        if decisions and self.data_path:
+            save_success = self.save_library()
+            if save_success:
+                logger.info(f"解析完成后自动存档成功: {self.data_path}")
+            else:
+                logger.warning(f"解析完成后自动存档失败: {self.data_path}")
         
-        # 3. 对KG中存在但Library中不存在的实体进行逐个解析和应用
-        resolved_results = []
-        for entity_id in kg_only_list:
-            try:
-                result = self.resolve_and_apply(entity_id)
-                resolved_results.append({
-                    "entity_id": entity_id,
-                    "resolution_type": result.decision.resolution_type.value,
-                    "success": result.error is None,
-                    "error": result.error
-                })
-                logger.debug(f"处理KG中存在但Library中不存在的实体: {entity_id} -> {result.decision.resolution_type.value}")
-            except Exception as e:
-                logger.error(f"处理实体失败 {entity_id}: {e}")
-                resolved_results.append({
-                    "entity_id": entity_id,
-                    "resolution_type": "ERROR",
-                    "success": False,
-                    "error": str(e)
-                })
-        
-        # 统计结果
-        success_count = sum(1 for r in resolved_results if r["success"])
-        
-        result_stats = {
-            "kg_entity_count": len(kg_entity_list),
-            "library_entity_count_before": len(library_entity_ids),
-            "library_entity_count_after": self.entity_library.get_entity_count(),
-            "removed_from_library": removed_count,
-            "new_from_kg": len(kg_only_list),
-            "resolved_success": success_count,
-            "resolved_failed": len(resolved_results) - success_count,
-            "removed_entities": list(library_only),
-            "new_entities": kg_only_list,
-            "resolution_results": resolved_results
-        }
-        
-        logger.info(f"对齐完成: 删除 {removed_count} 个实体, 新增 {len(kg_only_list)} 个实体, 成功解析 {success_count} 个")
-        return result_stats
+        return decisions
     
     def __str__(self) -> str:
         """字符串表示"""
         stats = self.get_library_stats()
         strategy_names = [s.name for s in self.strategies]
-        return f"EntityResolutionService(entities={stats['entity_count']}, strategies={strategy_names})"
+        
+        # 统计未解析实体数量
+        unresolved_count = sum(1 for record in self.entity_library.entities.values() if not record.resolved)
+        
+        return f"EntityResolutionService(entities={stats['entity_count']}, unresolved={unresolved_count}, strategies={strategy_names})"
 
 
 # 便捷函数
