@@ -12,7 +12,6 @@ from enum import Enum
 class EventType(str, Enum):
     """
     事件类型枚举
-    
     所有事件类型均为字符串，便于序列化和日志记录。
     """
     
@@ -79,6 +78,9 @@ class EventType(str, Enum):
             cls.RELATIONS_REDIRECTED,
         ]
     
+    @classmethod
+    def get_feature_events(cls) -> list:
+        pass
     @classmethod
     def get_all_events(cls) -> list:
         """获取所有事件类型"""

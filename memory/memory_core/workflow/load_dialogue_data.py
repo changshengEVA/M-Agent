@@ -365,7 +365,7 @@ def load_from_dialogue_path(
     }
     
     # 逐个处理文件
-    j_files = tqdm(sorted(json_files)) if use_tqdm else sorted(json_files)
+    j_files = tqdm(sorted(json_files), desc="构建KG_data") if use_tqdm else sorted(json_files)
     for json_file in j_files:
         logger.info(f"处理文件: {json_file.name}")
         

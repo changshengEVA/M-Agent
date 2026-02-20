@@ -166,9 +166,44 @@ class EntityResolutionService(BaseService):
         logger.info(f"收到实体合并事件: {source_id} -> {target_id}")
         
         try:
-            # 检查目标实体是否在 EntityLibrary 中
+            # Step 1: 收集源实体的所有别名（在删除之前）
+            source_aliases = []
+            if source_id in self.entity_library.entities:
+                # 获取源实体的所有名称（包括规范名称和别名）
+                source_record = self.entity_library.entities[source_id]
+                source_aliases = source_record.get_all_names()
+                logger.debug(f"源实体 {source_id} 的别名: {source_aliases}")
+            
+            # Step 2: 如果 source_id 存在于 EntityLibrary.entities，删除相关数据
+            if source_id in self.entity_library.entities:
+                logger.info(f"删除源实体 {source_id} 的相关数据")
+                
+                # 获取源实体的所有名称（包括规范名称和别名）
+                source_record = self.entity_library.entities[source_id]
+                source_names = source_record.get_all_names()
+                
+                # 从 name_to_entity 映射中删除源实体的所有名称
+                names_removed = 0
+                for name in source_names:
+                    if name in self.entity_library.name_to_entity:
+                        if self.entity_library.name_to_entity[name] == source_id:
+                            del self.entity_library.name_to_entity[name]
+                            names_removed += 1
+                            logger.debug(f"从 name_to_entity 中删除名称映射: {name} -> {source_id}")
+                
+                logger.info(f"从 name_to_entity 映射中删除了 {names_removed} 个名称映射")
+                
+                # 从 embeddings 中删除 source_id
+                if source_id in self.entity_library.embeddings:
+                    del self.entity_library.embeddings[source_id]
+                    logger.debug(f"删除嵌入向量: {source_id}")
+                
+                # 从 entities 中删除 source_id
+                del self.entity_library.entities[source_id]
+                logger.debug(f"删除实体记录: {source_id}")
+            
+            # Step 3: 确保 target_id 存在（如果不存在先 add_entity）
             if target_id not in self.entity_library.entities:
-                # 如果目标实体不在 Library 中，先添加它
                 logger.info(f"目标实体 {target_id} 不在 EntityLibrary 中，先添加")
                 add_success = self.entity_library.add_entity(
                     entity_id=target_id,
@@ -184,22 +219,46 @@ class EntityResolutionService(BaseService):
                     logger.warning(f"无法添加目标实体到 EntityLibrary: {target_id}")
                     return
             
-            # 更新 EntityLibrary：将源实体ID添加为目标实体的别名
-            success = self.entity_library.add_alias(
-                entity_id=target_id,
-                alias=source_id
-            )
+            # Step 4: 将源实体的所有别名重新映射到目标实体
+            aliases_added = 0
+            aliases_failed = 0
             
-            if success:
-                logger.info(f"EntityLibrary 更新成功: {source_id} 作为 {target_id} 的别名")
-            else:
-                # 如果添加别名失败，可能是别名已存在或其他原因
-                # 检查源实体是否已经在 Library 中
-                if source_id in self.entity_library.entities:
-                    # 如果源实体在 Library 中，可能需要更新其记录
-                    logger.info(f"源实体 {source_id} 已在 EntityLibrary 中，可能需要特殊处理")
+            for alias in source_aliases:
+                # 跳过目标实体本身（如果别名与目标实体ID相同）
+                if alias == target_id:
+                    logger.debug(f"跳过别名 {alias}，因为它与目标实体ID相同")
+                    continue
+                    
+                # 添加别名到目标实体
+                success = self.entity_library.add_alias(
+                    entity_id=target_id,
+                    alias=alias
+                )
                 
-                logger.warning(f"EntityLibrary 更新失败: {source_id} -> {target_id}")
+                if success:
+                    aliases_added += 1
+                    logger.debug(f"成功添加别名: {alias} -> {target_id}")
+                else:
+                    aliases_failed += 1
+                    logger.warning(f"添加别名失败: {alias} -> {target_id} (可能已存在)")
+            
+            logger.info(f"别名重新映射完成: 成功 {aliases_added} 个，失败 {aliases_failed} 个")
+            
+            # Step 5: 验证最终不变量
+            if source_id in self.entity_library.entities:
+                logger.error(f"严重错误: 合并后 source_id 仍然存在于 EntityLibrary: {source_id}")
+            else:
+                logger.debug(f"验证通过: source_id {source_id} 已从 EntityLibrary 中删除")
+            
+            # Step 6: 保存 EntityLibrary 到磁盘
+            if self.data_path:
+                save_success = self.entity_library.save_to_path(self.data_path)
+                if save_success:
+                    logger.info(f"EntityLibrary 已保存到磁盘: {self.data_path}")
+                else:
+                    logger.error(f"保存 EntityLibrary 到磁盘失败: {self.data_path}")
+            else:
+                logger.warning("没有设置 data_path，无法保存 EntityLibrary 到磁盘")
                 
         except Exception as e:
             logger.error(f"处理实体合并事件时出错: {e}")

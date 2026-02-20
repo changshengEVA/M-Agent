@@ -187,6 +187,40 @@ class EntityLibrary:
             # 创建目录（如果不存在）
             os.makedirs(dir_path, exist_ok=True)
             
+            # 步骤1：扫描目录下所有 *.json 文件，提取已有 entity_id
+            existing_files = set()
+            if os.path.exists(dir_path):
+                for filename in os.listdir(dir_path):
+                    if filename.endswith('.json'):
+                        # 提取 entity_id（文件名去掉 .json）
+                        entity_id = filename[:-5]  # 去掉 .json 后缀
+                        existing_files.add(entity_id)
+            
+            # 步骤2：计算当前内存中的实体ID集合
+            current_entities = set(self.entities.keys())
+            
+            # 步骤3：计算幽灵实体（存在于磁盘但不在内存中）
+            ghost_entities = existing_files - current_entities
+            
+            # 步骤4：删除幽灵实体文件
+            if ghost_entities:
+                logger.info(f"发现 {len(ghost_entities)} 个幽灵实体文件需要删除: {list(ghost_entities)[:10]}{'...' if len(ghost_entities) > 10 else ''}")
+                for ghost_id in ghost_entities:
+                    # 构建文件名（使用幽灵实体ID，确保文件名安全）
+                    safe_ghost_id = "".join(c for c in ghost_id if c.isalnum() or c in ('_', '-'))
+                    file_name = f"{safe_ghost_id}.json"
+                    file_path = os.path.join(dir_path, file_name)
+                    
+                    try:
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                            logger.debug(f"删除幽灵实体文件: {file_path}")
+                    except Exception as e:
+                        logger.warning(f"删除幽灵实体文件失败 {file_path}: {e}")
+            else:
+                logger.debug("未发现幽灵实体文件")
+            
+            # 步骤5：保存当前内存中的实体到文件
             saved_count = 0
             for entity_id, record in self.entities.items():
                 # 构建文件名（使用实体ID，确保文件名安全）

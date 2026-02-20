@@ -14,6 +14,7 @@ logging.basicConfig(
 
 # 设置特定模块的日志级别
 logging.getLogger('memory.memory_core').setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger('memory.memory_core.services_bank.entity_resolution').setLevel(logging.WARNING)
 
 print("=== 开始测试，日志已启用 ===")
@@ -26,21 +27,21 @@ memory_core = MemoryCore(
     llm_func=get_llm(0.0),
     embed_func=get_embed_model(),
     llm_temperature=0.0,
-    similarity_threshold=0.99,
+    similarity_threshold=0.88,
     top_k=3,
     use_threshold=True
 )
 
-#强制重新解析
-memory_core.entity_resolution_service.entity_library.reset_all_resolution_flags()
-memory_core.entity_resolution_service.resolve_unresolved_entities()
+# #强制重新解析并执行
+# memory_core.entity_resolution_service.entity_library.reset_all_resolution_flags()
+# memory_core.run_entity_resolution_pass()
 
-# 获取统计信息
+
+# memory_core.load_from_dialogue_path(Path("data/memory/testrt/kg_candidates"))
+# # 获取统计信息
 # kg_stats = memory_core.get_kg_stats()
 # print(f"  KG统计: {kg_stats}")
         
-# 获取实体解析统计
+# # 获取实体解析统计
 # er_stats = memory_core.get_entity_resolution_stats()
 # print(f"  实体解析统计: {er_stats}")
-
-# memory_core.load_from_dialogue_path(Path("data/memory/testrt/kg_candidates"))

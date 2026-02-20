@@ -162,19 +162,43 @@ class MemoryCore:
         然后再用 resolve_unresolved_entities，这样就对齐了。
         """
         try:
+            # 辅助函数：规范化实体ID（与 EntityRepository._sanitize_entity_name 保持一致）
+            def normalize_entity_id(entity_id: str) -> str:
+                """规范化实体ID，将空格替换为下划线，处理特殊字符"""
+                if not entity_id:
+                    return entity_id
+                # 去除首尾空格
+                normalized = entity_id.strip()
+                # 替换空格为下划线
+                normalized = normalized.replace(' ', '_')
+                # 替换其他可能的问题字符（简化版本，与 EntityRepository 保持一致）
+                for char in ['/', '\\', ':', '*', '?', '"', '<', '>', '|']:
+                    normalized = normalized.replace(char, '_')
+                # 限制长度（可选）
+                if len(normalized) > 100:
+                    normalized = normalized[:100]
+                return normalized
+            
             # 1. 获取 KG 中的所有实体 ID
-            kg_entity_ids = set(self.kg_base.list_entity_ids())
-            logger.info(f"KG 中有 {len(kg_entity_ids)} 个实体")
+            kg_entity_ids_raw = set(self.kg_base.list_entity_ids())
+            logger.info(f"KG 中有 {len(kg_entity_ids_raw)} 个实体（原始ID）")
             
             # 2. 获取 EntityLibrary 中的所有实体 ID
-            library_entity_ids = set()
+            library_entity_ids_raw = set()
             for entity_id in service.entity_library.entities.keys():
-                library_entity_ids.add(entity_id)
-            logger.info(f"EntityLibrary 中有 {len(library_entity_ids)} 个实体")
+                library_entity_ids_raw.add(entity_id)
+            logger.info(f"EntityLibrary 中有 {len(library_entity_ids_raw)} 个实体（原始ID）")
             
-            # 3. 比较两者是否一致
-            if kg_entity_ids == library_entity_ids:
-                logger.info("EntityLibrary 与 KG 实体一致，无需重建")
+            # 3. 创建规范化后的ID集合用于比较
+            kg_entity_ids_normalized = {normalize_entity_id(entity_id) for entity_id in kg_entity_ids_raw}
+            library_entity_ids_normalized = {normalize_entity_id(entity_id) for entity_id in library_entity_ids_raw}
+            
+            logger.info(f"KG 规范化后有 {len(kg_entity_ids_normalized)} 个实体")
+            logger.info(f"EntityLibrary 规范化后有 {len(library_entity_ids_normalized)} 个实体")
+            
+            # 4. 比较规范化后的ID是否一致
+            if kg_entity_ids_normalized == library_entity_ids_normalized:
+                logger.info("EntityLibrary 与 KG 实体一致（规范化后），无需重建")
                 
                 # 尝试加载已有的 Library 数据
                 try:
@@ -190,16 +214,43 @@ class MemoryCore:
                     logger.warning(f"加载 EntityLibrary 数据时出错: {load_e}")
                     
             else:
+                # 计算规范化后的差异
+                kg_only_normalized = kg_entity_ids_normalized - library_entity_ids_normalized
+                library_only_normalized = library_entity_ids_normalized - kg_entity_ids_normalized
+                
+                # 计算原始ID的差异（用于显示）
+                kg_only_raw = kg_entity_ids_raw - library_entity_ids_raw
+                library_only_raw = library_entity_ids_raw - kg_entity_ids_raw
+                
                 logger.warning(f"EntityLibrary 与 KG 实体不一致，需要重建")
-                logger.info(f"KG 中有但 Library 中没有的实体: {kg_entity_ids - library_entity_ids}")
-                logger.info(f"Library 中有但 KG 中没有的实体: {library_entity_ids - kg_entity_ids}")
+                logger.warning(f"实体数量不匹配（规范化后）: KG 有 {len(kg_entity_ids_normalized)} 个实体，EntityLibrary 有 {len(library_entity_ids_normalized)} 个实体")
+                logger.warning(f"原始ID数量: KG 有 {len(kg_entity_ids_raw)} 个，EntityLibrary 有 {len(library_entity_ids_raw)} 个")
+                logger.warning(f"差异详情（规范化后）:")
+                logger.warning(f"  - KG 中有但 EntityLibrary 中没有的实体 ({len(kg_only_normalized)} 个): {sorted(list(kg_only_normalized))[:10]}{'...' if len(kg_only_normalized) > 10 else ''}")
+                logger.warning(f"  - EntityLibrary 中有但 KG 中没有的实体 ({len(library_only_normalized)} 个): {sorted(list(library_only_normalized))[:10]}{'...' if len(library_only_normalized) > 10 else ''}")
+                
+                # 显示原始ID差异（如果与规范化后不同）
+                if kg_only_raw != kg_only_normalized or library_only_raw != library_only_normalized:
+                    logger.info(f"原始ID差异（可能因规范化而不同）:")
+                    if kg_only_raw:
+                        logger.info(f"  KG 原始ID有但 Library 原始ID没有: {sorted(list(kg_only_raw))[:10]}{'...' if len(kg_only_raw) > 10 else ''}")
+                    if library_only_raw:
+                        logger.info(f"  Library 原始ID有但 KG 原始ID没有: {sorted(list(library_only_raw))[:10]}{'...' if len(library_only_raw) > 10 else ''}")
+                
+                # 如果差异数量较少，显示全部
+                if len(kg_only_normalized) <= 20:
+                    logger.info(f"KG 中有但 Library 中没有的实体（规范化后）: {sorted(list(kg_only_normalized))}")
+                if len(library_only_normalized) <= 20:
+                    logger.info(f"Library 中有但 KG 中没有的实体（规范化后）: {sorted(list(library_only_normalized))}")
                 
                 # 4. 构建 kg_data 用于重建
                 kg_data = {"entities": []}
-                for entity_id in kg_entity_ids:
+                # 使用原始KG实体ID进行加载（因为文件系统使用的是规范化后的ID）
+                for entity_id in kg_entity_ids_raw:
                     success, entity_data = self.kg_base.repos.entity.load(entity_id)
                     if success:
                         # 确保实体数据包含必要的字段
+                        # 注意：entity_id 是规范化后的ID（带下划线），但实体数据中的name可能是原始名称（带空格）
                         entity_info = {
                             "id": entity_id,
                             "name": entity_data.get("name", entity_id),
@@ -218,16 +269,8 @@ class MemoryCore:
                     
                     # 6. 调用 resolve_unresolved_entities 对齐
                     logger.info("开始解析未解析的实体以完成对齐")
-                    decisions = service.resolve_unresolved_entities()
-                    logger.info(f"解析完成，共 {len(decisions)} 个决策")
+                    self.run_entity_resolution_pass()
                     
-                    # 保存重建后的 Library 数据
-                    if hasattr(service, 'data_path') and service.data_path:
-                        save_success = service.save_library()
-                        if save_success:
-                            logger.info(f"EntityLibrary 数据保存成功: {service.data_path}")
-                        else:
-                            logger.warning(f"EntityLibrary 数据保存失败: {service.data_path}")
                 else:
                     logger.error("EntityLibrary 重建失败")
                     
@@ -282,7 +325,7 @@ class MemoryCore:
         
         pass
     # ============================================================================
-    # 服务注册与事件广播
+    # 服务注册
     # ============================================================================
     
     def register_service(self, service: Any) -> None:
@@ -299,23 +342,25 @@ class MemoryCore:
         else:
             logger.warning(f"服务 {service.__class__.__name__} 不是 BaseService 子类，无法注册到 EventBus")
     
-    
+    # ============================================================================
+    # Service 功能执行部件
+    # ============================================================================
     def run_entity_resolution_pass(self) -> Dict[str, Any]:
         """
         执行实体解析阶段（Resolution Pass）
         
-        行为如下：
-        Step 1：调用 entity_resolution_service.resolve_unresolved_entities()
-        Step 2：MemoryCore 根据 decision 决定是否执行 merge
-        Step 3：不要手动更新 Library。merge 会触发 ENTITY_MERGED event，
-                Service Listener 会自动同步 Library。
+        重构为四个阶段：
+        Phase 1：收集解析结果（不修改 KG）
+        Phase 2：构建 Identity Graph（无向等价关系图）
+        Phase 3：计算 Identity Groups（连通分量）
+        Phase 4：稳定 Merge（统一指向 canonical entity）
         
         Returns:
             解析阶段执行结果
         """
         logger.info("开始执行实体解析阶段（Resolution Pass）")
         
-        # Step 1: 获取解析决策
+        logger.info("Phase 1: 收集解析结果")
         decisions = self.entity_resolution_service.resolve_unresolved_entities()
         logger.info(f"获取到 {len(decisions)} 个解析决策")
         
@@ -325,54 +370,160 @@ class MemoryCore:
             "new_entities": 0,
             "merged": 0,
             "merge_errors": [],
-            "decisions": []
+            "decisions": [],
+            "identity_groups": 0,
+            "canonical_entities": 0
         }
         
-        # Step 2: 根据 decision 决定是否执行 merge
+        # 记录所有决策
         for decision in decisions:
             decision_dict = decision.to_dict()
             results["decisions"].append(decision_dict)
             
-            if decision.is_same_as_existing() and decision.target_entity_id:
+            if decision.is_same_as_existing():
                 results["same_as_existing"] += 1
+            elif decision.is_new_entity():
+                results["new_entities"] += 1
+        
+        logger.info("Phase 2: 构建 Identity Graph")
+        
+        # 收集所有 SAME_AS_EXISTING 关系
+        same_as_relations = []
+        entity_set = set()
+        
+        for decision in decisions:
+            if decision.is_same_as_existing() and decision.target_entity_id:
+                source = decision.source_entity_id
+                target = decision.target_entity_id
+                same_as_relations.append((source, target))
+                entity_set.add(source)
+                entity_set.add(target)
+        
+        logger.info(f"构建 Identity Graph: {len(same_as_relations)} 个等价关系, {len(entity_set)} 个唯一实体")
+        
+        logger.info("Phase 3: 计算 Identity Groups（连通分量）")
+        
+        # 实现 Union-Find（并查集）
+        parent = {}
+        rank = {}
+        
+        def find(x):
+            if x not in parent:
+                parent[x] = x
+                rank[x] = 0
+                return x
+            if parent[x] != x:
+                parent[x] = find(parent[x])  # 路径压缩
+            return parent[x]
+        
+        def union(x, y):
+            root_x = find(x)
+            root_y = find(y)
+            if root_x != root_y:
+                # 按秩合并
+                if rank[root_x] < rank[root_y]:
+                    parent[root_x] = root_y
+                elif rank[root_x] > rank[root_y]:
+                    parent[root_y] = root_x
+                else:
+                    parent[root_y] = root_x
+                    rank[root_x] += 1
+        
+        # 应用所有等价关系
+        for source, target in same_as_relations:
+            union(source, target)
+        
+        # 收集连通分量
+        groups = {}
+        for entity in entity_set:
+            root = find(entity)
+            if root not in groups:
+                groups[root] = []
+            groups[root].append(entity)
+        
+        # 过滤掉只有一个实体的组（这些实体没有等价关系）
+        identity_groups = {root: entities for root, entities in groups.items() if len(entities) > 1}
+        
+        logger.info(f"计算得到 {len(identity_groups)} 个 Identity Groups（连通分量）")
+        results["identity_groups"] = len(identity_groups)
+        
+        logger.info("Phase 4: 稳定 Merge（统一指向 canonical entity）")
+        
+        # 为每个 Identity Group 选择 canonical entity
+        for root, entities in identity_groups.items():
+            logger.info(f"处理 Identity Group: {entities}")
+            
+            # 选择 canonical entity 的规则：
+            # 1. 优先选择在决策中作为 target 出现次数最多的实体
+            # 2. 如果平局，选择第一个实体
+            
+            # 统计每个实体作为 target 出现的次数
+            target_count = {}
+            for decision in decisions:
+                if decision.is_same_as_existing() and decision.target_entity_id:
+                    target = decision.target_entity_id
+                    if target in entities:
+                        target_count[target] = target_count.get(target, 0) + 1
+            
+            # 选择 canonical entity
+            canonical = None
+            if target_count:
+                # 选择出现次数最多的实体
+                canonical = max(target_count.items(), key=lambda x: x[1])[0]
+            else:
+                # 如果没有 target 统计，选择第一个实体
+                canonical = entities[0]
+            
+            logger.info(f"  选择 canonical entity: {canonical}")
+            results["canonical_entities"] += 1
+            
+            # 对 group 中其余实体执行 merge（直接指向 canonical）
+            for entity in entities:
+                if entity == canonical:
+                    continue  # 跳过 canonical 实体本身
                 
-                # 执行 KG 合并
                 try:
-                    logger.info(f"执行实体合并: {decision.source_entity_id} -> {decision.target_entity_id}")
+                    logger.info(f"  执行实体合并: {entity} -> {canonical}")
                     merge_result = self.kg_base.merge_entities(
-                        target_id=decision.target_entity_id,
-                        source_id=decision.source_entity_id
+                        target_id=canonical,
+                        source_id=entity
                     )
                     
                     if merge_result.get("success", False):
                         results["merged"] += 1
-                        logger.info(f"实体合并成功: {decision.source_entity_id} -> {decision.target_entity_id}")
+                        logger.info(f"  实体合并成功: {entity} -> {canonical}")
                     else:
                         error_msg = f"合并失败: {merge_result.get('error', 'unknown')}"
                         results["merge_errors"].append({
-                            "source": decision.source_entity_id,
-                            "target": decision.target_entity_id,
+                            "source": entity,
+                            "target": canonical,
                             "error": error_msg
                         })
-                        logger.warning(f"实体合并失败: {error_msg}")
+                        logger.warning(f"  实体合并失败: {error_msg}")
                         
                 except Exception as e:
                     error_msg = f"合并异常: {str(e)}"
                     results["merge_errors"].append({
-                        "source": decision.source_entity_id,
-                        "target": decision.target_entity_id,
+                        "source": entity,
+                        "target": canonical,
                         "error": error_msg
                     })
-                    logger.error(f"实体合并异常: {e}")
-                    
-            elif decision.is_new_entity():
-                results["new_entities"] += 1
+                    logger.error(f"  实体合并异常: {e}")
+        
+        # 处理新建实体判定（不执行任何操作，仅记录）
+        for decision in decisions:
+            if decision.is_new_entity():
                 logger.info(f"新建实体判定: {decision.source_entity_id}（不执行任何操作）")
         
-        # Step 3: 不要手动更新 Library（由事件驱动自动同步）
-        logger.info(f"解析阶段完成: 总计 {results['total_decisions']} 个决策, "
+        # ============================================================================
+        # 完成阶段
+        # ============================================================================
+        logger.info(f"解析阶段完成: "
+                   f"总计 {results['total_decisions']} 个决策, "
                    f"等价实体 {results['same_as_existing']} 个, "
                    f"新建实体 {results['new_entities']} 个, "
+                   f"Identity Groups {results['identity_groups']} 个, "
+                   f"Canonical Entities {results['canonical_entities']} 个, "
                    f"成功合并 {results['merged']} 个")
         
         results["success"] = len(results["merge_errors"]) == 0
