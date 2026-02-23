@@ -68,7 +68,10 @@ class RepoContext:
         
         # 创建关系仓库
         if relation_repository is None:
-            relation_repository = RelationRepository(relation_dir)
+            relation_repository = RelationRepository(
+                relation_dir,
+                entity_repository=entity_repository
+            )
         
         # 创建特征仓库
         if feature_repository is None:

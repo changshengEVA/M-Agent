@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 数据构造流程（简化版）：
-只需要指定id和kg_prompt_version两个参数，可选包含第五阶段（scene特征提取）
+支持通过参数控制 kg/scene 的 prompt 版本，可选包含第五阶段（scene特征提取）
 
 五个阶段：
 1. 构造 dialogues
@@ -249,16 +249,20 @@ def stage3_form_kg_candidates_for_id(process_id: str, prompt_version: str = "v1"
         return False
 
 
-def stage4_form_scenes_for_id(process_id: str, memory_owner_name: str = "changshengEVA"):
+def stage4_form_scenes_for_id(process_id: str,
+                              scene_prompt_version: str = "v1",
+                              memory_owner_name: str = "changshengEVA"):
     """
     第四阶段：形成 scene，为每个 episode 生成 scene（theme 和 diary）
     
     Args:
         process_id: 处理流ID
+        scene_prompt_version: scene prompt版本（v1 或 v2），默认v1
         memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
     """
     logger.info("=" * 50)
     logger.info(f"开始第四阶段：为处理流 {process_id} 形成 scene")
+    logger.info(f"使用 scene prompt 版本: {scene_prompt_version}")
     logger.info(f"记忆所有者名称: {memory_owner_name}")
     logger.info("=" * 50)
     
@@ -280,6 +284,7 @@ def stage4_form_scenes_for_id(process_id: str, memory_owner_name: str = "changsh
         # 调用 form_scene 模块的主函数
         logger.info("开始扫描并生成 scenes...")
         scan_and_form_scenes(
+            prompt_version=scene_prompt_version,
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
             scene_root=scene_root,
@@ -303,6 +308,7 @@ def stage4_form_scenes_for_id(process_id: str, memory_owner_name: str = "changsh
         logger.info("=" * 50)
         logger.info("第四阶段完成")
         logger.info(f"生成 scene 文件: {scene_files_count} 个")
+        logger.info(f"使用 scene prompt 版本: {scene_prompt_version}")
         logger.info(f"记忆所有者名称: {memory_owner_name}")
         logger.info(f"输出目录: {scene_root}")
         logger.info("=" * 50)
@@ -390,6 +396,7 @@ def stage5_form_scene_features_for_id(process_id: str, force_update: bool = Fals
 
 def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_type: str = "auto",
                            prompt_version: str = "v1", include_stage5: bool = True,
+                           scene_prompt_version: str = "v1",
                            memory_owner_name: str = "changshengEVA"):
     """
     为指定ID运行完整的数据构造流程
@@ -403,12 +410,14 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
                     - "default": 强制使用默认加载器
         prompt_version: prompt版本（v1 或 v2），默认v1
         include_stage5: 是否包含第五阶段（scene特征提取），默认True
+        scene_prompt_version: scene prompt版本（v1 或 v2），默认v1
         memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
     """
     logger.info(f"开始为处理流 {process_id} 执行完整数据构造流程")
     logger.info(f"数据源: {data_source if data_source else '默认'}")
     logger.info(f"加载器类型: {loader_type}")
     logger.info(f"使用 prompt 版本: {prompt_version}")
+    logger.info(f"使用 scene prompt 版本: {scene_prompt_version}")
     logger.info(f"包含第五阶段: {include_stage5}")
     logger.info(f"记忆所有者名称: {memory_owner_name}")
     
@@ -422,22 +431,22 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
     #     logger.warning("第二阶段失败，跳过第三阶段")
     #     return False
     
-    # 第三阶段：形成KG候选
-    if not stage3_form_kg_candidates_for_id(process_id, prompt_version, memory_owner_name):
-        logger.warning("第三阶段失败")
-        return False
+    # # 第三阶段：形成KG候选
+    # if not stage3_form_kg_candidates_for_id(process_id, prompt_version, memory_owner_name):
+    #     logger.warning("第三阶段失败")
+    #     return False
     
     # # 第四阶段：形成 scene
-    # if not stage4_form_scenes_for_id(process_id, memory_owner_name):
+    # if not stage4_form_scenes_for_id(process_id, scene_prompt_version, memory_owner_name):
     #     logger.warning("第四阶段失败")
     #     return False
     
-    # # 第五阶段：形成 scene 特征（可选）
-    # if include_stage5:
-    #     if not stage5_form_scene_features_for_id(process_id, force_update=False, memory_owner_name=memory_owner_name):
-    #         logger.warning("第五阶段失败")
-    #         # 第五阶段失败不视为整个流程失败，因为它是可选的增强功能
-    #         # 但仍然记录警告
+    # 第五阶段：形成 scene 特征（可选）
+    if include_stage5:
+        if not stage5_form_scene_features_for_id(process_id, force_update=False, memory_owner_name=memory_owner_name):
+            logger.warning("第五阶段失败")
+            # 第五阶段失败不视为整个流程失败，因为它是可选的增强功能
+            # 但仍然记录警告
     
     stage_count = 5 if include_stage5 else 4
     logger.info("=" * 50)
@@ -445,6 +454,7 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
     logger.info(f"数据源: {data_source if data_source else '默认'}")
     logger.info(f"加载器类型: {loader_type}")
     logger.info(f"使用 prompt 版本: {prompt_version}")
+    logger.info(f"使用 scene prompt 版本: {scene_prompt_version}")
     logger.info(f"记忆所有者名称: {memory_owner_name}")
     logger.info("=" * 50)
     return True
@@ -467,6 +477,8 @@ def main():
                        help="加载器类型：auto（自动检测，默认）, realtalk（强制使用realtalk加载器）, default（强制使用默认加载器）")
     parser.add_argument("--kg-prompt-version", type=str, default="v3",
                        help="KG候选生成的prompt版本（v1 或 v2，默认v2）")
+    parser.add_argument("--scene-prompt-version", type=str, default="v2",
+                       help="Scene 生成的prompt版本（v1 或 v2，默认v1）")
     parser.add_argument("--no-stage5", action="store_true",
                        help="不包含第五阶段（scene特征提取）")
     parser.add_argument("--memory-owner-name", type=str, default="changshengEVA",
@@ -480,6 +492,7 @@ def main():
         data_source=args.data_source,
         loader_type=args.loader_type,
         prompt_version=args.kg_prompt_version,
+        scene_prompt_version=args.scene_prompt_version,
         include_stage5=not args.no_stage5,
         memory_owner_name=args.memory_owner_name
     )

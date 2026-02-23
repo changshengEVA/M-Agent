@@ -122,6 +122,21 @@ def load_episodes(episode_file: Path) -> Dict:
     with open(episode_file, 'r', encoding='utf-8') as f:
         return json.load(f)
 
+def get_existing_scene_version(scene_root: Path, scene_file_name: str) -> Optional[str]:
+    """
+    读取已存在 scene 文件中的 scene_version。
+    如果文件不存在或读取失败，返回 None。
+    """
+    try:
+        scene_path = scene_root / scene_file_name
+        if not scene_path.exists():
+            return None
+        with open(scene_path, 'r', encoding='utf-8') as f:
+            scene_data = json.load(f)
+        return scene_data.get("scene_version")
+    except Exception:
+        return None
+
 def find_dialogue_file(dialogue_id: str, dialogues_root: Path = None) -> Optional[Path]:
     """
     根据 dialogue_id 查找对应的对话文件。
@@ -236,7 +251,11 @@ def call_openai_for_scene(episode_with_content: Dict, prompt_template: str) -> D
         logger.error(f"调用 OpenAI 失败: {e}")
         raise
 
-def build_scene_structure(scene_number: int, episode_meta: Dict, scene_result: Dict, memory_owner_name: str = "changshengEVA") -> Dict:
+def build_scene_structure(scene_number: int,
+                         episode_meta: Dict,
+                         scene_result: Dict,
+                         scene_version: str = "v1",
+                         memory_owner_name: str = "changshengEVA") -> Dict:
     """
     构建最终的 scene 结构，符合要求的格式。
     
@@ -244,6 +263,7 @@ def build_scene_structure(scene_number: int, episode_meta: Dict, scene_result: D
         scene_number: scene 编号（用于生成 scene_id）
         episode_meta: episode 元数据（包含 episode_id, dialogue_id, turn_span）
         scene_result: 包含 theme 和 diary 的字典
+        scene_version: scene 版本（如 v1、v2）
         memory_owner_name: 记忆所有者的名称，用于 meta 字段
         
     Returns:
@@ -259,7 +279,7 @@ def build_scene_structure(scene_number: int, episode_meta: Dict, scene_result: D
     
     return {
         "scene_id": scene_id,
-        "scene_version": "v1",
+        "scene_version": scene_version,
         "source": {
             "episodes": [
                 {
@@ -333,6 +353,7 @@ def process_episode_file(episode_file: Path,
                         episodes_root: Path = None,
                         scene_root: Path = None,
                         force_update: bool = False,
+                        prompt_version: str = "v1",
                         memory_owner_name: str = "changshengEVA") -> bool:
     """
     处理单个 episode 文件，生成 scene。
@@ -344,6 +365,7 @@ def process_episode_file(episode_file: Path,
         episodes_root: episodes根目录
         scene_root: scene根目录（如果为None，则使用默认位置）
         force_update: 是否强制更新，即使已生成也重新生成
+        prompt_version: scene prompt 版本（v1 或 v2）
         memory_owner_name: 记忆所有者的名称，用于 scene 的 meta 字段
     """
     try:
@@ -360,6 +382,7 @@ def process_episode_file(episode_file: Path,
         # 加载 episode 数据
         episode_data = load_episodes(episode_file)
         dialogue_id = episode_data.get("dialogue_id", "")
+        effective_scene_root = scene_root if scene_root is not None else get_scene_root(episodes_root)
         
         # 查找并加载对应的对话文件
         dialogue_file = find_dialogue_file(dialogue_id, dialogues_root)
@@ -379,9 +402,21 @@ def process_episode_file(episode_file: Path,
             
             # 检查是否已生成 scene
             if not force_update and status_manager.is_scene_generated(episode_key):
-                logger.info(f"Episode {episode_key} 已生成 scene，跳过")
-                skipped_count += 1
-                continue
+                existing_status = status_manager.get_episode(episode_key) or {}
+                scene_file_name = existing_status.get("scene_file")
+                existing_version = None
+                if scene_file_name:
+                    existing_version = get_existing_scene_version(effective_scene_root, scene_file_name)
+
+                if existing_version == prompt_version:
+                    logger.info(f"Episode {episode_key} 已生成 scene（版本 {existing_version}），跳过")
+                    skipped_count += 1
+                    continue
+
+                logger.info(
+                    f"Episode {episode_key} 已有 scene 版本 {existing_version}，"
+                    f"当前版本 {prompt_version}，将重新生成"
+                )
             
             # 检查 scene_available 状态
             episode_status = status_manager.get_episode(episode_key)
@@ -398,7 +433,7 @@ def process_episode_file(episode_file: Path,
             episode_with_content = build_episode_with_content(episode_meta, dialogue_data)
             
             # 获取 prompt 模板
-            prompt_key = "scene_former_v1"
+            prompt_key = f"scene_former_{prompt_version}"
             prompt_template = prompts.get(prompt_key, "")
             
             if not prompt_template:
@@ -433,7 +468,7 @@ def process_episode_file(episode_file: Path,
         
         # 分配 scene 编号并构建最终 scene 结构
         if scene_root is None:
-            scene_root = get_scene_root(episodes_root)
+            scene_root = effective_scene_root
         
         # 获取下一个起始编号
         start_number = get_next_scene_number(scene_root)
@@ -444,6 +479,7 @@ def process_episode_file(episode_file: Path,
                 scene_number,
                 scene_data["episode_meta"],
                 scene_data["scene_result"],
+                scene_version=prompt_version,
                 memory_owner_name=memory_owner_name
             )
             final_scenes.append({
@@ -462,7 +498,10 @@ def process_episode_file(episode_file: Path,
             created_at = item["scene"].get("meta", {}).get("created_at")
             status_manager.mark_scene_generated(episode_key, scene_file, created_at)
         
-        logger.info(f"为对话 {dialogue_id} 生成 {len(saved_files)} 个 scene 文件，跳过 {skipped_count} 个已生成的，保存到 {scene_root}")
+        logger.info(
+            f"为对话 {dialogue_id} 生成 {len(saved_files)} 个 scene 文件，跳过 {skipped_count} 个已生成的，"
+            f"保存到 {scene_root}，使用 prompt 版本: {prompt_version}"
+        )
         
         return True
         
@@ -474,6 +513,7 @@ def process_episode_file(episode_file: Path,
 
 def scan_and_form_scenes(use_tqdm: bool = True,
                         force_update: bool = False,
+                        prompt_version: str = "v1",
                         dialogues_root: Path = None,
                         episodes_root: Path = None,
                         scene_root: Path = None,
@@ -484,6 +524,7 @@ def scan_and_form_scenes(use_tqdm: bool = True,
     Args:
         use_tqdm: 是否使用 tqdm 显示进度条（默认 True）
         force_update: 是否强制更新 scene 文件（即使文件已存在，默认 False）
+        prompt_version: scene prompt 版本（v1 或 v2，默认 v1）
         dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
         episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
         scene_root: scene根目录，如果为None则使用默认位置（episodes_root/../scene）
@@ -505,6 +546,14 @@ def scan_and_form_scenes(use_tqdm: bool = True,
     if not prompts:
         logger.error("未找到 scene prompts")
         return
+
+    # 验证 prompt_version 是否有效
+    expected_prompt_key = f"scene_former_{prompt_version}"
+    if expected_prompt_key not in prompts:
+        logger.error(f"无效的 scene prompt 版本: {prompt_version}，未找到模板: {expected_prompt_key}")
+        available = [k for k in prompts.keys() if k.startswith("scene_former_")]
+        logger.error(f"可用 scene 模板: {available}")
+        return
     
     # 扫描所有 episode 文件
     episode_files = scan_episode_files(episodes_root)
@@ -516,7 +565,7 @@ def scan_and_form_scenes(use_tqdm: bool = True,
     
     # 处理文件
     if use_tqdm:
-        file_iter = tqdm(episode_files, desc="生成 scenes")
+        file_iter = tqdm(episode_files, desc=f"生成 scenes (prompt: {prompt_version})")
     else:
         file_iter = episode_files
     
@@ -529,11 +578,14 @@ def scan_and_form_scenes(use_tqdm: bool = True,
             episodes_root,
             scene_root,
             force_update=force_update,
+            prompt_version=prompt_version,
             memory_owner_name=memory_owner_name
         ):
             success_count += 1
     
-    logger.info(f"成功处理 {success_count}/{len(episode_files)} 个 episode 文件")
+    logger.info(
+        f"成功处理 {success_count}/{len(episode_files)} 个 episode 文件，使用 prompt 版本: {prompt_version}"
+    )
 
 def clear_all_scenes(scene_root: Path = None, confirm: bool = False):
     """
@@ -593,6 +645,7 @@ if __name__ == "__main__":
     parser.add_argument("--confirm", action="store_true", help="确认删除（与 --clear 一起使用）")
     parser.add_argument("--force-update", action="store_true",
                        help="强制更新 scene 文件（即使文件已存在）")
+    parser.add_argument("--prompt-version", default="v1", help="scene prompt 版本（v1 或 v2，默认 v1）")
     
     args = parser.parse_args()
     
@@ -600,10 +653,12 @@ if __name__ == "__main__":
         clear_all_scenes(confirm=args.confirm)
     elif args.scan:
         scan_and_form_scenes(
-            force_update=args.force_update
+            force_update=args.force_update,
+            prompt_version=args.prompt_version
         )
     else:
         # 默认行为：扫描并生成
         scan_and_form_scenes(
-            force_update=args.force_update
+            force_update=args.force_update,
+            prompt_version=args.prompt_version
         )

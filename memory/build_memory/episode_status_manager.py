@@ -50,9 +50,91 @@ class EpisodeStatusManager:
                     "episode_count": 0
                 }
             }
+            # 尝试从现有的 eligibility 文件自动初始化 episode 状态
+            self._auto_initialize_from_eligibility_files()
         else:
             with open(self.situation_file, 'r', encoding='utf-8') as f:
                 self._data = json.load(f)
+    
+    def _auto_initialize_from_eligibility_files(self):
+        """
+        从现有的 eligibility_v1.json 文件自动初始化 episode 状态。
+        扫描 episodes 目录下的所有 eligibility_v1.json 文件，将其中的资格信息
+        导入到 episode_situation.json 中。
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+        
+        # 获取 episodes 目录
+        episodes_dir = self.situation_file.parent
+        if not episodes_dir.exists():
+            logger.warning(f"Episodes 目录不存在: {episodes_dir}")
+            return
+        
+        # 扫描 by_dialogue 子目录
+        by_dialogue_dir = episodes_dir / "by_dialogue"
+        if not by_dialogue_dir.exists():
+            logger.warning(f"by_dialogue 目录不存在: {by_dialogue_dir}")
+            return
+        
+        initialized_count = 0
+        for dialogue_dir in by_dialogue_dir.iterdir():
+            if not dialogue_dir.is_dir():
+                continue
+            
+            # 查找 eligibility_v1.json 文件
+            eligibility_file = dialogue_dir / "eligibility_v1.json"
+            if not eligibility_file.exists():
+                continue
+            
+            try:
+                with open(eligibility_file, 'r', encoding='utf-8') as f:
+                    eligibility_data = json.load(f)
+                
+                dialogue_id = eligibility_data.get("dialogue_id", "")
+                results = eligibility_data.get("results", [])
+                
+                for result in results:
+                    episode_id = result.get("episode_id", "")
+                    episode_key = f"{dialogue_id}:{episode_id}"
+                    
+                    # 如果 episode 已存在，跳过
+                    if episode_key in self._data.get("episodes", {}):
+                        continue
+                    
+                    # 创建 episode 条目
+                    self._data.setdefault("episodes", {})[episode_key] = {
+                        "episode_key": episode_key,
+                        "episode_id": episode_id,
+                        "dialogue_id": dialogue_id,
+                        "scene_available": result.get("scene_available", False),
+                        "kg_available": result.get("kg_available", False),
+                        "emo_available": result.get("emo_available", False),
+                        "factual_novelty": result.get("factual_novelty", 0),
+                        "emotional_novelty": result.get("emotional_novelty", 0),
+                        "eligible": result.get("eligible", False),
+                        "reason": result.get("reason", ""),
+                        "updated_at": datetime.utcnow().isoformat() + "Z",
+                        "scene_generated": False,
+                        "kg_candidates_generated": False,
+                        "scene_generated_at": None,
+                        "kg_candidates_generated_at": None,
+                        "scene_file": None,
+                        "kg_candidate_file": None
+                    }
+                    
+                    initialized_count += 1
+                    
+            except Exception as e:
+                logger.warning(f"加载 eligibility 文件失败 {eligibility_file}: {e}")
+                continue
+        
+        if initialized_count > 0:
+            logger.info(f"从 eligibility 文件自动初始化了 {initialized_count} 个 episode 状态")
+            # 更新统计信息
+            self.update_statistics()
+            # 保存到文件
+            self._save_data()
     
     def _save_data(self):
         """保存数据到文件"""

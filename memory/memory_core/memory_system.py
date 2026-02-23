@@ -153,7 +153,9 @@ class MemoryCore:
         self._align_entity_library_with_kg(service)
         
         return service
-    
+    # ============================================================================
+    # 与附属数据库的对齐操作
+    # ============================================================================
     def _align_entity_library_with_kg(self, service: EntityResolutionService) -> None:
         """
         初始化 EntityLibrary 与 KG 的同步
