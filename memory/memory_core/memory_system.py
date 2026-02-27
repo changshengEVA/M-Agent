@@ -18,8 +18,9 @@ from memory.memory_core.services_bank.entity_resolution.service import (
 from memory.memory_core.system.event_bus import EventBus
 from memory.memory_core.system.event_types import EventType
 
-# 导入 load_model 中的 OpenAI 模型函数
-from load_model.OpenAIcall import get_llm, get_embed_model
+# 导入 LLM 与 Embedding 模型函数
+from load_model.OpenAIcall import get_llm
+from load_model.BGEcall import get_embed_model
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +52,7 @@ class MemoryCore:
         Args:
             workflow_id: 工作流ID，用于确定数据存储路径
             llm_func: 可选的LLM函数，如果为None则使用默认OpenAI LLM
-            embed_func: 可选的嵌入函数，如果为None则使用默认OpenAI Embedding
+            embed_func: 可选的嵌入函数，如果为None则使用默认本地Embedding
             llm_temperature: LLM温度参数（仅当使用默认LLM时有效）
             similarity_threshold: 实体解析相似度阈值
             top_k: 实体解析返回前K个候选
@@ -130,7 +131,7 @@ class MemoryCore:
             llm_func = get_llm(self.llm_temperature)
         
         if embed_func is None:
-            logger.info("使用默认 OpenAI Embedding")
+            logger.info("使用默认本地 Embedding")
             embed_func = get_embed_model()
         
         return llm_func, embed_func
@@ -321,6 +322,30 @@ class MemoryCore:
             kg_base=self.kg_base,
             entity_resolution_service=self.entity_resolution_service,
             memory_core=self  # 传递 MemoryCore 实例
+        )
+
+    def resolve_entity(self, name: str) -> Dict[str, Any]:
+        """
+        实体解析（Entity Grounding）公开接口。
+
+        Args:
+            name: 实体名称（可为规范名或别名）
+
+        Returns:
+            {
+              "hit": bool,
+              "entity_uid": str | None,
+              "canonical_name": str | None,
+              "aliases": list
+            }
+        """
+        from .workflow.entity_grounding import resolve_entity as workflow_resolve_entity
+
+        logger.info("调用 resolve_entity 接口")
+        return workflow_resolve_entity(
+            name=name,
+            entity_resolution_service=self.entity_resolution_service,
+            kg_base=self.kg_base
         )
     
     def search_feature_by_entity_id():

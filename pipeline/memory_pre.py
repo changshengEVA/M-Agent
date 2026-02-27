@@ -431,15 +431,15 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
     #     logger.warning("第二阶段失败，跳过第三阶段")
     #     return False
     
-    # # 第三阶段：形成KG候选
-    # if not stage3_form_kg_candidates_for_id(process_id, prompt_version, memory_owner_name):
-    #     logger.warning("第三阶段失败")
-    #     return False
+    # 第三阶段：形成KG候选
+    if not stage3_form_kg_candidates_for_id(process_id, prompt_version, memory_owner_name):
+        logger.warning("第三阶段失败")
+        return False
     
-    # # 第四阶段：形成 scene
-    # if not stage4_form_scenes_for_id(process_id, scene_prompt_version, memory_owner_name):
-    #     logger.warning("第四阶段失败")
-    #     return False
+    # 第四阶段：形成 scene
+    if not stage4_form_scenes_for_id(process_id, scene_prompt_version, memory_owner_name):
+        logger.warning("第四阶段失败")
+        return False
     
     # 第五阶段：形成 scene 特征（可选）
     if include_stage5:

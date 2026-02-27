@@ -30,6 +30,7 @@ class FeatureRecord(TypedDict, total=False):
     """特征记录"""
     entity_id: str
     feature: str  # 特征描述文本
+    feature_embedding: List[float]  # 特征文本的 embedding
     scene_id: Optional[str]
     confidence: float  # 置信度，0.0-1.0
     sources: List[SourceInfo]
@@ -39,6 +40,7 @@ class AttributeRecord(TypedDict, total=False):
     """属性记录"""
     entity: str
     field: str  # 属性字段名，如"年龄"、"职业"
+    field_embedding: List[float]  # 属性字段文本的 embedding
     value: Union[str, int, float, bool, List, Dict]  # 属性值
     confidence: float  # 置信度，0.0-1.0
     sources: List[SourceInfo]
@@ -416,6 +418,13 @@ def validate_feature_record(data: Dict[str, Any]) -> bool:
         
         if 'entity_id' in data and not isinstance(data['entity_id'], str):
             return False
+
+        if 'feature_embedding' in data:
+            feature_embedding = data['feature_embedding']
+            if not isinstance(feature_embedding, list):
+                return False
+            if not all(isinstance(v, (int, float)) for v in feature_embedding):
+                return False
         
         if 'confidence' in data and not isinstance(data['confidence'], (int, float)):
             return False
@@ -452,6 +461,13 @@ def validate_attribute_record(data: Dict[str, Any]) -> bool:
         
         if 'entity' in data and not isinstance(data['entity'], str):
             return False
+
+        if 'field_embedding' in data:
+            field_embedding = data['field_embedding']
+            if not isinstance(field_embedding, list):
+                return False
+            if not all(isinstance(v, (int, float)) for v in field_embedding):
+                return False
         
         if 'confidence' in data and not isinstance(data['confidence'], (int, float)):
             return False

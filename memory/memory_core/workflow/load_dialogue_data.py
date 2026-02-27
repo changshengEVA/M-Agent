@@ -132,6 +132,7 @@ def load_from_dialogue_json(
         entity_id = feature_data.get("entity_id")
         feature_text = feature_data.get("feature")
         scene_id = feature_data.get("scene_id", "unknown")
+        feature_embedding = feature_data.get("feature_embedding")
         
         if not entity_id or not feature_text:
             logger.warning("跳过无效的特征数据")
@@ -153,6 +154,9 @@ def load_from_dialogue_json(
                 "confidence": feature_data.get("confidence", 1.0),
                 "sources": [source_info]
             }
+
+            if isinstance(feature_embedding, list):
+                feature_record["feature_embedding"] = feature_embedding
             
             append_result = kg_base.append_feature(
                 entity_id=entity_id,
@@ -189,6 +193,7 @@ def load_from_dialogue_json(
         field = attribute_data.get("field")
         value = attribute_data.get("value")
         confidence = attribute_data.get("confidence", 1.0)
+        field_embedding = attribute_data.get("field_embedding")
         
         if not entity_id or not field or value is None:
             logger.warning("跳过无效的属性数据")
@@ -210,6 +215,9 @@ def load_from_dialogue_json(
                 "confidence": confidence,
                 "sources": [source_info]
             }
+
+            if isinstance(field_embedding, list):
+                attribute_record["field_embedding"] = field_embedding
             
             append_result = kg_base.append_attribute(
                 entity_id=entity_id,

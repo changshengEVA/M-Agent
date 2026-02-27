@@ -20,7 +20,8 @@ logging.getLogger('memory.memory_core.services_bank.entity_resolution').setLevel
 print("=== 开始测试，日志已启用 ===")
 
 from memory.memory_core.memory_system import MemoryCore
-from load_model.OpenAIcall import get_embed_model,get_llm
+from load_model.OpenAIcall import get_llm
+from load_model.BGEcall import get_embed_model
 
 memory_core = MemoryCore(
     workflow_id="testrt",
@@ -38,10 +39,15 @@ memory_core = MemoryCore(
 
 
 # memory_core.load_from_dialogue_path(Path("data/memory/testrt/kg_candidates"))
-# # 获取统计信息
-# kg_stats = memory_core.get_kg_stats()
-# print(f"  KG统计: {kg_stats}")
+# 获取统计信息
+kg_stats = memory_core.get_kg_stats()
+print(f"  KG统计: {kg_stats}")
         
-# # 获取实体解析统计
-# er_stats = memory_core.get_entity_resolution_stats()
-# print(f"  实体解析统计: {er_stats}")
+# 获取实体解析统计
+er_stats = memory_core.get_entity_resolution_stats()
+print(f"  实体解析统计: {er_stats}")
+
+# 尝试解析实体
+entity_return = memory_core.resolve_entity("NewYork University")
+print(f" 返回统计: {entity_return}")
+

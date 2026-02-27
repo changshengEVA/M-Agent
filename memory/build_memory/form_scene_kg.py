@@ -204,6 +204,36 @@ def call_llm_for_features(diary: str, entities: List[str], prompt_template: str,
         logger.error(f"调用 LLM 失败: {e}")
         raise
 
+def attach_feature_embeddings(features: List[Dict]) -> List[Dict]:
+    """
+    为每个特征生成文本 embedding，并写入 feature_embedding 字段。
+    """
+    if not features:
+        return features
+
+    from load_model.BGEcall import get_embed_model
+
+    embed_model = get_embed_model()
+
+    for item in features:
+        feature_text = item.get("feature", "")
+        if not feature_text:
+            item["feature_embedding"] = []
+            continue
+
+        try:
+            embedding = embed_model(feature_text)
+            if isinstance(embedding, list):
+                item["feature_embedding"] = embedding
+            else:
+                logger.warning(f"特征 embedding 格式异常，写入空列表: {feature_text[:50]}...")
+                item["feature_embedding"] = []
+        except Exception as e:
+            logger.error(f"生成特征 embedding 失败: {feature_text[:50]}..., 错误: {e}")
+            raise
+
+    return features
+
 def add_features_to_kg_candidates(kg_data: Dict, features: List[Dict]) -> Dict:
     """
     将特征添加到 kg_candidates 数据中。
@@ -314,6 +344,9 @@ def process_episode(episode_info: Dict,
             
             # 调用 LLM 生成特征
             features = call_llm_for_features(diary, entities, prompt_template, scene_id)
+
+        # 为特征补充文本 embedding 字段
+        features = attach_feature_embeddings(features)
         
         # 将特征添加到 kg_candidates 数据中
         kg_data_with_features = add_features_to_kg_candidates(kg_data, features)

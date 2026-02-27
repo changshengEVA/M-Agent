@@ -433,6 +433,47 @@ def extract_kg_candidate_v3(episode_with_content: Dict, prompt_dict: Dict) -> Di
     
     return merged_result
 
+def attach_attribute_field_embeddings(kg_result: Dict) -> Dict:
+    """
+    为 kg_result 中 attributes 的 field 生成 embedding，并写入 field_embedding 字段。
+    """
+    if not isinstance(kg_result, dict):
+        return kg_result
+
+    facts = kg_result.get("facts")
+    if not isinstance(facts, dict):
+        return kg_result
+
+    attributes = facts.get("attributes", [])
+    if not isinstance(attributes, list) or not attributes:
+        return kg_result
+
+    from load_model.BGEcall import get_embed_model
+
+    embed_model = get_embed_model()
+
+    for attr in attributes:
+        if not isinstance(attr, dict):
+            continue
+
+        field_text = attr.get("field", "")
+        if not field_text:
+            attr["field_embedding"] = []
+            continue
+
+        try:
+            embedding = embed_model(field_text)
+            if isinstance(embedding, list):
+                attr["field_embedding"] = embedding
+            else:
+                logger.warning(f"属性字段 embedding 格式异常，写入空列表: {field_text}")
+                attr["field_embedding"] = []
+        except Exception as e:
+            logger.error(f"生成属性字段 embedding 失败: {field_text}, 错误: {e}")
+            raise
+
+    return kg_result
+
 def save_kg_candidates_as_individual_files(kg_candidates: List[Dict], kg_candidates_root: Path):
     """
     将每个 kg_candidate 保存为单独的文件，按照编号从00001开始存储。
@@ -590,6 +631,7 @@ def process_eligibility_file(eligibility_file: Path,
             
             try:
                 kg_result = call_openai_for_kg_candidate(episode_with_content, prompt_template)
+                kg_result = attach_attribute_field_embeddings(kg_result)
                 kg_candidates.append({
                     "episode_id": episode_id,
                     "dialogue_id": dialogue_id,
