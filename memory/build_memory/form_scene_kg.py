@@ -14,7 +14,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Callable
 from tqdm import tqdm
 
 # 添加项目根目录到 Python 路径，确保可以导入 load_model
@@ -204,16 +204,19 @@ def call_llm_for_features(diary: str, entities: List[str], prompt_template: str,
         logger.error(f"调用 LLM 失败: {e}")
         raise
 
-def attach_feature_embeddings(features: List[Dict]) -> List[Dict]:
+def attach_feature_embeddings(
+    features: List[Dict],
+    embed_model: Optional[Callable[[Any], Any]] = None
+) -> List[Dict]:
     """
     为每个特征生成文本 embedding，并写入 feature_embedding 字段。
     """
     if not features:
         return features
 
-    from load_model.BGEcall import get_embed_model
-
-    embed_model = get_embed_model()
+    if embed_model is None:
+        from load_model.BGEcall import get_embed_model
+        embed_model = get_embed_model()
 
     for item in features:
         feature_text = item.get("feature", "")
@@ -275,7 +278,8 @@ def update_episode_status(episode_situation: Dict, episode_key: str, kg_file_nam
 def process_episode(episode_info: Dict, 
                    memory_root: Path,
                    prompts: Dict,
-                   force_update: bool = False) -> bool:
+                   force_update: bool = False,
+                   embed_model: Optional[Callable[[Any], Any]] = None) -> bool:
     """
     处理单个 episode，提取特征并保存。
     
@@ -346,7 +350,7 @@ def process_episode(episode_info: Dict,
             features = call_llm_for_features(diary, entities, prompt_template, scene_id)
 
         # 为特征补充文本 embedding 字段
-        features = attach_feature_embeddings(features)
+        features = attach_feature_embeddings(features, embed_model=embed_model)
         
         # 将特征添加到 kg_candidates 数据中
         kg_data_with_features = add_features_to_kg_candidates(kg_data, features)
@@ -366,7 +370,8 @@ def process_episode(episode_info: Dict,
 def scan_and_extract_features(workflow_id: str = "test2",
                              force_update: bool = False,
                              use_tqdm: bool = True,
-                             memory_owner_name: str = "changshengEVA"):
+                             memory_owner_name: str = "changshengEVA",
+                             embed_model: Optional[Callable[[Any], Any]] = None):
     """
     主函数：扫描所有符合条件的 episode，提取特征。
     
@@ -415,7 +420,13 @@ def scan_and_extract_features(workflow_id: str = "test2",
     
     success_count = 0
     for episode_info in episode_iter:
-        if process_episode(episode_info, memory_root, prompts, force_update):
+        if process_episode(
+            episode_info,
+            memory_root,
+            prompts,
+            force_update,
+            embed_model=embed_model
+        ):
             success_count += 1
             
             # 更新 episode_situation.json 状态

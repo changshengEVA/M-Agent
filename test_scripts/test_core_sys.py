@@ -48,6 +48,6 @@ er_stats = memory_core.get_entity_resolution_stats()
 print(f"  实体解析统计: {er_stats}")
 
 # 尝试解析实体
-entity_return = memory_core.resolve_entity("NewYork University")
+entity_return = memory_core.resolve_entity("纽约大学")
 print(f" 返回统计: {entity_return}")
 

@@ -16,7 +16,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable, Any
 from tqdm import tqdm
 
 # 添加项目根目录到 Python 路径，确保可以导入 load_model
@@ -433,7 +433,10 @@ def extract_kg_candidate_v3(episode_with_content: Dict, prompt_dict: Dict) -> Di
     
     return merged_result
 
-def attach_attribute_field_embeddings(kg_result: Dict) -> Dict:
+def attach_attribute_field_embeddings(
+    kg_result: Dict,
+    embed_model: Optional[Callable[[Any], Any]] = None
+) -> Dict:
     """
     为 kg_result 中 attributes 的 field 生成 embedding，并写入 field_embedding 字段。
     """
@@ -448,9 +451,9 @@ def attach_attribute_field_embeddings(kg_result: Dict) -> Dict:
     if not isinstance(attributes, list) or not attributes:
         return kg_result
 
-    from load_model.BGEcall import get_embed_model
-
-    embed_model = get_embed_model()
+    if embed_model is None:
+        from load_model.BGEcall import get_embed_model
+        embed_model = get_embed_model()
 
     for attr in attributes:
         if not isinstance(attr, dict):
@@ -536,7 +539,8 @@ def process_eligibility_file(eligibility_file: Path,
                             episodes_root: Path = None,
                             kg_candidates_root: Path = None,
                             force_update: bool = False,
-                            memory_owner_name: str = "changshengEVA") -> bool:
+                            memory_owner_name: str = "changshengEVA",
+                            embed_model: Optional[Callable[[Any], Any]] = None) -> bool:
     """
     处理单个 eligibility 文件，生成 kg_candidate（新格式：每个kg_candidate单独文件）
     
@@ -631,7 +635,10 @@ def process_eligibility_file(eligibility_file: Path,
             
             try:
                 kg_result = call_openai_for_kg_candidate(episode_with_content, prompt_template)
-                kg_result = attach_attribute_field_embeddings(kg_result)
+                kg_result = attach_attribute_field_embeddings(
+                    kg_result,
+                    embed_model=embed_model
+                )
                 kg_candidates.append({
                     "episode_id": episode_id,
                     "dialogue_id": dialogue_id,
@@ -681,7 +688,8 @@ def scan_and_form_kg_candidates(prompt_version: str = "v1",
                                 dialogues_root: Path = None,
                                 episodes_root: Path = None,
                                 kg_candidates_root: Path = None,
-                                memory_owner_name: str = "changshengEVA"):
+                                memory_owner_name: str = "changshengEVA",
+                                embed_model: Optional[Callable[[Any], Any]] = None):
     """
     主函数：扫描所有 eligibility 文件，为需要生成 kg_candidate 的对话创建 kg_candidate。
     使用新格式：每个kg_candidate保存为单独文件。
@@ -752,7 +760,8 @@ def scan_and_form_kg_candidates(prompt_version: str = "v1",
             episodes_root,
             kg_candidates_root,
             force_update=force_update,
-            memory_owner_name=memory_owner_name
+            memory_owner_name=memory_owner_name,
+            embed_model=embed_model
         ):
             success_count += 1
     

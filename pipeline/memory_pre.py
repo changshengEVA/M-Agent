@@ -17,12 +17,13 @@ import os
 import shutil
 import logging
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Callable
 from pathlib import Path
 import sys
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 
 # 导入数据加载模块
@@ -58,6 +59,20 @@ except ImportError:
 
 # 路径配置
 PROJECT_ROOT = Path(__file__).parent.parent
+
+
+def init_bge_embed_model() -> Optional[Callable[[Any], Any]]:
+    """
+    在 pipeline 入口预初始化 BGE embedding 模型，供后续阶段复用。
+    失败时返回 None，由各阶段内部按原有逻辑兜底。
+    """
+    try:
+        from load_model.BGEcall import get_embed_model
+        logger.info("预初始化 BGE embedding 模型...")
+        return get_embed_model()
+    except Exception as e:
+        logger.warning(f"BGE embedding 预初始化失败，将回退为按需初始化: {e}")
+        return None
 
 
 def get_output_path(process_id: str, stage_name: str) -> Path:
@@ -178,7 +193,12 @@ def stage2_construct_episodes_for_id(process_id: str, memory_owner_name: str = "
     return episode_files_count > 0
 
 
-def stage3_form_kg_candidates_for_id(process_id: str, prompt_version: str = "v1", memory_owner_name: str = "changshengEVA"):
+def stage3_form_kg_candidates_for_id(
+    process_id: str,
+    prompt_version: str = "v1",
+    memory_owner_name: str = "changshengEVA",
+    embed_model: Optional[Callable[[Any], Any]] = None
+):
     """
     第三阶段：形成KG候选，为kg_available为true的episode生成kg_candidate
     
@@ -215,7 +235,8 @@ def stage3_form_kg_candidates_for_id(process_id: str, prompt_version: str = "v1"
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
             kg_candidates_root=kg_candidates_root,
-            memory_owner_name=memory_owner_name
+            memory_owner_name=memory_owner_name,
+            embed_model=embed_model
         )
         
         # 统计生成的 kg_candidate 文件数量
@@ -322,7 +343,12 @@ def stage4_form_scenes_for_id(process_id: str,
         return False
 
 
-def stage5_form_scene_features_for_id(process_id: str, force_update: bool = False, memory_owner_name: str = "changshengEVA"):
+def stage5_form_scene_features_for_id(
+    process_id: str,
+    force_update: bool = False,
+    memory_owner_name: str = "changshengEVA",
+    embed_model: Optional[Callable[[Any], Any]] = None
+):
     """
     第五阶段：形成 scene 特征，为已生成 kg 和 scene 的 episode 提取实体特征
     
@@ -351,7 +377,8 @@ def stage5_form_scene_features_for_id(process_id: str, force_update: bool = Fals
             workflow_id=process_id,
             force_update=force_update,
             use_tqdm=True,
-            memory_owner_name=memory_owner_name
+            memory_owner_name=memory_owner_name,
+            embed_model=embed_model
         )
         
         # 统计已更新的 kg_candidate 文件数量
@@ -421,18 +448,24 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
     logger.info(f"包含第五阶段: {include_stage5}")
     logger.info(f"记忆所有者名称: {memory_owner_name}")
     
-    # # 第一阶段：构造 dialogues
-    # if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
-    #     logger.warning("第一阶段失败，跳过后续阶段")
-    #     return False
+    # 第一阶段：构造 dialogues
+    if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
+        logger.warning("第一阶段失败，跳过后续阶段")
+        return False
     
-    # # 第二阶段：构造 episodes
-    # if not stage2_construct_episodes_for_id(process_id, memory_owner_name):
-    #     logger.warning("第二阶段失败，跳过第三阶段")
-    #     return False
+    # 第二阶段：构造 episodes
+    if not stage2_construct_episodes_for_id(process_id, memory_owner_name):
+        logger.warning("第二阶段失败，跳过第三阶段")
+        return False
     
     # 第三阶段：形成KG候选
-    if not stage3_form_kg_candidates_for_id(process_id, prompt_version, memory_owner_name):
+    embed_model = init_bge_embed_model()
+    if not stage3_form_kg_candidates_for_id(
+        process_id,
+        prompt_version,
+        memory_owner_name,
+        embed_model=embed_model
+    ):
         logger.warning("第三阶段失败")
         return False
     
@@ -443,7 +476,12 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
     
     # 第五阶段：形成 scene 特征（可选）
     if include_stage5:
-        if not stage5_form_scene_features_for_id(process_id, force_update=False, memory_owner_name=memory_owner_name):
+        if not stage5_form_scene_features_for_id(
+            process_id,
+            force_update=False,
+            memory_owner_name=memory_owner_name,
+            embed_model=embed_model
+        ):
             logger.warning("第五阶段失败")
             # 第五阶段失败不视为整个流程失败，因为它是可选的增强功能
             # 但仍然记录警告
