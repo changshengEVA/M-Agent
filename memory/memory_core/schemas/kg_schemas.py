@@ -42,6 +42,7 @@ class AttributeRecord(TypedDict, total=False):
     field: str  # 属性字段名，如"年龄"、"职业"
     field_embedding: List[float]  # 属性字段文本的 embedding
     value: Union[str, int, float, bool, List, Dict]  # 属性值
+    values: List[Union[str, int, float, bool, List, Dict]]  # 同一字段的多值保留
     confidence: float  # 置信度，0.0-1.0
     sources: List[SourceInfo]
 
@@ -470,6 +471,9 @@ def validate_attribute_record(data: Dict[str, Any]) -> bool:
                 return False
         
         if 'confidence' in data and not isinstance(data['confidence'], (int, float)):
+            return False
+
+        if 'values' in data and not isinstance(data['values'], list):
             return False
         
         # 检查列表字段

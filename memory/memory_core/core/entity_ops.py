@@ -126,10 +126,25 @@ def merge_entities(
                     existing_sources = existing_feature.get('sources', [])
                     new_sources = feature.get('sources', [])
                     
-                    # 简单的去重合并
+                    existing_keys = {
+                        (
+                            s.get('dialogue_id'),
+                            s.get('episode_id'),
+                            s.get('scene_id')
+                        )
+                        for s in existing_sources if isinstance(s, dict)
+                    }
                     for source in new_sources:
-                        if source not in existing_sources:
+                        if not isinstance(source, dict):
+                            continue
+                        key = (
+                            source.get('dialogue_id'),
+                            source.get('episode_id'),
+                            source.get('scene_id')
+                        )
+                        if key not in existing_keys:
                             existing_sources.append(source)
+                            existing_keys.add(key)
                     
                     existing_feature['sources'] = existing_sources
                     # 保留置信度更高的值
@@ -153,6 +168,8 @@ def merge_entities(
             field = attr.get('field', '')
             if field:
                 if field not in attribute_map:
+                    if not isinstance(attr.get('values'), list):
+                        attr['values'] = [attr.get('value')]
                     attribute_map[field] = attr
                 else:
                     # 合并来源信息
@@ -160,11 +177,35 @@ def merge_entities(
                     existing_sources = existing_attr.get('sources', [])
                     new_sources = attr.get('sources', [])
                     
+                    existing_keys = {
+                        (
+                            s.get('dialogue_id'),
+                            s.get('episode_id'),
+                            s.get('scene_id')
+                        )
+                        for s in existing_sources if isinstance(s, dict)
+                    }
                     for source in new_sources:
-                        if source not in existing_sources:
+                        if not isinstance(source, dict):
+                            continue
+                        key = (
+                            source.get('dialogue_id'),
+                            source.get('episode_id'),
+                            source.get('scene_id')
+                        )
+                        if key not in existing_keys:
                             existing_sources.append(source)
+                            existing_keys.add(key)
                     
                     existing_attr['sources'] = existing_sources
+                    values = existing_attr.get('values')
+                    if not isinstance(values, list):
+                        values = []
+                        if 'value' in existing_attr:
+                            values.append(existing_attr.get('value'))
+                    if attr.get('value') not in values:
+                        values.append(attr.get('value'))
+                    existing_attr['values'] = values
                     # 保留置信度更高的值
                     if attr.get('confidence', 0) > existing_attr.get('confidence', 0):
                         existing_attr['value'] = attr['value']
@@ -176,9 +217,25 @@ def merge_entities(
         target_sources = target_data.get('sources', [])
         source_sources = source_data.get('sources', [])
         
+        target_source_keys = {
+            (
+                s.get('dialogue_id'),
+                s.get('episode_id'),
+                s.get('scene_id')
+            )
+            for s in target_sources if isinstance(s, dict)
+        }
         for source in source_sources:
-            if source not in target_sources:
+            if not isinstance(source, dict):
+                continue
+            key = (
+                source.get('dialogue_id'),
+                source.get('episode_id'),
+                source.get('scene_id')
+            )
+            if key not in target_source_keys:
                 target_sources.append(source)
+                target_source_keys.add(key)
         
         target_data['sources'] = target_sources
         

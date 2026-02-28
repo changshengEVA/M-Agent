@@ -22,6 +22,17 @@ from memory.memory_core.memory_system import MemoryCore
 logger = logging.getLogger(__name__)
 
 
+ATTRIBUTE_FIELD_ALIASES = {
+    "long-term_hobby": "long_term_hobby",
+}
+
+
+def _normalize_attribute_field(field: Any) -> Any:
+    if not isinstance(field, str):
+        return field
+    return ATTRIBUTE_FIELD_ALIASES.get(field, field)
+
+
 def load_from_dialogue_json(
     json_data: Dict[str, Any],
     kg_base: KGBase,
@@ -190,7 +201,7 @@ def load_from_dialogue_json(
     # 3. 处理属性
     for attribute_data in attributes:
         entity_id = attribute_data.get("entity")
-        field = attribute_data.get("field")
+        field = _normalize_attribute_field(attribute_data.get("field"))
         value = attribute_data.get("value")
         confidence = attribute_data.get("confidence", 1.0)
         field_embedding = attribute_data.get("field_embedding")

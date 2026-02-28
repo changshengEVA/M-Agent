@@ -13,6 +13,37 @@ from typing import Dict, List, Any, Optional, Union
 
 logger = logging.getLogger(__name__)
 
+
+def _source_dedup_key(source: Dict[str, Any]) -> tuple:
+    return (
+        source.get("dialogue_id"),
+        source.get("episode_id"),
+        source.get("scene_id"),
+    )
+
+
+def _merge_sources(existing_sources: List[Dict[str, Any]], new_sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    merged: List[Dict[str, Any]] = []
+    source_by_key: Dict[tuple, Dict[str, Any]] = {}
+
+    for source in (existing_sources or []) + (new_sources or []):
+        if not isinstance(source, dict):
+            continue
+
+        key = _source_dedup_key(source)
+        if key not in source_by_key:
+            source_copy = dict(source)
+            source_by_key[key] = source_copy
+            merged.append(source_copy)
+            continue
+
+        current = source_by_key[key]
+        for k, v in source.items():
+            if current.get(k) in (None, "") and v not in (None, ""):
+                current[k] = v
+
+    return merged
+
 # 导入schemas中定义的类型
 try:
     from ..schemas.kg_schemas import (
@@ -100,13 +131,10 @@ class FeatureRepository:
                     if 'sources' in feature_record:
                         sources_existing = existing_feature.get('sources', [])
                         sources_new = feature_record.get('sources', [])
-                        
-                        # 合并来源（简单的去重逻辑）
-                        for source in sources_new:
-                            if source not in sources_existing:
-                                sources_existing.append(source)
-                        
-                        existing_feature['sources'] = sources_existing
+                        existing_feature['sources'] = _merge_sources(
+                            sources_existing,
+                            sources_new
+                        )
                     
                     # 更新其他字段（保留现有值，除非新记录有更高置信度）
                     existing_confidence = existing_feature.get('confidence', 0)

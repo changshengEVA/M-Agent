@@ -1,4 +1,5 @@
 import sys
+import json
 import logging
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -42,12 +43,17 @@ memory_core = MemoryCore(
 # 获取统计信息
 kg_stats = memory_core.get_kg_stats()
 print(f"  KG统计: {kg_stats}")
-        
+
 # 获取实体解析统计
 er_stats = memory_core.get_entity_resolution_stats()
 print(f"  实体解析统计: {er_stats}")
 
 # 尝试解析实体
-entity_return = memory_core.resolve_entity("纽约大学")
-print(f" 返回统计: {entity_return}")
+entity_return = memory_core.resolve_entity("Emi")
+print(" entity_return:")
+print(json.dumps(entity_return, ensure_ascii=False, indent=2))
 
+# 尝试搜索特征和属性
+property_return = memory_core.query_entity_property("30a96824-01b0-4cbe-8ba4-c8c6fc3645eb", "兴趣爱好")
+print(" property_return:")
+print(json.dumps(property_return, ensure_ascii=False, indent=2))

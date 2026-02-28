@@ -347,10 +347,40 @@ class MemoryCore:
             entity_resolution_service=self.entity_resolution_service,
             kg_base=self.kg_base
         )
-    
-    def search_feature_by_entity_id():
-        
-        pass
+
+    def query_entity_property(self, entity_uid: str, query_text: str) -> Dict[str, Any]:
+        """
+        实体属性/特征查询公开接口。
+
+        Args:
+            entity_uid: 通过 resolve_entity 返回的实体 UID
+            query_text: 查询文本
+
+        Returns:
+            {
+              "hit": bool,
+              "entity_uid": str,
+              "query_text": str,
+              "content": dict | None,
+              "source": list,
+              "top_similar_contents": list
+            }
+        """
+        from .workflow.entity_property_query import (
+            query_entity_property as workflow_query_entity_property
+        )
+
+        logger.info("调用 query_entity_property 接口")
+        return workflow_query_entity_property(
+            entity_uid=entity_uid,
+            query_text=query_text,
+            kg_base=self.kg_base,
+            entity_resolution_service=self.entity_resolution_service,
+            embed_func=self.embed_func,
+            llm_func=self.llm_func,
+            similarity_threshold=self.similarity_threshold,
+            top_k=self.top_k,
+        )
     # ============================================================================
     # 服务注册
     # ============================================================================

@@ -13,6 +13,54 @@ from typing import Dict, List, Any, Optional, Union
 
 logger = logging.getLogger(__name__)
 
+
+def _source_dedup_key(source: Dict[str, Any]) -> tuple:
+    """Dedup source by business key, not by full dict content."""
+    return (
+        source.get("dialogue_id"),
+        source.get("episode_id"),
+        source.get("scene_id"),
+    )
+
+
+def _merge_sources(existing_sources: List[Dict[str, Any]], new_sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Merge and dedup sources while preserving insertion order."""
+    merged: List[Dict[str, Any]] = []
+    source_by_key: Dict[tuple, Dict[str, Any]] = {}
+
+    for source in (existing_sources or []) + (new_sources or []):
+        if not isinstance(source, dict):
+            continue
+
+        key = _source_dedup_key(source)
+        if key not in source_by_key:
+            source_copy = dict(source)
+            source_by_key[key] = source_copy
+            merged.append(source_copy)
+            continue
+
+        # Fill missing fields from later records (e.g., generated_at).
+        current = source_by_key[key]
+        for k, v in source.items():
+            if current.get(k) in (None, "") and v not in (None, ""):
+                current[k] = v
+
+    return merged
+
+
+def _merge_values(existing_attribute: Dict[str, Any], new_value: Any) -> None:
+    """Keep all observed values for one field in a stable list."""
+    values = existing_attribute.get("values")
+    if not isinstance(values, list):
+        values = []
+        if "value" in existing_attribute:
+            values.append(existing_attribute.get("value"))
+
+    if new_value not in values:
+        values.append(new_value)
+
+    existing_attribute["values"] = values
+
 # 导入schemas中定义的类型
 try:
     from ..schemas.kg_schemas import (
@@ -100,13 +148,12 @@ class AttributeRepository:
                     if 'sources' in attribute_record:
                         sources_existing = existing_attribute.get('sources', [])
                         sources_new = attribute_record.get('sources', [])
-                        
-                        # 合并来源（简单的去重逻辑）
-                        for source in sources_new:
-                            if source not in sources_existing:
-                                sources_existing.append(source)
-                        
-                        existing_attribute['sources'] = sources_existing
+                        existing_attribute['sources'] = _merge_sources(
+                            sources_existing,
+                            sources_new
+                        )
+
+                    _merge_values(existing_attribute, attribute_record.get('value'))
                     
                     # 比较置信度，选择置信度更高的值
                     existing_confidence = existing_attribute.get('confidence', 0)
@@ -119,13 +166,13 @@ class AttributeRepository:
                         
                         # 更新其他字段
                         for key, value in attribute_record.items():
-                            if key not in ['value', 'confidence', 'sources']:
+                            if key not in ['value', 'confidence', 'sources', 'values']:
                                 existing_attribute[key] = value
                     else:
                         # 现有记录置信度更高或相等，保留现有值
                         # 只更新非关键字段
                         for key, value in attribute_record.items():
-                            if key not in ['value', 'confidence', 'sources', 'field']:
+                            if key not in ['value', 'confidence', 'sources', 'field', 'values']:
                                 existing_attribute[key] = value
                     
                     # 更新实体中的属性
@@ -135,6 +182,10 @@ class AttributeRepository:
             
             if not attribute_exists:
                 # 添加新属性
+                if not isinstance(attribute_record.get('values'), list):
+                    attribute_record['values'] = [attribute_record.get('value')]
+                elif attribute_record.get('value') not in attribute_record['values']:
+                    attribute_record['values'].append(attribute_record.get('value'))
                 entity_data['attributes'].append(attribute_record)
             
             # 保存更新后的实体数据
