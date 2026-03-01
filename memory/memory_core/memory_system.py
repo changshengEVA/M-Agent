@@ -69,17 +69,20 @@ class MemoryCore:
         self.entity_dir = self.kg_data_path / "entity"
         self.relation_dir = self.kg_data_path / "relation"
         self.entity_library_path = self.kg_data_path / "entity_library"
+        self.scene_dir = self.kg_data_path.parent / "scene"
         
         # 确保目录存在
         self.entity_dir.mkdir(parents=True, exist_ok=True)
         self.relation_dir.mkdir(parents=True, exist_ok=True)
         self.entity_library_path.mkdir(parents=True, exist_ok=True)
+        self.scene_dir.mkdir(parents=True, exist_ok=True)
         
         logger.info(f"初始化 MemoryCore，工作流ID: {workflow_id}")
         logger.info(f"KG数据路径: {self.kg_data_path}")
         logger.info(f"实体目录: {self.entity_dir}")
         logger.info(f"关系目录: {self.relation_dir}")
         logger.info(f"实体库路径: {self.entity_library_path}")
+        logger.info(f"Scene目录: {self.scene_dir}")
         
         # 2. 初始化 EventBus
         self.event_bus = EventBus()
@@ -382,9 +385,42 @@ class MemoryCore:
             top_k=self.top_k,
         )
     # ============================================================================
+    # 宏观事件检索
+    # ============================================================================
+    def search_macro_events(
+        self,
+        query: Dict[str, Any],
+        use_threshold: bool = True,
+        threshold: float = 0.7,
+        topk: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        宏观事件（scene）检索公开接口。
+        基于 scene 的 theme_embedding 进行相似度检索。
+        """
+        from .workflow.macro_event_search import (
+            search_macro_events as workflow_search_macro_events
+        )
+
+        logger.info(
+            "调用 search_macro_events 接口: use_threshold=%s, threshold=%s, topk=%s, scene_dir=%s",
+            use_threshold,
+            threshold,
+            topk,
+            self.scene_dir,
+        )
+        return workflow_search_macro_events(
+            query=query,
+            scene_dir=self.scene_dir,
+            embed_func=self.embed_func,
+            use_threshold=use_threshold,
+            threshold=threshold,
+            topk=topk,
+        )
+
+    # ============================================================================
     # 服务注册
     # ============================================================================
-    
     def register_service(self, service: Any) -> None:
         """
         注册服务到 EventBus
