@@ -14,7 +14,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any, Callable
 from tqdm import tqdm
 
 # 添加项目根目录到 Python 路径，确保可以导入 load_model
@@ -251,6 +251,40 @@ def call_openai_for_scene(episode_with_content: Dict, prompt_template: str) -> D
         logger.error(f"调用 OpenAI 失败: {e}")
         raise
 
+def attach_theme_embedding(
+    scene_result: Dict,
+    embed_model: Optional[Callable[[Any], Any]] = None
+) -> Dict:
+    """
+    为 scene_result 中的 theme 生成 embedding，并写入 theme_embedding 字段。
+    """
+    scene_result = scene_result.copy()
+    theme_text = scene_result.get("theme", "")
+    if not isinstance(theme_text, str):
+        theme_text = str(theme_text) if theme_text is not None else ""
+        scene_result["theme"] = theme_text
+
+    if not theme_text.strip():
+        scene_result["theme_embedding"] = []
+        return scene_result
+
+    if embed_model is None:
+        from load_model.BGEcall import get_embed_model
+        embed_model = get_embed_model()
+
+    try:
+        embedding = embed_model(theme_text)
+        if isinstance(embedding, list):
+            scene_result["theme_embedding"] = embedding
+        else:
+            logger.warning(f"theme embedding 格式异常，写入空列表: {theme_text[:50]}...")
+            scene_result["theme_embedding"] = []
+    except Exception as e:
+        logger.error(f"生成 theme embedding 失败: {theme_text[:50]}..., 错误: {e}")
+        raise
+
+    return scene_result
+
 def build_scene_structure(scene_number: int,
                          episode_meta: Dict,
                          scene_result: Dict,
@@ -295,6 +329,7 @@ def build_scene_structure(scene_number: int,
             "language": language
         },
         "theme": scene_result.get("theme", ""),
+        "theme_embedding": scene_result.get("theme_embedding", []),
         "diary": scene_result.get("diary", "")
     }
 
@@ -354,7 +389,8 @@ def process_episode_file(episode_file: Path,
                         scene_root: Path = None,
                         force_update: bool = False,
                         prompt_version: str = "v1",
-                        memory_owner_name: str = "changshengEVA") -> bool:
+                        memory_owner_name: str = "changshengEVA",
+                        embed_model: Optional[Callable[[Any], Any]] = None) -> bool:
     """
     处理单个 episode 文件，生成 scene。
     
@@ -446,6 +482,7 @@ def process_episode_file(episode_file: Path,
                 if "theme" not in scene_result or "diary" not in scene_result:
                     logger.error(f"scene 结果缺少 theme 或 diary: {scene_result}")
                     continue
+                scene_result = attach_theme_embedding(scene_result, embed_model=embed_model)
                 
                 # 构建 scene 结构（需要 scene_number，但此时未知，先占位）
                 # 我们将稍后分配编号
@@ -517,7 +554,8 @@ def scan_and_form_scenes(use_tqdm: bool = True,
                         dialogues_root: Path = None,
                         episodes_root: Path = None,
                         scene_root: Path = None,
-                        memory_owner_name: str = "changshengEVA"):
+                        memory_owner_name: str = "changshengEVA",
+                        embed_model: Optional[Callable[[Any], Any]] = None):
     """
     主函数：扫描所有 episode 文件，为需要生成 scene 的对话创建 scene。
     
@@ -579,7 +617,8 @@ def scan_and_form_scenes(use_tqdm: bool = True,
             scene_root,
             force_update=force_update,
             prompt_version=prompt_version,
-            memory_owner_name=memory_owner_name
+            memory_owner_name=memory_owner_name,
+            embed_model=embed_model
         ):
             success_count += 1
     

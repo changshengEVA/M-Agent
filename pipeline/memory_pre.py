@@ -272,7 +272,8 @@ def stage3_form_kg_candidates_for_id(
 
 def stage4_form_scenes_for_id(process_id: str,
                               scene_prompt_version: str = "v1",
-                              memory_owner_name: str = "changshengEVA"):
+                              memory_owner_name: str = "changshengEVA",
+                              embed_model: Optional[Callable[[Any], Any]] = None):
     """
     第四阶段：形成 scene，为每个 episode 生成 scene（theme 和 diary）
     
@@ -309,7 +310,8 @@ def stage4_form_scenes_for_id(process_id: str,
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
             scene_root=scene_root,
-            memory_owner_name=memory_owner_name
+            memory_owner_name=memory_owner_name,
+            embed_model=embed_model
         )
         
         # 统计生成的 scene 文件数量
@@ -470,7 +472,12 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
         return False
     
     # 第四阶段：形成 scene
-    if not stage4_form_scenes_for_id(process_id, scene_prompt_version, memory_owner_name):
+    if not stage4_form_scenes_for_id(
+        process_id,
+        scene_prompt_version,
+        memory_owner_name,
+        embed_model=embed_model
+    ):
         logger.warning("第四阶段失败")
         return False
     
