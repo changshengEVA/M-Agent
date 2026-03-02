@@ -67,3 +67,11 @@ macro_return_topk = memory_core.search_macro_events(
 )
 print(" macro_return_topk:")
 print(json.dumps(macro_return_topk, ensure_ascii=False, indent=2))
+
+# Test content search by dialogue_id + episode_id
+content_return = memory_core.search_content(
+    dialogue_id="dlg_Chat_1_Emi_Elise_7",
+    episode_id="ep_002"
+)
+print(" content_return:")
+print(json.dumps(content_return, ensure_ascii=False, indent=2))

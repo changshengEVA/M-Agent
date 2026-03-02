@@ -66,10 +66,13 @@ class MemoryCore:
         
         # 1. 构建数据路径
         self.kg_data_path = Path(f"data/memory/{workflow_id}/kg_data")
+        self.memory_root = self.kg_data_path.parent
         self.entity_dir = self.kg_data_path / "entity"
         self.relation_dir = self.kg_data_path / "relation"
         self.entity_library_path = self.kg_data_path / "entity_library"
-        self.scene_dir = self.kg_data_path.parent / "scene"
+        self.scene_dir = self.memory_root / "scene"
+        self.dialogues_dir = self.memory_root / "dialogues"
+        self.episodes_dir = self.memory_root / "episodes"
         
         # 确保目录存在
         self.entity_dir.mkdir(parents=True, exist_ok=True)
@@ -79,10 +82,13 @@ class MemoryCore:
         
         logger.info(f"初始化 MemoryCore，工作流ID: {workflow_id}")
         logger.info(f"KG数据路径: {self.kg_data_path}")
+        logger.info(f"Memory根目录: {self.memory_root}")
         logger.info(f"实体目录: {self.entity_dir}")
         logger.info(f"关系目录: {self.relation_dir}")
         logger.info(f"实体库路径: {self.entity_library_path}")
         logger.info(f"Scene目录: {self.scene_dir}")
+        logger.info(f"Dialogues目录: {self.dialogues_dir}")
+        logger.info(f"Episodes目录: {self.episodes_dir}")
         
         # 2. 初始化 EventBus
         self.event_bus = EventBus()
@@ -364,9 +370,7 @@ class MemoryCore:
               "hit": bool,
               "entity_uid": str,
               "query_text": str,
-              "content": dict | None,
-              "source": list,
-              "top_similar_contents": list
+              "content": dict | None
             }
         """
         from .workflow.entity_property_query import (
@@ -416,6 +420,26 @@ class MemoryCore:
             use_threshold=use_threshold,
             threshold=threshold,
             topk=topk,
+        )
+
+    def search_content(self, dialogue_id: str, episode_id: str) -> Dict[str, Any]:
+        """
+        内容检索公开接口。
+        输入 dialogue_id 和 episode_id，返回对应对话片段的具体内容。
+        """
+        from .workflow.content_search import search_content as workflow_search_content
+
+        logger.info(
+            "调用 search_content 接口: dialogue_id=%s, episode_id=%s",
+            dialogue_id,
+            episode_id,
+        )
+        return workflow_search_content(
+            dialogue_id=dialogue_id,
+            episode_id=episode_id,
+            scene_dir=self.scene_dir,
+            dialogues_dir=self.dialogues_dir,
+            episodes_dir=self.episodes_dir,
         )
 
     # ============================================================================

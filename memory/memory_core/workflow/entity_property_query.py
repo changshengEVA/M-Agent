@@ -36,7 +36,6 @@ def query_entity_property(
         "entity_uid": entity_uid,
         "query_text": query_text,
         "content": None,
-        "top_similar_contents": [],
     }
 
     if not isinstance(entity_uid, str) or not entity_uid.strip():
@@ -72,6 +71,11 @@ def query_entity_property(
         if not isinstance(field, str) or not field.strip():
             continue
 
+        values = _collect_attribute_values(attr)
+        primary_value = attr.get("value")
+        if primary_value is None and values:
+            primary_value = values[0]
+
         field_embedding = attr.get("field_embedding")
         if not (isinstance(field_embedding, list) and field_embedding):
             try:
@@ -85,7 +89,8 @@ def query_entity_property(
                 "candidate_id": f"A{idx}",
                 "type": "attribute",
                 "field": field,
-                "value": attr.get("value"),
+                "value": primary_value,
+                "values": values,
                 "similarity": similarity,
                 "source": attr.get("sources", []),
             }
@@ -129,8 +134,6 @@ def query_entity_property(
     threshold_candidates = [c for c in candidates if c["similarity"] >= threshold]
     topk_candidates = candidates[:topk]
     llm_candidates = threshold_candidates if len(threshold_candidates) > topk else topk_candidates
-
-    result["top_similar_contents"] = [_strip_property_candidate(c) for c in candidates[:5]]
 
     target_candidate_id = _llm_judge_property(
         query_text=query,
@@ -204,6 +207,7 @@ def _strip_property_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     if candidate.get("type") == "attribute":
         base["field"] = candidate.get("field")
         base["value"] = candidate.get("value")
+        base["values"] = _normalize_values_list(candidate.get("values"))
     else:
         base["feature"] = candidate.get("feature")
     return base
@@ -223,7 +227,11 @@ def _llm_judge_property(
     candidate_lines: List[str] = []
     for idx, c in enumerate(candidates, start=1):
         if c.get("type") == "attribute":
-            desc = f"属性字段={c.get('field')}，属性值={c.get('value')}"
+            values = _normalize_values_list(c.get("values"))
+            if values:
+                desc = f"属性字段={c.get('field')}，属性值列表={values}"
+            else:
+                desc = f"属性字段={c.get('field')}，属性值={c.get('value')}"
         else:
             desc = f"特征={c.get('feature')}"
         candidate_lines.append(
@@ -270,5 +278,18 @@ def _llm_judge_property(
         idx = int(response) - 1
         if 0 <= idx < len(candidates):
             return str(candidates[idx].get("candidate_id"))
-
     return None
+
+
+def _collect_attribute_values(attr: Dict[str, Any]) -> List[Any]:
+    values = _normalize_values_list(attr.get("values"))
+    value = attr.get("value")
+    if value is not None and value not in values:
+        values.append(value)
+    return values
+
+
+def _normalize_values_list(values: Any) -> List[Any]:
+    if isinstance(values, list):
+        return list(values)
+    return []

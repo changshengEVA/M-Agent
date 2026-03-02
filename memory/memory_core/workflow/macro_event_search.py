@@ -74,12 +74,9 @@ def search_macro_events(
         candidates.append(
             {
                 "scene_id": scene_data.get("scene_id") or scene_file.stem,
-                "scene_file": scene_file.name,
                 "similarity": float(similarity),
                 "theme": scene_data.get("theme", ""),
-                "diary": scene_data.get("diary", ""),
                 "source": scene_data.get("source", {}),
-                "meta": scene_data.get("meta", {}),
             }
         )
 
