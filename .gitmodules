@@ -1,3 +1,6 @@
 [submodule "data/REALTALK"]
     path = data/REALTALK
     url = git@github.com:danny911kr/REALTALK.git
+[submodule "data/locomo"]
+	path = data/locomo
+	url = git@github.com:snap-research/locomo.git
