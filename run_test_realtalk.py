@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
@@ -17,7 +18,8 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 
-from load_model.BGEcall import get_embed_model
+from load_model.AlibabaEmbeddingCall import get_embed_model as get_alibaba_embed_model
+from load_model.BGEcall import get_embed_model as get_local_embed_model
 from load_model.OpenAIcall import get_llm
 from memory.memory_core.memory_system import MemoryCore
 
@@ -122,14 +124,47 @@ def init_memory_sys(config: Dict[str, Any]) -> MemoryCore:
     top_k = int(config.get("memory_top_k", 3))
     use_threshold = bool(config.get("memory_use_threshold", True))
 
+    embed_provider = str(config.get("embed_provider", os.getenv("EMBED_PROVIDER", "local"))).strip().lower()
+    if embed_provider in {"alibaba", "aliyun", "dashscope"}:
+        logger.info("Embedding provider: %s (Alibaba API)", embed_provider)
+        embed_func = get_alibaba_embed_model()
+    elif embed_provider in {"local", "bge"}:
+        logger.info("Embedding provider: %s (local BGE)", embed_provider)
+        embed_func = get_local_embed_model()
+    else:
+        raise ValueError(
+            f"Unsupported embed_provider: {embed_provider}. "
+            "Use one of: local, bge, alibaba, aliyun, dashscope."
+        )
+
     return MemoryCore(
         workflow_id=workflow_id,
         llm_func=get_llm(llm_temperature),
-        embed_func=get_embed_model(),
+        embed_func=embed_func,
         llm_temperature=llm_temperature,
         similarity_threshold=similarity_threshold,
         top_k=top_k,
         use_threshold=use_threshold,
+    )
+
+
+def ensure_kg_data_initialized(memory_core: MemoryCore) -> None:
+    kg_data_path = memory_core.kg_data_path
+    kg_candidates_path = memory_core.memory_root / "kg_candidates"
+    kg_files = [p for p in kg_data_path.rglob("*") if p.is_file()]
+
+    if kg_files:
+        logger.info("kg_data already has %d file(s), skip bootstrap import.", len(kg_files))
+        return
+
+    logger.info("kg_data is empty, bootstrap import from: %s", kg_candidates_path)
+    load_result = memory_core.load_from_dialogue_path(kg_candidates_path)
+    if not load_result.get("success", False):
+        raise RuntimeError(f"Failed to initialize kg_data from kg_candidates: {load_result}")
+    logger.info(
+        "Bootstrap import completed: processed=%s, failed=%s",
+        load_result.get("files_processed", 0),
+        load_result.get("files_failed", 0),
     )
 
 
@@ -143,6 +178,7 @@ def main() -> None:
         macro_search_defaults.update(macro_cfg)
 
     memory_sys = init_memory_sys(prompt_config)
+    ensure_kg_data_initialized(memory_sys)
 
     model_name = str(prompt_config.get("model_name", "deepseek-chat"))
     agent_temperature = float(prompt_config.get("agent_temperature", 0.0))

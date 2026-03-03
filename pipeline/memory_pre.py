@@ -19,13 +19,14 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Callable
 from pathlib import Path
+from dotenv import load_dotenv
 import sys
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-
+load_dotenv()
 # 导入数据加载模块
 try:
     from load_data import load_dialogues
@@ -61,17 +62,27 @@ except ImportError:
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
-def init_bge_embed_model() -> Optional[Callable[[Any], Any]]:
+def init_embed_model(embed_provider: str = "bge") -> Optional[Callable[[Any], Any]]:
     """
-    在 pipeline 入口预初始化 BGE embedding 模型，供后续阶段复用。
+    在 pipeline 入口预初始化 embedding 模型，供后续阶段复用。
+    支持 provider:
+    - bge/local: 本地 BGE
+    - alibaba/aliyun/dashscope: 阿里 DashScope Embedding
     失败时返回 None，由各阶段内部按原有逻辑兜底。
     """
+    provider = (embed_provider or "bge").strip().lower()
+
     try:
+        if provider in {"alibaba", "aliyun", "dashscope"}:
+            from load_model.AlibabaEmbeddingCall import get_embed_model
+            logger.info("预初始化 Alibaba embedding 模型...")
+            return get_embed_model()
+
         from load_model.BGEcall import get_embed_model
         logger.info("预初始化 BGE embedding 模型...")
         return get_embed_model()
     except Exception as e:
-        logger.warning(f"BGE embedding 预初始化失败，将回退为按需初始化: {e}")
+        logger.warning(f"{provider} embedding 预初始化失败，将回退为按需初始化: {e}")
         return None
 
 
@@ -426,7 +437,8 @@ def stage5_form_scene_features_for_id(
 def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_type: str = "auto",
                            prompt_version: str = "v1", include_stage5: bool = True,
                            scene_prompt_version: str = "v1",
-                           memory_owner_name: str = "changshengEVA"):
+                           memory_owner_name: str = "changshengEVA",
+                           embed_provider: str = "bge"):
     """
     为指定ID运行完整的数据构造流程
     
@@ -441,6 +453,7 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
         include_stage5: 是否包含第五阶段（scene特征提取），默认True
         scene_prompt_version: scene prompt版本（v1 或 v2），默认v1
         memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
+        embed_provider: embedding 提供方（bge/local/alibaba/aliyun/dashscope）
     """
     logger.info(f"开始为处理流 {process_id} 执行完整数据构造流程")
     logger.info(f"数据源: {data_source if data_source else '默认'}")
@@ -449,19 +462,20 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
     logger.info(f"使用 scene prompt 版本: {scene_prompt_version}")
     logger.info(f"包含第五阶段: {include_stage5}")
     logger.info(f"记忆所有者名称: {memory_owner_name}")
+    logger.info(f"Embedding provider: {embed_provider}")
     
-    # 第一阶段：构造 dialogues
-    if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
-        logger.warning("第一阶段失败，跳过后续阶段")
-        return False
+    # # 第一阶段：构造 dialogues
+    # if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
+    #     logger.warning("第一阶段失败，跳过后续阶段")
+    #     return False
     
-    # 第二阶段：构造 episodes
-    if not stage2_construct_episodes_for_id(process_id, memory_owner_name):
-        logger.warning("第二阶段失败，跳过第三阶段")
-        return False
+    # # 第二阶段：构造 episodes
+    # if not stage2_construct_episodes_for_id(process_id, memory_owner_name):
+    #     logger.warning("第二阶段失败，跳过第三阶段")
+    #     return False
     
     # 第三阶段：形成KG候选
-    embed_model = init_bge_embed_model()
+    embed_model = init_embed_model(embed_provider)
     if not stage3_form_kg_candidates_for_id(
         process_id,
         prompt_version,
@@ -501,6 +515,7 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
     logger.info(f"使用 prompt 版本: {prompt_version}")
     logger.info(f"使用 scene prompt 版本: {scene_prompt_version}")
     logger.info(f"记忆所有者名称: {memory_owner_name}")
+    logger.info(f"Embedding provider: {embed_provider}")
     logger.info("=" * 50)
     return True
 
@@ -528,6 +543,10 @@ def main():
                        help="不包含第五阶段（scene特征提取）")
     parser.add_argument("--memory-owner-name", type=str, default="changshengEVA",
                        help="记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符（默认：changshengEVA）")
+    parser.add_argument("--embed-provider", type=str,
+                       default=os.getenv("EMBED_PROVIDER", "bge"),
+                       choices=["bge", "local", "alibaba", "aliyun", "dashscope"],
+                       help="Embedding 提供方：bge/local/alibaba/aliyun/dashscope（默认读取 EMBED_PROVIDER 或 bge）")
     
     args = parser.parse_args()
     
@@ -539,7 +558,8 @@ def main():
         prompt_version=args.kg_prompt_version,
         scene_prompt_version=args.scene_prompt_version,
         include_stage5=not args.no_stage5,
-        memory_owner_name=args.memory_owner_name
+        memory_owner_name=args.memory_owner_name,
+        embed_provider=args.embed_provider
     )
     
     stage_count = 5 if not args.no_stage5 else 4
@@ -549,6 +569,7 @@ def main():
         logger.info(f"数据源: {args.data_source if args.data_source else '默认'}")
         logger.info(f"加载器类型: {args.loader_type}")
         logger.info(f"记忆所有者名称: {args.memory_owner_name}")
+        logger.info(f"Embedding provider: {args.embed_provider}")
         logger.info("=" * 50)
     else:
         logger.error("数据构造流程失败")
