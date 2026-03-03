@@ -289,10 +289,6 @@ class MemoryCore:
         except Exception as e:
             logger.warning(f"初始化 EntityLibrary 同步时出错: {e}")
     
-    # ============================================================================
-    # 公开接口
-    # ============================================================================
-    
     def load_from_dialogue_json(self, json_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         从单个对话 JSON 数据加载到 KG
@@ -333,6 +329,10 @@ class MemoryCore:
             memory_core=self  # 传递 MemoryCore 实例
         )
 
+    
+    # ============================================================================
+    # 公开接口
+    # ============================================================================
     def resolve_entity(self, name: str) -> Dict[str, Any]:
         """
         实体解析（Entity Grounding）公开接口。
@@ -388,9 +388,7 @@ class MemoryCore:
             similarity_threshold=self.similarity_threshold,
             top_k=self.top_k,
         )
-    # ============================================================================
-    # 宏观事件检索
-    # ============================================================================
+    
     def search_macro_events(
         self,
         query: Dict[str, Any],

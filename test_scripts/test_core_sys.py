@@ -58,20 +58,20 @@ property_return = memory_core.query_entity_property("30a96824-01b0-4cbe-8ba4-c8c
 print(" property_return:")
 print(json.dumps(property_return, ensure_ascii=False, indent=2))
 
-# Test macro event search via scene theme
-macro_return_topk = memory_core.search_macro_events(
-    query={"theme": "旅行计划"},
-    use_threshold=False,
-    threshold=0.7,
-    topk=1
-)
-print(" macro_return_topk:")
-print(json.dumps(macro_return_topk, ensure_ascii=False, indent=2))
+# # Test macro event search via scene theme
+# macro_return_topk = memory_core.search_macro_events(
+#     query={"theme": "旅行计划"},
+#     use_threshold=False,
+#     threshold=0.7,
+#     topk=1
+# )
+# print(" macro_return_topk:")
+# print(json.dumps(macro_return_topk, ensure_ascii=False, indent=2))
 
-# Test content search by dialogue_id + episode_id
-content_return = memory_core.search_content(
-    dialogue_id="dlg_Chat_1_Emi_Elise_7",
-    episode_id="ep_002"
-)
-print(" content_return:")
-print(json.dumps(content_return, ensure_ascii=False, indent=2))
+# # Test content search by dialogue_id + episode_id
+# content_return = memory_core.search_content(
+#     dialogue_id="dlg_Chat_1_Emi_Elise_7",
+#     episode_id="ep_002"
+# )
+# print(" content_return:")
+# print(json.dumps(content_return, ensure_ascii=False, indent=2))
