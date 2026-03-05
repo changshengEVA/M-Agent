@@ -200,6 +200,7 @@ def load_dialogues(file_path: str = None, loader_type: str = "auto") -> List[Dic
         loader_type: 加载器类型，可选值：
                     - "auto": 自动检测（默认）
                     - "realtalk": 强制使用 realtalk 加载器
+                    - "locomo": 强制使用 locomo 加载器
                     - "default": 强制使用默认加载器
         
     Returns:
@@ -210,11 +211,26 @@ def load_dialogues(file_path: str = None, loader_type: str = "auto") -> List[Dic
         if path is None:
             return False
         path_lower = path.lower()
+        # locomo 路径优先交给 locomo loader
+        if "locomo" in path_lower:
+            return False
         if "realtalk" in path_lower:
             return True
         import os
         filename = os.path.basename(path)
         if filename.startswith("Chat_") and filename.endswith(".json"):
+            return True
+        return False
+
+    def is_locomo_path(path: str) -> bool:
+        if path is None:
+            return False
+        path_lower = path.lower()
+        if "locomo" in path_lower:
+            return True
+        import os
+        filename = os.path.basename(path_lower)
+        if filename == "locomo10.json":
             return True
         return False
     
@@ -229,6 +245,17 @@ def load_dialogues(file_path: str = None, loader_type: str = "auto") -> List[Dic
             from .realtalk_history_loader import load_realtalk_dialogues
             logger.info(f"使用 realtalk 文件加载器: {file_path}")
             return load_realtalk_dialogues(file_path)
+
+    elif loader_type == "locomo":
+        # 强制使用 locomo 加载器
+        if file_path and os.path.isdir(file_path):
+            from .locomo_history_loader import load_locomo_dialogues_from_directory
+            logger.info(f"使用 locomo 目录加载器: {file_path}")
+            return load_locomo_dialogues_from_directory(file_path)
+        else:
+            from .locomo_history_loader import load_locomo_dialogues
+            logger.info(f"使用 locomo 文件加载器: {file_path}")
+            return load_locomo_dialogues(file_path)
     
     elif loader_type == "default":
         # 强制使用默认加载器
@@ -238,12 +265,22 @@ def load_dialogues(file_path: str = None, loader_type: str = "auto") -> List[Dic
         # 自动检测
         # 如果 file_path 是目录，检查目录名
         if file_path and os.path.isdir(file_path):
+            # locomo 目录优先
+            if "LOCOMO" in file_path.upper():
+                from .locomo_history_loader import load_locomo_dialogues_from_directory
+                logger.info(f"检测到 locomo 目录，使用 locomo 加载器: {file_path}")
+                return load_locomo_dialogues_from_directory(file_path)
             # 检查目录是否包含 "REALTALK"
             if "REALTALK" in file_path.upper():
                 from .realtalk_history_loader import load_realtalk_dialogues_from_directory
                 logger.info(f"检测到 realtalk 目录，使用 realtalk 加载器: {file_path}")
                 return load_realtalk_dialogues_from_directory(file_path)
         
+        if is_locomo_path(file_path):
+            from .locomo_history_loader import load_locomo_dialogues
+            logger.info(f"检测到 locomo 文件，使用 locomo 加载器: {file_path}")
+            return load_locomo_dialogues(file_path)
+
         if is_realtalk_path(file_path):
             from .realtalk_history_loader import load_realtalk_dialogues
             logger.info(f"检测到 realtalk 文件，使用 realtalk 加载器: {file_path}")

@@ -9,11 +9,19 @@ from .realtalk_history_loader import (
     load_realtalk_dialogues,
     load_realtalk_dialogues_from_directory
 )
+from .locomo_history_loader import (
+    load_locomo_history,
+    load_locomo_dialogues,
+    load_locomo_dialogues_from_directory
+)
 
 __all__ = [
     'load_dialog_history',
     'load_dialogues',
     'load_realtalk_history',
     'load_realtalk_dialogues',
-    'load_realtalk_dialogues_from_directory'
+    'load_realtalk_dialogues_from_directory',
+    'load_locomo_history',
+    'load_locomo_dialogues',
+    'load_locomo_dialogues_from_directory'
 ]

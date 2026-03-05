@@ -28,7 +28,7 @@ load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-PROMPT_CONFIG_PATH = Path("config/prompt/APP_LANGCHAIN_REALTALK_TEST.yaml")
+PROMPT_CONFIG_PATH = Path("config/Eval_env/APP_LANGCHAIN_REALTALK_TEST.yaml")
 memory_sys: MemoryCore | None = None
 macro_search_defaults: Dict[str, Any] = {
     "use_threshold": True,

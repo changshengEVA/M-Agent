@@ -108,6 +108,7 @@ def stage1_construct_dialogues_for_id(process_id: str, data_source: str = None, 
         loader_type: 加载器类型，可选值：
                     - "auto": 自动检测（默认）
                     - "realtalk": 强制使用 realtalk 加载器
+                    - "locomo": 强制使用 locomo 加载器
                     - "default": 强制使用默认加载器
     """
     logger.info("=" * 50)
@@ -448,6 +449,7 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
         loader_type: 加载器类型，可选值：
                     - "auto": 自动检测（默认）
                     - "realtalk": 强制使用 realtalk 加载器
+                    - "locomo": 强制使用 locomo 加载器
                     - "default": 强制使用默认加载器
         prompt_version: prompt版本（v1 或 v2），默认v1
         include_stage5: 是否包含第五阶段（scene特征提取），默认True
@@ -464,15 +466,15 @@ def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_ty
     logger.info(f"记忆所有者名称: {memory_owner_name}")
     logger.info(f"Embedding provider: {embed_provider}")
     
-    # # 第一阶段：构造 dialogues
-    # if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
-    #     logger.warning("第一阶段失败，跳过后续阶段")
-    #     return False
+    # 第一阶段：构造 dialogues
+    if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
+        logger.warning("第一阶段失败，跳过后续阶段")
+        return False
     
-    # # 第二阶段：构造 episodes
-    # if not stage2_construct_episodes_for_id(process_id, memory_owner_name):
-    #     logger.warning("第二阶段失败，跳过第三阶段")
-    #     return False
+    # 第二阶段：构造 episodes
+    if not stage2_construct_episodes_for_id(process_id, memory_owner_name):
+        logger.warning("第二阶段失败，跳过第三阶段")
+        return False
     
     # 第三阶段：形成KG候选
     embed_model = init_embed_model(embed_provider)
@@ -533,8 +535,8 @@ def main():
     parser.add_argument("--data-source", type=str, default=None,
                        help="数据源路径（文件或目录），如果未指定则使用默认路径")
     parser.add_argument("--loader-type", type=str, default="auto",
-                       choices=["auto", "realtalk", "default"],
-                       help="加载器类型：auto（自动检测，默认）, realtalk（强制使用realtalk加载器）, default（强制使用默认加载器）")
+                       choices=["auto", "realtalk", "locomo", "default"],
+                       help="加载器类型：auto（自动检测，默认）, realtalk（强制使用realtalk加载器）, locomo（强制使用locomo加载器）, default（强制使用默认加载器）")
     parser.add_argument("--kg-prompt-version", type=str, default="v3",
                        help="KG候选生成的prompt版本（v1 或 v2，默认v2）")
     parser.add_argument("--scene-prompt-version", type=str, default="v2",
@@ -578,5 +580,6 @@ def main():
 if __name__ == "__main__":
     main()
 
-##测试私有数据：        python ./pipeline/memory_pre.py --id testdefault 
-##测试realtalk数据      python ./pipeline/memory_pre.py --id testrt --data-source data\REALTALK\data\Chat_1_Emi_Elise.json --loader-type realtalk --memory-owner-name Emi
+##测试私有数据          python ./pipeline/memory_pre.py --id testdefault 
+##测试realtalk数据      python ./pipeline/memory_pre.py --id testrt --data-source data\REALTALK\data\Chat_1_Emi_Elise.json --loader-type realtalk
+##测试locomo数据        python ./pipeline/memory_pre.py --id testlocomo --data-source data\locomo\data\locomo10.json --loader-type locomo
