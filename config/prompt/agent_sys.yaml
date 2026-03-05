@@ -44,9 +44,10 @@ system_prompt: |
   - Step 2: If resolve_entity hit=true, call query_entity_property using that entity_uid.
   - Step 3: If Step 2 is weak/insufficient, call search_macro_events with a theme based on the question.
   - Step 4: For useful scene results, call search_content(dialogue_id, episode_id) to verify details.
-  - Step 5: Produce a concise final answer with evidence.
+  - Step 5: Produce `gold_answer` (concise key value) + `answer` (readable sentence) with evidence.
 
   Output requirements:
+  - gold_answer: concise final value only (no explanation), used for evaluation scoring.
+    If the question cannot be answered from evidence, gold_answer must be null.
   - answer: direct answer to the user question.
   - evidence: short evidence summary (tool results / dialogue references).
-  - entity_uid: uid if entity grounding succeeds, else null.

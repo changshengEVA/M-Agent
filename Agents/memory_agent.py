@@ -7,6 +7,7 @@ import json
 import logging
 import os
 import sys
+import time
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -36,12 +37,52 @@ class AgentResponse:
     """Structured output schema of memory QA agent."""
 
     answer: str
+    gold_answer: Optional[str] = None
     evidence: Optional[str] = None
-    entity_uid: Optional[str] = None
 
 
 class MemoryAgent:
     """LangChain agent wrapper for MemoryCore-based QA."""
+
+    @staticmethod
+    def _is_unanswerable_text(text: Any) -> bool:
+        if not isinstance(text, str):
+            return False
+        normalized = text.strip().lower()
+        if not normalized:
+            return True
+        markers = (
+            "cannot determine",
+            "can't determine",
+            "cannot answer",
+            "can't answer",
+            "insufficient evidence",
+            "not enough information",
+            "no information",
+            "no relevant information",
+            "not mentioned",
+            "unknown",
+            "无法确定",
+            "无法回答",
+            "信息不足",
+            "没有足够信息",
+            "未提及",
+        )
+        return any(marker in normalized for marker in markers)
+
+    @classmethod
+    def _normalize_output(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
+        answer_text = payload.get("answer")
+        gold_answer = payload.get("gold_answer")
+
+        if isinstance(gold_answer, str):
+            gold_answer = gold_answer.strip() or None
+        payload["gold_answer"] = gold_answer
+
+        if cls._is_unanswerable_text(answer_text):
+            payload["gold_answer"] = None
+
+        return payload
 
     def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH):
         self.config_path = Path(config_path)
@@ -156,16 +197,33 @@ class MemoryAgent:
         def resolve_entity(name: str) -> Dict[str, Any]:
             """Resolve a person/entity name to canonical entity UID in memory_sys."""
 
-            return self.memory_sys.resolve_entity(name=name)
+            logger.info("API call: resolve_entity(name=%s)", name)
+            result = self.memory_sys.resolve_entity(name=name)
+            logger.info(
+                "API response: resolve_entity(success=%s, entity_uid=%s)",
+                result.get("success") if isinstance(result, dict) else None,
+                result.get("entity_uid") if isinstance(result, dict) else None,
+            )
+            return result
 
         @tool
         def query_entity_property(entity_uid: str, query_text: str) -> Dict[str, Any]:
             """Query structured attributes/features for an entity by UID and query text."""
 
-            return self.memory_sys.query_entity_property(
+            logger.info(
+                "API call: query_entity_property(entity_uid=%s, query_text_len=%d)",
+                entity_uid,
+                len(query_text or ""),
+            )
+            result = self.memory_sys.query_entity_property(
                 entity_uid=entity_uid,
                 query_text=query_text,
             )
+            logger.info(
+                "API response: query_entity_property(success=%s)",
+                result.get("success") if isinstance(result, dict) else None,
+            )
+            return result
 
         @tool
         def search_macro_events(
@@ -185,21 +243,46 @@ class MemoryAgent:
                 self.macro_search_defaults["threshold"] if threshold is None else float(threshold)
             )
             cfg_topk = self.macro_search_defaults["topk"] if topk is None else int(topk)
-            return self.memory_sys.search_macro_events(
+            logger.info(
+                "API call: search_macro_events(theme=%s, use_threshold=%s, threshold=%s, topk=%s)",
+                theme,
+                cfg_use_threshold,
+                cfg_threshold,
+                cfg_topk,
+            )
+            result = self.memory_sys.search_macro_events(
                 query={"theme": theme},
                 use_threshold=cfg_use_threshold,
                 threshold=cfg_threshold,
                 topk=cfg_topk,
             )
+            logger.info(
+                "API response: search_macro_events(success=%s, result_count=%s)",
+                result.get("success") if isinstance(result, dict) else None,
+                len(result.get("results", []))
+                if isinstance(result, dict) and isinstance(result.get("results"), list)
+                else None,
+            )
+            return result
 
         @tool
         def search_content(dialogue_id: str, episode_id: str) -> Dict[str, Any]:
             """Fetch original dialogue turns by dialogue_id + episode_id."""
 
-            return self.memory_sys.search_content(
+            logger.info(
+                "API call: search_content(dialogue_id=%s, episode_id=%s)",
+                dialogue_id,
+                episode_id,
+            )
+            result = self.memory_sys.search_content(
                 dialogue_id=dialogue_id,
                 episode_id=episode_id,
             )
+            logger.info(
+                "API response: search_content(success=%s)",
+                result.get("success") if isinstance(result, dict) else None,
+            )
+            return result
 
         return [resolve_entity, query_entity_property, search_macro_events, search_content]
 
@@ -216,9 +299,21 @@ class MemoryAgent:
             "recursion_limit": self.recursion_limit,
         }
         try:
+            invoke_start = time.perf_counter()
+            logger.info(
+                "API call: agent.invoke(thread_id=%s, recursion_limit=%s, question_len=%d)",
+                active_thread_id,
+                self.recursion_limit,
+                len(question_text),
+            )
             response = self.agent.invoke(
                 {"messages": [{"role": "user", "content": question_text}]},
                 config=invoke_config,
+            )
+            logger.info(
+                "API response: agent.invoke(thread_id=%s, elapsed_ms=%.2f)",
+                active_thread_id,
+                (time.perf_counter() - invoke_start) * 1000.0,
             )
         except GraphRecursionError:
             logger.warning(
@@ -231,22 +326,36 @@ class MemoryAgent:
                 "configurable": {"thread_id": active_thread_id},
                 "recursion_limit": self.retry_recursion_limit,
             }
+            retry_start = time.perf_counter()
+            logger.info(
+                "API call: agent.invoke.retry(thread_id=%s, recursion_limit=%s, question_len=%d)",
+                active_thread_id,
+                self.retry_recursion_limit,
+                len(question_text),
+            )
             response = self.agent.invoke(
                 {"messages": [{"role": "user", "content": question_text}]},
                 config=retry_config,
             )
+            logger.info(
+                "API response: agent.invoke.retry(thread_id=%s, elapsed_ms=%.2f)",
+                active_thread_id,
+                (time.perf_counter() - retry_start) * 1000.0,
+            )
 
         structured = response.get("structured_response")
         if is_dataclass(structured):
-            return asdict(structured)
+            return self._normalize_output(asdict(structured))
         if isinstance(structured, dict):
-            return structured
+            return self._normalize_output(structured)
 
-        return {
+        return self._normalize_output(
+            {
             "answer": str(structured) if structured is not None else str(response),
+            "gold_answer": None,
             "evidence": None,
-            "entity_uid": None,
-        }
+            }
+        )
 
 
 def create_memory_agent(config_path: str | Path = DEFAULT_CONFIG_PATH) -> MemoryAgent:

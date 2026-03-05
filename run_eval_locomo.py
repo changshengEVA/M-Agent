@@ -547,8 +547,8 @@ def main() -> None:
                 thread_id = f"{args.thread_id_prefix}:{sid}:{q_idx}"
                 error_text = None
                 pred = ""
+                answer = ""
                 evidence = None
-                entity_uid = None
 
                 if not question:
                     error_text = "empty_question"
@@ -558,12 +558,13 @@ def main() -> None:
                 else:
                     try:
                         result = agent.ask(question, thread_id=thread_id)
-                        pred = str(result.get("answer", "") or "")
+                        answer = str(result.get("answer", "") or "")
+                        pred = str(result.get("gold_answer", "") or "")
                         evidence = result.get("evidence")
-                        entity_uid = result.get("entity_uid")
                         qa[args.prediction_key] = pred
+                        qa[args.prediction_key + "_answer"] = answer
+                        qa[args.prediction_key + "_gold_answer"] = pred
                         qa[args.prediction_key + "_evidence"] = evidence
-                        qa[args.prediction_key + "_entity_uid"] = entity_uid
                     except Exception as exc:
                         error_text = str(exc)
                         qa[args.prediction_key] = ""
@@ -580,8 +581,9 @@ def main() -> None:
                     "question": question,
                     "ground_truth_answer": qa.get("answer", ""),
                     "prediction": qa.get(args.prediction_key, ""),
+                    "prediction_answer": qa.get(args.prediction_key + "_answer"),
+                    "prediction_gold_answer": qa.get(args.prediction_key + "_gold_answer"),
                     "prediction_evidence": qa.get(args.prediction_key + "_evidence"),
-                    "prediction_entity_uid": qa.get(args.prediction_key + "_entity_uid"),
                     "error": error_text,
                 }
                 append_trace(trace_fp, trace_record)

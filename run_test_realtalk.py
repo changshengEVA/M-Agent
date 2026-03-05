@@ -42,8 +42,8 @@ class ResponseFormat:
     """Structured output schema for ReaLTalk memory QA."""
 
     answer: str
+    gold_answer: str | None = None
     evidence: str | None = None
-    entity_uid: str | None = None
 
 
 def _require_memory_sys() -> MemoryCore:
