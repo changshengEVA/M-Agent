@@ -8,6 +8,7 @@ import json
 import logging
 import math
 import os
+import random
 import re
 import string
 import time
@@ -53,14 +54,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--out-file",
         type=str,
-        default="data/locomo/data/locomo10_agent_qa.json",
-        help="Prediction output file.",
+        default="locomo10_agent_qa.json",
+        help="Prediction output file name (always written under log/).",
     )
     parser.add_argument(
         "--stats-file",
         type=str,
         default="",
-        help="Stats output file. Default: <out-file>_stats.json",
+        help="Stats output file name. Default: <out-file>_stats.json (under log/).",
     )
     parser.add_argument(
         "--model-key",
@@ -92,6 +93,18 @@ def parse_args() -> argparse.Namespace:
         help="Optional cap on number of samples to evaluate (0 means all).",
     )
     parser.add_argument(
+        "--sample-fraction",
+        type=float,
+        default=0.1,
+        help="Uniform random fraction of samples to evaluate (default: 0.1).",
+    )
+    parser.add_argument(
+        "--sample-seed",
+        type=int,
+        default=42,
+        help="Random seed used for sample selection.",
+    )
+    parser.add_argument(
         "--max-questions",
         type=int,
         default=0,
@@ -113,14 +126,14 @@ def parse_args() -> argparse.Namespace:
         "--log-file",
         type=str,
         default="",
-        help="Run log file. Default: <out-file>_run.log",
+        help="Run log file name. Default: <out-file>_run.log (under log/).",
     )
     parser.add_argument(
         "--trace-file",
         type=str,
         default="",
         help="JSONL trace file for per-question runtime records (GT + prediction). "
-        "Default: <out-file>_qa_trace.jsonl",
+        "Default: <out-file>_qa_trace.jsonl (under log/).",
     )
     return parser.parse_args()
 
@@ -129,6 +142,11 @@ def _replace_or_append_suffix(path: str, old_suffix: str, new_suffix: str) -> st
     if path.endswith(old_suffix):
         return path[: -len(old_suffix)] + new_suffix
     return path + new_suffix
+
+
+def _force_log_dir(path: str) -> str:
+    name = Path(path).name if str(path).strip() else "output.json"
+    return str(Path("log") / name)
 
 
 def setup_logging(log_file: str) -> None:
@@ -164,12 +182,25 @@ def count_pending_questions(
         for qa in qas:
             if not isinstance(qa, dict):
                 continue
-            if (not overwrite) and qa.get(prediction_key):
+            if (not overwrite) and is_qa_processed(qa, prediction_key):
                 continue
             count += 1
             if max_questions and count >= max_questions:
                 return max_questions
     return count
+
+
+def is_qa_processed(qa: Dict[str, Any], prediction_key: str) -> bool:
+    if prediction_key in qa:
+        return True
+
+    derived_keys = (
+        prediction_key + "_error",
+        prediction_key + "_answer",
+        prediction_key + "_gold_answer",
+        prediction_key + "_evidence",
+    )
+    return any(key in qa for key in derived_keys)
 
 
 def append_trace(trace_fp, record: Dict[str, Any]) -> None:
@@ -229,10 +260,44 @@ def f1_score_multi(prediction: str, ground_truth: str) -> float:
     return sum(scores) / len(scores)
 
 
+def b1_score_single(prediction: str, ground_truth: str) -> float:
+    pred_tokens = normalize_answer(prediction).split()
+    gt_tokens = normalize_answer(ground_truth).split()
+    if not pred_tokens or not gt_tokens:
+        return 0.0
+
+    pred_counts = Counter(pred_tokens)
+    gt_counts = Counter(gt_tokens)
+    clipped = sum(min(count, gt_counts[token]) for token, count in pred_counts.items())
+    precision = clipped / len(pred_tokens)
+    if precision <= 0:
+        return 0.0
+
+    cand_len = len(pred_tokens)
+    ref_len = len(gt_tokens)
+    bp = 1.0 if cand_len > ref_len else math.exp(1.0 - (ref_len / cand_len))
+    return bp * precision
+
+
+def b1_score_multi(prediction: str, ground_truth: str) -> float:
+    predictions = [p.strip() for p in str(prediction).split(",") if p.strip()]
+    ground_truths = [g.strip() for g in str(ground_truth).split(",") if g.strip()]
+    if not ground_truths:
+        return 0.0
+    if not predictions:
+        predictions = [""]
+
+    scores = []
+    for gt in ground_truths:
+        scores.append(max(b1_score_single(pred, gt) for pred in predictions))
+    return sum(scores) / len(scores)
+
+
 def eval_question_answering_locomo(
     qas: List[Dict[str, Any]], prediction_key: str
-) -> Tuple[List[float], float, List[float]]:
+) -> Tuple[List[float], List[float], List[float]]:
     all_scores: List[float] = []
+    all_b1_scores: List[float] = []
     all_recall: List[float] = []
 
     for qa in qas:
@@ -245,14 +310,24 @@ def eval_question_answering_locomo(
 
         if category in (2, 3, 4):
             score = f1_score_single(output, answer)
+            b1 = b1_score_single(output, answer)
         elif category == 1:
             score = f1_score_multi(output, answer)
+            b1 = b1_score_multi(output, answer)
         elif category == 5:
             lowered = output.lower()
-            score = 1.0 if ("no information available" in lowered or "not mentioned" in lowered) else 0.0
+            both_empty = (normalize_answer(output) == "") and (normalize_answer(answer) == "")
+            score = (
+                1.0
+                if both_empty or ("no information available" in lowered or "not mentioned" in lowered)
+                else 0.0
+            )
+            b1 = score
         else:
             score = 0.0
+            b1 = 0.0
         all_scores.append(score)
+        all_b1_scores.append(b1)
 
         context_key = prediction_key + "_context"
         evidence = qa.get("evidence", []) if isinstance(qa.get("evidence", []), list) else []
@@ -270,7 +345,7 @@ def eval_question_answering_locomo(
                 continue
         all_recall.append(1.0)
 
-    return all_scores, 0.0, all_recall
+    return all_scores, all_b1_scores, all_recall
 
 
 def get_conversation_lengths(conversation: Dict[str, Any]) -> Dict[str, int]:
@@ -426,6 +501,40 @@ def analyze_aggr_acc_locomo(
     return stats[model_key]
 
 
+def summarize_metric_by_category(
+    out_samples: List[Dict[str, Any]], metric_key: str
+) -> Dict[str, Any]:
+    total_counts = defaultdict(float)
+    metric_sums = defaultdict(float)
+
+    for sample in out_samples:
+        for qa in sample.get("qa", []):
+            if not isinstance(qa, dict):
+                continue
+            category = int(qa.get("category", -1))
+            total_counts[category] += 1
+            metric_sums[category] += float(qa.get(metric_key, 0.0))
+
+    keys = [4, 1, 2, 3, 5]
+    summary_by_cat = {}
+    total_q = 0.0
+    total_score = 0.0
+    for cat in keys:
+        count = total_counts[cat]
+        score_sum = metric_sums[cat]
+        acc = (score_sum / count) if count else 0.0
+        summary_by_cat[str(cat)] = {
+            "count": int(count),
+            "score_sum": round(score_sum, 6),
+            "accuracy": round(acc, 6),
+        }
+        total_q += count
+        total_score += score_sum
+
+    overall = (total_score / total_q) if total_q else 0.0
+    return {"summary_by_category": summary_by_cat, "overall": round(overall, 6)}
+
+
 def _load_json(path: str) -> Any:
     with open(path, "r", encoding="utf-8") as f:
         return json.load(f)
@@ -464,15 +573,35 @@ def _write_outputs(
         json.dump(ordered, f, ensure_ascii=False, indent=2)
 
 
+def _uniform_sample_by_fraction(
+    samples: List[Dict[str, Any]], fraction: float, seed: int
+) -> List[Dict[str, Any]]:
+    if fraction <= 0:
+        raise ValueError(f"--sample-fraction must be > 0, got {fraction}")
+    if fraction >= 1 or not samples:
+        return samples
+
+    sample_size = max(1, int(len(samples) * fraction))
+    if sample_size >= len(samples):
+        return samples
+
+    rng = random.Random(seed)
+    picked_indices = sorted(rng.sample(range(len(samples)), sample_size))
+    return [samples[i] for i in picked_indices]
+
+
 def main() -> None:
     args = parse_args()
 
     data_file = args.data_file
-    out_file = args.out_file
-    stats_file = args.stats_file or out_file.replace(".json", "_stats.json")
-    log_file = args.log_file or _replace_or_append_suffix(out_file, ".json", "_run.log")
-    trace_file = args.trace_file or _replace_or_append_suffix(out_file, ".json", "_qa_trace.jsonl")
-    metric_key = f"{args.model_key}_f1"
+    out_file = _force_log_dir(args.out_file)
+    stats_file = _force_log_dir(args.stats_file or out_file.replace(".json", "_stats.json"))
+    log_file = _force_log_dir(args.log_file or _replace_or_append_suffix(out_file, ".json", "_run.log"))
+    trace_file = _force_log_dir(
+        args.trace_file or _replace_or_append_suffix(out_file, ".json", "_qa_trace.jsonl")
+    )
+    f1_metric_key = f"{args.model_key}_f1"
+    b1_metric_key = f"{args.model_key}_b1"
 
     setup_logging(log_file)
     logger.info("Start LoCoMo QA evaluation")
@@ -486,6 +615,16 @@ def main() -> None:
     samples = _load_json(data_file)
     if not isinstance(samples, list):
         raise ValueError(f"Expected list data in {data_file}")
+
+    original_sample_count = len(samples)
+    samples = _uniform_sample_by_fraction(samples, args.sample_fraction, args.sample_seed)
+    logger.info(
+        "Uniform sample enabled: kept %d/%d samples (fraction=%.4f, seed=%d)",
+        len(samples),
+        original_sample_count,
+        args.sample_fraction,
+        args.sample_seed,
+    )
 
     if args.max_samples and args.max_samples > 0:
         samples = samples[: args.max_samples]
@@ -518,7 +657,11 @@ def main() -> None:
     if tqdm is not None:
         progress = tqdm(total=pending_questions, desc="Evaluating QA", unit="q")
 
-    agent = create_memory_agent(args.config)
+    agent = None
+    if pending_questions > 0:
+        agent = create_memory_agent(args.config)
+    else:
+        logger.info("No pending questions. Skip model inference and recompute metrics only.")
 
     asked_count = 0
     processed_samples = 0
@@ -540,7 +683,7 @@ def main() -> None:
                 if not isinstance(qa, dict):
                     continue
 
-                if (not args.overwrite) and qa.get(args.prediction_key):
+                if (not args.overwrite) and is_qa_processed(qa, args.prediction_key):
                     continue
 
                 question = str(qa.get("question", "") or "").strip()
@@ -557,6 +700,8 @@ def main() -> None:
                     changed = True
                 else:
                     try:
+                        if agent is None:
+                            raise RuntimeError("MemoryAgent is not initialized for pending question.")
                         result = agent.ask(question, thread_id=thread_id)
                         answer = str(result.get("answer", "") or "")
                         pred = str(result.get("gold_answer", "") or "")
@@ -615,28 +760,40 @@ def main() -> None:
         qas = sample.get("qa", [])
         if not isinstance(qas, list):
             continue
-        scores, _, recalls = eval_question_answering_locomo(qas, args.prediction_key)
+        f1_scores, b1_scores, recalls = eval_question_answering_locomo(qas, args.prediction_key)
         for i, qa in enumerate(qas):
             if not isinstance(qa, dict):
                 continue
-            qa[metric_key] = round(scores[i], 3)
+            qa[f1_metric_key] = round(f1_scores[i], 3)
+            qa[b1_metric_key] = round(b1_scores[i], 3)
             qa[args.model_key + "_recall"] = round(recalls[i], 3)
 
     _write_outputs(out_file, samples, out_map)
 
+    out_samples_in_order = [out_map[str(s.get("sample_id"))] for s in samples]
     stats = analyze_aggr_acc_locomo(
         ann_samples=samples,
-        out_samples=[out_map[str(s.get("sample_id"))] for s in samples],
+        out_samples=out_samples_in_order,
         out_file=stats_file,
         model_key=args.model_key,
-        metric_key=metric_key,
+        metric_key=f1_metric_key,
     )
+    b1_summary = summarize_metric_by_category(out_samples_in_order, b1_metric_key)
+    stats["summary_by_category_b1"] = b1_summary["summary_by_category"]
+    stats["overall_b1"] = b1_summary["overall"]
+    all_stats = _load_json(stats_file) if os.path.exists(stats_file) else {}
+    if not isinstance(all_stats, dict):
+        all_stats = {}
+    all_stats[args.model_key] = stats
+    with open(stats_file, "w", encoding="utf-8") as f:
+        json.dump(all_stats, f, ensure_ascii=False, indent=2)
 
     logger.info("Saved predictions: %s", out_file)
     logger.info("Saved stats: %s", stats_file)
     logger.info("Saved trace: %s", trace_file)
     logger.info("Evaluated new questions this run: %d", asked_count)
     logger.info("Overall accuracy (%s): %.3f", args.model_key, stats["overall_accuracy"])
+    logger.info("Overall B1 (%s): %.3f", args.model_key, stats["overall_b1"])
     logger.info("Category accuracy: %s", json.dumps(stats["summary_by_category"], ensure_ascii=False))
 
 
