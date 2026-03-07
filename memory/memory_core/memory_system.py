@@ -440,6 +440,36 @@ class MemoryCore:
             episodes_dir=self.episodes_dir,
         )
 
+    def search_events_by_time_range(self, start_time: str, end_time: str) -> List[Dict[str, Any]]:
+        """
+        按时间范围检索 scene 公开接口。
+
+        Args:
+            start_time: 查询起始时间（ISO 格式字符串）
+            end_time: 查询结束时间（ISO 格式字符串）
+
+        Returns:
+            List[Dict[str, Any]]，每项包含:
+            - scene_id
+            - theme
+            - starttime
+            - endtime
+        """
+        from .workflow.time_event_search import (
+            search_events_by_time_range as workflow_search_events_by_time_range
+        )
+
+        logger.info(
+            "调用 search_events_by_time_range 接口: start_time=%s, end_time=%s",
+            start_time,
+            end_time,
+        )
+        return workflow_search_events_by_time_range(
+            start_time=start_time,
+            end_time=end_time,
+            scene_dir=self.scene_dir,
+        )
+
     # ============================================================================
     # 服务注册
     # ============================================================================

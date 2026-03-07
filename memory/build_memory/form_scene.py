@@ -219,6 +219,76 @@ def build_episode_with_content(episode_meta: Dict, dialogue_data: Dict) -> Dict:
     
     return episode_with_content
 
+def extract_episode_time_range(episode_meta: Dict, dialogue_data: Dict) -> Tuple[str, str]:
+    """
+    从源 dialogue 中提取 episode 的起止时间。
+    优先使用 turn_span 对应 turn 的 timestamp；缺失时回退到 dialogue meta。
+
+    Args:
+        episode_meta: episode 元数据（包含 turn_span）
+        dialogue_data: 完整对话数据（包含 turns 与 meta）
+
+    Returns:
+        (start_time, end_time) 元组，缺失时返回空字符串
+    """
+    start_time = ""
+    end_time = ""
+
+    turn_span = episode_meta.get("turn_span", [])
+    if not isinstance(turn_span, list) or len(turn_span) < 2:
+        turn_span = [0, 0]
+
+    try:
+        start_id = int(turn_span[0])
+        end_id = int(turn_span[1])
+    except (TypeError, ValueError):
+        start_id, end_id = 0, 0
+
+    turns = dialogue_data.get("turns", [])
+    if not isinstance(turns, list):
+        turns = []
+
+    # 优先按 turn_id 精确匹配
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        turn_id = turn.get("turn_id")
+        if turn_id == start_id and not start_time:
+            start_time = turn.get("timestamp", "") or ""
+        if turn_id == end_id and not end_time:
+            end_time = turn.get("timestamp", "") or ""
+        if start_time and end_time:
+            break
+
+    # 若精确匹配失败，回退到 span 内第一条/最后一条 turn
+    if not start_time or not end_time:
+        span_turns: List[Dict] = []
+        for turn in turns:
+            if not isinstance(turn, dict):
+                continue
+            try:
+                turn_id = int(turn.get("turn_id", -1))
+            except (TypeError, ValueError):
+                continue
+            if start_id <= turn_id <= end_id:
+                span_turns.append(turn)
+        if span_turns:
+            if not start_time:
+                start_time = span_turns[0].get("timestamp", "") or ""
+            if not end_time:
+                end_time = span_turns[-1].get("timestamp", "") or ""
+
+    # 最后回退到 dialogue 元信息
+    meta = dialogue_data.get("meta", {})
+    if not isinstance(meta, dict):
+        meta = {}
+    if not start_time:
+        start_time = meta.get("start_time", "") or ""
+    if not end_time:
+        end_time = meta.get("end_time", "") or ""
+
+    return start_time, end_time
+
 def call_openai_for_scene(episode_with_content: Dict, prompt_template: str) -> Dict:
     """
     调用 OpenAI 进行 scene 生成。
@@ -289,7 +359,9 @@ def build_scene_structure(scene_number: int,
                          episode_meta: Dict,
                          scene_result: Dict,
                          scene_version: str = "v1",
-                         memory_owner_name: str = "changshengEVA") -> Dict:
+                         memory_owner_name: str = "changshengEVA",
+                         start_time: str = "",
+                         end_time: str = "") -> Dict:
     """
     构建最终的 scene 结构，符合要求的格式。
     
@@ -299,6 +371,8 @@ def build_scene_structure(scene_number: int,
         scene_result: 包含 theme 和 diary 的字典
         scene_version: scene 版本（如 v1、v2）
         memory_owner_name: 记忆所有者的名称，用于 meta 字段
+        start_time: episode 起始时间（从源 dialogue 提取）
+        end_time: episode 结束时间（从源 dialogue 提取）
         
     Returns:
         完整的 scene 数据字典
@@ -319,7 +393,9 @@ def build_scene_structure(scene_number: int,
                 {
                     "episode_id": episode_id,
                     "dialogue_id": dialogue_id,
-                    "turn_span": turn_span
+                    "turn_span": turn_span,
+                    "start_time": start_time,
+                    "end_time": end_time
                 }
             ]
         },
@@ -512,12 +588,18 @@ def process_episode_file(episode_file: Path,
         final_scenes = []
         for i, scene_data in enumerate(scenes):
             scene_number = start_number + i
+            start_time, end_time = extract_episode_time_range(
+                scene_data["episode_meta"],
+                dialogue_data
+            )
             final_scene = build_scene_structure(
                 scene_number,
                 scene_data["episode_meta"],
                 scene_data["scene_result"],
                 scene_version=prompt_version,
-                memory_owner_name=memory_owner_name
+                memory_owner_name=memory_owner_name,
+                start_time=start_time,
+                end_time=end_time
             )
             final_scenes.append({
                 "scene": final_scene,

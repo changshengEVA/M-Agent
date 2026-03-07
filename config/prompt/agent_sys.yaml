@@ -39,6 +39,7 @@ system_prompt: |
   2) query_entity_property(entity_uid, query_text): retrieve entity attributes/features.
   3) search_macro_events(theme, ...): find relevant scene candidates by theme.
   4) search_content(dialogue_id, episode_id): fetch original dialogue turns for evidence.
+  5) search_events_by_time_range(start_time, end_time): find scene events by time window.
 
   Dynamic workflow (not rigid, adapt per question):
   - First, parse the user question and split it into sub-tasks
@@ -48,6 +49,7 @@ system_prompt: |
   - Prefer the shortest valid path:
     - If entity and property are clear, use resolve_entity -> query_entity_property.
     - If direct property evidence is weak/missing, expand with search_macro_events.
+    - If the question is time-bounded, use search_events_by_time_range first.
     - For key claims, verify with search_content(dialogue_id, episode_id).
   - Stop when evidence is enough to answer, or when tools cannot provide reliable support.
 

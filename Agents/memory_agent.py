@@ -284,7 +284,35 @@ class MemoryAgent:
             )
             return result
 
-        return [resolve_entity, query_entity_property, search_macro_events, search_content]
+        @tool
+        def search_events_by_time_range(start_time: str, end_time: str) -> list[Dict[str, Any]]:
+            """
+            Search scenes by time range.
+            Returns a list of items with scene_id, theme, starttime, endtime.
+            """
+
+            logger.info(
+                "API call: search_events_by_time_range(start_time=%s, end_time=%s)",
+                start_time,
+                end_time,
+            )
+            result = self.memory_sys.search_events_by_time_range(
+                start_time=start_time,
+                end_time=end_time,
+            )
+            logger.info(
+                "API response: search_events_by_time_range(result_count=%s)",
+                len(result) if isinstance(result, list) else None,
+            )
+            return result
+
+        return [
+            resolve_entity,
+            query_entity_property,
+            search_macro_events,
+            search_content,
+            search_events_by_time_range,
+        ]
 
     def ask(self, question: str, thread_id: Optional[str] = None) -> Dict[str, Any]:
         """Run one QA round: input question -> output structured answer dict."""
