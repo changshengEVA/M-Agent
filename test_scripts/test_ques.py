@@ -1,4 +1,5 @@
-## changshengEVA 2026/3/7: 单体实验环境 
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 
 import sys
 import json
@@ -11,18 +12,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from Agents.memory_agent import create_memory_agent
+from utils.logging_trace import configure_colored_logging
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    handlers=[logging.StreamHandler()],
-)
+
+configure_colored_logging(level=logging.INFO)
 logging.getLogger("memory.memory_core").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 memoryagent = create_memory_agent(r"config\prompt\agent_sys.yaml")
 print("初始化成功")
-result = memoryagent.ask("How long did it take for Jon to open his studio?")
-print(json.dumps(result, ensure_ascii=False, indent=2))
-result = memoryagent.ask("How long did it take for Jon to open his studio?")
+result = memoryagent.ask("When is Jon's group performing at a festival?")
 print(json.dumps(result, ensure_ascii=False, indent=2))
