@@ -45,5 +45,12 @@ system_prompt: |
   Output requirements:
   - gold_answer: concise final value only (no explanation), used for evaluation scoring.
     If the question cannot be answered from evidence, gold_answer must be null.
+  - gold_answer formatting rules (strict):
+    - For direct fact questions, use the most precise wording from original dialogue evidence whenever possible.
+      Do not paraphrase, infer, or explain beyond evidence.
+    - If the answer contains multiple pieces of information, compress each piece into a short phrase and join with commas.
+    - When multiple sources are retrieved, first filter whether each source truly answers the question.
+      Summarize only evidence that is relevant to the asked question.
+    - Do not add unnecessary modifiers, tone words, background context, or extra details.
   - answer: direct answer to the user question.
   - evidence: short evidence summary (tool results / dialogue references).
