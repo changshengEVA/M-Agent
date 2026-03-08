@@ -1,53 +1,48 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-数据构造流程（简化版）：
-支持通过参数控制 kg/scene 的 prompt 版本，可选包含第五阶段（scene特征提取）
-
-五个阶段：
-1. 构造 dialogues
-2. 构造 episodes
-3. 形成KG候选
-4. 形成 scene（theme 和 diary）
-5. 形成 scene 特征（实体特征提取）
+Memory pre-processing pipeline:
+1. construct dialogues
+2. construct episodes
+3. form KG candidates
+4. form scenes
+5. extract scene features
+6. extract scene actions
 """
 
 import json
-import os
-import shutil
 import logging
-from datetime import datetime
-from typing import List, Dict, Any, Optional, Callable
-from pathlib import Path
-from dotenv import load_dotenv
+import os
 import sys
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+from pathlib import Path
+from typing import Any, Callable, Optional
+
+from dotenv import load_dotenv
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 load_dotenv()
-# 导入数据加载模块
+
+# data loader
 try:
     from load_data import load_dialogues
 except ImportError:
-    # 如果导入失败，使用本地定义的函数（向后兼容）
-    # 添加项目根目录到 sys.path（pipeline 目录的父目录）
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     sys.path.append(project_root)
     from load_data.dialog_history_loader import load_dialogues
 
-# 导入工具函数
+# pipeline utils
 try:
     from utils import save_dialogue
     from utils.memory_build_utils import build_episodes_with_id
     from memory.build_memory.form_kg_candidate import scan_and_form_kg_candidates
     from memory.build_memory.form_scene import scan_and_form_scenes
     from memory.build_memory.form_scene_kg import scan_and_extract_features
+    from memory.build_memory.form_scene_action import scan_and_form_scene_actions
 except ImportError:
-    # 如果导入失败，使用本地定义的函数（向后兼容）
-    # 添加项目根目录到 sys.path（pipeline 目录的父目录）
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     sys.path.append(project_root)
@@ -56,152 +51,122 @@ except ImportError:
     from memory.build_memory.form_kg_candidate import scan_and_form_kg_candidates
     from memory.build_memory.form_scene import scan_and_form_scenes
     from memory.build_memory.form_scene_kg import scan_and_extract_features
+    from memory.build_memory.form_scene_action import scan_and_form_scene_actions
 
 
-# 路径配置
 PROJECT_ROOT = Path(__file__).parent.parent
 
 
 def init_embed_model(embed_provider: str = "bge") -> Optional[Callable[[Any], Any]]:
-    """
-    在 pipeline 入口预初始化 embedding 模型，供后续阶段复用。
-    支持 provider:
-    - bge/local: 本地 BGE
-    - alibaba/aliyun/dashscope: 阿里 DashScope Embedding
-    失败时返回 None，由各阶段内部按原有逻辑兜底。
-    """
     provider = (embed_provider or "bge").strip().lower()
-
     try:
         if provider in {"alibaba", "aliyun", "dashscope"}:
             from load_model.AlibabaEmbeddingCall import get_embed_model
-            logger.info("预初始化 Alibaba embedding 模型...")
+
+            logger.info("Pre-initialize Alibaba embedding model")
             return get_embed_model()
 
         from load_model.BGEcall import get_embed_model
-        logger.info("预初始化 BGE embedding 模型...")
+
+        logger.info("Pre-initialize BGE embedding model")
         return get_embed_model()
-    except Exception as e:
-        logger.warning(f"{provider} embedding 预初始化失败，将回退为按需初始化: {e}")
+    except Exception as exc:
+        logger.warning("Embedding pre-init failed (%s), fallback to lazy init: %s", provider, exc)
+        return None
+
+
+def init_llm_model(model_temperature: float = 0.1) -> Optional[Callable[[str], str]]:
+    try:
+        from load_model.OpenAIcall import get_llm
+
+        logger.info("Pre-initialize LLM model (temperature=%s)", model_temperature)
+        return get_llm(model_temperature=model_temperature)
+    except Exception as exc:
+        logger.warning("LLM pre-init failed, fallback to lazy init: %s", exc)
         return None
 
 
 def get_output_path(process_id: str, stage_name: str) -> Path:
-    """
-    Args:
-        process_id: 处理流ID
-        stage_name: 阶段名称（如 "dialogues", "episodes", "kg_candidates"）
-        
-    Returns:
-        输出目录路径（基于项目根目录的绝对路径）
-    """
     return PROJECT_ROOT / "data" / "memory" / process_id / stage_name
 
 
-def stage1_construct_dialogues_for_id(process_id: str, data_source: str = None, loader_type: str = "auto"):
-    """
-    第一阶段：构造 dialogues 并保存到 data/memory/{id}/dialogues 目录
-    
-    Args:
-        process_id: 处理流ID
-        data_source: 数据源路径（文件或目录），如果为 None 则使用默认路径
-        loader_type: 加载器类型，可选值：
-                    - "auto": 自动检测（默认）
-                    - "realtalk": 强制使用 realtalk 加载器
-                    - "locomo": 强制使用 locomo 加载器
-                    - "default": 强制使用默认加载器
-    """
+def stage1_construct_dialogues_for_id(process_id: str, data_source: str = None, loader_type: str = "auto") -> bool:
     logger.info("=" * 50)
-    logger.info(f"开始第一阶段：为处理流 {process_id} 构造 dialogues")
-    logger.info(f"数据源: {data_source if data_source else '默认'}")
-    logger.info(f"加载器类型: {loader_type}")
+    logger.info("Stage 1: construct dialogues for process_id=%s", process_id)
+    logger.info("data_source=%s", data_source if data_source else "default")
+    logger.info("loader_type=%s", loader_type)
     logger.info("=" * 50)
-    
-    # 1. 加载 dialogue 列表
+
     dialogues = load_dialogues(data_source, loader_type)
     if not dialogues:
-        logger.error("没有加载到 dialogue 数据，退出")
+        logger.error("No dialogues loaded")
         return False
-    
-    logger.info(f"共加载 {len(dialogues)} 个 dialogue")
-    
-    # 2. 构建目标目录
+
     target_dir = get_output_path(process_id, "dialogues")
     target_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 3. 保存 dialogues
-    successful_count = 0
-    failed_count = 0
-    
-    for i, dialogue in enumerate(dialogues):
-        logger.info(f"保存第 {i+1}/{len(dialogues)} 个 dialogue: {dialogue.get('dialogue_id')}")
-        
+
+    success = 0
+    failed = 0
+    for i, dialogue in enumerate(dialogues, start=1):
+        logger.info("Save dialogue %s/%s: %s", i, len(dialogues), dialogue.get("dialogue_id"))
         if save_dialogue(dialogue, str(target_dir)):
-            successful_count += 1
+            success += 1
         else:
-            failed_count += 1
-    
-    # 4. 输出统计信息
+            failed += 1
+
     logger.info("=" * 50)
-    logger.info("第一阶段完成")
-    logger.info(f"成功保存: {successful_count} 个")
-    logger.info(f"失败: {failed_count} 个")
-    logger.info(f"输出目录: {target_dir}")
+    logger.info("Stage 1 complete")
+    logger.info("saved=%s failed=%s", success, failed)
+    logger.info("output=%s", target_dir)
     logger.info("=" * 50)
-    
-    return successful_count > 0
+    return success > 0
 
 
-def stage2_construct_episodes_for_id(process_id: str, memory_owner_name: str = "changshengEVA"):
-    """
-    第二阶段：构造 episodes 并保存到 data/memory/{id}/episodes 目录
-    
-    Args:
-        process_id: 处理流ID
-        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
-    """
+def stage2_construct_episodes_for_id(
+    process_id: str,
+    memory_owner_name: str = "changshengEVA",
+    llm_model: Optional[Callable[[str], str]] = None,
+) -> bool:
     logger.info("=" * 50)
-    logger.info(f"开始第二阶段：为处理流 {process_id} 构造 episodes")
-    logger.info(f"记忆所有者名称: {memory_owner_name}")
+    logger.info("Stage 2: construct episodes for process_id=%s", process_id)
+    logger.info("memory_owner_name=%s", memory_owner_name)
     logger.info("=" * 50)
-    
-    # 使用新的工具函数构建 episodes
-    logger.info(f"调用新的 memory build 方法构建 episodes...")
-    if not build_episodes_with_id(process_id, str(PROJECT_ROOT), memory_owner_name):
-        logger.error("构建 episodes 失败")
+
+    if not build_episodes_with_id(
+        process_id,
+        str(PROJECT_ROOT),
+        memory_owner_name,
+        llm_model=llm_model,
+    ):
+        logger.error("Build episodes failed")
         return False
-    
-    # 统计生成的文件数量
+
     episodes_root = get_output_path(process_id, "episodes")
     by_dialogue_dir = episodes_root / "by_dialogue"
-    
+
     episode_files_count = 0
     qualification_files_count = 0
     eligibility_files_count = 0
-    
+
     if by_dialogue_dir.exists():
-        for dialogue_dir_name in os.listdir(by_dialogue_dir):
-            dialogue_dir = by_dialogue_dir / dialogue_dir_name
-            if dialogue_dir.is_dir():
-                for filename in os.listdir(dialogue_dir):
-                    if filename.endswith('.json'):
-                        if filename == 'episodes_v1.json':
-                            episode_files_count += 1
-                        elif filename == 'qualifications_v1.json':
-                            qualification_files_count += 1
-                        elif filename.startswith('eligibility_'):
-                            eligibility_files_count += 1
-    
-    # 输出统计信息
+        for dialogue_dir in by_dialogue_dir.iterdir():
+            if not dialogue_dir.is_dir():
+                continue
+            for file_path in dialogue_dir.iterdir():
+                if file_path.suffix != ".json":
+                    continue
+                if file_path.name == "episodes_v1.json":
+                    episode_files_count += 1
+                elif file_path.name == "qualifications_v1.json":
+                    qualification_files_count += 1
+                elif file_path.name.startswith("eligibility_"):
+                    eligibility_files_count += 1
+
     logger.info("=" * 50)
-    logger.info("第二阶段完成")
-    logger.info(f"生成 episodes 文件: {episode_files_count} 个")
-    logger.info(f"生成 qualifications 文件: {qualification_files_count} 个")
-    logger.info(f"生成 eligibility 文件: {eligibility_files_count} 个")
-    logger.info(f"记忆所有者名称: {memory_owner_name}")
-    logger.info(f"输出目录: {episodes_root}")
+    logger.info("Stage 2 complete")
+    logger.info("episodes=%s qualifications=%s eligibility=%s", episode_files_count, qualification_files_count, eligibility_files_count)
+    logger.info("output=%s", episodes_root)
     logger.info("=" * 50)
-    
     return episode_files_count > 0
 
 
@@ -209,151 +174,91 @@ def stage3_form_kg_candidates_for_id(
     process_id: str,
     prompt_version: str = "v1",
     memory_owner_name: str = "changshengEVA",
-    embed_model: Optional[Callable[[Any], Any]] = None
-):
-    """
-    第三阶段：形成KG候选，为kg_available为true的episode生成kg_candidate
-    
-    Args:
-        process_id: 处理流ID
-        prompt_version: prompt版本（v1 或 v2），默认v1
-        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
-    """
+    embed_model: Optional[Callable[[Any], Any]] = None,
+    llm_model: Optional[Callable[[str], str]] = None,
+) -> bool:
     logger.info("=" * 50)
-    logger.info(f"开始第三阶段：为处理流 {process_id} 形成KG候选")
-    logger.info(f"使用 prompt 版本: {prompt_version}")
-    logger.info(f"记忆所有者名称: {memory_owner_name}")
+    logger.info("Stage 3: form KG candidates for process_id=%s", process_id)
+    logger.info("prompt_version=%s", prompt_version)
     logger.info("=" * 50)
-    
-    # 构建目录路径
+
     dialogues_root = get_output_path(process_id, "dialogues")
     episodes_root = get_output_path(process_id, "episodes")
     kg_candidates_root = get_output_path(process_id, "kg_candidates")
-    
-    # 确保目录存在
+
     dialogues_root.mkdir(parents=True, exist_ok=True)
     episodes_root.mkdir(parents=True, exist_ok=True)
     kg_candidates_root.mkdir(parents=True, exist_ok=True)
-    
-    logger.info(f"对话目录: {dialogues_root}")
-    logger.info(f"Episodes目录: {episodes_root}")
-    logger.info(f"KG候选目录: {kg_candidates_root}")
-    
+
     try:
-        # 调用 form_kg_candidate 模块的主函数
-        logger.info("开始扫描并生成 kg_candidates...")
         scan_and_form_kg_candidates(
             prompt_version=prompt_version,
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
             kg_candidates_root=kg_candidates_root,
             memory_owner_name=memory_owner_name,
-            embed_model=embed_model
+            embed_model=embed_model,
+            llm_model=llm_model,
         )
-        
-        # 统计生成的 kg_candidate 文件数量
-        kg_candidate_files_count = 0
-        if kg_candidates_root.exists():
-            for file_path in kg_candidates_root.iterdir():
-                if file_path.is_file() and file_path.suffix == '.json':
-                    # 检查文件名格式是否为数字（如 00001.json）
-                    try:
-                        int(file_path.stem)
-                        kg_candidate_files_count += 1
-                    except ValueError:
-                        # 不是数字格式的文件，跳过
-                        continue
-        
-        # 输出统计信息
-        logger.info("=" * 50)
-        logger.info("第三阶段完成")
-        logger.info(f"生成 kg_candidate 文件: {kg_candidate_files_count} 个")
-        logger.info(f"使用 prompt 版本: {prompt_version}")
-        logger.info(f"记忆所有者名称: {memory_owner_name}")
-        logger.info(f"输出目录: {kg_candidates_root}")
-        logger.info("=" * 50)
-        
-        return kg_candidate_files_count > 0
-        
-    except Exception as e:
-        logger.error(f"形成KG候选失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+
+        count = 0
+        for file_path in kg_candidates_root.glob("*.json"):
+            try:
+                int(file_path.stem)
+                count += 1
+            except ValueError:
+                continue
+
+        logger.info("Stage 3 complete, kg_candidate files=%s", count)
+        return count > 0
+    except Exception as exc:
+        logger.exception("Stage 3 failed: %s", exc)
         return False
 
 
-def stage4_form_scenes_for_id(process_id: str,
-                              scene_prompt_version: str = "v1",
-                              memory_owner_name: str = "changshengEVA",
-                              embed_model: Optional[Callable[[Any], Any]] = None):
-    """
-    第四阶段：形成 scene，为每个 episode 生成 scene（theme 和 diary）
-    
-    Args:
-        process_id: 处理流ID
-        scene_prompt_version: scene prompt版本（v1 或 v2），默认v1
-        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
-    """
+def stage4_form_scenes_for_id(
+    process_id: str,
+    scene_prompt_version: str = "v1",
+    memory_owner_name: str = "changshengEVA",
+    embed_model: Optional[Callable[[Any], Any]] = None,
+    llm_model: Optional[Callable[[str], str]] = None,
+) -> bool:
     logger.info("=" * 50)
-    logger.info(f"开始第四阶段：为处理流 {process_id} 形成 scene")
-    logger.info(f"使用 scene prompt 版本: {scene_prompt_version}")
-    logger.info(f"记忆所有者名称: {memory_owner_name}")
+    logger.info("Stage 4: form scenes for process_id=%s", process_id)
+    logger.info("scene_prompt_version=%s", scene_prompt_version)
     logger.info("=" * 50)
-    
-    # 构建目录路径
+
     dialogues_root = get_output_path(process_id, "dialogues")
     episodes_root = get_output_path(process_id, "episodes")
     scene_root = get_output_path(process_id, "scene")
-    
-    # 确保目录存在
+
     dialogues_root.mkdir(parents=True, exist_ok=True)
     episodes_root.mkdir(parents=True, exist_ok=True)
     scene_root.mkdir(parents=True, exist_ok=True)
-    
-    logger.info(f"对话目录: {dialogues_root}")
-    logger.info(f"Episodes目录: {episodes_root}")
-    logger.info(f"Scene目录: {scene_root}")
-    
+
     try:
-        # 调用 form_scene 模块的主函数
-        logger.info("开始扫描并生成 scenes...")
         scan_and_form_scenes(
             prompt_version=scene_prompt_version,
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
             scene_root=scene_root,
             memory_owner_name=memory_owner_name,
-            embed_model=embed_model
+            embed_model=embed_model,
+            llm_model=llm_model,
         )
-        
-        # 统计生成的 scene 文件数量
-        scene_files_count = 0
-        if scene_root.exists():
-            for file_path in scene_root.iterdir():
-                if file_path.is_file() and file_path.suffix == '.json':
-                    # 检查文件名格式是否为数字（如 00001.json）
-                    try:
-                        int(file_path.stem)
-                        scene_files_count += 1
-                    except ValueError:
-                        # 不是数字格式的文件，跳过
-                        continue
-        
-        # 输出统计信息
-        logger.info("=" * 50)
-        logger.info("第四阶段完成")
-        logger.info(f"生成 scene 文件: {scene_files_count} 个")
-        logger.info(f"使用 scene prompt 版本: {scene_prompt_version}")
-        logger.info(f"记忆所有者名称: {memory_owner_name}")
-        logger.info(f"输出目录: {scene_root}")
-        logger.info("=" * 50)
-        
-        return scene_files_count > 0
-        
-    except Exception as e:
-        logger.error(f"形成 scene 失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+
+        count = 0
+        for file_path in scene_root.glob("*.json"):
+            try:
+                int(file_path.stem)
+                count += 1
+            except ValueError:
+                continue
+
+        logger.info("Stage 4 complete, scene files=%s", count)
+        return count > 0
+    except Exception as exc:
+        logger.exception("Stage 4 failed: %s", exc)
         return False
 
 
@@ -361,225 +266,252 @@ def stage5_form_scene_features_for_id(
     process_id: str,
     force_update: bool = False,
     memory_owner_name: str = "changshengEVA",
-    embed_model: Optional[Callable[[Any], Any]] = None
-):
-    """
-    第五阶段：形成 scene 特征，为已生成 kg 和 scene 的 episode 提取实体特征
-    
-    Args:
-        process_id: 处理流ID
-        force_update: 是否强制更新特征文件（即使已生成也重新生成）
-        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
-    """
+    embed_model: Optional[Callable[[Any], Any]] = None,
+    llm_model: Optional[Callable[[str], str]] = None,
+) -> bool:
     logger.info("=" * 50)
-    logger.info(f"开始第五阶段：为处理流 {process_id} 形成 scene 特征")
-    logger.info(f"记忆所有者名称: {memory_owner_name}")
+    logger.info("Stage 5: extract scene features for process_id=%s", process_id)
     logger.info("=" * 50)
-    
-    # 构建目录路径
+
     memory_root = PROJECT_ROOT / "data" / "memory" / process_id
-    
-    # 确保目录存在
     memory_root.mkdir(parents=True, exist_ok=True)
-    
-    logger.info(f"Memory 根目录: {memory_root}")
-    
+
     try:
-        # 调用 form_scene_kg 模块的主函数
-        logger.info("开始扫描并提取 scene 特征...")
         scan_and_extract_features(
             workflow_id=process_id,
             force_update=force_update,
             use_tqdm=True,
             memory_owner_name=memory_owner_name,
-            embed_model=embed_model
+            embed_model=embed_model,
+            llm_model=llm_model,
         )
-        
-        # 统计已更新的 kg_candidate 文件数量
+
         kg_candidates_root = get_output_path(process_id, "kg_candidates")
         updated_files_count = 0
-        
-        if kg_candidates_root.exists():
-            for file_path in kg_candidates_root.iterdir():
-                if file_path.is_file() and file_path.suffix == '.json':
-                    try:
-                        # 检查文件名格式是否为数字（如 00001.json）
-                        int(file_path.stem)
-                        
-                        # 读取文件检查是否包含 features 字段
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            kg_data = json.load(f)
-                        
-                        # 检查是否包含 features 字段
-                        features = kg_data.get("kg_candidate", {}).get("facts", {}).get("features", None)
-                        if features is not None:
-                            updated_files_count += 1
-                    except (ValueError, json.JSONDecodeError):
-                        # 不是数字格式的文件或JSON解析错误，跳过
-                        continue
-        
-        # 输出统计信息
-        logger.info("=" * 50)
-        logger.info("第五阶段完成")
-        logger.info(f"更新 kg_candidate 文件: {updated_files_count} 个（包含特征）")
-        logger.info(f"记忆所有者名称: {memory_owner_name}")
-        logger.info(f"输出目录: {kg_candidates_root}")
-        logger.info("=" * 50)
-        
+        for file_path in kg_candidates_root.glob("*.json"):
+            try:
+                int(file_path.stem)
+            except ValueError:
+                continue
+
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    kg_data = json.load(f)
+                features = kg_data.get("kg_candidate", {}).get("facts", {}).get("features")
+                if features is not None:
+                    updated_files_count += 1
+            except json.JSONDecodeError:
+                continue
+
+        logger.info("Stage 5 complete, updated files=%s", updated_files_count)
         return updated_files_count > 0
-        
-    except Exception as e:
-        logger.error(f"形成 scene 特征失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+    except Exception as exc:
+        logger.exception("Stage 5 failed: %s", exc)
         return False
 
 
-def run_full_pipeline_for_id(process_id: str, data_source: str = None, loader_type: str = "auto",
-                           prompt_version: str = "v1", include_stage5: bool = True,
-                           scene_prompt_version: str = "v1",
-                           memory_owner_name: str = "changshengEVA",
-                           embed_provider: str = "bge"):
-    """
-    为指定ID运行完整的数据构造流程
-    
-    Args:
-        process_id: 处理流ID
-        data_source: 数据源路径（文件或目录），如果为 None 则使用默认路径
-        loader_type: 加载器类型，可选值：
-                    - "auto": 自动检测（默认）
-                    - "realtalk": 强制使用 realtalk 加载器
-                    - "locomo": 强制使用 locomo 加载器
-                    - "default": 强制使用默认加载器
-        prompt_version: prompt版本（v1 或 v2），默认v1
-        include_stage5: 是否包含第五阶段（scene特征提取），默认True
-        scene_prompt_version: scene prompt版本（v1 或 v2），默认v1
-        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
-        embed_provider: embedding 提供方（bge/local/alibaba/aliyun/dashscope）
-    """
-    logger.info(f"开始为处理流 {process_id} 执行完整数据构造流程")
-    logger.info(f"数据源: {data_source if data_source else '默认'}")
-    logger.info(f"加载器类型: {loader_type}")
-    logger.info(f"使用 prompt 版本: {prompt_version}")
-    logger.info(f"使用 scene prompt 版本: {scene_prompt_version}")
-    logger.info(f"包含第五阶段: {include_stage5}")
-    logger.info(f"记忆所有者名称: {memory_owner_name}")
-    logger.info(f"Embedding provider: {embed_provider}")
-    
-    # 第一阶段：构造 dialogues
-    if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
-        logger.warning("第一阶段失败，跳过后续阶段")
+def stage6_form_scene_actions_for_id(
+    process_id: str,
+    action_prompt_version: str = "v1",
+    force_update: bool = False,
+    embed_model: Optional[Callable[[Any], Any]] = None,
+    llm_model: Optional[Callable[[str], str]] = None,
+) -> bool:
+    logger.info("=" * 50)
+    logger.info("Stage 6: extract scene actions for process_id=%s", process_id)
+    logger.info("action_prompt_version=%s", action_prompt_version)
+    logger.info("=" * 50)
+
+    memory_root = PROJECT_ROOT / "data" / "memory" / process_id
+    memory_root.mkdir(parents=True, exist_ok=True)
+
+    try:
+        stage_stats = scan_and_form_scene_actions(
+            workflow_id=process_id,
+            prompt_version=action_prompt_version,
+            force_update=force_update,
+            use_tqdm=True,
+            embed_model=embed_model,
+            llm_model=llm_model,
+        )
+
+        scene_root = get_output_path(process_id, "scene")
+        updated_files_count = 0
+        non_empty_actions_count = 0
+        for file_path in scene_root.glob("*.json"):
+            try:
+                int(file_path.stem)
+            except ValueError:
+                continue
+
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    scene_data = json.load(f)
+                actions = scene_data.get("actions")
+                if isinstance(actions, list):
+                    updated_files_count += 1
+                    if actions:
+                        non_empty_actions_count += 1
+            except json.JSONDecodeError:
+                continue
+
+        logger.info(
+            "Stage 6 complete, scene files with actions=%s (non-empty=%s), stats=%s",
+            updated_files_count,
+            non_empty_actions_count,
+            stage_stats,
+        )
+        return updated_files_count > 0
+    except Exception as exc:
+        logger.exception("Stage 6 failed: %s", exc)
         return False
-    
-    # 第二阶段：构造 episodes
-    if not stage2_construct_episodes_for_id(process_id, memory_owner_name):
-        logger.warning("第二阶段失败，跳过第三阶段")
-        return False
-    
-    # 第三阶段：形成KG候选
-    embed_model = init_embed_model(embed_provider)
-    if not stage3_form_kg_candidates_for_id(
-        process_id,
+
+
+def run_full_pipeline_for_id(
+    process_id: str,
+    data_source: str = None,
+    loader_type: str = "auto",
+    prompt_version: str = "v1",
+    include_stage5: bool = True,
+    include_stage6: bool = True,
+    scene_prompt_version: str = "v1",
+    action_prompt_version: str = "v1",
+    memory_owner_name: str = "changshengEVA",
+    embed_provider: str = "bge",
+    llm_temperature: float = 0.1,
+) -> bool:
+    logger.info("Run full pipeline for process_id=%s", process_id)
+    logger.info("data_source=%s loader_type=%s", data_source if data_source else "default", loader_type)
+    logger.info(
+        "kg_prompt=%s scene_prompt=%s action_prompt=%s include_stage5=%s include_stage6=%s",
         prompt_version,
-        memory_owner_name,
-        embed_model=embed_model
-    ):
-        logger.warning("第三阶段失败")
-        return False
-    
-    # 第四阶段：形成 scene
-    if not stage4_form_scenes_for_id(
-        process_id,
         scene_prompt_version,
-        memory_owner_name,
-        embed_model=embed_model
-    ):
-        logger.warning("第四阶段失败")
-        return False
-    
-    # 第五阶段：形成 scene 特征（可选）
-    if include_stage5:
-        if not stage5_form_scene_features_for_id(
+        action_prompt_version,
+        include_stage5,
+        include_stage6,
+    )
+    logger.info("memory_owner_name=%s", memory_owner_name)
+    logger.info("embed_provider=%s llm_temperature=%s", embed_provider, llm_temperature)
+    llm_model = init_llm_model(llm_temperature)
+    embed_model = init_embed_model(embed_provider)
+
+    # if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
+    #     logger.warning("Stage 1 failed")
+    #     return False
+
+
+    # if not stage2_construct_episodes_for_id(
+    #     process_id,
+    #     memory_owner_name,
+    #     llm_model=llm_model,
+    # ):
+    #     logger.warning("Stage 2 failed")
+    #     return False
+
+
+    # if not stage3_form_kg_candidates_for_id(
+    #     process_id,
+    #     prompt_version,
+    #     memory_owner_name,
+    #     embed_model=embed_model,
+    #     llm_model=llm_model,
+    # ):
+    #     logger.warning("Stage 3 failed")
+    #     return False
+
+    # if not stage4_form_scenes_for_id(
+    #     process_id,
+    #     scene_prompt_version,
+    #     memory_owner_name,
+    #     embed_model=embed_model,
+    #     llm_model=llm_model,
+    # ):
+    #     logger.warning("Stage 4 failed")
+    #     return False
+
+    # if include_stage5:
+    #     if not stage5_form_scene_features_for_id(
+    #         process_id,
+    #         force_update=False,
+    #         memory_owner_name=memory_owner_name,
+    #         embed_model=embed_model,
+    #         llm_model=llm_model,
+    #     ):
+    #         logger.warning("Stage 5 failed")
+
+    if include_stage6:
+        if not stage6_form_scene_actions_for_id(
             process_id,
+            action_prompt_version=action_prompt_version,
             force_update=False,
-            memory_owner_name=memory_owner_name,
-            embed_model=embed_model
+            embed_model=embed_model,
+            llm_model=llm_model,
         ):
-            logger.warning("第五阶段失败")
-            # 第五阶段失败不视为整个流程失败，因为它是可选的增强功能
-            # 但仍然记录警告
-    
-    stage_count = 5 if include_stage5 else 4
-    logger.info("=" * 50)
-    logger.info(f"处理流 {process_id} 的所有数据构造流程完成（包含 {stage_count} 个阶段）")
-    logger.info(f"数据源: {data_source if data_source else '默认'}")
-    logger.info(f"加载器类型: {loader_type}")
-    logger.info(f"使用 prompt 版本: {prompt_version}")
-    logger.info(f"使用 scene prompt 版本: {scene_prompt_version}")
-    logger.info(f"记忆所有者名称: {memory_owner_name}")
-    logger.info(f"Embedding provider: {embed_provider}")
-    logger.info("=" * 50)
+            logger.warning("Stage 6 failed")
+
+    logger.info("Pipeline complete for process_id=%s", process_id)
     return True
 
 
-def main():
+def main() -> None:
     import argparse
-    """
-    主函数：支持数据源和加载器类型参数
-    """
+
     parser = argparse.ArgumentParser(
-        description="数据构造流程 - 支持指定数据源和加载器类型"
+        description="Memory pre-processing pipeline"
     )
-    parser.add_argument("--id", type=str, required=True,
-                       help="处理流ID（必需）")
-    parser.add_argument("--data-source", type=str, default=None,
-                       help="数据源路径（文件或目录），如果未指定则使用默认路径")
-    parser.add_argument("--loader-type", type=str, default="auto",
-                       choices=["auto", "realtalk", "locomo", "default"],
-                       help="加载器类型：auto（自动检测，默认）, realtalk（强制使用realtalk加载器）, locomo（强制使用locomo加载器）, default（强制使用默认加载器）")
-    parser.add_argument("--kg-prompt-version", type=str, default="v3",
-                       help="KG候选生成的prompt版本（v1 或 v2，默认v2）")
-    parser.add_argument("--scene-prompt-version", type=str, default="v2",
-                       help="Scene 生成的prompt版本（v1 或 v2，默认v1）")
-    parser.add_argument("--no-stage5", action="store_true",
-                       help="不包含第五阶段（scene特征提取）")
-    parser.add_argument("--memory-owner-name", type=str, default="changshengEVA",
-                       help="记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符（默认：changshengEVA）")
-    parser.add_argument("--embed-provider", type=str,
-                       default=os.getenv("EMBED_PROVIDER", "bge"),
-                       choices=["bge", "local", "alibaba", "aliyun", "dashscope"],
-                       help="Embedding 提供方：bge/local/alibaba/aliyun/dashscope（默认读取 EMBED_PROVIDER 或 bge）")
-    
+    parser.add_argument("--id", type=str, required=True, help="Process ID")
+    parser.add_argument("--data-source", type=str, default=None, help="Input data source path")
+    parser.add_argument(
+        "--loader-type",
+        type=str,
+        default="auto",
+        choices=["auto", "realtalk", "locomo", "default"],
+        help="Dialogue loader type",
+    )
+    parser.add_argument("--kg-prompt-version", type=str, default="v3", help="KG prompt version")
+    parser.add_argument("--scene-prompt-version", type=str, default="v2", help="Scene prompt version")
+    parser.add_argument("--action-prompt-version", type=str, default="v1", help="Action prompt version")
+    parser.add_argument("--no-stage5", action="store_true", help="Disable stage 5")
+    parser.add_argument("--no-stage6", action="store_true", help="Disable stage 6")
+    parser.add_argument("--memory-owner-name", type=str, default="changshengEVA", help="Memory owner name")
+    parser.add_argument(
+        "--embed-provider",
+        type=str,
+        default=os.getenv("EMBED_PROVIDER", "bge"),
+        choices=["bge", "local", "alibaba", "aliyun", "dashscope"],
+        help="Embedding provider",
+    )
+    parser.add_argument(
+        "--llm-temperature",
+        type=float,
+        default=float(os.getenv("LLM_TEMPERATURE", "0.0")),
+        help="LLM temperature",
+    )
+
     args = parser.parse_args()
-    
-    # 直接运行完整流程
+
     success = run_full_pipeline_for_id(
         args.id,
         data_source=args.data_source,
         loader_type=args.loader_type,
         prompt_version=args.kg_prompt_version,
         scene_prompt_version=args.scene_prompt_version,
+        action_prompt_version=args.action_prompt_version,
         include_stage5=not args.no_stage5,
+        include_stage6=not args.no_stage6,
         memory_owner_name=args.memory_owner_name,
-        embed_provider=args.embed_provider
+        embed_provider=args.embed_provider,
+        llm_temperature=args.llm_temperature,
     )
-    
-    stage_count = 5 if not args.no_stage5 else 4
+
     if success:
-        logger.info("=" * 50)
-        logger.info(f"处理流 {args.id} 的数据构造流程完成（完整{stage_count}个阶段）")
-        logger.info(f"数据源: {args.data_source if args.data_source else '默认'}")
-        logger.info(f"加载器类型: {args.loader_type}")
-        logger.info(f"记忆所有者名称: {args.memory_owner_name}")
-        logger.info(f"Embedding provider: {args.embed_provider}")
-        logger.info("=" * 50)
+        logger.info("Pipeline succeeded for process_id=%s", args.id)
     else:
-        logger.error("数据构造流程失败")
+        logger.error("Pipeline failed for process_id=%s", args.id)
 
 
 if __name__ == "__main__":
     main()
-
 ##测试私有数据          python ./pipeline/memory_pre.py --id testdefault 
 ##测试realtalk数据      python ./pipeline/memory_pre.py --id testrt --data-source data\REALTALK\data\Chat_1_Emi_Elise.json --loader-type realtalk
 ##测试locomo数据        python ./pipeline/memory_pre.py --id testlocomo --data-source data\locomo\data\locomo10.json --loader-type locomo

@@ -12,7 +12,7 @@ import yaml
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable
 from tqdm import tqdm
 
 # 添加项目根目录到 Python 路径，确保可以导入 load_model
@@ -106,15 +106,20 @@ def load_dialogue(dialogue_file: Path) -> Dict:
     with open(dialogue_file, 'r', encoding='utf-8') as f:
         return json.load(f)
 
-def call_openai_for_segmentation(dialogue_json: Dict, prompts: Dict) -> Dict:
+def call_openai_for_segmentation(
+    dialogue_json: Dict,
+    prompts: Dict,
+    llm_model: Optional[Callable[[str], str]] = None
+) -> Dict:
     """
     调用 OpenAI 进行对话分割。
     返回包含 episodes 的字典。
     """
-    from load_model.OpenAIcall import get_llm
+    if llm_model is None:
+        from load_model.OpenAIcall import get_llm
+        llm_model = get_llm(model_temperature=0.1)
     
     # 获取 LLM 实例，温度设为 0.1 以获得更确定性的输出
-    llm = get_llm(model_temperature=0.1)
     
     # 构建完整的 prompt
     system_prompt = prompts.get('system_prompt', '')
@@ -128,7 +133,7 @@ def call_openai_for_segmentation(dialogue_json: Dict, prompts: Dict) -> Dict:
     full_prompt = f"{system_prompt}\n\n{user_prompt}"
     
     try:
-        response_text = llm(full_prompt)
+        response_text = llm_model(full_prompt)
         # 解析 JSON 响应
         # 响应可能包含额外的文本，尝试提取 JSON 部分
         import re
@@ -163,7 +168,13 @@ def save_episodes(episode_data: Dict, episode_file: Path):
     with open(episode_file, 'w', encoding='utf-8') as f:
         json.dump(episode_data, f, ensure_ascii=False, indent=2)
 
-def process_dialogue_file(dialogue_file: Path, prompts: Dict, episodes_root: Path = None, memory_owner_name: str = "changshengEVA") -> bool:
+def process_dialogue_file(
+    dialogue_file: Path,
+    prompts: Dict,
+    episodes_root: Path = None,
+    memory_owner_name: str = "changshengEVA",
+    llm_model: Optional[Callable[[str], str]] = None
+) -> bool:
     """处理单个对话文件，生成 episodes"""
     try:
         # 加载对话
@@ -171,7 +182,11 @@ def process_dialogue_file(dialogue_file: Path, prompts: Dict, episodes_root: Pat
         dialogue_id = dialogue_data.get('dialogue_id', dialogue_file.stem)
         
         # 调用 OpenAI 进行分割
-        openai_result = call_openai_for_segmentation(dialogue_data, prompts)
+        openai_result = call_openai_for_segmentation(
+            dialogue_data,
+            prompts,
+            llm_model=llm_model
+        )
         
         # 构建最终结构
         episode_data = build_episode_structure(dialogue_id, openai_result)
@@ -185,7 +200,13 @@ def process_dialogue_file(dialogue_file: Path, prompts: Dict, episodes_root: Pat
         logger.error(f"处理对话文件 {dialogue_file} 失败: {e}")
         return False
 
-def scan_and_build_episodes(use_tqdm: bool = True, dialogues_root: Path = None, episodes_root: Path = None, memory_owner_name: str = "changshengEVA"):
+def scan_and_build_episodes(
+    use_tqdm: bool = True,
+    dialogues_root: Path = None,
+    episodes_root: Path = None,
+    memory_owner_name: str = "changshengEVA",
+    llm_model: Optional[Callable[[str], str]] = None
+):
     """
     主函数：扫描所有对话文件，为需要生成 episodes 的对话创建 episodes。
     
@@ -231,7 +252,13 @@ def scan_and_build_episodes(use_tqdm: bool = True, dialogues_root: Path = None, 
     
     success_count = 0
     for dialogue_file in file_iter:
-        if process_dialogue_file(dialogue_file, prompts, episodes_root, memory_owner_name):
+        if process_dialogue_file(
+            dialogue_file,
+            prompts,
+            episodes_root,
+            memory_owner_name,
+            llm_model=llm_model
+        ):
             success_count += 1
 
 if __name__ == "__main__":

@@ -159,22 +159,29 @@ def extract_entities_from_kg_candidates(kg_data: Dict) -> List[str]:
     
     return entities
 
-def call_llm_for_features(diary: str, entities: List[str], prompt_template: str, scene_id: str) -> List[Dict]:
+def call_llm_for_features(
+    diary: str,
+    entities: List[str],
+    prompt_template: str,
+    scene_id: str,
+    llm_model: Optional[Callable[[str], str]] = None
+) -> List[Dict]:
     """
     调用 LLM 进行特征提取。
     返回解析后的 JSON 列表，格式为 [{"entity_id": "...", "feature": "...", "scene_id": "..."}, ...]
     """
-    from load_model.OpenAIcall import get_llm
+    if llm_model is None:
+        from load_model.OpenAIcall import get_llm
+        llm_model = get_llm(model_temperature=0.1)
     
     # 获取 LLM 实例，温度设为 0.1 以获得更确定性的输出
-    llm = get_llm(model_temperature=0.1)
     
     # 构建输入
     entities_str = json.dumps(entities, ensure_ascii=False)
     full_prompt = prompt_template.replace('<DIARY>', diary).replace('<ENTITIES_LIST>', entities_str)
     
     try:
-        response_text = llm(full_prompt)
+        response_text = llm_model(full_prompt)
         # 解析 JSON 响应
         # 响应可能包含额外的文本，尝试提取 JSON 部分
         json_match = re.search(r'\[.*\]', response_text, re.DOTALL)
@@ -279,7 +286,8 @@ def process_episode(episode_info: Dict,
                    memory_root: Path,
                    prompts: Dict,
                    force_update: bool = False,
-                   embed_model: Optional[Callable[[Any], Any]] = None) -> bool:
+                   embed_model: Optional[Callable[[Any], Any]] = None,
+                   llm_model: Optional[Callable[[str], str]] = None) -> bool:
     """
     处理单个 episode，提取特征并保存。
     
@@ -347,7 +355,13 @@ def process_episode(episode_info: Dict,
                 return False
             
             # 调用 LLM 生成特征
-            features = call_llm_for_features(diary, entities, prompt_template, scene_id)
+            features = call_llm_for_features(
+                diary,
+                entities,
+                prompt_template,
+                scene_id,
+                llm_model=llm_model
+            )
 
         # 为特征补充文本 embedding 字段
         features = attach_feature_embeddings(features, embed_model=embed_model)
@@ -371,7 +385,8 @@ def scan_and_extract_features(workflow_id: str = "test2",
                              force_update: bool = False,
                              use_tqdm: bool = True,
                              memory_owner_name: str = "changshengEVA",
-                             embed_model: Optional[Callable[[Any], Any]] = None):
+                             embed_model: Optional[Callable[[Any], Any]] = None,
+                             llm_model: Optional[Callable[[str], str]] = None):
     """
     主函数：扫描所有符合条件的 episode，提取特征。
     
@@ -425,7 +440,8 @@ def scan_and_extract_features(workflow_id: str = "test2",
             memory_root,
             prompts,
             force_update,
-            embed_model=embed_model
+            embed_model=embed_model,
+            llm_model=llm_model
         ):
             success_count += 1
             

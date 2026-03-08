@@ -9,10 +9,16 @@ import os
 import sys
 import logging
 from pathlib import Path
+from typing import Optional, Callable
 
 logger = logging.getLogger(__name__)
 
-def build_episodes_with_id(process_id: str, project_root: str = None, memory_owner_name: str = "changshengEVA"):
+def build_episodes_with_id(
+    process_id: str,
+    project_root: str = None,
+    memory_owner_name: str = "changshengEVA",
+    llm_model: Optional[Callable[[str], str]] = None
+):
     """
     使用指定的处理ID构建 episodes，生成到 data/memory/{id}/ 目录下
     
@@ -49,7 +55,8 @@ def build_episodes_with_id(process_id: str, project_root: str = None, memory_own
             use_tqdm=True,
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
-            memory_owner_name=memory_owner_name
+            memory_owner_name=memory_owner_name,
+            llm_model=llm_model
         )
         
         # 2. 评分 qualifications
@@ -59,7 +66,8 @@ def build_episodes_with_id(process_id: str, project_root: str = None, memory_own
             use_tqdm=True,
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
-            memory_owner_name=memory_owner_name
+            memory_owner_name=memory_owner_name,
+            llm_model=llm_model
         )
         
         # 3. 过滤 eligibility
@@ -82,7 +90,12 @@ def build_episodes_with_id(process_id: str, project_root: str = None, memory_own
         logger.error(traceback.format_exc())
         return False
 
-def build_episodes_custom(dialogues_root: Path, episodes_root: Path, memory_owner_name: str = "changshengEVA"):
+def build_episodes_custom(
+    dialogues_root: Path,
+    episodes_root: Path,
+    memory_owner_name: str = "changshengEVA",
+    llm_model: Optional[Callable[[str], str]] = None
+):
     """
     使用自定义目录构建 episodes
     
@@ -111,7 +124,8 @@ def build_episodes_custom(dialogues_root: Path, episodes_root: Path, memory_owne
             use_tqdm=True,
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
-            memory_owner_name=memory_owner_name
+            memory_owner_name=memory_owner_name,
+            llm_model=llm_model
         )
         
         # 2. 评分 qualifications
@@ -121,7 +135,8 @@ def build_episodes_custom(dialogues_root: Path, episodes_root: Path, memory_owne
             use_tqdm=True,
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
-            memory_owner_name=memory_owner_name
+            memory_owner_name=memory_owner_name,
+            llm_model=llm_model
         )
         
         # 3. 过滤 eligibility
@@ -144,7 +159,11 @@ def build_episodes_custom(dialogues_root: Path, episodes_root: Path, memory_owne
         logger.error(traceback.format_exc())
         return False
 
-def run_memory_build_for_id(process_id: str, source_dialogues_dir: Path = None):
+def run_memory_build_for_id(
+    process_id: str,
+    source_dialogues_dir: Path = None,
+    llm_model: Optional[Callable[[str], str]] = None
+):
     """
     为指定ID运行完整的memory build流程
     
@@ -185,7 +204,7 @@ def run_memory_build_for_id(process_id: str, source_dialogues_dir: Path = None):
                     shutil.copy2(item, dest)
         
         # 运行构建流程
-        return build_episodes_with_id(process_id, project_root)
+        return build_episodes_with_id(process_id, project_root, llm_model=llm_model)
         
     except Exception as e:
         logger.error(f"运行 memory build 失败: {e}")

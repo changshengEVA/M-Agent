@@ -14,7 +14,7 @@ import logging
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Callable
 from tqdm import tqdm
 
 # 添加项目根目录到 Python 路径，确保可以导入 load_model
@@ -176,15 +176,21 @@ def build_episode_with_content(episode_meta: Dict, dialogue_data: Dict) -> Dict:
     
     return episode_with_content
 
-def call_openai_for_scoring(episode_with_content: Dict, system_prompt: str, user_prompt_template: str) -> Dict:
+def call_openai_for_scoring(
+    episode_with_content: Dict,
+    system_prompt: str,
+    user_prompt_template: str,
+    llm_model: Optional[Callable[[str], str]] = None
+) -> Dict:
     """
     调用 OpenAI 进行单个评分维度的评分。
     返回解析后的 JSON 结果。
     """
-    from load_model.OpenAIcall import get_llm
+    if llm_model is None:
+        from load_model.OpenAIcall import get_llm
+        llm_model = get_llm(model_temperature=0.1)
     
     # 获取 LLM 实例，温度设为 0.1 以获得更确定性的输出
-    llm = get_llm(model_temperature=0.1)
     
     # 将 episode JSON 转换为字符串用于插入
     episode_str = json.dumps(episode_with_content, ensure_ascii=False, indent=2)
@@ -212,7 +218,11 @@ def call_openai_for_scoring(episode_with_content: Dict, system_prompt: str, user
         raise
 
 
-def call_openai_for_qualification(episode_with_content: Dict, scoring_sys: Dict) -> Dict:
+def call_openai_for_qualification(
+    episode_with_content: Dict,
+    scoring_sys: Dict,
+    llm_model: Optional[Callable[[str], str]] = None
+) -> Dict:
     """
     调用 OpenAI 进行多个评分维度的评分。
     依次按照 scoring_sys 中的内容分别打分，返回所有评分结果的字典。
@@ -229,7 +239,12 @@ def call_openai_for_qualification(episode_with_content: Dict, scoring_sys: Dict)
             continue
         
         try:
-            result = call_openai_for_scoring(episode_with_content, system_prompt, user_prompt)
+            result = call_openai_for_scoring(
+                episode_with_content,
+                system_prompt,
+                user_prompt,
+                llm_model=llm_model
+            )
             scoring_results[score_name] = result
         except Exception as e:
             logger.error(f"评分模块 {scoring_name} 失败: {e}")
@@ -292,7 +307,13 @@ def build_qualification_structure(dialogue_id: str, episode_id: str, scoring_res
         "rationale": rationale
     }
 
-def process_episode_file(episode_file: Path, prompts: Dict, dialogues_root: Path = None, memory_owner_name: str = "changshengEVA") -> bool:
+def process_episode_file(
+    episode_file: Path,
+    prompts: Dict,
+    dialogues_root: Path = None,
+    memory_owner_name: str = "changshengEVA",
+    llm_model: Optional[Callable[[str], str]] = None
+) -> bool:
     """处理单个 episode 文件，生成 qualification"""
     try:
         # 加载 episodes
@@ -322,7 +343,11 @@ def process_episode_file(episode_file: Path, prompts: Dict, dialogues_root: Path
             episode_with_content = build_episode_with_content(episode, dialogue_data)
             
             # 调用 OpenAI 进行 qualification
-            openai_result = call_openai_for_qualification(episode_with_content, prompts)
+            openai_result = call_openai_for_qualification(
+                episode_with_content,
+                prompts,
+                llm_model=llm_model
+            )
             
             # 构建最终结构
             qualification = build_qualification_structure(dialogue_id, episode_id, openai_result)
@@ -349,7 +374,13 @@ def save_qualifications(qualifications: List[Dict], qualification_file: Path):
             "qualification_version": "v1"
         }, f, ensure_ascii=False, indent=2)
 
-def scan_and_qualify_episodes(use_tqdm: bool = True, dialogues_root: Path = None, episodes_root: Path = None, memory_owner_name: str = "changshengEVA"):
+def scan_and_qualify_episodes(
+    use_tqdm: bool = True,
+    dialogues_root: Path = None,
+    episodes_root: Path = None,
+    memory_owner_name: str = "changshengEVA",
+    llm_model: Optional[Callable[[str], str]] = None
+):
     """
     主函数：扫描所有 episode 文件，为需要生成 qualification 的 episode 创建 qualification。
     
@@ -396,7 +427,13 @@ def scan_and_qualify_episodes(use_tqdm: bool = True, dialogues_root: Path = None
     
     success_count = 0
     for episode_file in file_iter:
-        if process_episode_file(episode_file, prompts, dialogues_root, memory_owner_name):
+        if process_episode_file(
+            episode_file,
+            prompts,
+            dialogues_root,
+            memory_owner_name,
+            llm_model=llm_model
+        ):
             success_count += 1
     
     logger.info(f"成功处理 {success_count}/{len(files_to_process)} 个 episode 文件")

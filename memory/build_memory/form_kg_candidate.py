@@ -284,7 +284,11 @@ def episode_to_plain_text(episode_with_content: Dict) -> str:
     return '\n'.join(lines)
 
 
-def call_openai_for_kg_candidate(episode_with_content: Dict, prompt_template) -> Dict:
+def call_openai_for_kg_candidate(
+    episode_with_content: Dict,
+    prompt_template,
+    llm_model: Optional[Callable[[str], str]] = None
+) -> Dict:
     """
     调用 OpenAI 进行 kg_candidate 提取。
     支持 v1/v2（字符串模板）和 v3（字典模板，三段式提取）。
@@ -293,20 +297,25 @@ def call_openai_for_kg_candidate(episode_with_content: Dict, prompt_template) ->
     # 判断 prompt_template 类型
     if isinstance(prompt_template, dict):
         # v3 三段式提取
-        return extract_kg_candidate_v3(episode_with_content, prompt_template)
+        return extract_kg_candidate_v3(
+            episode_with_content,
+            prompt_template,
+            llm_model=llm_model
+        )
     elif isinstance(prompt_template, str):
         # v1/v2 单次提取
-        from load_model.OpenAIcall import get_llm
+        if llm_model is None:
+            from load_model.OpenAIcall import get_llm
+            llm_model = get_llm(model_temperature=0.1)
         
         # 获取 LLM 实例，温度设为 0.1 以获得更确定性的输出
-        llm = get_llm(model_temperature=0.1)
         
         # 将 episode 转换为纯文本对话
         episode_str = episode_to_plain_text(episode_with_content)
         full_prompt = prompt_template.replace('<txt_string>', episode_str)
         
         try:
-            response_text = llm(full_prompt)
+            response_text = llm_model(full_prompt)
             # 解析 JSON 响应
             # 响应可能包含额外的文本，尝试提取 JSON 部分
             json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
@@ -326,7 +335,11 @@ def call_openai_for_kg_candidate(episode_with_content: Dict, prompt_template) ->
         raise ValueError(f"不支持的 prompt_template 类型: {type(prompt_template)}")
 
 
-def extract_kg_candidate_v3(episode_with_content: Dict, prompt_dict: Dict) -> Dict:
+def extract_kg_candidate_v3(
+    episode_with_content: Dict,
+    prompt_dict: Dict,
+    llm_model: Optional[Callable[[str], str]] = None
+) -> Dict:
     """
     使用 v3 三段式 prompt 提取 kg_candidate。
     流程：
@@ -336,10 +349,11 @@ def extract_kg_candidate_v3(episode_with_content: Dict, prompt_dict: Dict) -> Di
     
     返回合并后的 kg_candidate，格式与 v1/v2 兼容。
     """
-    from load_model.OpenAIcall import get_llm
+    if llm_model is None:
+        from load_model.OpenAIcall import get_llm
+        llm_model = get_llm(model_temperature=0.1)
     
     # 获取 LLM 实例，温度设为 0.1 以获得更确定性的输出
-    llm = get_llm(model_temperature=0.1)
     
     # 将 episode 转换为纯文本对话
     episode_str = episode_to_plain_text(episode_with_content)
@@ -354,7 +368,7 @@ def extract_kg_candidate_v3(episode_with_content: Dict, prompt_dict: Dict) -> Di
     
     entity_full_prompt = entity_prompt.replace('<txt_string>', episode_str)
     try:
-        entity_response = llm(entity_full_prompt)
+        entity_response = llm_model(entity_full_prompt)
         entity_json_match = re.search(r'\{.*\}', entity_response, re.DOTALL)
         if entity_json_match:
             entity_response = entity_json_match.group(0)
@@ -374,7 +388,7 @@ def extract_kg_candidate_v3(episode_with_content: Dict, prompt_dict: Dict) -> Di
         relation_full_prompt = relation_full_prompt.replace('<entity_list_json>', json.dumps(entities, ensure_ascii=False))
         
         try:
-            relation_response = llm(relation_full_prompt)
+            relation_response = llm_model(relation_full_prompt)
             relation_json_match = re.search(r'\{.*\}', relation_response, re.DOTALL)
             if relation_json_match:
                 relation_response = relation_json_match.group(0)
@@ -394,7 +408,7 @@ def extract_kg_candidate_v3(episode_with_content: Dict, prompt_dict: Dict) -> Di
         attribution_full_prompt = attribution_full_prompt.replace('<memory_owner_name>', memory_owner_name)
         
         try:
-            attribution_response = llm(attribution_full_prompt)
+            attribution_response = llm_model(attribution_full_prompt)
             attribution_json_match = re.search(r'\{.*\}', attribution_response, re.DOTALL)
             if attribution_json_match:
                 attribution_response = attribution_json_match.group(0)
@@ -540,7 +554,8 @@ def process_eligibility_file(eligibility_file: Path,
                             kg_candidates_root: Path = None,
                             force_update: bool = False,
                             memory_owner_name: str = "changshengEVA",
-                            embed_model: Optional[Callable[[Any], Any]] = None) -> bool:
+                            embed_model: Optional[Callable[[Any], Any]] = None,
+                            llm_model: Optional[Callable[[str], str]] = None) -> bool:
     """
     处理单个 eligibility 文件，生成 kg_candidate（新格式：每个kg_candidate单独文件）
     
@@ -634,7 +649,11 @@ def process_eligibility_file(eligibility_file: Path,
                 return False
             
             try:
-                kg_result = call_openai_for_kg_candidate(episode_with_content, prompt_template)
+                kg_result = call_openai_for_kg_candidate(
+                    episode_with_content,
+                    prompt_template,
+                    llm_model=llm_model
+                )
                 kg_result = attach_attribute_field_embeddings(
                     kg_result,
                     embed_model=embed_model
@@ -689,7 +708,8 @@ def scan_and_form_kg_candidates(prompt_version: str = "v1",
                                 episodes_root: Path = None,
                                 kg_candidates_root: Path = None,
                                 memory_owner_name: str = "changshengEVA",
-                                embed_model: Optional[Callable[[Any], Any]] = None):
+                                embed_model: Optional[Callable[[Any], Any]] = None,
+                                llm_model: Optional[Callable[[str], str]] = None):
     """
     主函数：扫描所有 eligibility 文件，为需要生成 kg_candidate 的对话创建 kg_candidate。
     使用新格式：每个kg_candidate保存为单独文件。
@@ -761,7 +781,8 @@ def scan_and_form_kg_candidates(prompt_version: str = "v1",
             kg_candidates_root,
             force_update=force_update,
             memory_owner_name=memory_owner_name,
-            embed_model=embed_model
+            embed_model=embed_model,
+            llm_model=llm_model
         ):
             success_count += 1
     

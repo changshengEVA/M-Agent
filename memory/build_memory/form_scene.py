@@ -289,22 +289,27 @@ def extract_episode_time_range(episode_meta: Dict, dialogue_data: Dict) -> Tuple
 
     return start_time, end_time
 
-def call_openai_for_scene(episode_with_content: Dict, prompt_template: str) -> Dict:
+def call_openai_for_scene(
+    episode_with_content: Dict,
+    prompt_template: str,
+    llm_model: Optional[Callable[[str], str]] = None
+) -> Dict:
     """
     调用 OpenAI 进行 scene 生成。
     返回解析后的 JSON 结果（包含 theme 和 diary）。
     """
-    from load_model.OpenAIcall import get_llm
+    if llm_model is None:
+        from load_model.OpenAIcall import get_llm
+        llm_model = get_llm(model_temperature=0.1)
     
     # 获取 LLM 实例，温度设为 0.1 以获得更确定性的输出
-    llm = get_llm(model_temperature=0.1)
     
     # 将 episode JSON 转换为字符串用于插入
     episode_str = json.dumps(episode_with_content, ensure_ascii=False, indent=2)
     full_prompt = prompt_template.replace('<txt_string>', episode_str)
     
     try:
-        response_text = llm(full_prompt)
+        response_text = llm_model(full_prompt)
         # 解析 JSON 响应
         # 响应可能包含额外的文本，尝试提取 JSON 部分
         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
@@ -466,7 +471,8 @@ def process_episode_file(episode_file: Path,
                         force_update: bool = False,
                         prompt_version: str = "v1",
                         memory_owner_name: str = "changshengEVA",
-                        embed_model: Optional[Callable[[Any], Any]] = None) -> bool:
+                        embed_model: Optional[Callable[[Any], Any]] = None,
+                        llm_model: Optional[Callable[[str], str]] = None) -> bool:
     """
     处理单个 episode 文件，生成 scene。
     
@@ -553,7 +559,11 @@ def process_episode_file(episode_file: Path,
                 return False
             
             try:
-                scene_result = call_openai_for_scene(episode_with_content, prompt_template)
+                scene_result = call_openai_for_scene(
+                    episode_with_content,
+                    prompt_template,
+                    llm_model=llm_model
+                )
                 # 验证结果包含 theme 和 diary
                 if "theme" not in scene_result or "diary" not in scene_result:
                     logger.error(f"scene 结果缺少 theme 或 diary: {scene_result}")
@@ -637,7 +647,8 @@ def scan_and_form_scenes(use_tqdm: bool = True,
                         episodes_root: Path = None,
                         scene_root: Path = None,
                         memory_owner_name: str = "changshengEVA",
-                        embed_model: Optional[Callable[[Any], Any]] = None):
+                        embed_model: Optional[Callable[[Any], Any]] = None,
+                        llm_model: Optional[Callable[[str], str]] = None):
     """
     主函数：扫描所有 episode 文件，为需要生成 scene 的对话创建 scene。
     
@@ -700,7 +711,8 @@ def scan_and_form_scenes(use_tqdm: bool = True,
             force_update=force_update,
             prompt_version=prompt_version,
             memory_owner_name=memory_owner_name,
-            embed_model=embed_model
+            embed_model=embed_model,
+            llm_model=llm_model
         ):
             success_count += 1
     
