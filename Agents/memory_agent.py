@@ -6,9 +6,12 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 import time
+from calendar import monthrange
 from dataclasses import asdict, dataclass, is_dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -44,6 +47,11 @@ class AgentResponse:
 class MemoryAgent:
     """LangChain agent wrapper for MemoryCore-based QA."""
 
+    _RELATIVE_MONTH_FROM_PATTERN = re.compile(
+        r"\b(?P<direction>next|last)\s+month\s+from\s+(?P<anchor>[A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{4}-\d{1,2}-\d{1,2})\b",
+        flags=re.IGNORECASE,
+    )
+
     @staticmethod
     def _is_unanswerable_text(text: Any) -> bool:
         if not isinstance(text, str):
@@ -75,14 +83,65 @@ class MemoryAgent:
         answer_text = payload.get("answer")
         gold_answer = payload.get("gold_answer")
 
+        if isinstance(answer_text, str):
+            answer_text = cls._absolutize_relative_time(answer_text).strip()
+            payload["answer"] = answer_text
+
         if isinstance(gold_answer, str):
-            gold_answer = gold_answer.strip() or None
+            gold_answer = cls._absolutize_relative_time(gold_answer).strip() or None
         payload["gold_answer"] = gold_answer
 
         if cls._is_unanswerable_text(answer_text):
             payload["gold_answer"] = None
 
         return payload
+
+    @classmethod
+    def _absolutize_relative_time(cls, text: str) -> str:
+        if not isinstance(text, str) or not text.strip():
+            return text
+
+        def _replace(match: re.Match[str]) -> str:
+            direction = (match.group("direction") or "").strip().lower()
+            anchor_text = (match.group("anchor") or "").strip()
+            anchor_dt = cls._parse_anchor_date(anchor_text)
+            if anchor_dt is None:
+                return match.group(0)
+
+            delta = 1 if direction == "next" else -1
+            shifted = cls._shift_month(anchor_dt, delta)
+            return shifted.strftime("%B %Y")
+
+        return cls._RELATIVE_MONTH_FROM_PATTERN.sub(_replace, text)
+
+    @staticmethod
+    def _parse_anchor_date(text: str) -> Optional[datetime]:
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return None
+
+        formats = (
+            "%Y-%m-%d",
+            "%Y/%m/%d",
+            "%B %d, %Y",
+            "%B %d %Y",
+            "%b %d, %Y",
+            "%b %d %Y",
+        )
+        for fmt in formats:
+            try:
+                return datetime.strptime(cleaned, fmt)
+            except Exception:
+                continue
+        return None
+
+    @staticmethod
+    def _shift_month(dt: datetime, delta: int) -> datetime:
+        month_index = dt.month - 1 + delta
+        year = dt.year + month_index // 12
+        month = month_index % 12 + 1
+        day = min(dt.day, monthrange(year, month)[1])
+        return dt.replace(year=year, month=month, day=day)
 
     def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH):
         self.config_path = Path(config_path)
@@ -96,6 +155,17 @@ class MemoryAgent:
         macro_cfg = self.config.get("macro_search_defaults", {})
         if isinstance(macro_cfg, dict):
             self.macro_search_defaults.update(macro_cfg)
+
+        self.detail_search_defaults: Dict[str, Any] = {
+            "topk": 5,
+        }
+        detail_cfg = self.config.get("detail_search_defaults", {})
+        if isinstance(detail_cfg, dict):
+            self.detail_search_defaults.update(detail_cfg)
+        # backward compatibility
+        action_cfg = self.config.get("action_search_defaults", {})
+        if isinstance(action_cfg, dict):
+            self.detail_search_defaults.update(action_cfg)
 
         self.memory_sys = self._init_memory_sys(self.config)
         if bool(self.config.get("auto_bootstrap_kg_data", True)):
@@ -267,7 +337,7 @@ class MemoryAgent:
 
         @tool
         def search_content(dialogue_id: str, episode_id: str) -> Dict[str, Any]:
-            """Fetch original dialogue turns by dialogue_id + episode_id."""
+            """Fetch dialogue original text details and event/time info by dialogue_id + episode_id."""
 
             logger.info(
                 "API call: search_content(dialogue_id=%s, episode_id=%s)",
@@ -306,12 +376,39 @@ class MemoryAgent:
             )
             return result
 
+        @tool
+        def search_details(detail: str, topk: Optional[int] = None) -> Dict[str, Any]:
+            """
+            Search concrete behavior/action details from scene memories by semantic similarity.
+            Returns top-K matched details with actor/evidence.
+            """
+
+            cfg_topk = self.detail_search_defaults["topk"] if topk is None else int(topk)
+            logger.info(
+                "API call: search_details(detail=%s, topk=%s)",
+                detail,
+                cfg_topk,
+            )
+            result = self.memory_sys.search_details(
+                detail_query=detail,
+                topk=cfg_topk,
+            )
+            logger.info(
+                "API response: search_details(success=%s, result_count=%s)",
+                result.get("hit") if isinstance(result, dict) else None,
+                len(result.get("results", []))
+                if isinstance(result, dict) and isinstance(result.get("results"), list)
+                else None,
+            )
+            return result
+
         return [
             resolve_entity,
             query_entity_property,
             search_macro_events,
             search_content,
             search_events_by_time_range,
+            search_details,
         ]
 
     def ask(self, question: str, thread_id: Optional[str] = None) -> Dict[str, Any]:

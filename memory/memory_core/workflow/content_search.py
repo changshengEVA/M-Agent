@@ -30,6 +30,9 @@ def search_content(
         "dialogue_id": dialogue_id,
         "episode_id": episode_id,
         "turn_span": None,
+        "event_time": {"start_time": "", "end_time": ""},
+        "event_info": {},
+        "turn_time_span": {"start_time": "", "end_time": ""},
         "source": {},
         "participants": [],
         "dialogue_meta": {},
@@ -68,6 +71,8 @@ def search_content(
     if dialogue_file is None:
         result["error"] = "dialogue_file_not_found"
         result["turn_span"] = span_info.get("turn_span")
+        result["event_time"] = span_info.get("event_time", {"start_time": "", "end_time": ""})
+        result["event_info"] = span_info.get("event_info", {})
         result["source"] = span_info.get("source", {})
         return result
 
@@ -75,6 +80,8 @@ def search_content(
     if dialogue_data is None:
         result["error"] = "dialogue_file_load_failed"
         result["turn_span"] = span_info.get("turn_span")
+        result["event_time"] = span_info.get("event_time", {"start_time": "", "end_time": ""})
+        result["event_info"] = span_info.get("event_info", {})
         result["source"] = span_info.get("source", {})
         return result
 
@@ -84,10 +91,17 @@ def search_content(
 
     result["hit"] = True
     result["turn_span"] = turn_span
+    result["event_time"] = span_info.get("event_time", {"start_time": "", "end_time": ""})
+    result["event_info"] = span_info.get("event_info", {})
     result["source"] = span_info.get("source", {})
     result["participants"] = dialogue_data.get("participants", [])
     result["dialogue_meta"] = dialogue_data.get("meta", {})
     result["turns"] = selected_turns
+    result["turn_time_span"] = _extract_turn_time_span(selected_turns)
+
+    if not result["event_time"].get("start_time") and not result["event_time"].get("end_time"):
+        result["event_time"] = result["turn_time_span"]
+
     return result
 
 
@@ -119,6 +133,16 @@ def _find_turn_span_from_scene(
 
             return {
                 "turn_span": ep.get("turn_span"),
+                "event_time": {
+                    "start_time": str(ep.get("start_time", "") or ep.get("starttime", "") or ""),
+                    "end_time": str(ep.get("end_time", "") or ep.get("endtime", "") or ""),
+                },
+                "event_info": {
+                    "scene_id": scene_data.get("scene_id") or scene_file.stem,
+                    "scene_theme": scene_data.get("theme", ""),
+                    "episode_id": ep.get("episode_id", ""),
+                    "dialogue_id": ep.get("dialogue_id", ""),
+                },
                 "source": {
                     "from": "scene",
                     "scene_id": scene_data.get("scene_id") or scene_file.stem,
@@ -160,6 +184,16 @@ def _find_turn_span_from_episode_file(
 
             return {
                 "turn_span": ep.get("turn_span"),
+                "event_time": {
+                    "start_time": str(ep.get("start_time", "") or ep.get("starttime", "") or ""),
+                    "end_time": str(ep.get("end_time", "") or ep.get("endtime", "") or ""),
+                },
+                "event_info": {
+                    "scene_id": "",
+                    "scene_theme": "",
+                    "episode_id": ep.get("episode_id", ""),
+                    "dialogue_id": ep.get("dialogue_id", ""),
+                },
                 "source": {
                     "from": "episodes_file",
                     "episode_file": episode_file.name,
@@ -201,6 +235,41 @@ def _slice_turns(turns: Any, turn_span: Any) -> List[Dict[str, Any]]:
     return [t for t in turns if isinstance(t, dict)]
 
 
+def _extract_turn_time_span(turns: List[Dict[str, Any]]) -> Dict[str, str]:
+    if not isinstance(turns, list) or not turns:
+        return {"start_time": "", "end_time": ""}
+
+    first_ts = ""
+    last_ts = ""
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        ts = _extract_turn_timestamp(turn)
+        if ts:
+            if not first_ts:
+                first_ts = ts
+            last_ts = ts
+
+    return {
+        "start_time": first_ts,
+        "end_time": last_ts,
+    }
+
+
+def _extract_turn_timestamp(turn: Dict[str, Any]) -> str:
+    for key in ("timestamp", "time", "created_at", "datetime"):
+        val = turn.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    meta = turn.get("meta", {})
+    if isinstance(meta, dict):
+        for key in ("timestamp", "time", "created_at", "datetime"):
+            val = meta.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return ""
+
+
 def _load_json(path: Path) -> Optional[Dict[str, Any]]:
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -210,4 +279,3 @@ def _load_json(path: Path) -> Optional[Dict[str, Any]]:
     except Exception as exc:
         logger.warning("search_content: failed to load %s: %s", path, exc)
     return None
-

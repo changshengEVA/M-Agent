@@ -35,6 +35,13 @@ except Exception:
 logger = logging.getLogger("run_eval_locomo")
 
 
+DEFAULT_TEST_ID = "default"
+PREDICTION_FILE_NAME = "locomo10_agent_qa.json"
+STATS_FILE_NAME = "locomo10_agent_qa_stats.json"
+RUN_LOG_FILE_NAME = "locomo10_agent_qa_run.log"
+TRACE_FILE_NAME = "locomo10_agent_qa_qa_trace.jsonl"
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Evaluate MemoryAgent on LoCoMo QA using LoCoMo-style QA metrics."
@@ -52,16 +59,10 @@ def parse_args() -> argparse.Namespace:
         help="MemoryAgent config yaml path.",
     )
     parser.add_argument(
-        "--out-file",
+        "--test-id",
         type=str,
-        default="locomo10_agent_qa.json",
-        help="Prediction output file name (always written under log/).",
-    )
-    parser.add_argument(
-        "--stats-file",
-        type=str,
-        default="",
-        help="Stats output file name. Default: <out-file>_stats.json (under log/).",
+        default=DEFAULT_TEST_ID,
+        help="Output test folder name under log/, e.g. log/<test-id>/.",
     )
     parser.add_argument(
         "--model-key",
@@ -84,7 +85,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--overwrite",
         action="store_true",
-        help="If set, overwrite existing predictions in out-file.",
+        help="If set, overwrite existing predictions in the fixed prediction file.",
     )
     parser.add_argument(
         "--max-samples",
@@ -122,31 +123,27 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Optional delay between QA calls.",
     )
-    parser.add_argument(
-        "--log-file",
-        type=str,
-        default="",
-        help="Run log file name. Default: <out-file>_run.log (under log/).",
-    )
-    parser.add_argument(
-        "--trace-file",
-        type=str,
-        default="",
-        help="JSONL trace file for per-question runtime records (GT + prediction). "
-        "Default: <out-file>_qa_trace.jsonl (under log/).",
-    )
     return parser.parse_args()
 
 
-def _replace_or_append_suffix(path: str, old_suffix: str, new_suffix: str) -> str:
-    if path.endswith(old_suffix):
-        return path[: -len(old_suffix)] + new_suffix
-    return path + new_suffix
+def _sanitize_test_id(test_id: str) -> str:
+    cleaned = str(test_id).strip()
+    if not cleaned:
+        return DEFAULT_TEST_ID
+
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", cleaned)
+    cleaned = cleaned.strip("._-")
+    return cleaned or DEFAULT_TEST_ID
 
 
-def _force_log_dir(path: str) -> str:
-    name = Path(path).name if str(path).strip() else "output.json"
-    return str(Path("log") / name)
+def _build_output_paths(test_id: str) -> Dict[str, str]:
+    out_dir = Path("log") / _sanitize_test_id(test_id)
+    return {
+        "out_file": str(out_dir / PREDICTION_FILE_NAME),
+        "stats_file": str(out_dir / STATS_FILE_NAME),
+        "log_file": str(out_dir / RUN_LOG_FILE_NAME),
+        "trace_file": str(out_dir / TRACE_FILE_NAME),
+    }
 
 
 def setup_logging(log_file: str) -> None:
@@ -594,17 +591,17 @@ def main() -> None:
     args = parse_args()
 
     data_file = args.data_file
-    out_file = _force_log_dir(args.out_file)
-    stats_file = _force_log_dir(args.stats_file or out_file.replace(".json", "_stats.json"))
-    log_file = _force_log_dir(args.log_file or _replace_or_append_suffix(out_file, ".json", "_run.log"))
-    trace_file = _force_log_dir(
-        args.trace_file or _replace_or_append_suffix(out_file, ".json", "_qa_trace.jsonl")
-    )
+    output_paths = _build_output_paths(args.test_id)
+    out_file = output_paths["out_file"]
+    stats_file = output_paths["stats_file"]
+    log_file = output_paths["log_file"]
+    trace_file = output_paths["trace_file"]
     f1_metric_key = f"{args.model_key}_f1"
     b1_metric_key = f"{args.model_key}_b1"
 
     setup_logging(log_file)
     logger.info("Start LoCoMo QA evaluation")
+    logger.info("test_id=%s", _sanitize_test_id(args.test_id))
     logger.info("data_file=%s", data_file)
     logger.info("config=%s", args.config)
     logger.info("out_file=%s", out_file)

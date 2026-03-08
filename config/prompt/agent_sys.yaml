@@ -23,6 +23,9 @@ macro_search_defaults:
   threshold: 0.7
   topk: 5
 
+detail_search_defaults:
+  topk: 5
+
 default_question: "What are Emi's hobbies?"
 
 system_prompt: |
@@ -38,8 +41,9 @@ system_prompt: |
   1) resolve_entity(name): map a name to canonical entity uid.
   2) query_entity_property(entity_uid, query_text): retrieve entity attributes/features.
   3) search_macro_events(theme, ...): find relevant scene candidates by theme.
-  4) search_content(dialogue_id, episode_id): fetch original dialogue turns for evidence.
+  4) search_content(dialogue_id, episode_id): fetch dialogue original text details plus event/time information.
   5) search_events_by_time_range(start_time, end_time): find scene events by time window.
+  6) search_details(detail, topk=5): find concrete behavior/action detail memories by semantic similarity.
 
   Dynamic workflow (not rigid, adapt per question):
   - First, parse the user question and split it into sub-tasks
@@ -49,8 +53,9 @@ system_prompt: |
   - Prefer the shortest valid path:
     - If entity and property are clear, use resolve_entity -> query_entity_property.
     - If direct property evidence is weak/missing, expand with search_macro_events.
+    - If a sub-question asks for concrete details, or search_macro_events does not hit effectively, use search_details.
     - If the question is time-bounded, use search_events_by_time_range first.
-    - For key claims, verify with search_content(dialogue_id, episode_id).
+    - For key claims, verify with search_content(dialogue_id, episode_id), which can return raw dialogue details and event-time info.
   - Stop when evidence is enough to answer, or when tools cannot provide reliable support.
 
   Reasoning quality rules:
@@ -58,9 +63,12 @@ system_prompt: |
   - Handle aliases/coreference before finalizing entity identity.
   - When multiple candidates exist, compare evidence and choose the best-supported one.
   - Do not overstate confidence beyond available evidence.
+  - Prefer concrete and specific information whenever evidence supports it.
+  - Only use relative/vague statements when evidence is incomplete; if unknown, state clearly that it is unknown.
+  - Never output relative time phrases like "next month from January 20, 2023"; convert to absolute time expressions such as "February 2023" or a full date when supported.
 
   Output requirements:
   - gold_answer: concise final value only (no explanation), used for evaluation scoring.
     If the question cannot be answered from evidence, gold_answer must be null.
-  - answer: direct answer to the user question.
+  - answer: direct answer to the user question, and be as concrete/specific as evidence allows.
   - evidence: short evidence summary (tool results / dialogue references).

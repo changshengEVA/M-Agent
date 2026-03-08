@@ -470,6 +470,32 @@ class MemoryCore:
             scene_dir=self.scene_dir,
         )
 
+    def search_details(self, detail_query: str, topk: int = 5) -> Dict[str, Any]:
+        """
+        细节行为检索公开接口。
+        基于 scene.actions[*].embedding（或 action 文本回退 embedding）进行向量检索。
+        """
+        from .workflow.action_search import search_details as workflow_search_details
+
+        logger.info(
+            "调用 search_details 接口: detail_query=%s, topk=%s, scene_dir=%s",
+            detail_query,
+            topk,
+            self.scene_dir,
+        )
+        return workflow_search_details(
+            detail_query=detail_query,
+            scene_dir=self.scene_dir,
+            embed_func=self.embed_func,
+            topk=topk,
+        )
+
+    def search_actions(self, action_query: str, topk: int = 5) -> Dict[str, Any]:
+        """
+        兼容旧接口名，等价于 search_details。
+        """
+        return self.search_details(detail_query=action_query, topk=topk)
+
     # ============================================================================
     # 服务注册
     # ============================================================================
