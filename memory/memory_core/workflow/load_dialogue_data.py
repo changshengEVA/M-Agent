@@ -1,0 +1,473 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+对话数据加载接口
+
+两个接口：
+1. load_from_dialogue_json: 处理单个 kg_candidate JSON 文件
+2. load_from_dialogue_path: 处理 kg_candidate 目录下的所有文件
+"""
+
+import json
+import logging
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, Any, List, Optional
+from tqdm import tqdm
+
+from memory.memory_core.core.kg_base import KGBase
+from memory.memory_core.services_bank.entity_resolution.service import EntityResolutionService
+from memory.memory_core.memory_system import MemoryCore
+
+logger = logging.getLogger(__name__)
+
+
+ATTRIBUTE_FIELD_ALIASES = {
+    "long-term_hobby": "long_term_hobby",
+}
+
+
+def _normalize_attribute_field(field: Any) -> Any:
+    if not isinstance(field, str):
+        return field
+    return ATTRIBUTE_FIELD_ALIASES.get(field, field)
+
+
+def load_from_dialogue_json(
+    json_data: Dict[str, Any],
+    kg_base: KGBase,
+    entity_resolution_service: EntityResolutionService,
+    memory_core: Optional[Any] = None,
+    save: bool = True
+) -> Dict[str, Any]:
+    """
+    从单个对话 JSON 数据加载到 KG
+
+    接收参数：
+    1. json数据（格式参照kg_candidate中的单个文件）
+    2. kg_base操作类的实例化
+    3. EntityResolutionService类的实例化
+    4. memory_core: MemoryCore实例（可选，如果提供则使用其resolve_entity方法）
+
+    接口功能：接收并解析json数据，使用kg_base操作类将信息加入到kg本体数据中；
+    操作完之后调用EntityResolutionService类扫描KG
+
+    Args:
+        json_data: 对话 JSON 数据
+        kg_base: KGBase 实例
+        entity_resolution_service: EntityResolutionService 实例
+        memory_core: MemoryCore实例（可选）
+        
+    Returns:
+        操作结果字典
+    """
+    logger.info("开始加载单个对话 JSON 数据")
+    
+    # 提取 kg_candidate 部分
+    kg_candidate = json_data.get("kg_candidate", {})
+    facts = kg_candidate.get("facts", {})
+    
+    entities = facts.get("entities", [])
+    features = facts.get("features", [])
+    attributes = facts.get("attributes", [])
+    relations = facts.get("relations", [])
+    
+    episode_id = json_data.get("episode_id", "unknown")
+    dialogue_id = json_data.get("dialogue_id", "unknown")
+    
+    logger.info(f"处理对话 {dialogue_id} (episode: {episode_id})")
+    logger.info(f"发现 {len(entities)} 个实体, {len(features)} 个特征, {len(attributes)} 个属性, {len(relations)} 个关系")
+    
+    results = {
+        "episode_id": episode_id,
+        "dialogue_id": dialogue_id,
+        "entities_processed": 0,
+        "features_processed": 0,
+        "attributes_processed": 0,
+        "relations_processed": 0,
+        "entity_errors": [],
+        "feature_errors": [],
+        "attribute_errors": [],
+        "relation_errors": [],
+        "resolution_applied": False
+    }
+    
+    # 1. 处理实体
+    for entity_data in entities:
+        entity_id = entity_data.get("id")
+        entity_type = entity_data.get("type")
+        confidence = entity_data.get("confidence", 1.0)
+        
+        if not entity_id:
+            logger.warning("跳过无ID的实体")
+            continue
+        
+        try:
+            # 检查实体是否已存在
+            check_result = kg_base.assert_entity_exists(entity_id)
+            if not check_result.get("success", False):
+                # 实体不存在，创建新实体
+                add_result = kg_base.add_entity(
+                    entity_id=entity_id,
+                    entity_type=entity_type,
+                    source_info={
+                        "episode_id": episode_id,
+                        "dialogue_id": dialogue_id,
+                        "confidence": confidence
+                    }
+                )
+                
+                if add_result.get("success", False):
+                    logger.debug(f"创建实体: {entity_id} (类型: {entity_type})")
+                    results["entities_processed"] += 1
+                else:
+                    logger.warning(f"创建实体失败: {entity_id}, 结果: {add_result}")
+                    results["entity_errors"].append({
+                        "entity_id": entity_id,
+                        "error": add_result.get("error", "unknown")
+                    })
+            else:
+                # 实体已存在，跳过创建
+                logger.debug(f"实体已存在: {entity_id}")
+                results["entities_processed"] += 1
+                
+        except Exception as e:
+            logger.error(f"处理实体时出错 {entity_id}: {e}")
+            results["entity_errors"].append({
+                "entity_id": entity_id,
+                "error": str(e)
+            })
+    
+    # 2. 处理特征
+    for feature_data in features:
+        entity_id = feature_data.get("entity_id")
+        feature_text = feature_data.get("feature")
+        scene_id = feature_data.get("scene_id", "unknown")
+        feature_embedding = feature_data.get("feature_embedding")
+        
+        if not entity_id or not feature_text:
+            logger.warning("跳过无效的特征数据")
+            continue
+        
+        try:
+            # 追加特征到实体，符合 FeatureRecord 模式
+            # 构建来源信息
+            source_info = {
+                "dialogue_id": dialogue_id,
+                "episode_id": episode_id,
+                "scene_id": scene_id,
+                "generated_at": feature_data.get("timestamp") or datetime.utcnow().isoformat() + "Z"
+            }
+            
+            feature_record = {
+                "feature": feature_text,
+                "scene_id": scene_id,
+                "confidence": feature_data.get("confidence", 1.0),
+                "sources": [source_info]
+            }
+
+            if isinstance(feature_embedding, list):
+                feature_record["feature_embedding"] = feature_embedding
+            
+            append_result = kg_base.append_feature(
+                entity_id=entity_id,
+                feature_record=feature_record,
+                source_info={
+                    "episode_id": episode_id,
+                    "dialogue_id": dialogue_id,
+                    "scene_id": scene_id
+                }
+            )
+            
+            if append_result.get("success", False):
+                logger.debug(f"为实体 {entity_id} 添加特征: {feature_text[:50]}...")
+                results["features_processed"] += 1
+            else:
+                logger.warning(f"添加特征失败: {entity_id}, 结果: {append_result}")
+                results["feature_errors"].append({
+                    "entity_id": entity_id,
+                    "feature": feature_text[:100],
+                    "error": append_result.get("error", "unknown")
+                })
+                
+        except Exception as e:
+            logger.error(f"处理特征时出错 {entity_id}: {e}")
+            results["feature_errors"].append({
+                "entity_id": entity_id,
+                "feature": feature_text[:100],
+                "error": str(e)
+            })
+    
+    # 3. 处理属性
+    for attribute_data in attributes:
+        entity_id = attribute_data.get("entity")
+        field = _normalize_attribute_field(attribute_data.get("field"))
+        value = attribute_data.get("value")
+        confidence = attribute_data.get("confidence", 1.0)
+        field_embedding = attribute_data.get("field_embedding")
+        
+        if not entity_id or not field or value is None:
+            logger.warning("跳过无效的属性数据")
+            continue
+        
+        try:
+            # 追加属性到实体，符合 AttributeRecord 模式
+            # 构建来源信息
+            source_info = {
+                "dialogue_id": dialogue_id,
+                "episode_id": episode_id,
+                "scene_id": attribute_data.get("scene_id"),
+                "generated_at": attribute_data.get("timestamp") or datetime.utcnow().isoformat() + "Z"
+            }
+            
+            attribute_record = {
+                "field": field,
+                "value": value,
+                "confidence": confidence,
+                "sources": [source_info]
+            }
+
+            if isinstance(field_embedding, list):
+                attribute_record["field_embedding"] = field_embedding
+            
+            append_result = kg_base.append_attribute(
+                entity_id=entity_id,
+                attribute_record=attribute_record,
+                source_info={
+                    "episode_id": episode_id,
+                    "dialogue_id": dialogue_id,
+                    "scene_id": attribute_data.get("scene_id")
+                }
+            )
+            
+            if append_result.get("success", False):
+                logger.debug(f"为实体 {entity_id} 添加属性: {field}={value}")
+                results["attributes_processed"] += 1
+            else:
+                logger.warning(f"添加属性失败: {entity_id}, 结果: {append_result}")
+                results["attribute_errors"].append({
+                    "entity_id": entity_id,
+                    "field": field,
+                    "value": str(value)[:100],
+                    "error": append_result.get("error", "unknown")
+                })
+                
+        except Exception as e:
+            logger.error(f"处理属性时出错 {entity_id}: {e}")
+            results["attribute_errors"].append({
+                "entity_id": entity_id,
+                "field": field,
+                "value": str(value)[:100],
+                "error": str(e)
+            })
+    
+    # 4. 处理关系
+    for relation_data in relations:
+        subject = relation_data.get("subject")
+        relation_type = relation_data.get("relation")
+        obj = relation_data.get("object")
+        confidence = relation_data.get("confidence", 1.0)
+        
+        if not subject or not relation_type or not obj:
+            logger.warning("跳过无效的关系数据")
+            continue
+        
+        try:
+            # 构建来源信息
+            source_info = {
+                "episode_id": episode_id,
+                "dialogue_id": dialogue_id,
+                "scene_id": relation_data.get("scene_id"),
+                "confidence": confidence
+            }
+            
+            # 添加关系
+            add_result = kg_base.add_relation(
+                subject=subject,
+                relation=relation_type,
+                object=obj,
+                confidence=confidence,
+                source_info=source_info
+            )
+            
+            if add_result.get("success", False):
+                logger.debug(f"添加关系: {subject} -[{relation_type}]-> {obj}")
+                results["relations_processed"] += 1
+            else:
+                logger.warning(f"添加关系失败: {subject} -[{relation_type}]-> {obj}, 结果: {add_result}")
+                results["relation_errors"].append({
+                    "subject": subject,
+                    "relation": relation_type,
+                    "object": obj,
+                    "error": add_result.get("error", "unknown")
+                })
+                
+        except Exception as e:
+            logger.error(f"处理关系时出错 {subject} -[{relation_type}]-> {obj}: {e}")
+            results["relation_errors"].append({
+                "subject": subject,
+                "relation": relation_type,
+                "object": obj,
+                "error": str(e)
+            })
+    
+    # 5. 实体解析（事件驱动）
+    # 根据重构原则，Workflow 只负责数据输入，不进行全量扫描解析
+    # 实体解析将由 MemoryCore 在接收到 ENTITY_ADDED 事件时自动触发
+    logger.info("跳过全量实体解析扫描（事件驱动模式）")
+    results["resolution_applied"] = False
+    results["resolution_note"] = "事件驱动模式：实体解析由 MemoryCore 在 ENTITY_ADDED 事件时自动触发"
+    
+    logger.info(f"单个对话加载完成: 处理了 {results['entities_processed']} 个实体, {results['features_processed']} 个特征, {results['attributes_processed']} 个属性, {results['relations_processed']} 个关系")
+    # 6. 提取关系、特征
+    return results
+
+
+def load_from_dialogue_path(
+    path: Path,
+    kg_base: KGBase,
+    entity_resolution_service: EntityResolutionService,
+    memory_core: MemoryCore,
+    use_tqdm: bool = True
+) -> Dict[str, Any]:
+    """
+    从对话数据目录加载所有文件到 KG
+
+    接收参数:
+    1. path路径（kg_candidate的路径）
+    2. kg_base操作类的实例化
+    3. EntityResolutionService类的实例化
+    4. memory_core: MemoryCore实例（可选）
+
+    接口功能循环一遍文件夹下的文件操作一遍上面的单个处理的功能，最后才调用EntityResolutionService类扫描KG
+
+    Args:
+        path: kg_candidate 目录路径
+        kg_base: KGBase 实例
+        entity_resolution_service: EntityResolutionService 实例
+        memory_core: MemoryCore实例（可选）
+        
+    Returns:
+        操作结果字典
+    """
+    logger.info(f"开始加载对话目录: {path}")
+    
+    if not path.exists():
+        error_msg = f"路径不存在: {path}"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
+    
+    if not path.is_dir():
+        error_msg = f"路径不是目录: {path}"
+        logger.error(error_msg)
+        return {"success": False, "error": error_msg}
+    
+    # 查找所有 JSON 文件
+    json_files = list(path.glob("*.json"))
+    if not json_files:
+        logger.warning(f"目录中没有找到 JSON 文件: {path}")
+        return {"success": True, "message": "没有找到 JSON 文件", "files_processed": 0}
+    
+    logger.info(f"找到 {len(json_files)} 个 JSON 文件")
+    
+    results = {
+        "path": str(path),
+        "total_files": len(json_files),
+        "files_processed": 0,
+        "files_failed": 0,
+        "total_entities_processed": 0,
+        "total_features_processed": 0,
+        "total_attributes_processed": 0,
+        "total_relations_processed": 0,
+        "file_results": [],
+        "resolution_applied": False
+    }
+    
+    # 逐个处理文件
+    j_files = tqdm(sorted(json_files), desc="构建KG_data") if use_tqdm else sorted(json_files)
+    for json_file in j_files:
+        logger.info(f"处理文件: {json_file.name}")
+        
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                json_data = json.load(f)
+            
+            # 调用单个文件处理函数
+            file_result = load_from_dialogue_json(
+                json_data=json_data,
+                kg_base=kg_base,
+                entity_resolution_service=entity_resolution_service,
+                memory_core=memory_core,
+                save=False
+            )
+            
+            # 注意：这里不调用 EntityResolutionService 扫描，留到最后统一扫描
+            # 移除 resolution_applied 标志，因为我们在最后才扫描
+            if "resolution_applied" in file_result:
+                file_result.pop("resolution_applied")
+            
+            results["file_results"].append({
+                "file": json_file.name,
+                "success": True,
+                "result": file_result
+            })
+            
+            results["files_processed"] += 1
+            results["total_entities_processed"] += file_result.get("entities_processed", 0)
+            results["total_features_processed"] += file_result.get("features_processed", 0)
+            results["total_attributes_processed"] += file_result.get("attributes_processed", 0)
+            results["total_relations_processed"] += file_result.get("relations_processed", 0)
+            
+            logger.info(f"文件处理完成: {json_file.name}")
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"JSON 解析错误 {json_file}: {e}")
+            results["file_results"].append({
+                "file": json_file.name,
+                "success": False,
+                "error": f"JSON 解析错误: {e}"
+            })
+            results["files_failed"] += 1
+            
+        except Exception as e:
+            logger.error(f"处理文件时出错 {json_file}: {e}")
+            results["file_results"].append({
+                "file": json_file.name,
+                "success": False,
+                "error": str(e)
+            })
+            results["files_failed"] += 1
+    
+    # 所有文件处理完成后，执行统一的 Resolution Pass
+    # 根据重构原则，加载阶段结束后，统一执行一次 Resolution Pass
+    # 禁止在加载过程中进行解析
+    if memory_core and hasattr(memory_core, 'run_entity_resolution_pass'):
+        logger.info("开始执行统一的 Resolution Pass")
+        try:
+            resolution_result = memory_core.run_entity_resolution_pass()
+            results["resolution_applied"] = True
+            results["resolution_result"] = resolution_result
+            results["resolution_note"] = "显式 Resolution Pass 模式：加载完成后统一执行解析阶段"
+            
+            logger.info(f"Resolution Pass 完成: "
+                       f"总计 {resolution_result.get('total_decisions', 0)} 个决策, "
+                       f"合并 {resolution_result.get('merged', 0)} 个实体")
+        except Exception as e:
+            logger.error(f"执行 Resolution Pass 时出错: {e}")
+            results["resolution_applied"] = False
+            results["resolution_error"] = str(e)
+            results["resolution_note"] = f"Resolution Pass 执行失败: {e}"
+    else:
+        logger.info("未提供 MemoryCore 实例或缺少 run_entity_resolution_pass 方法，跳过 Resolution Pass")
+        results["resolution_applied"] = False
+        results["resolution_note"] = "未执行 Resolution Pass（需要 MemoryCore 实例）"
+    
+    logger.info(f"目录加载完成: 处理了 {results['files_processed']} 个文件, "
+                f"{results['total_entities_processed']} 个实体, "
+                f"{results['total_features_processed']} 个特征, "
+                f"{results['total_attributes_processed']} 个属性, "
+                f"{results['total_relations_processed']} 个关系")
+    
+    results["success"] = results["files_failed"] == 0
+    return results
+

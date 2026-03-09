@@ -6,5 +6,8 @@ data/memory/*
 
 data/graph_data/*
 
+model/*
+
 /.env
 
+log/*

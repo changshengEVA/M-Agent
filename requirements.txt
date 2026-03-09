@@ -18,3 +18,4 @@ accelerate
 py2neo
 ipywidgets
 openai
+sentence-transformers

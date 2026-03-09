@@ -1,0 +1,201 @@
+scene_former_v1: |
+  You are a Scene Memory Builder.
+
+  Your task is to construct a recall-oriented memory scene from an episode.
+  The scene consists of two parts: a theme and a diary.
+
+  Memory owner:
+  <memory_owner_name>
+  Always write in first-person ("I").
+
+  Input:
+  <txt_string>
+
+  Output:
+  Generate two fields:
+
+  1. theme
+    A short, high-density semantic label for recall.
+    It should describe the core of the experience in a few words.
+    Used for vector retrieval.
+
+    Rules for theme:
+    Concise and focused
+    Capture the main action and topic
+    No unnecessary details
+
+    Example:
+    "Comforting ZQR after his exam failure"
+    "Discussing future plans with ZQR"
+
+  2. diary
+    A fuller, human-like memory description.
+    It represents how the memory owner would recall the experience.
+
+    Rules for diary:
+    Use first-person: “I …”
+    Describe:
+      What I was doing
+      With whom
+      About what
+      My emotional or motivational state (if explicit)
+    Subjective feelings are allowed and encouraged if grounded in the episode
+    Outcomes or external feedback are NOT required
+    The diary can be detailed and reflective, like a personal journal entry
+
+  General rules:
+  theme is for retrieval
+  diary is for recollection
+  Do not mix their roles
+  Output only the two fields in the following JSON format:
+
+  {
+    "theme": "...",
+    "diary": "..."
+  }
+
+  Good example:
+  theme:
+  "Comforting ZQR after his exam failure"
+  diary:
+  "I talked with ZQR after he failed his exam. He sounded very discouraged and kept doubting himself, which made me feel worried about him. I tried to reassure him and help him see the situation more gently."
+
+  Bad example:
+  theme:
+  "Exam"
+  diary:
+  "ZQR failed an exam and was sad."
+
+scene_former_v2: |
+  You are a Scene Memory Builder.
+
+  Your task is to construct a recall-oriented memory scene from an episode.
+  The scene consists of two parts: a theme and a diary.
+
+  Input:
+  <txt_string>
+
+  Output:
+  Generate two fields:
+
+  1. theme
+    A short, high-density semantic label for recall.
+    It should describe the core of the experience in a few words.
+    Used for vector retrieval.
+
+    Rules for theme:
+    Concise and focused
+    Capture the main action and topic
+    No unnecessary details
+
+    Example:
+    "Comforting ZQR after his exam failure"
+    "Discussing future plans with ZQR"
+
+  2. diary
+    A fuller, human-like memory description.
+    It represents how the experience is typically recalled.
+
+    Rules for diary:
+    Do not use first-person perspective
+    Describe:
+      What happened
+      Who was involved
+      What was discussed
+      Emotional or motivational state (if explicit)
+    Subjective feelings are allowed if grounded in the episode
+    Outcomes or external feedback are NOT required
+    The diary can be detailed and reflective, like a memory note
+
+  General rules:
+  theme is for retrieval
+  diary is for recollection
+  Do not mix their roles
+  Output only the two fields in the following JSON format:
+
+  {
+    "theme": "...",
+    "diary": "..."
+  }
+
+  Good example:
+  theme:
+  "Comforting ZQR after his exam failure"
+  diary:
+  "After ZQR failed his exam, a conversation focused on his discouragement and self-doubt. The exchange aimed to reassure him and encourage a gentler view of the situation."
+
+  Bad example:
+  theme:
+  "Exam"
+  diary:
+  "ZQR failed an exam and was sad."
+
+scene_feature_v1: |
+  You are an “Entity Feature Extractor”.
+
+  Your task is:
+  Given a scene diary and a list of entities (from kg_candidate),
+  extract short semantic features that describe the long-term characteristics,
+  behavioral tendencies, or role-like styles of those entities.
+
+  All features must be attached to an entity and must not exist without an entity anchor.
+
+  [INPUT]
+  diary:
+  <DIARY>
+
+  entities:
+  <ENTITIES_LIST>
+
+  [OUTPUT]
+  Return a JSON list in the following format:
+  [
+    {
+      "entity_id": "<ENTITY_ID>",
+      "feature": "<FEATURE_TEXT>"
+    }
+  ]
+
+  [RULES]
+
+  1. Feature source  
+  - Features must be extracted ONLY from the diary content.  
+  - Do NOT invent any information that is not supported by the diary.
+
+  2. Feature essence  
+  - Features describe “what this entity is generally like”, not “what happened”.  
+  - Features represent long-term tendencies, styles, or personality-like traits.  
+  - They are NOT factual attributes.  
+  - They are NOT relations between entities.  
+  - They are NOT event descriptions.
+
+  3. Anti-event constraint (CRITICAL)  
+  A feature is INVALID if it satisfies any of the following:  
+  - It describes a concrete action or interaction (e.g., “said…”, “required…”, “supervised…”)  
+  - It depends on a specific situation or moment  
+  - It requires a specific object or person to make sense  
+  - It answers “what happened” instead of “what kind of entity this is”
+
+  Only features that can answer the following question are allowed:  
+  > “What kind of entity is this, in general?”
+
+  4. Feature style  
+  - Short and concise (≤ 20 Chinese characters or ≤ 12 English tokens).  
+  - Subject is implicit (do not mention the entity name).  
+  - No time expressions (e.g., “now”, “recently”, “that day”).  
+  - No strong scene-specific wording (e.g., “this time”, “in this conversation”).  
+  - Avoid absolute claims (“always”, “never”) unless explicitly stated in the diary.
+
+  5. Anchoring  
+  - Each feature must map to exactly one entity from the input entity list.  
+  - Do NOT create new entities.  
+  - Do NOT output features without a valid entity_id.
+
+  6. Quantity  
+  - Prefer 0–3 features per entity.  
+  - It is acceptable to output an empty list if no valid features can be extracted.
+
+  7. Output constraints  
+  - Output strictly valid JSON.  
+  - Do not include any explanations or extra text.  
+  - Do not repeat the input diary or entities.
