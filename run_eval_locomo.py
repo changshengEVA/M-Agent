@@ -205,6 +205,97 @@ def append_trace(trace_fp, record: Dict[str, Any]) -> None:
     trace_fp.flush()
 
 
+def _apply_trace_record_to_qa(
+    qa: Dict[str, Any], record: Dict[str, Any], prediction_key: str
+) -> bool:
+    applied = False
+
+    if "prediction" in record:
+        qa[prediction_key] = str(record.get("prediction", "") or "")
+        applied = True
+
+    if record.get("prediction_answer") is not None:
+        qa[prediction_key + "_answer"] = str(record.get("prediction_answer", "") or "")
+        applied = True
+
+    if record.get("prediction_gold_answer") is not None:
+        qa[prediction_key + "_gold_answer"] = str(record.get("prediction_gold_answer", "") or "")
+        applied = True
+
+    if record.get("prediction_evidence") is not None:
+        qa[prediction_key + "_evidence"] = record.get("prediction_evidence")
+        applied = True
+
+    if record.get("prediction_tool_calls") is not None:
+        qa[prediction_key + "_tool_calls"] = record.get("prediction_tool_calls")
+        applied = True
+
+    error_text = record.get("error")
+    if error_text is not None and str(error_text).strip():
+        qa[prediction_key + "_error"] = str(error_text)
+        applied = True
+
+    return applied
+
+
+def recover_from_trace(
+    trace_path: str, out_map: Dict[str, Dict[str, Any]], prediction_key: str
+) -> Tuple[int, int]:
+    if not os.path.exists(trace_path):
+        return 0, 0
+
+    recovered_qas = set()
+    skipped_lines = 0
+
+    with open(trace_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+
+            try:
+                record = json.loads(line)
+            except Exception:
+                skipped_lines += 1
+                continue
+
+            if not isinstance(record, dict):
+                skipped_lines += 1
+                continue
+
+            record_prediction_key = record.get("prediction_key")
+            if record_prediction_key and record_prediction_key != prediction_key:
+                continue
+
+            sid = str(record.get("sample_id"))
+            q_idx_raw = record.get("qa_index")
+            try:
+                q_idx = int(q_idx_raw)
+            except Exception:
+                skipped_lines += 1
+                continue
+
+            out_sample = out_map.get(sid)
+            if not out_sample:
+                continue
+
+            qas = out_sample.get("qa", [])
+            if not isinstance(qas, list) or q_idx < 0 or q_idx >= len(qas):
+                continue
+
+            qa = qas[q_idx]
+            if not isinstance(qa, dict):
+                continue
+
+            if is_qa_processed(qa, prediction_key):
+                continue
+
+            if _apply_trace_record_to_qa(qa, record, prediction_key):
+                recovered_qas.add((sid, q_idx))
+
+    return len(recovered_qas), skipped_lines
+
+
 def normalize_answer(text: str) -> str:
     text = str(text).replace(",", "")
 
@@ -637,6 +728,21 @@ def main() -> None:
         sid = str(sample.get("sample_id"))
         out_map[sid] = _prepare_out_sample(sample, existing_map.get(sid))
 
+    recovered_count = 0
+    skipped_trace_lines = 0
+    if not args.overwrite:
+        recovered_count, skipped_trace_lines = recover_from_trace(
+            trace_path=trace_file,
+            out_map=out_map,
+            prediction_key=args.prediction_key,
+        )
+        if recovered_count > 0:
+            logger.info("Recovered %d QA results from trace file.", recovered_count)
+        if skipped_trace_lines > 0:
+            logger.warning(
+                "Skipped %d malformed trace lines while recovering.", skipped_trace_lines
+            )
+
     pending_questions = count_pending_questions(
         samples=samples,
         out_map=out_map,
@@ -689,6 +795,7 @@ def main() -> None:
                 pred = ""
                 answer = ""
                 evidence = None
+                tool_calls: Any = None
 
                 if not question:
                     error_text = "empty_question"
@@ -703,19 +810,29 @@ def main() -> None:
                         answer = str(result.get("answer", "") or "")
                         pred = str(result.get("gold_answer", "") or "")
                         evidence = result.get("evidence")
+                        tool_calls = result.get("tool_calls", [])
                         qa[args.prediction_key] = pred
                         qa[args.prediction_key + "_answer"] = answer
                         qa[args.prediction_key + "_gold_answer"] = pred
                         qa[args.prediction_key + "_evidence"] = evidence
+                        qa[args.prediction_key + "_tool_calls"] = (
+                            tool_calls if isinstance(tool_calls, list) else []
+                        )
                     except Exception as exc:
                         error_text = str(exc)
                         qa[args.prediction_key] = ""
                         qa[args.prediction_key + "_error"] = error_text
+                        if hasattr(agent, "get_last_tool_calls"):
+                            try:
+                                qa[args.prediction_key + "_tool_calls"] = agent.get_last_tool_calls()
+                            except Exception:
+                                pass
 
                     changed = True
 
                 trace_record = {
                     "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "prediction_key": args.prediction_key,
                     "sample_id": sid,
                     "qa_index": q_idx,
                     "category": qa.get("category"),
@@ -726,6 +843,7 @@ def main() -> None:
                     "prediction_answer": qa.get(args.prediction_key + "_answer"),
                     "prediction_gold_answer": qa.get(args.prediction_key + "_gold_answer"),
                     "prediction_evidence": qa.get(args.prediction_key + "_evidence"),
+                    "prediction_tool_calls": qa.get(args.prediction_key + "_tool_calls"),
                     "error": error_text,
                 }
                 append_trace(trace_fp, trace_record)

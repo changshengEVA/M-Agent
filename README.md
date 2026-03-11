@@ -1,73 +1,99 @@
 # M-Agent
-This this a chat robot with memory throughout the right rag!!
-This project is trying to build an Agent that brings out its best ability to memory and use it to communicate with users. 构建知识图谱的统一训练范式
 
-# Log
-2024-08-06:启动项目
-2025-12-24:正式进行知识图谱的定义与搭建
+### **M-Agent: A Multi-Dimensional Memory Agent for Long-Term Dialogue Question Answering**
 
-# TODO
-1. 构造分支
-2. 需要将代码重构变得更加清晰有条理，更加高效。
-3. 当前的知识图谱中节点的生成并没有进行去重的操作，可能导致关系对节点牵引的破坏。
-4. 关系的定义，提取构建。
-5. 将某些属性进行参数化存储。
-6. 构建双模态记忆的邮件管理助手。  
-<img src="data\imgs\1.png" alt="示例图片" width="650" height="300">
+M-Agent is an **Agent-Memory** system for **Long-Term Dialogue QA**, designed to address semantic mismatch issues that standard RAG pipelines often face in memory retrieval.
 
-# install
-Firstly, you need to install the necessary packages
+In long-horizon dialogue memory, user questions are often **abstract, cross-temporal, and reasoning-heavy**, while raw evidence is usually **local and concrete text fragments**.
+This semantic-level gap between **query** and **evidence** makes pure embedding-similarity retrieval unreliable.
 
-```shell
-pip3 install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+M-Agent introduces **Retrieval Target Decomposition** and **Multi-Dimensional Memory Retrieval**, so the agent can pick retrieval tools based on question type and improve answer accuracy.
+
+![pipeline_img](docs/pipeline_img.png)
+Figure 1. Comparison between direct embedding retrieval and the M-Agent retrieval framework.
+Left: directly embedding the question may fail on multi-entity or abstract-relation questions.
+Right: M-Agent decomposes the question into sub-questions and retrieves evidence using six semantic dimensions (Entity, Feature, Action, Time, Reason-Result, Theme), then synthesizes answers from recalled episodes.
+
+---
+### **TODO**
+
+
+---
+### **Quick_start**
+
+The following steps only cover the shortest path from 0 to running `run_eval_locomo.py`.
+
+1. Create and activate a virtual environment
+
+```bash
+# Windows PowerShell
+python -m venv .venv
+.\.venv\Scripts\activate
+
+# macOS / Linux
+# python3 -m venv .venv
+# source .venv/bin/activate
 ```
-Find the version that suits you, and the different versions don't change much  
-Then install the other dependencies
-```shell
+
+2. Install dependencies
+
+```bash
+python -m pip install --upgrade pip
 pip install -r requirements.txt
 ```
 
-To vertify if you are successful, run test.ipynb, which finish the fundamental functions of llama-index
+3. Create `.env` in the project root and fill the fields below
 
-# run
-Select the method you want to run, and run it
-```shell
-python main.py --method <method>
+```dotenv
+# MemoryCore LLM: load_model/OpenAIcall.py
+# Fill one of API_SECRET_KEY or OPENAI_API_KEY
+API_SECRET_KEY=YOUR_OPENAI_COMPATIBLE_KEY
+OPENAI_API_KEY=
+BASE_URL=https://api.openai.com/v1
+
+# Agent model key: model_name=deepseek-chat (config/prompt/agent_sys.yaml)
+DEEPSEEK_API_KEY=YOUR_DEEPSEEK_KEY
+
+# Embedding key: embed_provider=aliyun (config/prompt/agent_sys.yaml)
+ALIBABA_API_KEY=YOUR_ALIBABA_KEY
+ALIBABA_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+ALIBABA_EMBED_MODEL=text-embedding-v4
+
+# Optional switches (keep consistent with current repo defaults)
+LANGUAGE=zh
+EMBED_PROVIDER=aliyun
+LLM_PROVIDER=deepseek
 ```
-the \<method\> you can choose are:
-* local -> this mean that you will use the local model.
-* azure -> this mean that you will use the azure base openai.
-* openai -> this mean that you will use the openai or domestic factor base openai.（测试版本仅仅支持该版本）
-# Config
-Firstly, you need to set your .env file 
+
+4. Run LoCoMo preprocessing first (`memory_pre`)
+
+> `run_eval_locomo.py` uses `config/prompt/agent_sys.yaml` by default, where `workflow_id` is `testlocomo`.
+> Keep preprocessing `--id` the same (`testlocomo`), or change both to the same value.
+
+```bash
+python pipeline/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo --embed-provider aliyun
 ```
-# The information of the QQ-bot, if you don not have please create it at https://q.qq.com/ first.
-APPID = 
-TOKEN = 
-APPSECRET = 
 
+After preprocessing, these folders will be generated/updated under `data/memory/testlocomo/`:
 
-# OPENAI key
-API_SECRET_KEY = 
-BASE_URL = 
+- `dialogues/`
+- `episodes/`
+- `kg_candidates/`
+- `scene/`
 
-# language
-LANGUAGE = Chinese
+5. Run LoCoMo evaluation
 
-# Weather key
-TOMORROW_API = 
-LOCATION = 
+```bash
+# Quick check: sampled run
+python run_eval_locomo.py --test-id quickstart --sample-fraction 0.1
 
-# Azure OpenAI Service
-AZURE_OPENAI_KEY=
-AZURE_OPENAI_ENDPOINT=
+# Full run: 10/10 samples
+# python run_eval_locomo.py --test-id quickstart-full --sample-fraction 1.0
 ```
-since the project is not finished yet, the .env file will update while the project is developing
 
+6. Check outputs
 
-# Our target
-* Our short term goal is to learn how to use the llama-index library, and learn how to make the Vector Rag and the Graph Rag, comparing these functions and make a better one to over the efficiency of the previous.
-* Our long term goal is to make a chat robot with memory throughout these Rag, this can be the agent that collecting data for you, it can search online and talk to you with its own memory.
-
-# Join us
-If you are interested in this project, please contact us.
+- `log/<test-id>/locomo10_agent_qa.json`
+- `log/<test-id>/locomo10_agent_qa_stats.json`
+- `log/<test-id>/locomo10_agent_qa_run.log`
+- `log/<test-id>/locomo10_agent_qa_qa_trace.jsonl`

@@ -85,6 +85,7 @@ def search_details(
             if not isinstance(action_item, dict):
                 continue
 
+            actor_text = str(action_item.get("actor", "")).strip()
             action_text = str(action_item.get("action", "")).strip()
             if not action_text:
                 continue
@@ -93,7 +94,8 @@ def search_details(
 
             action_embedding = action_item.get("embedding")
             if not _is_valid_embedding(action_embedding):
-                action_embedding = _embed_text(embed_func=embed_func, text=action_text, context="action")
+                embedding_text = _build_action_embedding_text(actor=actor_text, action=action_text)
+                action_embedding = _embed_text(embed_func=embed_func, text=embedding_text, context="action")
             if not _is_valid_embedding(action_embedding):
                 continue
 
@@ -102,7 +104,7 @@ def search_details(
                 {
                     "scene_id": scene_id,
                     "similarity": float(similarity),
-                    "actor": action_item.get("actor", ""),
+                    "actor": actor_text,
                     "action": action_text,
                     "evidence": action_item.get("evidence", {}),
                 }
@@ -146,6 +148,14 @@ def _embed_text(
     if _is_valid_embedding(embedding):
         return [float(v) for v in embedding]
     return None
+
+
+def _build_action_embedding_text(actor: str, action: str) -> str:
+    actor_text = (actor or "").strip()
+    action_text = (action or "").strip()
+    if actor_text and action_text:
+        return f"{actor_text}: {action_text}"
+    return action_text or actor_text
 
 
 def _cosine_similarity(vec_a: Any, vec_b: Any) -> float:

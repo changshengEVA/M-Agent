@@ -13,7 +13,7 @@ from calendar import monthrange
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -143,9 +143,45 @@ class MemoryAgent:
         day = min(dt.day, monthrange(year, month)[1])
         return dt.replace(year=year, month=month, day=day)
 
+    @staticmethod
+    def _safe_trace_value(value: Any, depth: int = 0) -> Any:
+        if depth > 6:
+            return "<max_depth>"
+        if value is None or isinstance(value, (bool, int, float, str)):
+            return value
+        if is_dataclass(value):
+            return MemoryAgent._safe_trace_value(asdict(value), depth=depth + 1)
+        if isinstance(value, dict):
+            return {
+                str(k): MemoryAgent._safe_trace_value(v, depth=depth + 1)
+                for k, v in value.items()
+            }
+        if isinstance(value, (list, tuple, set)):
+            return [MemoryAgent._safe_trace_value(v, depth=depth + 1) for v in value]
+        return str(value)
+
+    def _record_tool_call(self, tool_name: str, params: Dict[str, Any]) -> None:
+        self._current_tool_calls.append(
+            {
+                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "tool_name": str(tool_name),
+                "params": self._safe_trace_value(params),
+            }
+        )
+
+    def _consume_current_tool_calls(self) -> List[Dict[str, Any]]:
+        calls = self._current_tool_calls
+        self._current_tool_calls = []
+        return calls
+
+    def get_last_tool_calls(self) -> List[Dict[str, Any]]:
+        return [dict(call) for call in self._last_tool_calls]
+
     def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH):
         self.config_path = Path(config_path)
         self.config = self._load_config(self.config_path)
+        self._current_tool_calls: List[Dict[str, Any]] = []
+        self._last_tool_calls: List[Dict[str, Any]] = []
 
         self.macro_search_defaults: Dict[str, Any] = {
             "use_threshold": True,
@@ -267,6 +303,7 @@ class MemoryAgent:
         def resolve_entity(name: str) -> Dict[str, Any]:
             """Resolve a person/entity name to canonical entity UID in memory_sys."""
 
+            self._record_tool_call("resolve_entity", {"name": name})
             logger.info("API call: resolve_entity(name=%s)", name)
             result = self.memory_sys.resolve_entity(name=name)
             logger.info(
@@ -280,6 +317,10 @@ class MemoryAgent:
         def query_entity_property(entity_uid: str, query_text: str) -> Dict[str, Any]:
             """Query structured attributes/features for an entity by UID and query text."""
 
+            self._record_tool_call(
+                "query_entity_property",
+                {"entity_uid": entity_uid, "query_text": query_text},
+            )
             logger.info(
                 "API call: query_entity_property(entity_uid=%s, query_text_len=%d)",
                 entity_uid,
@@ -313,6 +354,15 @@ class MemoryAgent:
                 self.macro_search_defaults["threshold"] if threshold is None else float(threshold)
             )
             cfg_topk = self.macro_search_defaults["topk"] if topk is None else int(topk)
+            self._record_tool_call(
+                "search_macro_events",
+                {
+                    "theme": theme,
+                    "use_threshold": cfg_use_threshold,
+                    "threshold": cfg_threshold,
+                    "topk": cfg_topk,
+                },
+            )
             logger.info(
                 "API call: search_macro_events(theme=%s, use_threshold=%s, threshold=%s, topk=%s)",
                 theme,
@@ -339,6 +389,10 @@ class MemoryAgent:
         def search_content(dialogue_id: str, episode_id: str) -> Dict[str, Any]:
             """Fetch dialogue original text details and event/time info by dialogue_id + episode_id."""
 
+            self._record_tool_call(
+                "search_content",
+                {"dialogue_id": dialogue_id, "episode_id": episode_id},
+            )
             logger.info(
                 "API call: search_content(dialogue_id=%s, episode_id=%s)",
                 dialogue_id,
@@ -361,6 +415,10 @@ class MemoryAgent:
             Returns a list of items with scene_id, theme, starttime, endtime.
             """
 
+            self._record_tool_call(
+                "search_events_by_time_range",
+                {"start_time": start_time, "end_time": end_time},
+            )
             logger.info(
                 "API call: search_events_by_time_range(start_time=%s, end_time=%s)",
                 start_time,
@@ -384,6 +442,10 @@ class MemoryAgent:
             """
 
             cfg_topk = self.detail_search_defaults["topk"] if topk is None else int(topk)
+            self._record_tool_call(
+                "search_details",
+                {"detail": detail, "topk": cfg_topk},
+            )
             logger.info(
                 "API call: search_details(detail=%s, topk=%s)",
                 detail,
@@ -418,69 +480,79 @@ class MemoryAgent:
 
         question_text = question.strip()
         active_thread_id = thread_id or self.thread_id
+        self._current_tool_calls = []
 
         invoke_config = {
             "configurable": {"thread_id": active_thread_id},
             "recursion_limit": self.recursion_limit,
         }
         try:
-            invoke_start = time.perf_counter()
-            logger.info(
-                "API call: agent.invoke(thread_id=%s, recursion_limit=%s, question_len=%d)",
-                active_thread_id,
-                self.recursion_limit,
-                len(question_text),
-            )
-            response = self.agent.invoke(
-                {"messages": [{"role": "user", "content": question_text}]},
-                config=invoke_config,
-            )
-            logger.info(
-                "API response: agent.invoke(thread_id=%s, elapsed_ms=%.2f)",
-                active_thread_id,
-                (time.perf_counter() - invoke_start) * 1000.0,
-            )
-        except GraphRecursionError:
-            logger.warning(
-                "GraphRecursionError on thread_id=%s with recursion_limit=%s; retrying with recursion_limit=%s",
-                active_thread_id,
-                self.recursion_limit,
-                self.retry_recursion_limit,
-            )
-            retry_config = {
-                "configurable": {"thread_id": active_thread_id},
-                "recursion_limit": self.retry_recursion_limit,
-            }
-            retry_start = time.perf_counter()
-            logger.info(
-                "API call: agent.invoke.retry(thread_id=%s, recursion_limit=%s, question_len=%d)",
-                active_thread_id,
-                self.retry_recursion_limit,
-                len(question_text),
-            )
-            response = self.agent.invoke(
-                {"messages": [{"role": "user", "content": question_text}]},
-                config=retry_config,
-            )
-            logger.info(
-                "API response: agent.invoke.retry(thread_id=%s, elapsed_ms=%.2f)",
-                active_thread_id,
-                (time.perf_counter() - retry_start) * 1000.0,
-            )
+            try:
+                invoke_start = time.perf_counter()
+                logger.info(
+                    "API call: agent.invoke(thread_id=%s, recursion_limit=%s, question_len=%d)",
+                    active_thread_id,
+                    self.recursion_limit,
+                    len(question_text),
+                )
+                response = self.agent.invoke(
+                    {"messages": [{"role": "user", "content": question_text}]},
+                    config=invoke_config,
+                )
+                logger.info(
+                    "API response: agent.invoke(thread_id=%s, elapsed_ms=%.2f)",
+                    active_thread_id,
+                    (time.perf_counter() - invoke_start) * 1000.0,
+                )
+            except GraphRecursionError:
+                logger.warning(
+                    "GraphRecursionError on thread_id=%s with recursion_limit=%s; retrying with recursion_limit=%s",
+                    active_thread_id,
+                    self.recursion_limit,
+                    self.retry_recursion_limit,
+                )
+                retry_config = {
+                    "configurable": {"thread_id": active_thread_id},
+                    "recursion_limit": self.retry_recursion_limit,
+                }
+                retry_start = time.perf_counter()
+                logger.info(
+                    "API call: agent.invoke.retry(thread_id=%s, recursion_limit=%s, question_len=%d)",
+                    active_thread_id,
+                    self.retry_recursion_limit,
+                    len(question_text),
+                )
+                response = self.agent.invoke(
+                    {"messages": [{"role": "user", "content": question_text}]},
+                    config=retry_config,
+                )
+                logger.info(
+                    "API response: agent.invoke.retry(thread_id=%s, elapsed_ms=%.2f)",
+                    active_thread_id,
+                    (time.perf_counter() - retry_start) * 1000.0,
+                )
 
-        structured = response.get("structured_response")
-        if is_dataclass(structured):
-            return self._normalize_output(asdict(structured))
-        if isinstance(structured, dict):
-            return self._normalize_output(structured)
+            structured = response.get("structured_response")
+            if is_dataclass(structured):
+                payload = self._normalize_output(asdict(structured))
+            elif isinstance(structured, dict):
+                payload = self._normalize_output(structured)
+            else:
+                payload = self._normalize_output(
+                    {
+                        "answer": str(structured) if structured is not None else str(response),
+                        "gold_answer": None,
+                        "evidence": None,
+                    }
+                )
 
-        return self._normalize_output(
-            {
-            "answer": str(structured) if structured is not None else str(response),
-            "gold_answer": None,
-            "evidence": None,
-            }
-        )
+            tool_calls = self._consume_current_tool_calls()
+            payload["tool_calls"] = tool_calls
+            self._last_tool_calls = tool_calls
+            return payload
+        except Exception:
+            self._last_tool_calls = self._consume_current_tool_calls()
+            raise
 
 
 def create_memory_agent(config_path: str | Path = DEFAULT_CONFIG_PATH) -> MemoryAgent:

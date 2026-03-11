@@ -280,6 +280,14 @@ def normalize_actor(actor: str, participants: List[str]) -> str:
     return mapping.get(actor.lower(), actor)
 
 
+def build_action_embedding_text(actor: str, action: str) -> str:
+    actor_text = (actor or "").strip()
+    action_text = (action or "").strip()
+    if actor_text and action_text:
+        return f"{actor_text}: {action_text}"
+    return action_text or actor_text
+
+
 def complete_action_item(
     raw_item: Dict[str, Any],
     source_ep: Dict[str, Any],
@@ -299,12 +307,13 @@ def complete_action_item(
         action = evidence_sentence or "unknown_action"
 
     embedding: List[float] = []
+    embedding_input = build_action_embedding_text(actor=actor, action=action)
     try:
-        vec = embed_model(action)
+        vec = embed_model(embedding_input)
         if isinstance(vec, list):
             embedding = vec
     except Exception as exc:
-        logger.warning("Embedding generation failed for action '%s': %s", action[:80], exc)
+        logger.warning("Embedding generation failed for action '%s': %s", embedding_input[:80], exc)
 
     return {
         "actor": actor,
