@@ -7,7 +7,7 @@ Memory pre-processing pipeline:
 3. form KG candidates
 4. form scenes
 5. extract scene features
-6. extract scene actions
+6. extract scene actions and refresh action embeddings
 """
 
 import json
@@ -15,9 +15,13 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Optional, Tuple
 
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+except ImportError:
+    def load_dotenv(*_args: Any, **_kwargs: Any) -> bool:
+        return False
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -356,7 +360,7 @@ def stage6_form_scene_actions_for_id(
                 continue
 
         logger.info(
-            "Stage 6 complete, scene files with actions=%s (non-empty=%s), stats=%s",
+            "Stage 6 complete, scene files with actions=%s (non-empty=%s), action_stats=%s",
             updated_files_count,
             non_empty_actions_count,
             stage_stats,
@@ -395,49 +399,48 @@ def run_full_pipeline_for_id(
     llm_model = init_llm_model(llm_temperature)
     embed_model = init_embed_model(embed_provider)
 
-    # if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
-    #     logger.warning("Stage 1 failed")
-    #     return False
+    if not stage1_construct_dialogues_for_id(process_id, data_source, loader_type):
+        logger.warning("Stage 1 failed")
+        return False
 
+    if not stage2_construct_episodes_for_id(
+        process_id,
+        memory_owner_name,
+        llm_model=llm_model,
+    ):
+        logger.warning("Stage 2 failed")
+        return False
 
-    # if not stage2_construct_episodes_for_id(
-    #     process_id,
-    #     memory_owner_name,
-    #     llm_model=llm_model,
-    # ):
-    #     logger.warning("Stage 2 failed")
-    #     return False
+    if not stage3_form_kg_candidates_for_id(
+        process_id,
+        prompt_version,
+        memory_owner_name,
+        embed_model=embed_model,
+        llm_model=llm_model,
+    ):
+        logger.warning("Stage 3 failed")
+        return False
 
+    if not stage4_form_scenes_for_id(
+        process_id,
+        scene_prompt_version,
+        memory_owner_name,
+        embed_model=embed_model,
+        llm_model=llm_model,
+    ):
+        logger.warning("Stage 4 failed")
+        return False
 
-    # if not stage3_form_kg_candidates_for_id(
-    #     process_id,
-    #     prompt_version,
-    #     memory_owner_name,
-    #     embed_model=embed_model,
-    #     llm_model=llm_model,
-    # ):
-    #     logger.warning("Stage 3 failed")
-    #     return False
-
-    # if not stage4_form_scenes_for_id(
-    #     process_id,
-    #     scene_prompt_version,
-    #     memory_owner_name,
-    #     embed_model=embed_model,
-    #     llm_model=llm_model,
-    # ):
-    #     logger.warning("Stage 4 failed")
-    #     return False
-
-    # if include_stage5:
-    #     if not stage5_form_scene_features_for_id(
-    #         process_id,
-    #         force_update=False,
-    #         memory_owner_name=memory_owner_name,
-    #         embed_model=embed_model,
-    #         llm_model=llm_model,
-    #     ):
-    #         logger.warning("Stage 5 failed")
+    if include_stage5:
+        if not stage5_form_scene_features_for_id(
+            process_id,
+            force_update=False,
+            memory_owner_name=memory_owner_name,
+            embed_model=embed_model,
+            llm_model=llm_model,
+        ):
+            logger.warning("Stage 5 failed")
+            return False
 
     if include_stage6:
         if not stage6_form_scene_actions_for_id(
@@ -448,6 +451,7 @@ def run_full_pipeline_for_id(
             llm_model=llm_model,
         ):
             logger.warning("Stage 6 failed")
+            return False
 
     logger.info("Pipeline complete for process_id=%s", process_id)
     return True
