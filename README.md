@@ -7,12 +7,12 @@ M-Agent is an **Agent-Memory** system for **Long-Term Dialogue QA**, designed to
 In long-horizon dialogue memory, user questions are often **abstract, cross-temporal, and reasoning-heavy**, while raw evidence is usually **local and concrete text fragments**.
 This semantic-level gap between **query** and **evidence** makes pure embedding-similarity retrieval unreliable.
 
-M-Agent introduces **Retrieval Target Decomposition** and **Multi-Dimensional Memory Retrieval**, so the agent can pick retrieval tools based on question type and improve answer accuracy.
+M-Agent introduces **Retrieval Target Decomposition** and **Multi-Dimensional Memory Retrieval**, building a scalable memory retrieval system so the agent can invoke the right retrieval tools for different question types and improve answer accuracy.
 
 ![pipeline_img](docs/pipeline_img.png)
 Figure 1. Comparison between direct embedding retrieval and the M-Agent retrieval framework.
-Left: directly embedding the question may fail on multi-entity or abstract-relation questions.
-Right: M-Agent decomposes the question into sub-questions and retrieves evidence using six semantic dimensions (Entity, Feature, Action, Time, Reason-Result, Theme), then synthesizes answers from recalled episodes.
+Left: directly embedding the question can cause incorrect recalls or fail to find valid evidence for multi-entity or abstract-relation questions.
+Right: M-Agent first decomposes the question into sub-questions, retrieves evidence through six semantic labels (Entity, Feature, Action, Time, Reason-Result, Theme), and then analyzes recalled episodes to produce the final answer.
 
 ---
 ### **TODO**
@@ -21,9 +21,9 @@ Right: M-Agent decomposes the question into sub-questions and retrieves evidence
 ---
 ### **Quick_start**
 
-The following steps only cover the shortest path from 0 to running `run_eval_locomo.py`.
+The following steps only cover the path from zero to running `run_eval_locomo.py`.
 
-1. Create and activate a virtual environment
+1. Enter the project root and create a virtual environment
 
 ```bash
 # Windows PowerShell
