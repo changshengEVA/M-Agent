@@ -97,3 +97,8 @@ python run_eval_locomo.py --test-id quickstart --sample-fraction 0.1
 - `log/<test-id>/locomo10_agent_qa_stats.json`
 - `log/<test-id>/locomo10_agent_qa_run.log`
 - `log/<test-id>/locomo10_agent_qa_qa_trace.jsonl`
+
+Each QA item now also stores intermediate decomposition fields such as
+`memory_agent_prediction_plan`, `memory_agent_prediction_sub_questions`, and
+`memory_agent_prediction_plan_summary`, so you can inspect whether the agent
+actually decomposed the question before retrieving evidence.

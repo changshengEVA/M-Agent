@@ -96,3 +96,7 @@ python run_eval_locomo.py --test-id quickstart --sample-fraction 0.1
 - `log/<test-id>/locomo10_agent_qa_stats.json`
 - `log/<test-id>/locomo10_agent_qa_run.log`
 - `log/<test-id>/locomo10_agent_qa_qa_trace.jsonl`
+
+每条 QA 结果现在还会额外保存中间拆解字段，例如
+`memory_agent_prediction_plan`、`memory_agent_prediction_sub_questions`、
+`memory_agent_prediction_plan_summary`，可以直接检查 Agent 是否真的先拆题再检索作答。

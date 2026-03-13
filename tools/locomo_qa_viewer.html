@@ -1,0 +1,1979 @@
+﻿<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>LoCoMo QA 数据查看器</title>
+  <style>
+    :root {
+      --bg: #f4efe8;
+      --panel: #fffaf3;
+      --panel-strong: #f8f0e3;
+      --ink: #222018;
+      --muted: #6f6653;
+      --line: #d7c9ae;
+      --accent: #1f7a8c;
+      --accent-strong: #135f6d;
+      --chip: #efe3cf;
+      --ok: #2c9c69;
+      --warn: #d78725;
+      --bad: #c3453c;
+      --shadow: 0 10px 28px rgba(58, 44, 20, 0.12);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 15% 10%, #fae8cf 0, transparent 38%),
+        radial-gradient(circle at 82% -5%, #d4efe8 0, transparent 42%),
+        var(--bg);
+      min-height: 100vh;
+    }
+
+    .container {
+      width: min(96vw, 1680px);
+      margin: 0 auto;
+      padding: 24px 18px 28px;
+    }
+
+    .hero {
+      background: linear-gradient(125deg, #f9f1e5 0%, #f0f8f5 100%);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      padding: 18px 20px;
+      display: grid;
+      grid-template-columns: 1.2fr 1fr;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+
+    .title {
+      margin: 0;
+      font-size: 26px;
+      letter-spacing: 0.2px;
+    }
+
+    .subtitle {
+      margin: 8px 0 0;
+      color: var(--muted);
+      line-height: 1.45;
+      font-size: 14px;
+    }
+
+    .drop-zone {
+      border: 1.5px dashed var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      background: rgba(255, 255, 255, 0.55);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      text-align: center;
+      gap: 8px;
+      transition: border-color 0.2s, background-color 0.2s;
+      min-height: 125px;
+    }
+
+    .drop-actions {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .drop-zone.dragover {
+      border-color: var(--accent);
+      background: #eef9fb;
+    }
+
+    .hint {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .primary-btn,
+    .secondary-btn {
+      border: 0;
+      border-radius: 10px;
+      padding: 9px 13px;
+      font-size: 14px;
+      cursor: pointer;
+      transition: transform 0.15s, opacity 0.15s, background-color 0.2s;
+    }
+
+    .primary-btn {
+      background: var(--accent);
+      color: white;
+    }
+
+    .primary-btn:hover {
+      background: var(--accent-strong);
+      transform: translateY(-1px);
+    }
+
+    .secondary-btn {
+      background: var(--chip);
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+
+    .secondary-btn:hover {
+      opacity: 0.86;
+    }
+
+    .controls {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 14px;
+      margin-bottom: 12px;
+    }
+
+    .control-grid {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(140px, 1fr));
+      gap: 10px;
+      align-items: end;
+    }
+
+    label {
+      font-size: 12px;
+      color: var(--muted);
+      display: block;
+      margin-bottom: 5px;
+    }
+
+    input[type="text"],
+    input[type="number"],
+    select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px 9px;
+      background: white;
+      color: var(--ink);
+      font-size: 14px;
+    }
+
+    .category-wrap {
+      margin-top: 12px;
+      border-top: 1px dashed var(--line);
+      padding-top: 10px;
+    }
+
+    .category-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip {
+      padding: 6px 10px;
+      border-radius: 999px;
+      border: 1px solid var(--line);
+      background: white;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(110px, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      box-shadow: var(--shadow);
+    }
+
+    .card .key {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 0;
+    }
+
+    .card .value {
+      margin: 6px 0 0;
+      font-size: 24px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+
+    .main-area {
+      display: grid;
+      grid-template-columns: minmax(0, 1.25fr) minmax(560px, 42%);
+      gap: 12px;
+      align-items: start;
+      margin-bottom: 10px;
+    }
+
+    .bars {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .bar-row {
+      display: grid;
+      grid-template-columns: 34px 1fr 44px;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+    }
+
+    .bar-track {
+      height: 12px;
+      background: #f3eadb;
+      border-radius: 99px;
+      overflow: hidden;
+      border: 1px solid #e3d4bb;
+    }
+
+    .bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #2d98ab, #5cb89d);
+    }
+
+    .table-shell {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .table-title {
+      padding: 10px 12px;
+      background: #fff6ea;
+      border-bottom: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .table-scroll {
+      overflow: auto;
+      max-height: 62vh;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th,
+    td {
+      border-bottom: 1px solid #eadbc2;
+      vertical-align: top;
+      padding: 8px;
+      text-align: left;
+    }
+
+    th {
+      position: sticky;
+      top: 0;
+      background: var(--panel-strong);
+      z-index: 2;
+      white-space: nowrap;
+    }
+
+    tr:hover {
+      background: #fff2de;
+    }
+
+    tr.clickable-row {
+      cursor: pointer;
+    }
+
+    tr.selected-row {
+      background: #e5f5f6;
+    }
+
+    .tiny {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .mono {
+      font-family: "Cascadia Mono", Consolas, monospace;
+      font-size: 12px;
+    }
+
+    .score {
+      font-weight: 700;
+      border-radius: 6px;
+      padding: 2px 6px;
+      display: inline-block;
+      min-width: 52px;
+      text-align: center;
+    }
+
+    .score.high {
+      background: #ddf2e8;
+      color: #1f7f54;
+    }
+
+    .score.mid {
+      background: #fff0d9;
+      color: #a66213;
+    }
+
+    .score.low {
+      background: #ffe1df;
+      color: #9c322b;
+    }
+
+    .raw-panel {
+      margin-top: 0;
+    }
+
+    .raw-toolbar {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+
+    .raw-tabs {
+      display: flex;
+      gap: 6px;
+    }
+
+    .tab-btn {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      border-radius: 8px;
+      padding: 5px 9px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+
+    .tab-btn.active {
+      background: #def2f5;
+      border-color: #9ed1d8;
+      color: #0f5260;
+      font-weight: 600;
+    }
+
+    .raw-meta {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+
+    .raw-readable {
+      border: 1px solid #e5d8c4;
+      border-radius: 8px;
+      padding: 10px;
+      background: #fffdf8;
+      max-height: 58vh;
+      overflow: auto;
+    }
+
+    .raw-section-title {
+      margin: 8px 0 6px;
+      color: #6b5f49;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+    }
+
+    .kv-grid {
+      display: grid;
+      grid-template-columns: 100px 1fr;
+      gap: 6px 10px;
+      margin-bottom: 8px;
+      font-size: 12px;
+    }
+
+    .kv-k {
+      color: var(--muted);
+    }
+
+    .kv-v {
+      color: var(--ink);
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .score-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+
+    .score-chip {
+      border: 1px solid #d8c9ae;
+      background: #f8efdf;
+      color: #4f4534;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+    }
+
+    .toolcalls-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .toolcalls-summary {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 4px;
+    }
+
+    .toolcall-item {
+      border: 1px solid #dfd4c0;
+      border-left-width: 5px;
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px;
+      font-size: 12px;
+    }
+
+    .toolcall-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .toolcall-badge {
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid;
+      white-space: nowrap;
+    }
+
+    .toolcall-time {
+      color: #766851;
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .toolcall-params {
+      margin: 0;
+      background: #fbf6ec;
+      border: 1px solid #eee2cf;
+      border-radius: 6px;
+      padding: 6px;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 11px;
+      color: #2f2b22;
+    }
+
+    .trace-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .trace-item {
+      border: 1px solid #e9dcc8;
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px;
+      font-size: 12px;
+    }
+
+    .trace-head {
+      font-weight: 700;
+      margin-bottom: 4px;
+      color: #385969;
+    }
+
+    .trace-body {
+      color: #2f2b22;
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+    }
+
+    .evidence-wrap {
+      margin-top: 10px;
+    }
+
+    .evidence-summary {
+      font-size: 12px;
+      color: #534936;
+      margin-bottom: 6px;
+    }
+
+    .evidence-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 56vh;
+      overflow: auto;
+      padding-right: 2px;
+    }
+
+    .ev-session {
+      border: 1px solid #eadfcf;
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px;
+    }
+
+    .ev-session-title {
+      font-size: 12px;
+      color: #5f543f;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+
+    .ev-line {
+      font-size: 12px;
+      line-height: 1.45;
+      padding: 3px 6px;
+      border-radius: 6px;
+      margin-bottom: 3px;
+      color: #2f2b22;
+      border: 1px solid transparent;
+    }
+
+    .ev-line.hit {
+      background: #ffe4e2;
+      border-color: #ffc3be;
+      color: #8d1e18;
+    }
+
+    .ev-id {
+      color: #7c6b52;
+    }
+
+    .ev-line.hit .ev-id {
+      color: #8d1e18;
+      font-weight: 700;
+    }
+
+    .ev-spk {
+      font-weight: 700;
+    }
+
+    .raw-pre {
+      margin: 0;
+      background: #f7f1e6;
+      border: 1px solid #e5d8c4;
+      border-radius: 8px;
+      padding: 10px;
+      min-height: 160px;
+      max-height: 58vh;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .pager {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px;
+      border-top: 1px solid var(--line);
+      background: #fff6ea;
+      gap: 8px;
+    }
+
+    .pager-left,
+    .pager-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    @media (max-width: 1200px) {
+      .main-area {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 1024px) {
+      .hero {
+        grid-template-columns: 1fr;
+      }
+
+      .control-grid {
+        grid-template-columns: repeat(2, minmax(120px, 1fr));
+      }
+
+      .stats {
+        grid-template-columns: repeat(2, minmax(100px, 1fr));
+      }
+    }
+
+    @media (max-width: 640px) {
+      .container {
+        padding: 14px 10px 20px;
+      }
+
+      .title {
+        font-size: 22px;
+      }
+
+      .control-grid,
+      .stats {
+        grid-template-columns: 1fr;
+      }
+
+      table {
+        font-size: 12px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <section class="hero">
+      <div>
+        <h1 class="title">LoCoMo QA 数据查看器</h1>
+        <p class="subtitle">
+          用于查看 `locomo10_agent_qa.json` 这类评估结果文件。支持按分类、分数字段与得分区间筛选，并查看每条 QA 的完整内容。
+        </p>
+      </div>
+      <div class="drop-zone" id="dropZone">
+        <div class="drop-actions">
+          <button class="primary-btn" id="pickBtn">选择预测 JSON</button>
+          <button class="secondary-btn" id="pickSourceBtn">加载LoCoMo原始文件</button>
+        </div>
+        <input id="fileInput" type="file" accept=".json,application/json" hidden />
+        <input id="sourceFileInput" type="file" accept=".json,application/json" hidden />
+        <div class="hint">也可直接将文件拖到这里</div>
+        <div class="tiny" id="fileMeta">尚未加载文件</div>
+        <div class="tiny" id="sourceMeta">原始数据: 未加载</div>
+      </div>
+    </section>
+
+    <section class="controls">
+      <div class="control-grid">
+        <div>
+          <label for="scoreField">分数字段</label>
+          <select id="scoreField"></select>
+        </div>
+        <div>
+          <label for="scoreMin" id="scoreMinLabel">最低分</label>
+          <input type="number" id="scoreMin" step="0.001" placeholder="例如 0.5" />
+        </div>
+        <div>
+          <label for="scoreMax" id="scoreMaxLabel">最高分</label>
+          <input type="number" id="scoreMax" step="0.001" placeholder="例如 1.0" />
+        </div>
+        <div>
+          <label for="keyword">关键词（问答/预测）</label>
+          <input type="text" id="keyword" placeholder="输入关键词" />
+        </div>
+        <div>
+          <label for="pageSize">每页条数</label>
+          <select id="pageSize">
+            <option value="20">20</option>
+            <option value="50" selected>50</option>
+            <option value="100">100</option>
+            <option value="200">200</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="category-wrap">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:7px;">
+          <label style="margin:0;">分类筛选（category）</label>
+          <button class="secondary-btn" id="resetBtn">重置筛选</button>
+        </div>
+        <div class="category-list" id="categoryList"></div>
+      </div>
+    </section>
+
+    <section class="stats" id="statsRow"></section>
+
+    <section class="main-area">
+      <div class="table-shell">
+        <div class="table-title">提示：单击任意行，在右侧 Raw 详情面板查看完整信息。</div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>sample_id</th>
+                <th>qa_idx</th>
+                <th>category</th>
+                <th id="scoreColumnHeader">score</th>
+                <th>question</th>
+                <th>answer</th>
+                <th>prediction</th>
+              </tr>
+            </thead>
+            <tbody id="tableBody"></tbody>
+          </table>
+        </div>
+        <div class="pager">
+          <div class="pager-left">
+            <button class="secondary-btn" id="prevBtn">上一页</button>
+            <button class="secondary-btn" id="nextBtn">下一页</button>
+          </div>
+          <div class="pager-right">
+            <span class="tiny" id="pageInfo">第 0/0 页</span>
+          </div>
+        </div>
+      </div>
+
+      <section class="table-shell raw-panel">
+        <div class="table-title">Raw 详情</div>
+        <div style="padding:10px;">
+          <div class="raw-toolbar">
+            <div class="raw-tabs">
+              <button class="tab-btn active" id="rawReadableBtn">可读视图</button>
+              <button class="tab-btn" id="rawJsonBtn">原始 JSON</button>
+            </div>
+          </div>
+          <div class="raw-meta" id="rawMeta">未选中任何行</div>
+          <div class="raw-readable" id="rawReadable">请先点击上方表格中的一条记录。</div>
+          <pre class="raw-pre mono" id="rawContent" hidden>请先点击上方表格中的一条记录。</pre>
+        </div>
+      </section>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      rows: [],
+      filteredRows: [],
+      scoreFields: [],
+      categories: [],
+      selectedCategories: new Set(),
+      selectedScoreField: "",
+      pageSize: 50,
+      page: 1,
+      fileName: "",
+      selectedRowKey: "",
+      rawView: "readable",
+      sourceSamplesById: new Map(),
+    };
+    const METRIC_KEY_RE = /(f1|b1|score|acc|accuracy|recall|metric)/i;
+
+    const fileInput = document.getElementById("fileInput");
+    const sourceFileInput = document.getElementById("sourceFileInput");
+    const pickBtn = document.getElementById("pickBtn");
+    const pickSourceBtn = document.getElementById("pickSourceBtn");
+    const fileMeta = document.getElementById("fileMeta");
+    const sourceMeta = document.getElementById("sourceMeta");
+    const dropZone = document.getElementById("dropZone");
+    const scoreFieldEl = document.getElementById("scoreField");
+    const scoreMinEl = document.getElementById("scoreMin");
+    const scoreMaxEl = document.getElementById("scoreMax");
+    const scoreMinLabelEl = document.getElementById("scoreMinLabel");
+    const scoreMaxLabelEl = document.getElementById("scoreMaxLabel");
+    const scoreColumnHeaderEl = document.getElementById("scoreColumnHeader");
+    const keywordEl = document.getElementById("keyword");
+    const pageSizeEl = document.getElementById("pageSize");
+    const categoryListEl = document.getElementById("categoryList");
+    const resetBtn = document.getElementById("resetBtn");
+    const statsRowEl = document.getElementById("statsRow");
+    const categoryBarsEl = document.getElementById("categoryBars");
+    const tableBodyEl = document.getElementById("tableBody");
+    const prevBtn = document.getElementById("prevBtn");
+    const nextBtn = document.getElementById("nextBtn");
+    const pageInfoEl = document.getElementById("pageInfo");
+    const rawMetaEl = document.getElementById("rawMeta");
+    const rawReadableEl = document.getElementById("rawReadable");
+    const rawContentEl = document.getElementById("rawContent");
+    const rawReadableBtn = document.getElementById("rawReadableBtn");
+    const rawJsonBtn = document.getElementById("rawJsonBtn");
+
+    pickBtn.addEventListener("click", () => fileInput.click());
+    pickSourceBtn.addEventListener("click", () => sourceFileInput.click());
+    fileInput.addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (file) readFile(file);
+    });
+    sourceFileInput.addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (file) readSourceFile(file);
+    });
+
+    ["dragenter", "dragover"].forEach((evt) => {
+      dropZone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.add("dragover");
+      });
+    });
+
+    ["dragleave", "drop"].forEach((evt) => {
+      dropZone.addEventListener(evt, (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dropZone.classList.remove("dragover");
+      });
+    });
+
+    dropZone.addEventListener("drop", (e) => {
+      const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+      if (file) readFile(file);
+    });
+
+    scoreFieldEl.addEventListener("change", () => {
+      state.selectedScoreField = scoreFieldEl.value;
+      state.page = 1;
+      updateScoreFieldUi();
+      applyFilters();
+    });
+
+    [scoreMinEl, scoreMaxEl, keywordEl].forEach((el) => {
+      el.addEventListener("input", () => {
+        state.page = 1;
+        applyFilters();
+      });
+    });
+
+    pageSizeEl.addEventListener("change", () => {
+      state.pageSize = Number(pageSizeEl.value) || 50;
+      state.page = 1;
+      renderTable();
+      renderPager();
+    });
+
+    prevBtn.addEventListener("click", () => {
+      if (state.page > 1) {
+        state.page -= 1;
+        renderTable();
+        renderPager();
+      }
+    });
+
+    nextBtn.addEventListener("click", () => {
+      const pages = totalPages();
+      if (state.page < pages) {
+        state.page += 1;
+        renderTable();
+        renderPager();
+      }
+    });
+
+    rawReadableBtn.addEventListener("click", () => {
+      state.rawView = "readable";
+      renderRawViewSwitch();
+    });
+
+    rawJsonBtn.addEventListener("click", () => {
+      state.rawView = "json";
+      renderRawViewSwitch();
+    });
+
+    resetBtn.addEventListener("click", () => {
+      scoreMinEl.value = "";
+      scoreMaxEl.value = "";
+      keywordEl.value = "";
+      state.selectedCategories = new Set(state.categories.map(String));
+      syncCategoryChecks();
+      state.page = 1;
+      applyFilters();
+    });
+
+    function readFile(file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          loadJson(String(reader.result || ""), file.name);
+        } catch (error) {
+          alert(`解析失败: ${error.message}`);
+        }
+      };
+      reader.readAsText(file, "utf-8");
+    }
+
+    function readSourceFile(file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          loadSourceJson(String(reader.result || ""), file.name);
+        } catch (error) {
+          sourceMeta.textContent = `原始数据加载失败: ${error.message}`;
+        }
+      };
+      reader.readAsText(file, "utf-8");
+    }
+
+    function loadSourceJson(text, fileName) {
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new Error("不是合法 JSON");
+      }
+
+      const samples = extractSamples(parsed, fileName).filter(
+        (s) => s && typeof s === "object" && s.sample_id !== undefined
+      );
+      if (!samples.length) {
+        throw new Error("未识别到 sample 列表");
+      }
+
+      const sampleMap = new Map();
+      samples.forEach((sample) => {
+        sampleMap.set(String(sample.sample_id), sample);
+      });
+
+      state.sourceSamplesById = sampleMap;
+      sourceMeta.textContent = `原始数据: ${fileName} | sample=${sampleMap.size}`;
+      renderRawPanel();
+    }
+
+    async function tryAutoLoadSource() {
+      const paths = [
+        "data/locomo/data/locomo10.json",
+        "./data/locomo/data/locomo10.json",
+      ];
+
+      for (const path of paths) {
+        try {
+          const resp = await fetch(path, { cache: "no-store" });
+          if (!resp.ok) continue;
+          const text = await resp.text();
+          loadSourceJson(text, path);
+          return;
+        } catch {
+          // ignore and continue
+        }
+      }
+    }
+
+    function loadJson(text, fileName) {
+      let parsed;
+      try {
+        parsed = JSON.parse(text);
+      } catch {
+        throw new Error("不是合法 JSON");
+      }
+
+      const parsedSamples = extractSamples(parsed, fileName);
+      if (!parsedSamples.length) {
+        throw new Error("已解析成功，但没有发现可展示的 qa 数据");
+      }
+
+      const rows = [];
+      const scoreFields = new Set();
+      const categories = new Set();
+
+      parsedSamples.forEach((sample, sIdx) => {
+        if (!sample || typeof sample !== "object") return;
+
+        const sampleId = sample.sample_id ?? `sample_${sIdx}`;
+        const qaList = Array.isArray(sample.qa) ? sample.qa : [];
+
+        qaList.forEach((qa, qIdx) => {
+          if (!qa || typeof qa !== "object") return;
+
+          const category = toNumber(qa.category);
+          if (category !== null) categories.add(String(category));
+
+          const row = {
+            sampleId,
+            qaIndex: qIdx,
+            category: category !== null ? category : qa.category,
+            question: toText(qa.question),
+            answer: toText(qa.answer),
+            prediction: pickPredictionText(qa),
+            metrics: {},
+            raw: qa,
+          };
+
+          Object.entries(qa).forEach(([key, value]) => {
+            if (key === "category") return;
+            const vNum = toMetricNumber(key, value);
+            if (vNum === null) return;
+
+            row.metrics[key] = vNum;
+            scoreFields.add(key);
+          });
+
+          rows.push(row);
+        });
+      });
+
+      state.rows = rows;
+      state.scoreFields = prioritizedScoreFields([...scoreFields]);
+      state.categories = [...categories].sort((a, b) => Number(a) - Number(b));
+      state.selectedCategories = new Set(state.categories);
+      state.selectedScoreField = pickDefaultScoreField(state.scoreFields);
+      state.page = 1;
+      state.fileName = fileName;
+      state.selectedRowKey = "";
+
+      renderScoreFieldOptions();
+      renderCategoryFilters();
+      applyFilters();
+
+      fileMeta.textContent = `${fileName} | 共 ${rows.length} 条 QA`;
+    }
+
+    function extractSamples(parsed, fileName) {
+      if (Array.isArray(parsed)) {
+        return parsed;
+      }
+
+      if (!parsed || typeof parsed !== "object") {
+        throw new Error("JSON 顶层必须是数组或对象");
+      }
+
+      const namedListKeys = ["samples", "data", "results", "items"];
+      for (const key of namedListKeys) {
+        if (Array.isArray(parsed[key])) {
+          return parsed[key];
+        }
+      }
+
+      if (Array.isArray(parsed.qa)) {
+        return [parsed];
+      }
+
+      // sample_id -> sample object map
+      const entries = Object.entries(parsed);
+      const mapLikeSamples = [];
+      let mapLikeCount = 0;
+
+      for (const [k, v] of entries) {
+        if (!v || typeof v !== "object" || Array.isArray(v)) continue;
+        if (!Array.isArray(v.qa)) continue;
+        mapLikeCount += 1;
+        mapLikeSamples.push({ sample_id: v.sample_id ?? k, ...v });
+      }
+      if (mapLikeCount > 0) {
+        return mapLikeSamples;
+      }
+
+      // Friendly hint when user selected stats file by mistake
+      const lowerName = String(fileName || "").toLowerCase();
+      const nestedStatsShape = entries.some(([, v]) => {
+        if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+        return (
+          "summary_by_category" in v ||
+          "overall_accuracy" in v ||
+          "category_counts" in v
+        );
+      });
+      const hasStatsShape =
+        lowerName.includes("_stats") ||
+        "summary_by_category" in parsed ||
+        "overall_accuracy" in parsed ||
+        "category_counts" in parsed ||
+        nestedStatsShape;
+      if (hasStatsShape) {
+        throw new Error("当前文件更像统计文件（stats），请改选 locomo10_agent_qa.json 预测明细文件");
+      }
+
+      const previewKeys = Object.keys(parsed).slice(0, 8).join(", ");
+      throw new Error(
+        `无法识别数据结构。支持数组、{samples:[...]}/ {data:[...]} 或 sample_id 映射对象。当前键: ${previewKeys || "(无)"}`
+      );
+    }
+
+    function toText(value) {
+      if (value === null || value === undefined) return "";
+      if (typeof value === "string") return value;
+      return JSON.stringify(value);
+    }
+
+    function toNumber(value) {
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+      if (typeof value === "string" && value.trim() !== "") {
+        const n = Number(value);
+        if (Number.isFinite(n)) return n;
+      }
+      return null;
+    }
+
+    function toMetricNumber(key, value) {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return value;
+      }
+
+      if (typeof value === "string" && METRIC_KEY_RE.test(key)) {
+        const n = Number(value.trim());
+        if (Number.isFinite(n)) return n;
+      }
+
+      return null;
+    }
+
+    function pickPredictionText(qa) {
+      const priority = [
+        "memory_agent_prediction",
+        "prediction",
+        "model_prediction",
+        "output",
+      ];
+
+      for (const key of priority) {
+        if (qa[key] !== undefined && qa[key] !== null && String(qa[key]).trim() !== "") {
+          return toText(qa[key]);
+        }
+      }
+
+      const dynamic = Object.keys(qa).find((k) => /_prediction$/i.test(k));
+      if (dynamic) return toText(qa[dynamic]);
+
+      return "";
+    }
+
+    function prioritizedScoreFields(fields) {
+      const rank = (name) => {
+        const n = name.toLowerCase();
+        if (/llm_judge.*(score|acc|accuracy)$/i.test(n)) return 0;
+        if (n.endsWith("_gpt_score") || n === "gpt_score") return 1;
+        if (n.endsWith("_f1") || n === "f1") return 2;
+        if (n.endsWith("_b1") || n === "b1") return 3;
+        if (n.includes("recall")) return 4;
+        if (n.includes("score") || n.includes("acc") || n.includes("accuracy")) return 5;
+        return 6;
+      };
+
+      return fields.sort((a, b) => {
+        const ra = rank(a);
+        const rb = rank(b);
+        if (ra !== rb) return ra - rb;
+        return a.localeCompare(b);
+      });
+    }
+
+    function pickDefaultScoreField(fields) {
+      if (!fields.length) return "";
+      const llmJudge = fields.find((f) => /llm_judge.*(score|acc|accuracy)$/i.test(f));
+      if (llmJudge) return llmJudge;
+      const gptScore = fields.find((f) => /gpt_score$/i.test(f));
+      if (gptScore) return gptScore;
+      const preferred = fields.find((f) => /_f1$/i.test(f));
+      return preferred || fields[0];
+    }
+
+    function updateScoreFieldUi() {
+      const field = state.selectedScoreField || "";
+      const shortField = field || "score";
+      if (scoreColumnHeaderEl) {
+        scoreColumnHeaderEl.textContent = shortField;
+      }
+      if (scoreMinLabelEl) {
+        scoreMinLabelEl.textContent = field ? `最低分 (${field})` : "最低分";
+      }
+      if (scoreMaxLabelEl) {
+        scoreMaxLabelEl.textContent = field ? `最高分 (${field})` : "最高分";
+      }
+    }
+
+    function renderScoreFieldOptions() {
+      scoreFieldEl.innerHTML = "";
+
+      if (!state.scoreFields.length) {
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = "(无可用分数字段)";
+        scoreFieldEl.appendChild(option);
+        scoreFieldEl.disabled = true;
+        updateScoreFieldUi();
+        return;
+      }
+
+      scoreFieldEl.disabled = false;
+      state.scoreFields.forEach((field) => {
+        const option = document.createElement("option");
+        option.value = field;
+        option.textContent = field;
+        if (field === state.selectedScoreField) option.selected = true;
+        scoreFieldEl.appendChild(option);
+      });
+      updateScoreFieldUi();
+    }
+
+    function renderCategoryFilters() {
+      categoryListEl.innerHTML = "";
+
+      if (!state.categories.length) {
+        const tip = document.createElement("span");
+        tip.className = "tiny";
+        tip.textContent = "未检测到分类字段";
+        categoryListEl.appendChild(tip);
+        return;
+      }
+
+      const allChip = document.createElement("label");
+      allChip.className = "chip";
+      const allInput = document.createElement("input");
+      allInput.type = "checkbox";
+      allInput.checked = true;
+      allInput.id = "category_all";
+      allInput.addEventListener("change", () => {
+        if (allInput.checked) {
+          state.selectedCategories = new Set(state.categories);
+        } else {
+          state.selectedCategories.clear();
+        }
+        syncCategoryChecks();
+        state.page = 1;
+        applyFilters();
+      });
+      allChip.appendChild(allInput);
+      allChip.appendChild(document.createTextNode("全部"));
+      categoryListEl.appendChild(allChip);
+
+      state.categories.forEach((category) => {
+        const chip = document.createElement("label");
+        chip.className = "chip";
+
+        const input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = state.selectedCategories.has(category);
+        input.dataset.category = category;
+        input.addEventListener("change", () => {
+          if (input.checked) state.selectedCategories.add(category);
+          else state.selectedCategories.delete(category);
+
+          syncCategoryChecks();
+          state.page = 1;
+          applyFilters();
+        });
+
+        chip.appendChild(input);
+        chip.appendChild(document.createTextNode(`category ${category}`));
+        categoryListEl.appendChild(chip);
+      });
+
+      syncCategoryChecks();
+    }
+
+    function syncCategoryChecks() {
+      const inputs = categoryListEl.querySelectorAll('input[data-category]');
+      inputs.forEach((input) => {
+        const c = input.dataset.category;
+        input.checked = state.selectedCategories.has(c);
+      });
+
+      const allInput = document.getElementById("category_all");
+      if (allInput) {
+        allInput.checked = state.selectedCategories.size === state.categories.length;
+      }
+    }
+
+    function applyFilters() {
+      const min = scoreMinEl.value.trim() === "" ? null : Number(scoreMinEl.value);
+      const max = scoreMaxEl.value.trim() === "" ? null : Number(scoreMaxEl.value);
+      const keyword = keywordEl.value.trim().toLowerCase();
+      const scoreField = state.selectedScoreField;
+
+      state.filteredRows = state.rows.filter((row) => {
+        const cat = String(row.category);
+        if (state.categories.length) {
+          if (!state.selectedCategories.size) return false;
+          if (!state.selectedCategories.has(cat)) return false;
+        }
+
+        if (scoreField) {
+          const score = row.metrics[scoreField];
+          if (score === undefined || score === null) return false;
+          if (min !== null && Number.isFinite(min) && score < min) return false;
+          if (max !== null && Number.isFinite(max) && score > max) return false;
+        }
+
+        if (keyword) {
+          const haystack = [row.question, row.answer, row.prediction].join(" ").toLowerCase();
+          if (!haystack.includes(keyword)) return false;
+        }
+
+        return true;
+      });
+
+      if (!state.filteredRows.length) {
+        state.selectedRowKey = "";
+      } else if (!state.selectedRowKey || !state.filteredRows.some((row) => rowKey(row) === state.selectedRowKey)) {
+        state.selectedRowKey = rowKey(state.filteredRows[0]);
+      }
+
+      renderStats();
+      renderCategoryBars();
+      renderTable();
+      renderPager();
+      renderRawPanel();
+    }
+
+    function renderStats() {
+      const total = state.rows.length;
+      const filtered = state.filteredRows.length;
+      const scoreField = state.selectedScoreField;
+
+      let avg = "-";
+      let scoredCount = 0;
+      if (scoreField) {
+        let sum = 0;
+        state.filteredRows.forEach((row) => {
+          const s = row.metrics[scoreField];
+          if (typeof s === "number" && Number.isFinite(s)) {
+            sum += s;
+            scoredCount += 1;
+          }
+        });
+        avg = scoredCount ? (sum / scoredCount).toFixed(4) : "-";
+      }
+
+      const html = [
+        statCard("文件", state.fileName || "未加载"),
+        statCard("总 QA", String(total)),
+        statCard("筛选后", String(filtered)),
+        statCard(scoreField ? `均分 (${scoreField})` : "均分", avg),
+      ].join("");
+
+      statsRowEl.innerHTML = html;
+    }
+
+    function statCard(key, value) {
+      return `<div class="card"><p class="key">${escapeHtml(key)}</p><p class="value">${escapeHtml(value)}</p></div>`;
+    }
+
+    function renderCategoryBars() {
+      if (!categoryBarsEl) return;
+      if (!state.filteredRows.length) {
+        categoryBarsEl.innerHTML = '<div class="tiny">暂无数据</div>';
+        return;
+      }
+
+      const counts = new Map();
+      state.filteredRows.forEach((row) => {
+        const key = String(row.category);
+        counts.set(key, (counts.get(key) || 0) + 1);
+      });
+
+      const entries = [...counts.entries()].sort((a, b) => Number(a[0]) - Number(b[0]));
+      const maxCount = Math.max(...entries.map((x) => x[1]));
+
+      categoryBarsEl.innerHTML = entries
+        .map(([cat, count]) => {
+          const width = maxCount ? (count / maxCount) * 100 : 0;
+          return `
+            <div class="bar-row">
+              <div class="mono">${escapeHtml(cat)}</div>
+              <div class="bar-track"><div class="bar-fill" style="width:${width.toFixed(2)}%"></div></div>
+              <div class="mono">${count}</div>
+            </div>
+          `;
+        })
+        .join("");
+    }
+
+    function renderTable() {
+      const page = state.page;
+      const pageSize = state.pageSize;
+      const start = (page - 1) * pageSize;
+      const end = start + pageSize;
+      const rows = state.filteredRows.slice(start, end);
+
+      if (!rows.length) {
+        tableBodyEl.innerHTML = '<tr><td colspan="7" class="tiny">无匹配记录</td></tr>';
+        return;
+      }
+
+      const scoreField = state.selectedScoreField;
+      tableBodyEl.innerHTML = rows
+        .map((row) => {
+          const score = scoreField ? row.metrics[scoreField] : null;
+          const key = rowKey(row);
+          const selectedCls = key === state.selectedRowKey ? "selected-row" : "";
+          return `
+            <tr class="clickable-row ${selectedCls}" data-row-key="${escapeHtml(key)}">
+              <td class="mono">${escapeHtml(String(row.sampleId))}</td>
+              <td class="mono">${row.qaIndex}</td>
+              <td class="mono">${escapeHtml(String(row.category))}</td>
+              <td>${renderScore(score, scoreField, row)}</td>
+              <td>${escapeHtml(truncate(row.question, 160))}</td>
+              <td>${escapeHtml(truncate(row.answer, 120))}</td>
+              <td>${escapeHtml(truncate(row.prediction, 120))}</td>
+            </tr>
+          `;
+        })
+        .join("");
+
+      tableBodyEl.querySelectorAll("tr[data-row-key]").forEach((tr) => {
+        tr.addEventListener("click", () => {
+          state.selectedRowKey = tr.dataset.rowKey || "";
+          renderTable();
+          renderRawPanel();
+        });
+      });
+    }
+
+    function renderScore(score, scoreField, row) {
+      if (score === null || score === undefined || !Number.isFinite(score)) {
+        return '<span class="tiny">-</span>';
+      }
+
+      const isJudgeScore = /llm_judge.*(score|acc|accuracy)$/i.test(String(scoreField || ""));
+      let cls = "mid";
+      if (isJudgeScore) {
+        if (score >= 0.999) cls = "high";
+        else if (score <= 0.001) cls = "low";
+      } else {
+        if (score >= 0.8) cls = "high";
+        else if (score < 0.5) cls = "low";
+      }
+
+      let title = `${String(scoreField || "score")}: ${score.toFixed(3)}`;
+      if (row && row.raw && scoreField && /_score$/i.test(scoreField)) {
+        const metaKey = String(scoreField).replace(/_score$/i, "");
+        const meta = row.raw[metaKey];
+        if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+          if (meta.label) title += ` | ${meta.label}`;
+          if (meta.status) title += ` | ${meta.status}`;
+        }
+      }
+
+      return `<span class="score ${cls}" title="${escapeHtml(title)}">${score.toFixed(3)}</span>`;
+    }
+
+    function totalPages() {
+      return Math.max(1, Math.ceil(state.filteredRows.length / state.pageSize));
+    }
+
+    function renderPager() {
+      const pages = totalPages();
+      if (state.page > pages) state.page = pages;
+
+      pageInfoEl.textContent = `第 ${state.page}/${pages} 页`;
+      prevBtn.disabled = state.page <= 1;
+      nextBtn.disabled = state.page >= pages;
+    }
+
+    function rowKey(row) {
+      return `${String(row.sampleId)}::${String(row.qaIndex)}`;
+    }
+
+    function renderRawViewSwitch() {
+      const readable = state.rawView === "readable";
+      rawReadableEl.hidden = !readable;
+      rawContentEl.hidden = readable;
+      rawReadableBtn.classList.toggle("active", readable);
+      rawJsonBtn.classList.toggle("active", !readable);
+    }
+
+    function renderRawPanel() {
+      if (!state.selectedRowKey) {
+        rawMetaEl.textContent = "未选中任何行";
+        rawReadableEl.textContent = "请先点击上方表格中的一条记录。";
+        rawContentEl.textContent = "请先点击上方表格中的一条记录。";
+        renderRawViewSwitch();
+        return;
+      }
+
+      const row = state.filteredRows.find((item) => rowKey(item) === state.selectedRowKey);
+      if (!row) {
+        rawMetaEl.textContent = "当前选中行不在筛选结果中";
+        rawReadableEl.textContent = "请在表格中重新选择一条记录。";
+        rawContentEl.textContent = "请在表格中重新选择一条记录。";
+        renderRawViewSwitch();
+        return;
+      }
+
+      rawMetaEl.innerHTML =
+        `sample_id: <span class="mono">${escapeHtml(String(row.sampleId))}</span> | ` +
+        `qa_idx: <span class="mono">${escapeHtml(String(row.qaIndex))}</span> | ` +
+        `category: <span class="mono">${escapeHtml(String(row.category))}</span>`;
+      rawReadableEl.innerHTML = buildReadableHtml(row);
+      rawContentEl.textContent = JSON.stringify(row.raw, null, 2);
+      renderRawViewSwitch();
+    }
+
+    function buildReadableHtml(row) {
+      const raw = row.raw || {};
+      const predictionAnswerKey = Object.keys(raw).find((k) => /_prediction_answer$/i.test(k));
+      const predictionAnswer = predictionAnswerKey ? toText(raw[predictionAnswerKey]) : "";
+      const predictionToolCalls = extractPredictionToolCalls(raw);
+      const traceMessages = extractTraceMessages(predictionAnswer);
+      const judgeInfo = buildJudgeInfoHtml(raw);
+
+      const scoreChips = Object.entries(row.metrics)
+        .slice(0, 12)
+        .map(([k, v]) => `<span class="score-chip">${escapeHtml(k)}=${Number(v).toFixed(3)}</span>`)
+        .join("");
+
+      const basicInfo = `
+        <div class="raw-section-title">关键字段</div>
+        <div class="kv-grid">
+          <div class="kv-k">question</div><div class="kv-v">${escapeHtml(toText(raw.question || ""))}</div>
+          <div class="kv-k">answer</div><div class="kv-v">${escapeHtml(toText(raw.answer || ""))}</div>
+          <div class="kv-k">prediction</div><div class="kv-v">${escapeHtml(row.prediction || "")}</div>
+        </div>
+      `;
+
+      const scoreInfo = `
+        <div class="raw-section-title">分数</div>
+        <div class="score-chips">${scoreChips || '<span class="tiny">无分数字段</span>'}</div>
+      `;
+
+      const predAnswerInfo = `
+        <div class="raw-section-title">${escapeHtml(predictionAnswerKey || "prediction_answer")}</div>
+        <div class="kv-v">${escapeHtml(truncate(predictionAnswer || "(空)", 1200))}</div>
+      `;
+
+      const toolCallInfo = buildToolCallsHtml(predictionToolCalls);
+      const evidenceInfo = buildEvidenceHtml(row);
+
+      const traceInfo = traceMessages.length
+        ? `
+          <div class="raw-section-title">消息时间线（从 prediction_answer 自动解析）</div>
+          <div class="trace-list">
+            ${traceMessages
+              .slice(0, 24)
+              .map((msg, idx) => {
+                const suffix = msg.tools.length ? ` | tool_calls: ${msg.tools.join(", ")}` : "";
+                return `
+                  <div class="trace-item">
+                    <div class="trace-head">#${idx + 1} ${escapeHtml(msg.role)}${escapeHtml(suffix)}</div>
+                    <pre class="trace-body">${escapeHtml(msg.content)}</pre>
+                  </div>
+                `;
+              })
+              .join("")}
+          </div>
+        `
+        : `
+          <div class="raw-section-title">消息时间线</div>
+          <div class="tiny">未识别到可解析的消息结构（这通常表示该字段不是 trace 串）。</div>
+        `;
+
+      return `${basicInfo}${scoreInfo}${judgeInfo}${toolCallInfo}${predAnswerInfo}${evidenceInfo}${traceInfo}`;
+    }
+
+    function buildJudgeInfoHtml(raw) {
+      if (!raw || typeof raw !== "object") return "";
+
+      const judgeKeys = Object.keys(raw).filter((k) => /_llm_judge$/i.test(k));
+      const blocks = judgeKeys
+        .map((key) => {
+          const value = raw[key];
+          if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+
+          const lines = [
+            ["status", value.status],
+            ["label", value.label],
+            ["correct_count", value.correct_count],
+            ["num_runs", value.num_runs],
+            ["prediction_field_used", value.prediction_field_used],
+          ]
+            .filter(([, v]) => v !== undefined && v !== null && String(v) !== "")
+            .map(
+              ([k, v]) =>
+                `<div class="kv-k">${escapeHtml(String(k))}</div><div class="kv-v">${escapeHtml(toText(v))}</div>`
+            )
+            .join("");
+
+          const judgments = value.judgments && typeof value.judgments === "object"
+            ? Object.entries(value.judgments)
+                .map(([k, v]) => `<span class="score-chip">${escapeHtml(k)}=${escapeHtml(toText(v))}</span>`)
+                .join("")
+            : "";
+
+          return `
+            <div class="raw-section-title">${escapeHtml(key)}</div>
+            <div class="kv-grid">${lines || '<div class="tiny">无摘要信息</div>'}</div>
+            <div class="score-chips">${judgments || '<span class="tiny">无逐轮判定</span>'}</div>
+          `;
+        })
+        .filter(Boolean)
+        .join("");
+
+      return blocks;
+    }
+
+    function extractPredictionToolCalls(raw) {
+      if (!raw || typeof raw !== "object") return [];
+
+      const direct = raw.memory_agent_prediction_tool_calls;
+      if (Array.isArray(direct)) return direct;
+
+      const dynamicKey = Object.keys(raw).find((k) => /_prediction_tool_calls$/i.test(k));
+      const dynamicVal = dynamicKey ? raw[dynamicKey] : null;
+      if (Array.isArray(dynamicVal)) return dynamicVal;
+
+      // Defensive: some data may serialize list to JSON string
+      const candidate = dynamicVal ?? direct;
+      if (typeof candidate === "string") {
+        const parsed = parseJsonLoose(candidate);
+        if (Array.isArray(parsed)) return parsed;
+      }
+      return [];
+    }
+
+    function buildToolCallsHtml(toolCallsRaw) {
+      const toolCalls = Array.isArray(toolCallsRaw)
+        ? toolCallsRaw.filter((x) => x && typeof x === "object")
+        : [];
+
+      if (!toolCalls.length) {
+        return `
+          <div class="raw-section-title">memory_agent_prediction_tool_calls</div>
+          <div class="tiny">无工具调用记录。</div>
+        `;
+      }
+
+      const counts = new Map();
+      toolCalls.forEach((call) => {
+        const name = normalizeToolName(call);
+        counts.set(name, (counts.get(name) || 0) + 1);
+      });
+      const colorMap = buildToolColorMap([...counts.keys()]);
+
+      const summary = [...counts.entries()]
+        .map(([name, count]) => {
+          const c = colorMap.get(name) || toolColorForName(name);
+          return `<span class="toolcall-badge" style="background:${c.bg}; border-color:${c.border}; color:${c.text};">${escapeHtml(name)} x${count}</span>`;
+        })
+        .join("");
+
+      const items = toolCalls
+        .map((call, idx) => {
+          const name = normalizeToolName(call);
+          const ts = toText(call.ts || call.time || "");
+          const params = toPrettyJson(call.params ?? call.args ?? call.input ?? {});
+          const c = colorMap.get(name) || toolColorForName(name);
+          return `
+            <div class="toolcall-item" style="border-left-color:${c.border};">
+              <div class="toolcall-head">
+                <span class="toolcall-badge" style="background:${c.bg}; border-color:${c.border}; color:${c.text};">#${idx + 1} ${escapeHtml(name)}</span>
+                <span class="toolcall-time mono">${escapeHtml(ts || "-")}</span>
+              </div>
+              <pre class="toolcall-params">${escapeHtml(truncate(params, 900))}</pre>
+            </div>
+          `;
+        })
+        .join("");
+
+      return `
+        <div class="raw-section-title">memory_agent_prediction_tool_calls (${toolCalls.length})</div>
+        <div class="toolcalls-wrap">
+          <div class="toolcalls-summary">${summary}</div>
+          ${items}
+        </div>
+      `;
+    }
+
+    function normalizeToolName(call) {
+      return (
+        toText(
+          call.tool_name ||
+          call.name ||
+          call.tool ||
+          call.method ||
+          call.fn ||
+          "unknown_tool"
+        ) || "unknown_tool"
+      );
+    }
+
+    function toPrettyJson(value) {
+      if (value === null || value === undefined) return "{}";
+      if (typeof value === "string") {
+        const parsed = parseJsonLoose(value);
+        if (parsed !== null) return JSON.stringify(parsed, null, 2);
+        return value;
+      }
+      if (typeof value === "object") return JSON.stringify(value, null, 2);
+      return String(value);
+    }
+
+    function buildToolColorMap(names) {
+      const map = new Map();
+      const unique = [...new Set((names || []).map((x) => String(x)))];
+      const n = Math.max(1, unique.length);
+      unique.forEach((name, i) => {
+        const hue = Math.round((360 * i) / n);
+        map.set(name, {
+          bg: `hsl(${hue} 95% 95%)`,
+          border: `hsl(${hue} 55% 55%)`,
+          text: `hsl(${hue} 65% 28%)`,
+        });
+      });
+      return map;
+    }
+
+    function toolColorForName(name) {
+      const palette = [
+        { bg: "#e6f4ff", border: "#4f9dea", text: "#1a4f87" },
+        { bg: "#e9f8ef", border: "#4daa73", text: "#1f6944" },
+        { bg: "#fff4e5", border: "#d49b41", text: "#83591a" },
+        { bg: "#f2ecff", border: "#8c6ad7", text: "#4b2d8f" },
+        { bg: "#e8f7f7", border: "#3ca7a7", text: "#1d6262" },
+        { bg: "#ffeef2", border: "#d16f8c", text: "#8a2f4a" },
+        { bg: "#f3f4f6", border: "#8f9aa8", text: "#495463" },
+        { bg: "#ecf8e8", border: "#76b85b", text: "#3f6e2f" },
+      ];
+      const key = String(name || "unknown_tool");
+      let h = 0;
+      for (let i = 0; i < key.length; i += 1) {
+        h = (h * 31 + key.charCodeAt(i)) >>> 0;
+      }
+      return palette[h % palette.length];
+    }
+
+    function buildEvidenceHtml(row) {
+      const sourceSample = state.sourceSamplesById.get(String(row.sampleId));
+      if (!sourceSample) {
+        if (!state.sourceSamplesById.size) {
+          return `
+            <div class="raw-section-title">证据原文（正确答案）</div>
+            <div class="tiny">未加载 LoCoMo 原始数据。请点击上方“加载LoCoMo原始文件”，选择 <code>locomo10.json</code>。</div>
+          `;
+        }
+        return `
+          <div class="raw-section-title">证据原文（正确答案）</div>
+          <div class="tiny">原始数据中未找到 sample_id=${escapeHtml(String(row.sampleId))}。</div>
+        `;
+      }
+
+      const sourceQa = Array.isArray(sourceSample.qa) ? sourceSample.qa[row.qaIndex] : null;
+      const evidenceIds = normalizeEvidenceIds(
+        (sourceQa && sourceQa.evidence) || row.raw.evidence || []
+      );
+      if (!evidenceIds.length) {
+        return `
+          <div class="raw-section-title">证据原文（正确答案）</div>
+          <div class="tiny">该题没有可解析的 evidence 字段。</div>
+        `;
+      }
+
+      const conversation =
+        sourceSample && typeof sourceSample.conversation === "object" && sourceSample.conversation
+          ? sourceSample.conversation
+          : {};
+      const foundIds = new Set();
+      const sessionNums = [...new Set(evidenceIds.map((id) => Number(id.split(":")[0].slice(1))))].filter((x) =>
+        Number.isFinite(x)
+      );
+
+      const sessionBlocks = sessionNums
+        .sort((a, b) => a - b)
+        .map((sessionNum) => {
+          const sessionKey = `session_${sessionNum}`;
+          const turns = Array.isArray(conversation[sessionKey]) ? conversation[sessionKey] : [];
+          if (!turns.length) {
+            return `
+              <div class="ev-session">
+                <div class="ev-session-title">${escapeHtml(sessionKey)}</div>
+                <div class="tiny">该会话不存在或为空。</div>
+              </div>
+            `;
+          }
+
+          const lines = turns
+            .map((turn, idx) => {
+              const diaId = normalizeDiaId(turn.dia_id || `D${sessionNum}:${idx + 1}`);
+              const hit = evidenceIds.includes(diaId);
+              if (hit) foundIds.add(diaId);
+              const speaker = toText(turn.speaker || "");
+              const text = toText(turn.text || "");
+              const imgHint = turn.img_file
+                ? ` [img] ${toText(turn.blip_caption || turn.img_file)}`
+                : "";
+              return `
+                <div class="ev-line ${hit ? "hit" : ""}">
+                  <span class="mono ev-id">${escapeHtml(diaId)}</span>
+                  <span class="ev-spk">${escapeHtml(speaker)}:</span>
+                  ${escapeHtml(text + imgHint)}
+                </div>
+              `;
+            })
+            .join("");
+
+          return `
+            <div class="ev-session">
+              <div class="ev-session-title">${escapeHtml(sessionKey)}</div>
+              ${lines}
+            </div>
+          `;
+        })
+        .join("");
+
+      const missing = evidenceIds.filter((id) => !foundIds.has(id));
+      const summary =
+        `evidence_id: ${escapeHtml(evidenceIds.join(", "))} | ` +
+        `已定位: ${foundIds.size}/${evidenceIds.length}` +
+        (missing.length ? ` | 未命中: ${escapeHtml(missing.join(", "))}` : "");
+
+      return `
+        <div class="raw-section-title">证据原文（正确答案）</div>
+        <div class="evidence-wrap">
+          <div class="evidence-summary">${summary}</div>
+          <div class="evidence-list">${sessionBlocks}</div>
+        </div>
+      `;
+    }
+
+    function normalizeEvidenceIds(rawEvidence) {
+      if (!Array.isArray(rawEvidence)) return [];
+      const out = [];
+      const seen = new Set();
+      rawEvidence.forEach((item) => {
+        const id = normalizeDiaId(item);
+        if (/^D\d+:\d+$/i.test(id) && !seen.has(id)) {
+          seen.add(id);
+          out.push(id);
+        }
+      });
+      return out;
+    }
+
+    function normalizeDiaId(rawId) {
+      const text = String(rawId || "").trim().replace(/[()]/g, "");
+      let m = text.match(/^D\s*(\d+)\s*:\s*(\d+)$/i);
+      if (m) return `D${Number(m[1])}:${Number(m[2])}`;
+      m = text.match(/^(\d+)\s*,\s*(\d+)$/);
+      if (m) return `D${Number(m[1])}:${Number(m[2])}`;
+      return text.toUpperCase();
+    }
+
+    function extractTraceMessages(text) {
+      if (!text || typeof text !== "string") return [];
+      if (!text.includes("HumanMessage(") && !text.includes("AIMessage(") && !text.includes("ToolMessage(")) {
+        return [];
+      }
+
+      const blocks = [];
+      const blockRe = /(HumanMessage|AIMessage|ToolMessage)\(([\s\S]*?)\)(?=,\s*(?:HumanMessage|AIMessage|ToolMessage)\(|\]\s*\}$|$)/g;
+      let match;
+      while ((match = blockRe.exec(text)) !== null) {
+        const role = match[1];
+        const body = match[2] || "";
+        const contentMatch = body.match(/content='((?:\\'|[^'])*)'/s);
+        const content = contentMatch ? normalizeTraceText(contentMatch[1]) : "";
+        const tools = role === "AIMessage" ? extractToolNames(body) : [];
+        blocks.push({
+          role,
+          content: formatTraceContent(role, content),
+          tools,
+        });
+      }
+
+      return blocks;
+    }
+
+    function extractToolNames(body) {
+      const names = [];
+      const re = /'name': '([^']+)'/g;
+      let m;
+      while ((m = re.exec(body)) !== null) {
+        if (!names.includes(m[1])) names.push(m[1]);
+      }
+      return names.slice(0, 6);
+    }
+
+    function normalizeTraceText(text) {
+      return String(text || "")
+        .replace(/\\\\n/g, "\n")
+        .replace(/\\\\t/g, "\t")
+        .replace(/\\\\r/g, "\r")
+        .replace(/\\"/g, "\"")
+        .replace(/\\'/g, "'")
+        .replace(/\\\\/g, "\\")
+        .trim();
+    }
+
+    function formatTraceContent(role, content) {
+      if (!content) return "(empty)";
+      if (role !== "ToolMessage") return truncate(content, 500);
+
+      const parsed = parseJsonLoose(content);
+      if (!parsed) return truncate(content, 800);
+
+      if (Array.isArray(parsed)) {
+        const lines = [`event_count: ${parsed.length}`];
+        parsed.slice(0, 4).forEach((item, i) => {
+          const theme = item && typeof item === "object" ? item.theme || item.scene_id || JSON.stringify(item) : String(item);
+          lines.push(`${i + 1}. ${theme}`);
+        });
+        return lines.join("\n");
+      }
+
+      if (typeof parsed === "object") {
+        if (Array.isArray(parsed.results)) {
+          const lines = [
+            `hit: ${String(parsed.hit)}`,
+            `matched_count: ${String(parsed.matched_count ?? parsed.results.length)}`,
+          ];
+          parsed.results.slice(0, 3).forEach((r, i) => {
+            const ev = r && r.evidence ? `${r.evidence.episode_id || ""}/${r.evidence.dialogue_id || ""}` : "";
+            lines.push(`${i + 1}. ${r.scene_id || ""} sim=${Number(r.similarity || 0).toFixed(3)} ${ev}`.trim());
+          });
+          return lines.join("\n");
+        }
+
+        if (Array.isArray(parsed.turns)) {
+          return [
+            `dialogue_id: ${parsed.dialogue_id || "-"}`,
+            `episode_id: ${parsed.episode_id || "-"}`,
+            `turns: ${parsed.turns.length}`,
+            `time: ${parsed.event_time ? `${parsed.event_time.start_time || ""} -> ${parsed.event_time.end_time || ""}` : "-"}`,
+          ].join("\n");
+        }
+
+        const keys = Object.keys(parsed).slice(0, 8);
+        return keys.map((k) => `${k}: ${toText(parsed[k])}`).join("\n");
+      }
+
+      return truncate(String(parsed), 800);
+    }
+
+    function parseJsonLoose(text) {
+      const t = String(text || "").trim();
+      if (!t) return null;
+      if (!(t.startsWith("{") || t.startsWith("["))) return null;
+      try {
+        return JSON.parse(t);
+      } catch {
+        return null;
+      }
+    }
+
+    function truncate(text, n) {
+      if (!text) return "";
+      return text.length > n ? `${text.slice(0, n - 1)}…` : text;
+    }
+
+    function escapeHtml(text) {
+      return String(text)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    renderStats();
+    renderCategoryBars();
+    renderTable();
+    renderPager();
+    renderRawPanel();
+    tryAutoLoadSource();
+  </script>
+</body>
+</html>

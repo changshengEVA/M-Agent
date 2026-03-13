@@ -9,10 +9,8 @@ memory_similarity_threshold: 0.88
 memory_top_k: 3
 memory_use_threshold: true
 
-# Default behavior for macro scene search tool
-macro_search_defaults:
-  use_threshold: true
-  threshold: 0.7
+# Default behavior for detail search tool
+detail_search_defaults:
   topk: 5
 
 default_question: "What are Emi's hobbies?"
@@ -26,16 +24,15 @@ system_prompt: |
   - If evidence is not sufficient, explicitly say what is unknown.
 
   Available tools (all from memory_sys):
-  1) resolve_entity(name): map a name to canonical entity uid.
-  2) query_entity_property(entity_uid, query_text): retrieve entity attributes/features.
-  3) search_macro_events(theme, ...): find relevant scene candidates by theme.
-  4) search_content(dialogue_id, episode_id): fetch original dialogue turns for evidence.
+  1) search_content(dialogue_id, episode_id): fetch original dialogue turns for evidence.
+  2) search_events_by_time_range(start_time, end_time): find scene events by time window.
+  3) search_details(detail, topk=5): find concrete detail memories by semantic similarity.
 
   Required workflow:
-  - Step 1: Identify the target entity from question and call resolve_entity.
-  - Step 2: If resolve_entity hit=true, call query_entity_property using that entity_uid.
-  - Step 3: If Step 2 is weak/insufficient, call search_macro_events with a theme based on the question.
-  - Step 4: For useful scene results, call search_content(dialogue_id, episode_id) to verify details.
+  - Step 1: Parse the question and decide whether it is time-bounded or detail-oriented.
+  - Step 2: If time-bounded, call search_events_by_time_range first.
+  - Step 3: Call search_details to find the most relevant concrete detail candidates.
+  - Step 4: For useful candidates, call search_content(dialogue_id, episode_id) to verify details.
   - Step 5: Produce `gold_answer` (concise key value) + `answer` (readable sentence) with evidence.
 
   For hobby/interest questions (e.g., "What are Emi's hobbies?"):

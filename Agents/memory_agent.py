@@ -42,6 +42,8 @@ class AgentResponse:
     answer: str
     gold_answer: Optional[str] = None
     evidence: Optional[str] = None
+    sub_questions: Optional[List[str]] = None
+    plan_summary: Optional[str] = None
 
 
 class MemoryAgent:
@@ -51,6 +53,7 @@ class MemoryAgent:
         r"\b(?P<direction>next|last)\s+month\s+from\s+(?P<anchor>[A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{4}-\d{1,2}-\d{1,2})\b",
         flags=re.IGNORECASE,
     )
+    _JSON_BLOCK_PATTERN = re.compile(r"\{[\s\S]*\}")
 
     @staticmethod
     def _is_unanswerable_text(text: Any) -> bool:
@@ -177,11 +180,20 @@ class MemoryAgent:
     def get_last_tool_calls(self) -> List[Dict[str, Any]]:
         return [dict(call) for call in self._last_tool_calls]
 
+    def get_last_question_plan(self) -> Optional[Dict[str, Any]]:
+        if not isinstance(self._last_question_plan, dict):
+            return None
+        return {
+            str(k): self._safe_trace_value(v)
+            for k, v in self._last_question_plan.items()
+        }
+
     def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH):
         self.config_path = Path(config_path)
         self.config = self._load_config(self.config_path)
         self._current_tool_calls: List[Dict[str, Any]] = []
         self._last_tool_calls: List[Dict[str, Any]] = []
+        self._last_question_plan: Optional[Dict[str, Any]] = None
 
         self.macro_search_defaults: Dict[str, Any] = {
             "use_threshold": True,
@@ -213,6 +225,23 @@ class MemoryAgent:
             self.config.get("retry_recursion_limit", max(self.recursion_limit, 120))
         )
         self.system_prompt = str(self.config["system_prompt"])
+        self.planner_prompt = str(
+            self.config.get(
+                "planner_prompt",
+                (
+                    "You are a question decomposition planner for a memory QA agent.\n"
+                    "Break the question into a small number of evidence-seeking sub-questions.\n"
+                    "Return JSON only with keys: goal, question_type, decomposition_reason, "
+                    "sub_questions, suggested_tool_order, completion_criteria.\n"
+                    "question_type must be one of: direct_lookup, comparison, summary, counting, "
+                    "temporal, causal, multi_hop.\n"
+                    "sub_questions must be an ordered list of concrete, answerable questions.\n"
+                    "suggested_tool_order must be an ordered list chosen from: "
+                    "search_events_by_time_range, search_details, search_content.\n"
+                    "Keep the plan minimal and goal-directed."
+                ),
+            )
+        )
         self.model_name = str(self.config.get("model_name", "deepseek-chat"))
         self.agent_temperature = float(self.config.get("agent_temperature", 0.0))
 
@@ -438,7 +467,7 @@ class MemoryAgent:
         def search_details(detail: str, topk: Optional[int] = None) -> Dict[str, Any]:
             """
             Search concrete behavior/action details from scene memories by semantic similarity.
-            Returns top-K matched details with actor/evidence.
+            Returns top-K matched details with atomic-fact/evidence.
             """
 
             cfg_topk = self.detail_search_defaults["topk"] if topk is None else int(topk)
@@ -464,14 +493,405 @@ class MemoryAgent:
             )
             return result
 
-        return [
-            resolve_entity,
-            query_entity_property,
-            search_macro_events,
-            search_content,
-            search_events_by_time_range,
-            search_details,
+        return [search_content, search_events_by_time_range, search_details]
+
+    @staticmethod
+    def _extract_message_text(message: Any) -> str:
+        content = getattr(message, "content", message)
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            chunks: List[str] = []
+            for item in content:
+                if isinstance(item, str):
+                    chunks.append(item)
+                elif isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str):
+                        chunks.append(text)
+            return "\n".join(chunk for chunk in chunks if chunk)
+        return str(content or "")
+
+    @classmethod
+    def _parse_json_block(cls, text: str) -> Optional[Dict[str, Any]]:
+        if not isinstance(text, str) or not text.strip():
+            return None
+        stripped = text.strip()
+        candidates = [stripped]
+        matched = cls._JSON_BLOCK_PATTERN.search(stripped)
+        if matched:
+            candidates.append(matched.group(0))
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return None
+
+    @staticmethod
+    def _normalize_question_plan(question_text: str, plan: Dict[str, Any]) -> Dict[str, Any]:
+        normalized_sub_questions = plan.get("sub_questions", [])
+        if not isinstance(normalized_sub_questions, list):
+            normalized_sub_questions = []
+        normalized_sub_questions = [
+            str(item).strip() for item in normalized_sub_questions if str(item).strip()
         ]
+
+        tool_order = plan.get("suggested_tool_order", [])
+        if not isinstance(tool_order, list):
+            tool_order = []
+        tool_order = [str(item).strip() for item in tool_order if str(item).strip()]
+
+        question_type = str(plan.get("question_type", "") or "").strip().lower()
+        if not question_type:
+            question_type = "direct_lookup"
+
+        goal = str(plan.get("goal", "") or "").strip() or question_text
+        decomposition_reason = str(plan.get("decomposition_reason", "") or "").strip()
+        completion_criteria = str(plan.get("completion_criteria", "") or "").strip()
+
+        if not normalized_sub_questions:
+            normalized_sub_questions = [question_text]
+
+        return {
+            "goal": goal,
+            "question_type": question_type,
+            "decomposition_reason": decomposition_reason,
+            "sub_questions": normalized_sub_questions,
+            "suggested_tool_order": tool_order,
+            "completion_criteria": completion_criteria,
+        }
+
+    @staticmethod
+    def _fallback_question_plan(question_text: str) -> Dict[str, Any]:
+        normalized = question_text.strip()
+        lowered = normalized.lower()
+
+        if any(token in lowered for token in ("compare", "difference", "different", "similar")) or any(
+            token in normalized for token in ("对比", "比较", "区别", "不同", "相同")
+        ):
+            question_type = "comparison"
+            sub_questions = [
+                f"What is the evidence for the first side of: {normalized}",
+                f"What is the evidence for the second side of: {normalized}",
+                f"Based on both sides, what is the supported comparison result for: {normalized}",
+            ]
+        elif any(token in lowered for token in ("how many", "count", "number of")) or any(
+            token in normalized for token in ("多少", "几次", "几个人", "数量", "总共")
+        ):
+            question_type = "counting"
+            sub_questions = [
+                f"What candidate evidence items are relevant to: {normalized}",
+                f"After deduplication, what is the correct count for: {normalized}",
+            ]
+        elif any(token in lowered for token in ("summary", "summarize")) or any(
+            token in normalized for token in ("总结", "概括", "概述")
+        ):
+            question_type = "summary"
+            sub_questions = [
+                f"What are the key evidence points needed to summarize: {normalized}",
+                f"What concise summary is supported by those evidence points for: {normalized}",
+            ]
+        elif any(token in lowered for token in ("when", "before", "after", "during", "date", "time")) or any(
+            token in normalized for token in ("什么时候", "之前", "之后", "期间", "日期", "时间")
+        ):
+            question_type = "temporal"
+            sub_questions = [
+                f"What events or details establish the time anchors for: {normalized}",
+                f"What exact time answer is supported for: {normalized}",
+            ]
+        elif any(token in lowered for token in ("why", "reason", "because", "cause")) or any(
+            token in normalized for token in ("为什么", "原因", "因为", "导致")
+        ):
+            question_type = "causal"
+            sub_questions = [
+                f"What happened before or around the target event in: {normalized}",
+                f"What evidence-supported cause or reason answers: {normalized}",
+            ]
+        else:
+            question_type = "direct_lookup"
+            sub_questions = [
+                f"What concrete evidence directly answers: {normalized}",
+                f"What final answer is supported by that evidence for: {normalized}",
+            ]
+
+        return {
+            "goal": normalized,
+            "question_type": question_type,
+            "decomposition_reason": "Fallback heuristic decomposition.",
+            "sub_questions": sub_questions,
+            "suggested_tool_order": [
+                "search_events_by_time_range" if question_type == "temporal" else "search_details",
+                "search_content",
+            ],
+            "completion_criteria": "Each core sub-question is answered with tool-grounded evidence.",
+        }
+
+    def _decompose_question(self, question_text: str) -> Dict[str, Any]:
+        logger.info(
+            "API call: decompose_question(question_len=%d)",
+            len(question_text or ""),
+        )
+        try:
+            response = self.model.invoke(
+                f"{self.planner_prompt}\n\n[User Question]\n{question_text}"
+            )
+            plan_text = self._extract_message_text(response)
+            parsed = self._parse_json_block(plan_text)
+            if isinstance(parsed, dict):
+                normalized = self._normalize_question_plan(question_text, parsed)
+                logger.info(
+                    "PLAN UPDATE: %s",
+                    json.dumps(self._safe_trace_value(normalized), ensure_ascii=False),
+                )
+                logger.info(
+                    "API response: decompose_question(question_type=%s, sub_question_count=%d)",
+                    normalized.get("question_type"),
+                    len(normalized.get("sub_questions", [])),
+                )
+                return normalized
+        except Exception as exc:
+            logger.warning("decompose_question failed, fallback to heuristic plan: %s", exc)
+
+        fallback = self._fallback_question_plan(question_text)
+        logger.info(
+            "PLAN UPDATE: %s",
+            json.dumps(self._safe_trace_value(fallback), ensure_ascii=False),
+        )
+        logger.info(
+            "API response: decompose_question(question_type=%s, sub_question_count=%d, fallback=true)",
+            fallback.get("question_type"),
+            len(fallback.get("sub_questions", [])),
+        )
+        return fallback
+
+    @staticmethod
+    def _build_sub_question_prompt(
+        question_text: str,
+        question_plan: Dict[str, Any],
+        sub_question: str,
+        sub_index: int,
+        total_sub_questions: int,
+    ) -> str:
+        return (
+            "[Original Question]\n"
+            f"{question_text}\n\n"
+            "[Question Plan]\n"
+            f"{json.dumps(question_plan, ensure_ascii=False, indent=2)}\n\n"
+            "[Current Sub-question]\n"
+            f"#{sub_index}/{total_sub_questions}: {sub_question}\n\n"
+            "[Task]\n"
+            "- Answer only the current sub-question.\n"
+            "- Use tools if needed.\n"
+            "- Keep the answer concrete and grounded in evidence.\n"
+            "- gold_answer should be the concise value for this sub-question when possible."
+        )
+
+    @staticmethod
+    def _build_final_synthesis_prompt(
+        question_text: str,
+        question_plan: Dict[str, Any],
+        sub_question_results: List[Dict[str, Any]],
+    ) -> str:
+        return (
+            "You are the final synthesis stage of a memory QA pipeline.\n"
+            "Use only the provided solved sub-questions and their evidence.\n"
+            "Return JSON only with keys: answer, gold_answer, evidence.\n"
+            "gold_answer must be concise. If the final answer is unknown, set gold_answer to null.\n\n"
+            "[Original Question]\n"
+            f"{question_text}\n\n"
+            "[Question Plan]\n"
+            f"{json.dumps(question_plan, ensure_ascii=False, indent=2)}\n\n"
+            "[Solved Sub-questions]\n"
+            f"{json.dumps(sub_question_results, ensure_ascii=False, indent=2)}"
+        )
+
+    def _invoke_tool_agent(self, prompt_text: str, thread_id: str) -> Dict[str, Any]:
+        invoke_config = {
+            "configurable": {"thread_id": thread_id},
+            "recursion_limit": self.recursion_limit,
+        }
+        try:
+            invoke_start = time.perf_counter()
+            logger.info(
+                "API call: agent.invoke(thread_id=%s, recursion_limit=%s, prompt_len=%d)",
+                thread_id,
+                self.recursion_limit,
+                len(prompt_text or ""),
+            )
+            response = self.agent.invoke(
+                {"messages": [{"role": "user", "content": prompt_text}]},
+                config=invoke_config,
+            )
+            logger.info(
+                "API response: agent.invoke(thread_id=%s, elapsed_ms=%.2f)",
+                thread_id,
+                (time.perf_counter() - invoke_start) * 1000.0,
+            )
+            return response
+        except GraphRecursionError:
+            logger.warning(
+                "GraphRecursionError on thread_id=%s with recursion_limit=%s; retrying with recursion_limit=%s",
+                thread_id,
+                self.recursion_limit,
+                self.retry_recursion_limit,
+            )
+            retry_config = {
+                "configurable": {"thread_id": thread_id},
+                "recursion_limit": self.retry_recursion_limit,
+            }
+            retry_start = time.perf_counter()
+            logger.info(
+                "API call: agent.invoke.retry(thread_id=%s, recursion_limit=%s, prompt_len=%d)",
+                thread_id,
+                self.retry_recursion_limit,
+                len(prompt_text or ""),
+            )
+            response = self.agent.invoke(
+                {"messages": [{"role": "user", "content": prompt_text}]},
+                config=retry_config,
+            )
+            logger.info(
+                "API response: agent.invoke.retry(thread_id=%s, elapsed_ms=%.2f)",
+                thread_id,
+                (time.perf_counter() - retry_start) * 1000.0,
+            )
+            return response
+
+    def _normalize_agent_structured_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        structured = response.get("structured_response")
+        if is_dataclass(structured):
+            return self._normalize_output(asdict(structured))
+        if isinstance(structured, dict):
+            return self._normalize_output(structured)
+        return self._normalize_output(
+            {
+                "answer": str(structured) if structured is not None else str(response),
+                "gold_answer": None,
+                "evidence": None,
+            }
+        )
+
+    def _solve_sub_questions(
+        self,
+        question_text: str,
+        question_plan: Dict[str, Any],
+        active_thread_id: str,
+    ) -> List[Dict[str, Any]]:
+        sub_questions = question_plan.get("sub_questions", [])
+        if not isinstance(sub_questions, list):
+            sub_questions = []
+
+        results: List[Dict[str, Any]] = []
+        total = max(len(sub_questions), 1)
+
+        for idx, item in enumerate(sub_questions, start=1):
+            sub_question = str(item).strip()
+            if not sub_question:
+                continue
+
+            logger.info(
+                "SUBQ START: %s",
+                json.dumps(
+                    {
+                        "index": idx,
+                        "question": sub_question,
+                        "status": "in_progress",
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
+            try:
+                prompt_text = self._build_sub_question_prompt(
+                    question_text=question_text,
+                    question_plan=question_plan,
+                    sub_question=sub_question,
+                    sub_index=idx,
+                    total_sub_questions=total,
+                )
+                response = self._invoke_tool_agent(
+                    prompt_text=prompt_text,
+                    thread_id=f"{active_thread_id}:subq:{idx}",
+                )
+                payload = self._normalize_agent_structured_response(response)
+                result_item = {
+                    "index": idx,
+                    "question": sub_question,
+                    "status": "completed",
+                    "answer": str(payload.get("answer", "") or "").strip(),
+                    "gold_answer": payload.get("gold_answer"),
+                    "evidence": payload.get("evidence"),
+                }
+            except Exception as exc:
+                result_item = {
+                    "index": idx,
+                    "question": sub_question,
+                    "status": "failed",
+                    "answer": "",
+                    "gold_answer": None,
+                    "evidence": None,
+                    "error": str(exc),
+                }
+
+            logger.info(
+                "SUBQ DONE: %s",
+                json.dumps(self._safe_trace_value(result_item), ensure_ascii=False),
+            )
+            results.append(result_item)
+
+        return results
+
+    def _synthesize_final_answer(
+        self,
+        question_text: str,
+        question_plan: Dict[str, Any],
+        sub_question_results: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        synthesis_prompt = self._build_final_synthesis_prompt(
+            question_text=question_text,
+            question_plan=question_plan,
+            sub_question_results=sub_question_results,
+        )
+        logger.info(
+            "API call: synthesize_final_answer(sub_question_count=%d)",
+            len(sub_question_results),
+        )
+        response = self.model.invoke(synthesis_prompt)
+        response_text = self._extract_message_text(response)
+        parsed = self._parse_json_block(response_text)
+        if isinstance(parsed, dict):
+            payload = self._normalize_output(parsed)
+        else:
+            payload = self._normalize_output(
+                {
+                    "answer": response_text.strip(),
+                    "gold_answer": None,
+                    "evidence": None,
+                }
+            )
+        logger.info(
+            "API response: synthesize_final_answer(answer_len=%d)",
+            len(str(payload.get("answer", "") or "")),
+        )
+        return payload
+
+    @staticmethod
+    def _build_execution_prompt(question_text: str, question_plan: Dict[str, Any]) -> str:
+        return (
+            "[Original Question]\n"
+            f"{question_text}\n\n"
+            "[Question Plan]\n"
+            f"{json.dumps(question_plan, ensure_ascii=False, indent=2)}\n\n"
+            "[Execution Rules]\n"
+            "- Answer the original question, not the plan itself.\n"
+            "- Use the plan as the default execution order.\n"
+            "- If tool evidence invalidates the plan, refine it mentally and continue.\n"
+            "- Do not skip the sub-questions for comparison, summary, counting, or multi-hop questions."
+        )
 
     def ask(self, question: str, thread_id: Optional[str] = None) -> Dict[str, Any]:
         """Run one QA round: input question -> output structured answer dict."""
@@ -481,73 +901,27 @@ class MemoryAgent:
         question_text = question.strip()
         active_thread_id = thread_id or self.thread_id
         self._current_tool_calls = []
-
-        invoke_config = {
-            "configurable": {"thread_id": active_thread_id},
-            "recursion_limit": self.recursion_limit,
-        }
+        question_plan = self._decompose_question(question_text)
+        self._last_question_plan = question_plan
         try:
-            try:
-                invoke_start = time.perf_counter()
-                logger.info(
-                    "API call: agent.invoke(thread_id=%s, recursion_limit=%s, question_len=%d)",
-                    active_thread_id,
-                    self.recursion_limit,
-                    len(question_text),
-                )
-                response = self.agent.invoke(
-                    {"messages": [{"role": "user", "content": question_text}]},
-                    config=invoke_config,
-                )
-                logger.info(
-                    "API response: agent.invoke(thread_id=%s, elapsed_ms=%.2f)",
-                    active_thread_id,
-                    (time.perf_counter() - invoke_start) * 1000.0,
-                )
-            except GraphRecursionError:
-                logger.warning(
-                    "GraphRecursionError on thread_id=%s with recursion_limit=%s; retrying with recursion_limit=%s",
-                    active_thread_id,
-                    self.recursion_limit,
-                    self.retry_recursion_limit,
-                )
-                retry_config = {
-                    "configurable": {"thread_id": active_thread_id},
-                    "recursion_limit": self.retry_recursion_limit,
-                }
-                retry_start = time.perf_counter()
-                logger.info(
-                    "API call: agent.invoke.retry(thread_id=%s, recursion_limit=%s, question_len=%d)",
-                    active_thread_id,
-                    self.retry_recursion_limit,
-                    len(question_text),
-                )
-                response = self.agent.invoke(
-                    {"messages": [{"role": "user", "content": question_text}]},
-                    config=retry_config,
-                )
-                logger.info(
-                    "API response: agent.invoke.retry(thread_id=%s, elapsed_ms=%.2f)",
-                    active_thread_id,
-                    (time.perf_counter() - retry_start) * 1000.0,
-                )
-
-            structured = response.get("structured_response")
-            if is_dataclass(structured):
-                payload = self._normalize_output(asdict(structured))
-            elif isinstance(structured, dict):
-                payload = self._normalize_output(structured)
-            else:
-                payload = self._normalize_output(
-                    {
-                        "answer": str(structured) if structured is not None else str(response),
-                        "gold_answer": None,
-                        "evidence": None,
-                    }
-                )
-
+            sub_question_results = self._solve_sub_questions(
+                question_text=question_text,
+                question_plan=question_plan,
+                active_thread_id=active_thread_id,
+            )
+            payload = self._synthesize_final_answer(
+                question_text=question_text,
+                question_plan=question_plan,
+                sub_question_results=sub_question_results,
+            )
             tool_calls = self._consume_current_tool_calls()
             payload["tool_calls"] = tool_calls
+            payload["question_plan"] = question_plan
+            payload["sub_question_results"] = sub_question_results
+            if not payload.get("sub_questions"):
+                payload["sub_questions"] = question_plan.get("sub_questions", [])
+            if not payload.get("plan_summary"):
+                payload["plan_summary"] = question_plan.get("decomposition_reason")
             self._last_tool_calls = tool_calls
             return payload
         except Exception:

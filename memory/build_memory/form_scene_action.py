@@ -3,9 +3,9 @@
 """
 Scene action extraction module.
 
-Scan scene files under one workflow and write back an `actions` field for each
-scene. Actions are extracted from source dialogue spans referenced by
-scene.source.episodes.
+Scan scene files under one workflow and write back a `facts` field for each
+scene. Each action item stores one extracted atomic fact from source dialogue
+spans referenced by scene.source.episodes.
 """
 
 from __future__ import annotations
@@ -203,7 +203,13 @@ def call_action_extraction(
         parsed = [parsed]
     if not isinstance(parsed, list):
         raise ValueError("Action extraction result is not a JSON list")
-    return [x for x in parsed if isinstance(x, dict)]
+    normalized: List[Dict[str, Any]] = []
+    for item in parsed:
+        if isinstance(item, dict):
+            normalized.append(item)
+        elif isinstance(item, str) and item.strip():
+            normalized.append({"Atomic fact": item.strip()})
+    return normalized
 
 
 def fallback_extract_actions(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -222,24 +228,22 @@ def fallback_extract_actions(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]
     results: List[Dict[str, Any]] = []
 
     for turn in turns:
-        speaker = str(turn.get("speaker", "")).strip()
         text = str(turn.get("text", "")).strip()
         lower = text.lower()
         if not text:
             continue
 
         if any(k in lower for k in keywords) or any(k in text for k in keywords):
-            action = text
+            atomic_fact = text
             sentences = re.split(r"(?<=[.!?。！？])\s+", text)
             for sentence in sentences:
                 if any(k in sentence.lower() for k in keywords) or any(k in sentence for k in keywords):
-                    action = sentence.strip()
+                    atomic_fact = sentence.strip()
                     break
             results.append(
                 {
-                    "actor": speaker,
-                    "action": action,
-                    "evidence_sentence": action,
+                    "Atomic fact": atomic_fact,
+                    "evidence_sentence": atomic_fact,
                 }
             )
 
@@ -252,8 +256,7 @@ def fallback_extract_actions(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]
         if text:
             return [
                 {
-                    "actor": str(first.get("speaker", "")).strip(),
-                    "action": text,
+                    "Atomic fact": text,
                     "evidence_sentence": text,
                 }
             ]
@@ -261,63 +264,43 @@ def fallback_extract_actions(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]
     return []
 
 
-def infer_actor_from_evidence(evidence_sentence: str, turns: List[Dict[str, Any]], participants: List[str]) -> str:
-    evidence = evidence_sentence.strip().lower()
-    if evidence:
-        for turn in turns:
-            speaker = str(turn.get("speaker", "")).strip()
-            text = str(turn.get("text", "")).strip().lower()
-            if evidence in text and speaker:
-                return speaker
-    return participants[0] if participants else ""
+def extract_atomic_fact(raw_item: Dict[str, Any]) -> str:
+    if not isinstance(raw_item, dict):
+        return ""
+
+    candidate_keys = ("Atomic fact", "atomic_fact", "atomic fact", "Atomic_fact")
+    for key in candidate_keys:
+        value = raw_item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
-def normalize_actor(actor: str, participants: List[str]) -> str:
-    actor = actor.strip()
-    if not actor:
-        return actor
-    mapping = {p.lower(): p for p in participants}
-    return mapping.get(actor.lower(), actor)
-
-
-def build_action_embedding_text(actor: str, action: str) -> str:
-    actor_text = (actor or "").strip()
-    action_text = (action or "").strip()
-    if actor_text and action_text:
-        return f"{actor_text}: {action_text}"
-    return action_text or actor_text
+def build_atomic_fact_embedding_text(atomic_fact: str) -> str:
+    return (atomic_fact or "").strip()
 
 
 def complete_action_item(
     raw_item: Dict[str, Any],
     source_ep: Dict[str, Any],
-    turns: List[Dict[str, Any]],
-    participants: List[str],
     embed_model: Callable[[Any], Any],
 ) -> Dict[str, Any]:
     evidence_sentence = str(raw_item.get("evidence_sentence", "")).strip()
-    actor = str(raw_item.get("actor", "")).strip()
-    action = str(raw_item.get("action", "")).strip()
-
-    if not actor:
-        actor = infer_actor_from_evidence(evidence_sentence, turns, participants)
-    actor = normalize_actor(actor, participants)
-
-    if not action:
-        action = evidence_sentence or "unknown_action"
+    atomic_fact = extract_atomic_fact(raw_item)
+    if not atomic_fact:
+        atomic_fact = evidence_sentence or "unknown_atomic_fact"
 
     embedding: List[float] = []
-    embedding_input = build_action_embedding_text(actor=actor, action=action)
+    embedding_input = build_atomic_fact_embedding_text(atomic_fact=atomic_fact)
     try:
         vec = embed_model(embedding_input)
         if isinstance(vec, list):
             embedding = vec
     except Exception as exc:
-        logger.warning("Embedding generation failed for action '%s': %s", embedding_input[:80], exc)
+        logger.warning("Embedding generation failed for atomic_fact '%s': %s", embedding_input[:80], exc)
 
     return {
-        "actor": actor,
-        "action": action,
+        "Atomic fact": atomic_fact,
         "evidence": {
             "episode_id": str(source_ep.get("episode_id", "")),
             "dialogue_id": str(source_ep.get("dialogue_id", "")),
@@ -331,9 +314,14 @@ def deduplicate_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     seen = set()
     for item in actions:
         evidence = item.get("evidence", {})
+        atomic_fact = str(
+            item.get("Atomic fact")
+            or item.get("atomic_fact")
+            or item.get("atomic fact")
+            or ""
+        ).strip().lower()
         key = (
-            str(item.get("actor", "")).strip().lower(),
-            str(item.get("action", "")).strip().lower(),
+            atomic_fact,
             str(evidence.get("episode_id", "")).strip(),
             str(evidence.get("dialogue_id", "")).strip(),
         )
@@ -367,11 +355,6 @@ def build_actions_from_source_episode(
         logger.warning("Failed to load dialogue file %s: %s", dialogue_file, exc)
         return []
 
-    participants = dialogue_data.get("participants", [])
-    if not isinstance(participants, list):
-        participants = []
-    participants = [str(p) for p in participants]
-
     turns = extract_turns(dialogue_data, turn_span if isinstance(turn_span, list) else [])
     dialogue_block = turns_to_dialogue_block(turns)
     if not dialogue_block.strip():
@@ -390,8 +373,6 @@ def build_actions_from_source_episode(
         complete_action_item(
             raw_item=item,
             source_ep=source_ep,
-            turns=turns,
-            participants=participants,
             embed_model=embed_model,
         )
         for item in raw_actions
@@ -413,19 +394,19 @@ def process_scene_file(
         logger.error("Failed to load scene file %s: %s", scene_file, exc)
         return "failed", 0
 
-    if not force_update and isinstance(scene_data.get("actions"), list):
-        return "skipped", len(scene_data.get("actions", []))
+    if not force_update and isinstance(scene_data.get("facts"), list):
+        return "skipped", len(scene_data.get("facts", []))
 
     source = scene_data.get("source", {})
     source_episodes = source.get("episodes", []) if isinstance(source, dict) else []
     if not isinstance(source_episodes, list):
         source_episodes = []
 
-    actions: List[Dict[str, Any]] = []
+    facts: List[Dict[str, Any]] = []
     for source_ep in source_episodes:
         if not isinstance(source_ep, dict):
             continue
-        actions.extend(
+        facts.extend(
             build_actions_from_source_episode(
                 source_ep=source_ep,
                 dialogues_root=dialogues_root,
@@ -435,11 +416,12 @@ def process_scene_file(
             )
         )
 
-    scene_data["actions"] = deduplicate_actions(actions)
+    scene_data["facts"] = deduplicate_actions(facts)
+    scene_data.pop("actions", None)
 
     try:
         save_json(scene_file, scene_data)
-        return "updated", len(scene_data["actions"])
+        return "updated", len(scene_data["facts"])
     except Exception as exc:
         logger.error("Failed to save scene file %s: %s", scene_file, exc)
         return "failed", 0
@@ -459,13 +441,13 @@ def scan_and_form_scene_actions(
 
     if not memory_root.exists():
         logger.error("Memory root does not exist: %s", memory_root)
-        return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "with_actions": 0, "empty_actions": 0}
+        return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "with_facts": 0, "empty_facts": 0}
     if not scene_root.exists():
         logger.error("Scene directory does not exist: %s", scene_root)
-        return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "with_actions": 0, "empty_actions": 0}
+        return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "with_facts": 0, "empty_facts": 0}
     if not dialogues_root.exists():
         logger.error("Dialogues directory does not exist: %s", dialogues_root)
-        return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "with_actions": 0, "empty_actions": 0}
+        return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "with_facts": 0, "empty_facts": 0}
 
     prompts = load_prompts()
     prompt_keys = [f"action_extractio_{prompt_version}", f"action_extraction_{prompt_version}"]
@@ -477,7 +459,7 @@ def scan_and_form_scene_actions(
             break
     if not isinstance(prompt_template, str) or not prompt_template.strip():
         logger.error("Prompt template not found for keys: %s", prompt_keys)
-        return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "with_actions": 0, "empty_actions": 0}
+        return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "with_facts": 0, "empty_facts": 0}
 
     if embed_model is None:
         try:
@@ -494,14 +476,14 @@ def scan_and_form_scene_actions(
         "updated": 0,
         "skipped": 0,
         "failed": 0,
-        "with_actions": 0,
-        "empty_actions": 0,
+        "with_facts": 0,
+        "empty_facts": 0,
     }
     if not scene_files:
         logger.info("No scene files found under %s", scene_root)
         return stats
 
-    file_iter = tqdm(scene_files, desc="Extract scene actions") if use_tqdm else scene_files
+    file_iter = tqdm(scene_files, desc="Extract scene facts") if use_tqdm else scene_files
     for scene_file in file_iter:
         status, action_count = process_scene_file(
             scene_file=scene_file,
@@ -515,26 +497,26 @@ def scan_and_form_scene_actions(
         if status == "updated":
             stats["updated"] += 1
             if action_count > 0:
-                stats["with_actions"] += 1
+                stats["with_facts"] += 1
             else:
-                stats["empty_actions"] += 1
+                stats["empty_facts"] += 1
         elif status == "skipped":
             stats["skipped"] += 1
             if action_count > 0:
-                stats["with_actions"] += 1
+                stats["with_facts"] += 1
             else:
-                stats["empty_actions"] += 1
+                stats["empty_facts"] += 1
         else:
             stats["failed"] += 1
 
     logger.info(
-        "Scene action extraction complete: scanned=%s updated=%s skipped=%s failed=%s with_actions=%s empty_actions=%s",
+        "Scene fact extraction complete: scanned=%s updated=%s skipped=%s failed=%s with_facts=%s empty_facts=%s",
         stats["scanned"],
         stats["updated"],
         stats["skipped"],
         stats["failed"],
-        stats["with_actions"],
-        stats["empty_actions"],
+        stats["with_facts"],
+        stats["empty_facts"],
     )
     return stats
 
@@ -542,10 +524,10 @@ def scan_and_form_scene_actions(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Extract actions for scene files")
+    parser = argparse.ArgumentParser(description="Extract facts for scene files")
     parser.add_argument("--workflow-id", type=str, default="default", help="Workflow ID under data/memory")
     parser.add_argument("--prompt-version", type=str, default="v1", help="Action prompt version suffix")
-    parser.add_argument("--force-update", action="store_true", help="Regenerate actions even if already present")
+    parser.add_argument("--force-update", action="store_true", help="Regenerate facts even if already present")
     parser.add_argument("--no-tqdm", action="store_true", help="Disable tqdm progress bar")
     args = parser.parse_args()
 

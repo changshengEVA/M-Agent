@@ -130,10 +130,12 @@ def stage2_construct_episodes_for_id(
     process_id: str,
     memory_owner_name: str = "changshengEVA",
     llm_model: Optional[Callable[[str], str]] = None,
+    enable_episode_scoring_filter: bool = False,
 ) -> bool:
     logger.info("=" * 50)
     logger.info("Stage 2: construct episodes for process_id=%s", process_id)
     logger.info("memory_owner_name=%s", memory_owner_name)
+    logger.info("enable_episode_scoring_filter=%s", enable_episode_scoring_filter)
     logger.info("=" * 50)
 
     if not build_episodes_with_id(
@@ -141,6 +143,7 @@ def stage2_construct_episodes_for_id(
         str(PROJECT_ROOT),
         memory_owner_name,
         llm_model=llm_model,
+        enable_episode_scoring_filter=enable_episode_scoring_filter,
     ):
         logger.error("Build episodes failed")
         return False
@@ -341,7 +344,7 @@ def stage6_form_scene_actions_for_id(
 
         scene_root = get_output_path(process_id, "scene")
         updated_files_count = 0
-        non_empty_actions_count = 0
+        non_empty_facts_count = 0
         for file_path in scene_root.glob("*.json"):
             try:
                 int(file_path.stem)
@@ -351,18 +354,18 @@ def stage6_form_scene_actions_for_id(
             try:
                 with open(file_path, "r", encoding="utf-8") as f:
                     scene_data = json.load(f)
-                actions = scene_data.get("actions")
-                if isinstance(actions, list):
+                facts = scene_data.get("facts")
+                if isinstance(facts, list):
                     updated_files_count += 1
-                    if actions:
-                        non_empty_actions_count += 1
+                    if facts:
+                        non_empty_facts_count += 1
             except json.JSONDecodeError:
                 continue
 
         logger.info(
-            "Stage 6 complete, scene files with actions=%s (non-empty=%s), action_stats=%s",
+            "Stage 6 complete, scene files with facts=%s (non-empty=%s), fact_stats=%s",
             updated_files_count,
-            non_empty_actions_count,
+            non_empty_facts_count,
             stage_stats,
         )
         return updated_files_count > 0
@@ -381,6 +384,7 @@ def run_full_pipeline_for_id(
     scene_prompt_version: str = "v1",
     action_prompt_version: str = "v1",
     memory_owner_name: str = "changshengEVA",
+    enable_episode_scoring_filter: bool = False,
     embed_provider: str = "bge",
     llm_temperature: float = 0.1,
 ) -> bool:
@@ -395,6 +399,7 @@ def run_full_pipeline_for_id(
         include_stage6,
     )
     logger.info("memory_owner_name=%s", memory_owner_name)
+    logger.info("enable_episode_scoring_filter=%s", enable_episode_scoring_filter)
     logger.info("embed_provider=%s llm_temperature=%s", embed_provider, llm_temperature)
     llm_model = init_llm_model(llm_temperature)
     embed_model = init_embed_model(embed_provider)
@@ -407,6 +412,7 @@ def run_full_pipeline_for_id(
         process_id,
         memory_owner_name,
         llm_model=llm_model,
+        enable_episode_scoring_filter=enable_episode_scoring_filter,
     ):
         logger.warning("Stage 2 failed")
         return False
@@ -477,6 +483,11 @@ def main() -> None:
     parser.add_argument("--action-prompt-version", type=str, default="v1", help="Action prompt version")
     parser.add_argument("--no-stage5", action="store_true", help="Disable stage 5")
     parser.add_argument("--no-stage6", action="store_true", help="Disable stage 6")
+    parser.add_argument(
+        "--enable-episode-scoring-filter",
+        action="store_true",
+        help="Enable episode qualification scoring and eligibility filtering (disabled by default).",
+    )
     parser.add_argument("--memory-owner-name", type=str, default="changshengEVA", help="Memory owner name")
     parser.add_argument(
         "--embed-provider",
@@ -504,6 +515,7 @@ def main() -> None:
         include_stage5=not args.no_stage5,
         include_stage6=not args.no_stage6,
         memory_owner_name=args.memory_owner_name,
+        enable_episode_scoring_filter=args.enable_episode_scoring_filter,
         embed_provider=args.embed_provider,
         llm_temperature=args.llm_temperature,
     )
@@ -518,4 +530,4 @@ if __name__ == "__main__":
     main()
 ##测试私有数据          python ./pipeline/memory_pre.py --id testdefault 
 ##测试realtalk数据      python ./pipeline/memory_pre.py --id testrt --data-source data\REALTALK\data\Chat_1_Emi_Elise.json --loader-type realtalk
-##测试locomo数据        python ./pipeline/memory_pre.py --id testlocomo --data-source data\locomo\data\locomo10.json --loader-type locomo
+##测试locomo数据        python ./pipeline/memory_pre.py --id evallocomo --data-source data\locomo\data\locomo10.json --loader-type locomo

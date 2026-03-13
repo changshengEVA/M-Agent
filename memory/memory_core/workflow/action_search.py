@@ -3,7 +3,7 @@
 """
 Action search workflow.
 
-Searches scene `actions` by cosine similarity on action embeddings.
+Searches scene `facts` by cosine similarity on atomic-fact embeddings.
 """
 
 import json
@@ -22,21 +22,20 @@ def search_details(
     topk: int = 5,
 ) -> Dict[str, Any]:
     """
-    Search actions by semantic similarity.
+    Search action details by semantic similarity.
 
     Output format:
     {
       "hit": bool,
       "topk": int,
       "total_scene_count": int,
-      "total_action_count": int,
+      "total_fact_count": int,
       "matched_count": int,
       "results": [
         {
           "scene_id": str,
           "similarity": float,
-          "actor": str,
-          "action": str,
+          "Atomic fact": str,
           "evidence": {"episode_id": str, "dialogue_id": str}
         }
       ]
@@ -49,7 +48,7 @@ def search_details(
         "hit": False,
         "topk": safe_topk,
         "total_scene_count": 0,
-        "total_action_count": 0,
+        "total_fact_count": 0,
         "matched_count": 0,
         "results": [],
     }
@@ -77,25 +76,27 @@ def search_details(
             continue
 
         scene_id = scene_data.get("scene_id") or scene_file.stem
-        actions = scene_data.get("actions", [])
-        if not isinstance(actions, list):
+        facts = scene_data.get("facts")
+        if not isinstance(facts, list):
             continue
 
-        for action_item in actions:
+        for action_item in facts:
             if not isinstance(action_item, dict):
                 continue
 
-            actor_text = str(action_item.get("actor", "")).strip()
-            action_text = str(action_item.get("action", "")).strip()
-            if not action_text:
+            atomic_fact_text = _extract_atomic_fact(action_item)
+            if not atomic_fact_text:
                 continue
 
-            result["total_action_count"] += 1
+            result["total_fact_count"] += 1
 
             action_embedding = action_item.get("embedding")
             if not _is_valid_embedding(action_embedding):
-                embedding_text = _build_action_embedding_text(actor=actor_text, action=action_text)
-                action_embedding = _embed_text(embed_func=embed_func, text=embedding_text, context="action")
+                action_embedding = _embed_text(
+                    embed_func=embed_func,
+                    text=atomic_fact_text,
+                    context="atomic_fact",
+                )
             if not _is_valid_embedding(action_embedding):
                 continue
 
@@ -104,8 +105,7 @@ def search_details(
                 {
                     "scene_id": scene_id,
                     "similarity": float(similarity),
-                    "actor": actor_text,
-                    "action": action_text,
+                    "Atomic fact": atomic_fact_text,
                     "evidence": action_item.get("evidence", {}),
                 }
             )
@@ -150,12 +150,13 @@ def _embed_text(
     return None
 
 
-def _build_action_embedding_text(actor: str, action: str) -> str:
-    actor_text = (actor or "").strip()
-    action_text = (action or "").strip()
-    if actor_text and action_text:
-        return f"{actor_text}: {action_text}"
-    return action_text or actor_text
+def _extract_atomic_fact(item: Dict[str, Any]) -> str:
+    candidate_keys = ("Atomic fact", "atomic_fact", "atomic fact", "Atomic_fact")
+    for key in candidate_keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
 
 
 def _cosine_similarity(vec_a: Any, vec_b: Any) -> float:

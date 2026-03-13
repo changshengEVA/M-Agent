@@ -1,198 +1,289 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Memory Build 工具函数 - 替代猴子补丁的新方法
-直接调用支持自定义目录参数的 build 方法
+Utilities for memory build pipeline.
+
+This module wraps episode build + optional qualification/filtering stages.
 """
 
-import os
-import sys
+from __future__ import annotations
+
+import json
 import logging
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
+
+def _build_default_all_available_results(dialogue_id: str, episodes: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Build pass-through eligibility records so every episode is available."""
+    results: List[Dict[str, Any]] = []
+    for episode in episodes:
+        if not isinstance(episode, dict):
+            continue
+        episode_id = str(episode.get("episode_id", "")).strip()
+        if not episode_id:
+            continue
+        results.append(
+            {
+                "episode_id": episode_id,
+                "dialogue_id": dialogue_id,
+                "eligible": True,
+                "reason": "all_available_default",
+                "rule_hits": [],
+                "scene_available": True,
+                "kg_available": True,
+                "emo_available": True,
+                "factual_novelty": 2,
+                "emotional_novelty": 1,
+            }
+        )
+    return results
+
+
+def _mark_all_episodes_available(
+    episodes_root: Path,
+    episode_version: str = "v1",
+    eligibility_version: str = "v1",
+) -> Tuple[int, int]:
+    """
+    Write eligibility + episode_situation with full pass-through policy.
+
+    Returns:
+        (dialogues_processed, episodes_marked)
+    """
+    from memory.build_memory.filter_episode import save_eligibility, save_episode_situation
+
+    by_dialogue_dir = episodes_root / "by_dialogue"
+    if not by_dialogue_dir.exists():
+        return 0, 0
+
+    dialogues_processed = 0
+    episodes_marked = 0
+
+    for dialogue_dir in by_dialogue_dir.iterdir():
+        if not dialogue_dir.is_dir():
+            continue
+
+        episode_file = dialogue_dir / f"episodes_{episode_version}.json"
+        if not episode_file.exists():
+            continue
+
+        try:
+            with open(episode_file, "r", encoding="utf-8") as f:
+                episode_data = json.load(f)
+        except Exception as exc:
+            logger.warning("Failed to load %s: %s", episode_file, exc)
+            continue
+
+        if not isinstance(episode_data, dict):
+            continue
+
+        dialogue_id = str(episode_data.get("dialogue_id", dialogue_dir.name)).strip()
+        episodes = episode_data.get("episodes", [])
+        if not isinstance(episodes, list):
+            episodes = []
+
+        results = _build_default_all_available_results(dialogue_id, episodes)
+        eligibility_file = dialogue_dir / f"eligibility_{eligibility_version}.json"
+
+        try:
+            save_eligibility(results, dialogue_id, eligibility_file, eligibility_version)
+            save_episode_situation(results, dialogue_id, episodes_root)
+        except Exception as exc:
+            logger.warning(
+                "Failed to save pass-through eligibility for dialogue_id=%s: %s",
+                dialogue_id,
+                exc,
+            )
+            continue
+
+        dialogues_processed += 1
+        episodes_marked += len(results)
+
+    return dialogues_processed, episodes_marked
+
+
 def build_episodes_with_id(
     process_id: str,
-    project_root: str = None,
+    project_root: str | Path | None = None,
     memory_owner_name: str = "changshengEVA",
-    llm_model: Optional[Callable[[str], str]] = None
-):
+    llm_model: Optional[Callable[[str], str]] = None,
+    enable_episode_scoring_filter: bool = False,
+) -> bool:
     """
-    使用指定的处理ID构建 episodes，生成到 data/memory/{id}/ 目录下
-    
-    Args:
-        process_id: 处理流的ID标识
-        project_root: 项目根目录，如果为None则使用当前文件所在目录的父目录的父目录
-        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
-    
-    Returns:
-        成功返回 True，失败返回 False
+    Build episodes for a workflow under data/memory/{process_id}/.
+
+    When enable_episode_scoring_filter is False (default), this function skips
+    qualification/filtering and marks all episodes as scene/kg/emo available.
     """
     try:
-        # 确定项目根目录
         if project_root is None:
             project_root = Path(__file__).parent.parent
-        
-        # 构建目录路径
+
         dialogues_root = Path(project_root) / "data" / "memory" / process_id / "dialogues"
         episodes_root = Path(project_root) / "data" / "memory" / process_id / "episodes"
-        
-        # 确保目录存在
+
         dialogues_root.mkdir(parents=True, exist_ok=True)
         episodes_root.mkdir(parents=True, exist_ok=True)
-        
-        logger.info(f"开始为处理流 {process_id} 构建 episodes")
-        logger.info(f"对话目录: {dialogues_root}")
-        logger.info(f"Episodes目录: {episodes_root}")
-        logger.info(f"记忆所有者名称: {memory_owner_name}")
-        
-        # 1. 构建 episodes
-        logger.info("开始构建 episodes...")
+
+        logger.info("Start building episodes for workflow=%s", process_id)
+        logger.info("dialogues_root=%s", dialogues_root)
+        logger.info("episodes_root=%s", episodes_root)
+        logger.info("memory_owner_name=%s", memory_owner_name)
+        logger.info("enable_episode_scoring_filter=%s", enable_episode_scoring_filter)
+
         from memory.build_memory.build_episode import scan_and_build_episodes
+
         scan_and_build_episodes(
             use_tqdm=True,
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
             memory_owner_name=memory_owner_name,
-            llm_model=llm_model
+            llm_model=llm_model,
         )
-        
-        # 2. 评分 qualifications
-        logger.info("开始评分 qualifications...")
-        from memory.build_memory.qualify_episode import scan_and_qualify_episodes
-        scan_and_qualify_episodes(
-            use_tqdm=True,
-            dialogues_root=dialogues_root,
-            episodes_root=episodes_root,
-            memory_owner_name=memory_owner_name,
-            llm_model=llm_model
-        )
-        
-        # 3. 过滤 eligibility
-        logger.info("开始过滤 eligibility...")
-        from memory.build_memory.filter_episode import scan_and_filter_episodes
-        scan_and_filter_episodes(
-            episode_version="v1",
-            eligibility_version="v1",
-            use_tqdm=True,
-            force_update_situation=True,
-            episodes_root=episodes_root
-        )
-        
-        logger.info(f"处理流 {process_id} 的 episode 构建流程完成")
+
+        if enable_episode_scoring_filter:
+            logger.info("Run qualification stage")
+            from memory.build_memory.qualify_episode import scan_and_qualify_episodes
+
+            scan_and_qualify_episodes(
+                use_tqdm=True,
+                dialogues_root=dialogues_root,
+                episodes_root=episodes_root,
+                memory_owner_name=memory_owner_name,
+                llm_model=llm_model,
+            )
+
+            logger.info("Run eligibility filtering stage")
+            from memory.build_memory.filter_episode import scan_and_filter_episodes
+
+            scan_and_filter_episodes(
+                episode_version="v1",
+                eligibility_version="v1",
+                use_tqdm=True,
+                force_update_situation=True,
+                episodes_root=episodes_root,
+            )
+        else:
+            logger.info("Skip qualification/filter. Mark all episodes as available by default.")
+            dialogue_count, episode_count = _mark_all_episodes_available(
+                episodes_root=episodes_root,
+                episode_version="v1",
+                eligibility_version="v1",
+            )
+            logger.info(
+                "Pass-through eligibility generated: dialogues=%s episodes=%s",
+                dialogue_count,
+                episode_count,
+            )
+
+        logger.info("Episode build flow completed for workflow=%s", process_id)
         return True
-        
-    except Exception as e:
-        logger.error(f"构建 episodes 失败: {e}")
+
+    except Exception as exc:
+        logger.error("Build episodes failed: %s", exc)
         import traceback
+
         logger.error(traceback.format_exc())
         return False
+
 
 def build_episodes_custom(
     dialogues_root: Path,
     episodes_root: Path,
     memory_owner_name: str = "changshengEVA",
-    llm_model: Optional[Callable[[str], str]] = None
-):
-    """
-    使用自定义目录构建 episodes
-    
-    Args:
-        dialogues_root: 对话根目录
-        episodes_root: episodes根目录
-        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
-    
-    Returns:
-        成功返回 True，失败返回 False
-    """
+    llm_model: Optional[Callable[[str], str]] = None,
+    enable_episode_scoring_filter: bool = False,
+) -> bool:
+    """Build episodes using explicit dialogue/episode roots."""
     try:
-        logger.info(f"开始使用自定义目录构建 episodes")
-        logger.info(f"对话目录: {dialogues_root}")
-        logger.info(f"Episodes目录: {episodes_root}")
-        logger.info(f"记忆所有者名称: {memory_owner_name}")
-        
-        # 确保目录存在
+        logger.info("Build episodes with custom roots")
+        logger.info("dialogues_root=%s", dialogues_root)
+        logger.info("episodes_root=%s", episodes_root)
+        logger.info("memory_owner_name=%s", memory_owner_name)
+        logger.info("enable_episode_scoring_filter=%s", enable_episode_scoring_filter)
+
         dialogues_root.mkdir(parents=True, exist_ok=True)
         episodes_root.mkdir(parents=True, exist_ok=True)
-        
-        # 1. 构建 episodes
-        logger.info("开始构建 episodes...")
+
         from memory.build_memory.build_episode import scan_and_build_episodes
+
         scan_and_build_episodes(
             use_tqdm=True,
             dialogues_root=dialogues_root,
             episodes_root=episodes_root,
             memory_owner_name=memory_owner_name,
-            llm_model=llm_model
+            llm_model=llm_model,
         )
-        
-        # 2. 评分 qualifications
-        logger.info("开始评分 qualifications...")
-        from memory.build_memory.qualify_episode import scan_and_qualify_episodes
-        scan_and_qualify_episodes(
-            use_tqdm=True,
-            dialogues_root=dialogues_root,
-            episodes_root=episodes_root,
-            memory_owner_name=memory_owner_name,
-            llm_model=llm_model
-        )
-        
-        # 3. 过滤 eligibility
-        logger.info("开始过滤 eligibility...")
-        from memory.build_memory.filter_episode import scan_and_filter_episodes
-        scan_and_filter_episodes(
-            episode_version="v1",
-            eligibility_version="v1",
-            use_tqdm=True,
-            force_update_situation=True,
-            episodes_root=episodes_root
-        )
-        
-        logger.info("episode 构建流程完成")
+
+        if enable_episode_scoring_filter:
+            logger.info("Run qualification stage")
+            from memory.build_memory.qualify_episode import scan_and_qualify_episodes
+
+            scan_and_qualify_episodes(
+                use_tqdm=True,
+                dialogues_root=dialogues_root,
+                episodes_root=episodes_root,
+                memory_owner_name=memory_owner_name,
+                llm_model=llm_model,
+            )
+
+            logger.info("Run eligibility filtering stage")
+            from memory.build_memory.filter_episode import scan_and_filter_episodes
+
+            scan_and_filter_episodes(
+                episode_version="v1",
+                eligibility_version="v1",
+                use_tqdm=True,
+                force_update_situation=True,
+                episodes_root=episodes_root,
+            )
+        else:
+            logger.info("Skip qualification/filter. Mark all episodes as available by default.")
+            dialogue_count, episode_count = _mark_all_episodes_available(
+                episodes_root=episodes_root,
+                episode_version="v1",
+                eligibility_version="v1",
+            )
+            logger.info(
+                "Pass-through eligibility generated: dialogues=%s episodes=%s",
+                dialogue_count,
+                episode_count,
+            )
+
+        logger.info("Episode build flow completed")
         return True
-        
-    except Exception as e:
-        logger.error(f"构建 episodes 失败: {e}")
+
+    except Exception as exc:
+        logger.error("Build episodes failed: %s", exc)
         import traceback
+
         logger.error(traceback.format_exc())
         return False
 
+
 def run_memory_build_for_id(
     process_id: str,
-    source_dialogues_dir: Path = None,
-    llm_model: Optional[Callable[[str], str]] = None
-):
-    """
-    为指定ID运行完整的memory build流程
-    
-    Args:
-        process_id: 处理流的ID标识
-        source_dialogues_dir: 源对话目录，如果为None则使用默认的data/memory/dialogues
-    
-    Returns:
-        成功返回 True，失败返回 False
-    """
+    source_dialogues_dir: Path | None = None,
+    llm_model: Optional[Callable[[str], str]] = None,
+    enable_episode_scoring_filter: bool = False,
+) -> bool:
+    """Run memory build for one workflow id."""
     try:
-        from pathlib import Path
         import shutil
-        
-        # 确定项目根目录
+
         project_root = Path(__file__).parent.parent
-        
-        # 构建目标目录
+
         target_dialogues_root = project_root / "data" / "memory" / process_id / "dialogues"
         episodes_root = project_root / "data" / "memory" / process_id / "episodes"
-        
-        # 确保目录存在
+
         target_dialogues_root.mkdir(parents=True, exist_ok=True)
         episodes_root.mkdir(parents=True, exist_ok=True)
-        
-        # 如果提供了源对话目录，则复制对话文件
+
         if source_dialogues_dir and source_dialogues_dir.exists():
-            logger.info(f"从 {source_dialogues_dir} 复制对话文件到 {target_dialogues_root}")
-            # 复制目录内容
+            logger.info("Copy dialogue files from %s to %s", source_dialogues_dir, target_dialogues_root)
             for item in source_dialogues_dir.iterdir():
                 if item.is_dir():
                     dest = target_dialogues_root / item.name
@@ -202,12 +293,17 @@ def run_memory_build_for_id(
                 else:
                     dest = target_dialogues_root / item.name
                     shutil.copy2(item, dest)
-        
-        # 运行构建流程
-        return build_episodes_with_id(process_id, project_root, llm_model=llm_model)
-        
-    except Exception as e:
-        logger.error(f"运行 memory build 失败: {e}")
+
+        return build_episodes_with_id(
+            process_id,
+            project_root,
+            llm_model=llm_model,
+            enable_episode_scoring_filter=enable_episode_scoring_filter,
+        )
+
+    except Exception as exc:
+        logger.error("Run memory build failed: %s", exc)
         import traceback
+
         logger.error(traceback.format_exc())
         return False

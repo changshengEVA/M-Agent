@@ -230,6 +230,18 @@ def _apply_trace_record_to_qa(
         qa[prediction_key + "_tool_calls"] = record.get("prediction_tool_calls")
         applied = True
 
+    if record.get("prediction_plan") is not None:
+        qa[prediction_key + "_plan"] = record.get("prediction_plan")
+        applied = True
+
+    if record.get("prediction_sub_questions") is not None:
+        qa[prediction_key + "_sub_questions"] = record.get("prediction_sub_questions")
+        applied = True
+
+    if record.get("prediction_plan_summary") is not None:
+        qa[prediction_key + "_plan_summary"] = record.get("prediction_plan_summary")
+        applied = True
+
     error_text = record.get("error")
     if error_text is not None and str(error_text).strip():
         qa[prediction_key + "_error"] = str(error_text)
@@ -796,6 +808,9 @@ def main() -> None:
                 answer = ""
                 evidence = None
                 tool_calls: Any = None
+                question_plan: Any = None
+                sub_questions: Any = None
+                plan_summary = None
 
                 if not question:
                     error_text = "empty_question"
@@ -811,6 +826,9 @@ def main() -> None:
                         pred = str(result.get("gold_answer", "") or "")
                         evidence = result.get("evidence")
                         tool_calls = result.get("tool_calls", [])
+                        question_plan = result.get("question_plan")
+                        sub_questions = result.get("sub_questions")
+                        plan_summary = result.get("plan_summary")
                         qa[args.prediction_key] = pred
                         qa[args.prediction_key + "_answer"] = answer
                         qa[args.prediction_key + "_gold_answer"] = pred
@@ -818,10 +836,24 @@ def main() -> None:
                         qa[args.prediction_key + "_tool_calls"] = (
                             tool_calls if isinstance(tool_calls, list) else []
                         )
+                        qa[args.prediction_key + "_plan"] = (
+                            question_plan if isinstance(question_plan, dict) else None
+                        )
+                        qa[args.prediction_key + "_sub_questions"] = (
+                            sub_questions if isinstance(sub_questions, list) else []
+                        )
+                        qa[args.prediction_key + "_plan_summary"] = (
+                            str(plan_summary) if plan_summary is not None else None
+                        )
                     except Exception as exc:
                         error_text = str(exc)
                         qa[args.prediction_key] = ""
                         qa[args.prediction_key + "_error"] = error_text
+                        if hasattr(agent, "get_last_question_plan"):
+                            try:
+                                qa[args.prediction_key + "_plan"] = agent.get_last_question_plan()
+                            except Exception:
+                                pass
                         if hasattr(agent, "get_last_tool_calls"):
                             try:
                                 qa[args.prediction_key + "_tool_calls"] = agent.get_last_tool_calls()
@@ -844,6 +876,9 @@ def main() -> None:
                     "prediction_gold_answer": qa.get(args.prediction_key + "_gold_answer"),
                     "prediction_evidence": qa.get(args.prediction_key + "_evidence"),
                     "prediction_tool_calls": qa.get(args.prediction_key + "_tool_calls"),
+                    "prediction_plan": qa.get(args.prediction_key + "_plan"),
+                    "prediction_sub_questions": qa.get(args.prediction_key + "_sub_questions"),
+                    "prediction_plan_summary": qa.get(args.prediction_key + "_plan_summary"),
                     "error": error_text,
                 }
                 append_trace(trace_fp, trace_record)

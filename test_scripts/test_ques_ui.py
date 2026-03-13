@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import logging
 import queue
+import re
 import sys
 import threading
 import traceback
@@ -32,6 +33,10 @@ from utils.logging_trace import (
 
 
 class MemoryAgentTraceUI:
+    PLAN_UPDATE_PREFIX = "PLAN UPDATE: "
+    SUBQ_START_PREFIX = "SUBQ START: "
+    SUBQ_DONE_PREFIX = "SUBQ DONE: "
+
     def __init__(self) -> None:
         self.root = tk.Tk()
         self.root.title("Memory Agent Call Trace")
@@ -41,6 +46,8 @@ class MemoryAgentTraceUI:
         self.row_index = 0
         self.color_mapper = FunctionColorMapper()
         self.known_tags: set[str] = set()
+        self.live_plan: dict[str, object] = {}
+        self.live_sub_questions: list[dict[str, object]] = []
 
         self.config_var = tk.StringVar(value=r"config\prompt\agent_sys.yaml")
         self.thread_var = tk.StringVar(value="memory-agent-1")
@@ -102,8 +109,20 @@ class MemoryAgentTraceUI:
         self.trace_table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         trace_scroll.pack(side=tk.RIGHT, fill=tk.Y)
 
-        ttk.Label(right, text="Result JSON").pack(anchor=tk.W)
-        self.result_text = scrolledtext.ScrolledText(right, wrap=tk.WORD, height=30)
+        right_pane = ttk.Panedwindow(right, orient=tk.VERTICAL)
+        right_pane.pack(fill=tk.BOTH, expand=True)
+
+        plan_frame = ttk.Frame(right, padding=(0, 0, 0, 6))
+        result_frame = ttk.Frame(right)
+        right_pane.add(plan_frame, weight=3)
+        right_pane.add(result_frame, weight=5)
+
+        ttk.Label(plan_frame, text="Plan / Sub-questions").pack(anchor=tk.W)
+        self.plan_text = scrolledtext.ScrolledText(plan_frame, wrap=tk.WORD, height=12)
+        self.plan_text.pack(fill=tk.BOTH, expand=True)
+
+        ttk.Label(result_frame, text="Result JSON").pack(anchor=tk.W)
+        self.result_text = scrolledtext.ScrolledText(result_frame, wrap=tk.WORD, height=18)
         self.result_text.pack(fill=tk.BOTH, expand=True)
 
         status = ttk.Label(self.root, textvariable=self.status_var, anchor=tk.W, padding=8)
@@ -163,8 +182,11 @@ class MemoryAgentTraceUI:
 
     def _reset_view(self) -> None:
         self.row_index = 0
+        self.live_plan = {}
+        self.live_sub_questions = []
         for item_id in self.trace_table.get_children(""):
             self.trace_table.delete(item_id)
+        self.plan_text.delete("1.0", tk.END)
         self.result_text.delete("1.0", tk.END)
 
     def _drain_queue(self) -> None:
@@ -172,10 +194,13 @@ class MemoryAgentTraceUI:
             event_type, payload = self.event_queue.get()
             if event_type == "trace":
                 self._append_trace(payload)  # type: ignore[arg-type]
+                self._update_live_plan_from_trace(payload)  # type: ignore[arg-type]
             elif event_type == "result":
+                self._render_plan(payload)
                 self.result_text.delete("1.0", tk.END)
                 self.result_text.insert(tk.END, json.dumps(payload, ensure_ascii=False, indent=2))
             elif event_type == "error":
+                self.plan_text.delete("1.0", tk.END)
                 self.result_text.delete("1.0", tk.END)
                 self.result_text.insert(tk.END, str(payload))
                 self.status_var.set("Failed")
@@ -185,6 +210,138 @@ class MemoryAgentTraceUI:
                 self.run_button.configure(state=tk.NORMAL)
 
         self.root.after(100, self._drain_queue)
+
+    def _render_plan(self, payload: object) -> None:
+        if not isinstance(payload, dict):
+            self._render_live_plan_text()
+            return
+
+        question_plan = payload.get("question_plan")
+        sub_question_results = payload.get("sub_question_results")
+        if isinstance(question_plan, dict) and question_plan:
+            self.live_plan = dict(question_plan)
+        if isinstance(sub_question_results, list):
+            self.live_sub_questions = [
+                dict(item) for item in sub_question_results if isinstance(item, dict)
+            ]
+        self._render_live_plan_text()
+
+    def _update_live_plan_from_trace(self, event: TraceEvent) -> None:
+        if not isinstance(event, TraceEvent):
+            return
+
+        raw_message = event.raw_message or ""
+        if raw_message.startswith(self.PLAN_UPDATE_PREFIX):
+            payload = raw_message[len(self.PLAN_UPDATE_PREFIX) :].strip()
+            try:
+                parsed = json.loads(payload)
+            except Exception:
+                parsed = None
+            if isinstance(parsed, dict):
+                self.live_plan = parsed
+                self._initialize_live_sub_questions()
+                self._render_live_plan_text()
+            return
+
+        if raw_message.startswith(self.SUBQ_START_PREFIX):
+            payload = raw_message[len(self.SUBQ_START_PREFIX) :].strip()
+            self._apply_sub_question_update(payload, default_status="in_progress")
+            return
+
+        if raw_message.startswith(self.SUBQ_DONE_PREFIX):
+            payload = raw_message[len(self.SUBQ_DONE_PREFIX) :].strip()
+            self._apply_sub_question_update(payload, default_status="completed")
+            return
+
+    def _initialize_live_sub_questions(self) -> None:
+        sub_questions = self.live_plan.get("sub_questions", [])
+        if not isinstance(sub_questions, list):
+            self.live_sub_questions = []
+            return
+        self.live_sub_questions = []
+        for idx, item in enumerate(sub_questions, start=1):
+            text = str(item).strip()
+            if not text:
+                continue
+            self.live_sub_questions.append(
+                {
+                    "index": idx,
+                    "question": text,
+                    "status": "pending",
+                    "answer": "",
+                }
+            )
+
+    def _apply_sub_question_update(self, payload: str, default_status: str) -> None:
+        try:
+            parsed = json.loads(payload)
+        except Exception:
+            return
+        if not isinstance(parsed, dict):
+            return
+
+        try:
+            index_int = int(parsed.get("index"))
+        except Exception:
+            return
+
+        while len(self.live_sub_questions) < index_int:
+            self.live_sub_questions.append(
+                {
+                    "index": len(self.live_sub_questions) + 1,
+                    "question": "",
+                    "status": "pending",
+                    "answer": "",
+                }
+            )
+
+        item = self.live_sub_questions[index_int - 1]
+        item["index"] = index_int
+        if parsed.get("question") is not None:
+            item["question"] = str(parsed.get("question") or "")
+        item["status"] = str(parsed.get("status") or default_status)
+        if parsed.get("answer") is not None:
+            item["answer"] = str(parsed.get("answer") or "")
+        self._render_live_plan_text()
+
+    def _render_live_plan_text(self) -> None:
+        self.plan_text.delete("1.0", tk.END)
+
+        lines: list[str] = []
+        question_plan = self.live_plan if isinstance(self.live_plan, dict) else {}
+
+        goal = str(question_plan.get("goal", "") or "").strip()
+        if goal:
+            lines.append(f"Goal: {goal}")
+
+        if self.live_sub_questions:
+            if lines:
+                lines.append("")
+            lines.append("Sub-questions:")
+            for item in self.live_sub_questions:
+                index = int(item.get("index", 0) or 0)
+                question = str(item.get("question", "") or "").strip()
+                status = str(item.get("status", "pending") or "pending").strip().lower()
+                answer = str(item.get("answer", "") or "").strip()
+
+                if status == "completed":
+                    status_label = "done"
+                elif status == "in_progress":
+                    status_label = "running"
+                elif status == "failed":
+                    status_label = "failed"
+                else:
+                    status_label = "pending"
+
+                lines.append(f"{index}. [{status_label}] {question}")
+                if answer:
+                    answer_text = re.sub(r"\s+", " ", answer)
+                    lines.append(f"   Answer: {answer_text}")
+
+        if not lines:
+            lines.append("Waiting for decomposition...")
+
+        self.plan_text.insert(tk.END, "\n".join(lines))
 
     def _append_trace(self, event: TraceEvent) -> None:
         self.row_index += 1

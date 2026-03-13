@@ -9,7 +9,7 @@ import os
 import sys
 from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import yaml
 from dotenv import load_dotenv
@@ -30,9 +30,7 @@ logger = logging.getLogger(__name__)
 
 PROMPT_CONFIG_PATH = Path("config/Eval_env/APP_LANGCHAIN_REALTALK_TEST.yaml")
 memory_sys: MemoryCore | None = None
-macro_search_defaults: Dict[str, Any] = {
-    "use_threshold": True,
-    "threshold": 0.7,
+detail_search_defaults: Dict[str, Any] = {
     "topk": 5,
 }
 
@@ -53,52 +51,33 @@ def _require_memory_sys() -> MemoryCore:
 
 
 @tool
-def resolve_entity(name: str) -> Dict[str, Any]:
-    """Resolve a person/entity name to canonical entity UID in memory_sys."""
-
-    return _require_memory_sys().resolve_entity(name=name)
-
-
-@tool
-def query_entity_property(entity_uid: str, query_text: str) -> Dict[str, Any]:
-    """Query structured attributes/features for an entity by UID and query text."""
-
-    return _require_memory_sys().query_entity_property(
-        entity_uid=entity_uid,
-        query_text=query_text,
-    )
-
-
-@tool
-def search_macro_events(
-    theme: str,
-    use_threshold: bool | None = None,
-    threshold: float | None = None,
-    topk: int | None = None,
-) -> Dict[str, Any]:
-    """Search relevant scenes by semantic theme. Returns scene IDs and episode references."""
-
-    cfg_use_threshold = (
-        macro_search_defaults["use_threshold"] if use_threshold is None else bool(use_threshold)
-    )
-    cfg_threshold = macro_search_defaults["threshold"] if threshold is None else float(threshold)
-    cfg_topk = macro_search_defaults["topk"] if topk is None else int(topk)
-
-    return _require_memory_sys().search_macro_events(
-        query={"theme": theme},
-        use_threshold=cfg_use_threshold,
-        threshold=cfg_threshold,
-        topk=cfg_topk,
-    )
-
-
-@tool
 def search_content(dialogue_id: str, episode_id: str) -> Dict[str, Any]:
     """Fetch original dialogue turns by dialogue_id + episode_id."""
 
     return _require_memory_sys().search_content(
         dialogue_id=dialogue_id,
         episode_id=episode_id,
+    )
+
+
+@tool
+def search_events_by_time_range(start_time: str, end_time: str) -> list[Dict[str, Any]]:
+    """Search scenes by time range. Returns scene summaries in the time window."""
+
+    return _require_memory_sys().search_events_by_time_range(
+        start_time=start_time,
+        end_time=end_time,
+    )
+
+
+@tool
+def search_details(detail: str, topk: Optional[int] = None) -> Dict[str, Any]:
+    """Search concrete details from scene memories by semantic similarity."""
+
+    cfg_topk = detail_search_defaults["topk"] if topk is None else int(topk)
+    return _require_memory_sys().search_details(
+        detail_query=detail,
+        topk=cfg_topk,
     )
 
 
@@ -169,13 +148,13 @@ def ensure_kg_data_initialized(memory_core: MemoryCore) -> None:
 
 
 def main() -> None:
-    global memory_sys, macro_search_defaults
+    global memory_sys, detail_search_defaults
 
     prompt_config = load_prompt_config(PROMPT_CONFIG_PATH)
 
-    macro_cfg = prompt_config.get("macro_search_defaults", {})
-    if isinstance(macro_cfg, dict):
-        macro_search_defaults.update(macro_cfg)
+    detail_cfg = prompt_config.get("detail_search_defaults", {})
+    if isinstance(detail_cfg, dict):
+        detail_search_defaults.update(detail_cfg)
 
     memory_sys = init_memory_sys(prompt_config)
     ensure_kg_data_initialized(memory_sys)
@@ -199,7 +178,7 @@ def main() -> None:
     agent = create_agent(
         model=model,
         system_prompt=system_prompt,
-        tools=[resolve_entity, query_entity_property, search_macro_events, search_content],
+        tools=[search_content, search_events_by_time_range, search_details],
         response_format=ToolStrategy(ResponseFormat),
     )
 
