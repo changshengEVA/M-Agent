@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from Agents.memory_agent import create_memory_agent
+from utils.api_error_utils import is_network_api_error
 
 try:
     from tqdm import tqdm
@@ -690,7 +691,7 @@ def _uniform_sample_by_fraction(
     return [samples[i] for i in picked_indices]
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
 
     data_file = args.data_file
@@ -781,6 +782,7 @@ def main() -> None:
     asked_count = 0
     processed_samples = 0
     changed = False
+    fatal_error: Exception | None = None
 
     stop = False
     try:
@@ -859,6 +861,15 @@ def main() -> None:
                                 qa[args.prediction_key + "_tool_calls"] = agent.get_last_tool_calls()
                             except Exception:
                                 pass
+                        if is_network_api_error(exc):
+                            fatal_error = exc
+                            stop = True
+                            logger.exception(
+                                "Detected network/API error at sample_id=%s qa_index=%s thread_id=%s; stopping evaluation.",
+                                sid,
+                                q_idx,
+                                thread_id,
+                            )
 
                     changed = True
 
@@ -889,6 +900,9 @@ def main() -> None:
 
                 if args.sleep_seconds > 0:
                     time.sleep(args.sleep_seconds)
+
+                if stop:
+                    break
 
             processed_samples += 1
             if changed and args.save_every > 0 and processed_samples % args.save_every == 0:
@@ -945,7 +959,11 @@ def main() -> None:
     logger.info("Overall accuracy (%s): %.3f", args.model_key, stats["overall_accuracy"])
     logger.info("Overall B1 (%s): %.3f", args.model_key, stats["overall_b1"])
     logger.info("Category accuracy: %s", json.dumps(stats["summary_by_category"], ensure_ascii=False))
+    if fatal_error is not None:
+        logger.error("Evaluation stopped early due to network/API error: %s", fatal_error)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

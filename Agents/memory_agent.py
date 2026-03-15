@@ -27,6 +27,7 @@ from load_model.AlibabaEmbeddingCall import get_embed_model as get_alibaba_embed
 from load_model.BGEcall import get_embed_model as get_local_embed_model
 from load_model.OpenAIcall import get_llm
 from memory.memory_core.memory_system import MemoryCore
+from utils.api_error_utils import is_network_api_error
 
 load_dotenv()
 
@@ -654,6 +655,9 @@ class MemoryAgent:
                 )
                 return normalized
         except Exception as exc:
+            if is_network_api_error(exc):
+                logger.exception("decompose_question hit network/API error; aborting current run")
+                raise
             logger.warning("decompose_question failed, fallback to heuristic plan: %s", exc)
 
         fallback = self._fallback_question_plan(question_text)
@@ -827,6 +831,12 @@ class MemoryAgent:
                     "evidence": payload.get("evidence"),
                 }
             except Exception as exc:
+                if is_network_api_error(exc):
+                    logger.exception(
+                        "Sub-question %s hit network/API error; aborting current run",
+                        idx,
+                    )
+                    raise
                 result_item = {
                     "index": idx,
                     "question": sub_question,
@@ -901,6 +911,8 @@ class MemoryAgent:
         question_text = question.strip()
         active_thread_id = thread_id or self.thread_id
         self._current_tool_calls = []
+        self._last_tool_calls = []
+        self._last_question_plan = None
         question_plan = self._decompose_question(question_text)
         self._last_question_plan = question_plan
         try:
