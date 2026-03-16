@@ -4,3 +4,6 @@
 url: "neo4j://127.0.0.1:7687"
 user_name: "neo4j"
 password: "EVAnational0"
+
+# Workflow database routing (always isolated per workflow):
+database_template: "wf_{workflow_id}"

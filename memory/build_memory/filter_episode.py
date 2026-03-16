@@ -380,7 +380,7 @@ def save_episode_situation(results: List[Dict], dialogue_id: str, episodes_root:
     with open(situation_file, 'w', encoding='utf-8') as f:
         json.dump(existing_data, f, ensure_ascii=False, indent=2)
     
-    logger.info(f"更新 episode_situation.json: 统计信息已更新，总计 {len(existing_data['episodes'])} 个 episodes")
+    #logger.info(f"更新 episode_situation.json: 统计信息已更新，总计 {len(existing_data['episodes'])} 个 episodes")
 
 def process_qualification_file(qualification_file: Path,
                                episode_version: str = "v1",

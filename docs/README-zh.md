@@ -53,7 +53,7 @@ BASE_URL=https://api.openai.com/v1
 # Agent model key: model_name=deepseek-chat (config/prompt/agent_sys.yaml)
 DEEPSEEK_API_KEY=YOUR_DEEPSEEK_KEY
 
-# Embedding key: embed_provider=aliyun (config/prompt/agent_sys.yaml)
+# Embedding key: embed_provider（在 config/memory_core_config/*.yaml 中配置）
 ALIBABA_API_KEY=YOUR_ALIBABA_KEY
 ALIBABA_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ALIBABA_EMBED_MODEL=text-embedding-v4
@@ -64,21 +64,21 @@ EMBED_PROVIDER=aliyun
 LLM_PROVIDER=deepseek
 ```
 
-4. 先做 LoCoMo 预处理（`memory_pre`）
+4. 先做 LoCoMo 预处理（`memory_pre`，现在仅生成 dialogues + episodes）
 
-> `run_eval_locomo.py` 默认读取 `config/prompt/agent_sys.yaml`，其中 `workflow_id` 默认为 `testlocomo`。  
-> 所以下面预处理的 `--id` 也要使用 `testlocomo`（或你自己改成同一个值）。
+> `run_eval_locomo.py` 默认读取 `config/prompt/agent_sys.yaml`。  
+> 该文件里的 `memory_core_config_path` 会指向 `config/memory_core_config/agent_sys_memory.yaml`，  
+> 其中配置了 `workflow_id`。请确保预处理 `--id` 与该 `workflow_id` 保持一致。
 
 ```bash
-python pipeline/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo --embed-provider aliyun
+python pipeline/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo
 ```
 
 预处理完成后会在 `data/memory/testlocomo/` 生成（或更新）：
 
 - `dialogues/`
 - `episodes/`
-- `kg_candidates/`
-- `scene/`
+- `scene/`（由 MemoryCore 在导入 `episodes/` 时内部生成）
 
 5. 运行 LoCoMo 评测脚本
 

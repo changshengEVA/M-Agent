@@ -16,8 +16,10 @@ Right: M-Agent first decomposes the question into sub-questions, retrieves evide
 
 ---
 ### **TODO**
-
-
+Current refactor direction:
+1. System input has switched from `kg_candidates` to `episodes`.
+2. `Episode -> Scene -> Atomic facts` is generated inside `MemoryCore`.
+3. `persistence` layer is removed; `KGBase` now executes entity/relation operations directly on local Neo4j.
 ---
 ### **Quick_start**
 
@@ -54,7 +56,7 @@ BASE_URL=https://api.openai.com/v1
 # Agent model key: model_name=deepseek-chat (config/prompt/agent_sys.yaml)
 DEEPSEEK_API_KEY=YOUR_DEEPSEEK_KEY
 
-# Embedding key: embed_provider=aliyun (config/prompt/agent_sys.yaml)
+# Embedding key: embed_provider (config/memory_core_config/*.yaml)
 ALIBABA_API_KEY=YOUR_ALIBABA_KEY
 ALIBABA_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ALIBABA_EMBED_MODEL=text-embedding-v4
@@ -65,21 +67,21 @@ EMBED_PROVIDER=aliyun
 LLM_PROVIDER=deepseek
 ```
 
-4. Run LoCoMo preprocessing first (`memory_pre`)
+4. Run LoCoMo preprocessing first (`memory_pre`, now only builds dialogues + episodes)
 
-> `run_eval_locomo.py` uses `config/prompt/agent_sys.yaml` by default, where `workflow_id` is `testlocomo`.
-> Keep preprocessing `--id` the same (`testlocomo`), or change both to the same value.
+> `run_eval_locomo.py` uses `config/prompt/agent_sys.yaml` by default.
+> In that file, `memory_core_config_path` points to `config/memory_core_config/agent_sys_memory.yaml`,
+> where `workflow_id` is configured. Keep preprocessing `--id` consistent with that `workflow_id`.
 
 ```bash
-python pipeline/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo --embed-provider aliyun
+python pipeline/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo
 ```
 
 After preprocessing, these folders will be generated/updated under `data/memory/testlocomo/`:
 
 - `dialogues/`
 - `episodes/`
-- `kg_candidates/`
-- `scene/`
+- `scene/` (generated later by MemoryCore import from `episodes/`)
 
 5. Run LoCoMo evaluation
 

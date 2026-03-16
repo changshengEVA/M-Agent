@@ -1,53 +1,132 @@
-import sys
+﻿#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""Minimal MemoryCore test: load config -> init models -> init MemoryCore -> load episodes."""
+
+from __future__ import annotations
+
 import json
 import logging
+import sys
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
-from dotenv import load_dotenv
-load_dotenv()
-# 配置日志显示
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(),  # 输出到控制台
-    ]
-)
+from typing import Any, Dict
 
-# 设置特定模块的日志级别
-logging.getLogger('memory.memory_core').setLevel(logging.WARNING)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger('memory.memory_core.services_bank.entity_resolution').setLevel(logging.WARNING)
-
-print("=== 开始测试，日志已启用 ===")
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("memory.build_memory.form_scene").setLevel(logging.WARNING)
 
 from memory.memory_core.memory_system import MemoryCore
-from load_model.OpenAIcall import get_llm
-from load_model.AlibabaEmbeddingCall import get_embed_model
-
-memory_core = MemoryCore(
-    workflow_id="testlocomo",
-    llm_func=get_llm(0.0),
-    embed_func=get_embed_model(),
-    llm_temperature=0.0,
-    similarity_threshold=0.88,
-    top_k=3,
-    use_threshold=True
-)
-
-# #强制重新解析并执行
-# memory_core.entity_resolution_service.entity_library.reset_all_resolution_flags()
-# memory_core.run_entity_resolution_pass()
 
 
-# memory_core.load_from_dialogue_path(Path("data/memory/testrt/kg_candidates"))
-# 获取统计信息
-kg_stats = memory_core.get_kg_stats()
-print(f"  KG统计: {kg_stats}")
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "memory_core_config" / "test1.yaml"
 
-# 获取实体解析统计
-er_stats = memory_core.get_entity_resolution_stats()
-print(f"  实体解析统计: {er_stats}")
 
-details_return = memory_core.search_details("Jon, dance style")
-print(details_return)
+def _load_simple_yaml(raw: str) -> Dict[str, Any]:
+    data: Dict[str, Any] = {}
+    for line in str(raw or "").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or ":" not in stripped:
+            continue
+        key, value = stripped.split(":", 1)
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        lower = value.lower()
+        if lower in {"true", "false"}:
+            data[key] = lower == "true"
+            continue
+        try:
+            data[key] = int(value)
+            continue
+        except Exception:
+            pass
+        try:
+            data[key] = float(value)
+            continue
+        except Exception:
+            pass
+        data[key] = value
+    return data
+
+
+def load_config(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        raise FileNotFoundError(f"config file not found: {path}")
+
+    raw = path.read_text(encoding="utf-8")
+    try:
+        import yaml  # type: ignore
+
+        cfg = yaml.safe_load(raw) or {}
+        if not isinstance(cfg, dict):
+            raise ValueError(f"config root must be dict: {path}")
+        return cfg
+    except ModuleNotFoundError:
+        logger.warning("PyYAML not installed, using simple YAML parser for config file.")
+        return _load_simple_yaml(raw)
+
+
+def init_llm_func(cfg: Dict[str, Any]):
+    provider = str(cfg.get("llm_provider", "openai")).strip().lower()
+    temperature = float(cfg.get("memory_llm_temperature", 0.0))
+    model_name = str(cfg.get("llm_model_name", "")).strip()
+
+    if provider != "openai":
+        raise ValueError(f"unsupported llm_provider: {provider}, only 'openai' is supported in this test")
+
+    from load_model.OpenAIcall import get_chat_llm, get_llm
+
+    if model_name:
+        return get_chat_llm(model_temperature=temperature, model_name=model_name)
+    return get_llm(model_temperature=temperature)
+
+
+def init_embed_func(cfg: Dict[str, Any]):
+    provider = str(cfg.get("embed_provider", "aliyun")).strip().lower()
+    model_name = str(cfg.get("embed_model_name", "")).strip()
+
+    if provider in {"aliyun", "alibaba", "dashscope"}:
+        from load_model.AlibabaEmbeddingCall import get_embed_model as get_alibaba_embed_model
+
+        return get_alibaba_embed_model(model_name=model_name)
+
+    if provider in {"local", "bge"}:
+        from load_model.BGEcall import get_embed_model as get_local_embed_model
+
+        return get_local_embed_model(model_name=model_name or None)
+
+    raise ValueError(f"unsupported embed_provider: {provider}")
+
+
+def main() -> None:
+    config_path = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else DEFAULT_CONFIG_PATH
+    cfg = load_config(config_path)
+
+    llm_func = init_llm_func(cfg)
+    embed_func = init_embed_func(cfg)
+
+    memory_core = MemoryCore(
+        workflow_id=str(cfg.get("workflow_id", "test6")),
+        llm_func=llm_func,
+        embed_func=embed_func,
+        llm_temperature=float(cfg.get("memory_llm_temperature", 0.0)),
+        similarity_threshold=float(cfg.get("memory_similarity_threshold", 0.88)),
+        top_k=int(cfg.get("memory_top_k", 3)),
+        use_threshold=bool(cfg.get("memory_use_threshold", True)),
+        scene_prompt_version=str(cfg.get("scene_prompt_version", "v2")),
+        action_prompt_version=str(cfg.get("action_prompt_version", "v1")),
+        memory_owner_name=str(cfg.get("memory_owner_name", "changshengEVA")),
+    )
+
+    result = memory_core.load_from_episode_path(memory_core.episodes_dir)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+if __name__ == "__main__":
+    main()

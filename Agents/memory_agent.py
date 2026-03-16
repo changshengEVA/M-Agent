@@ -34,6 +34,7 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 DEFAULT_CONFIG_PATH = Path("config/prompt/agent_sys.yaml")
+DEFAULT_MEMORY_CORE_CONFIG_PATH = Path("config/memory_core_config/agent_sys_memory.yaml")
 
 
 @dataclass
@@ -192,18 +193,14 @@ class MemoryAgent:
     def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH):
         self.config_path = Path(config_path)
         self.config = self._load_config(self.config_path)
+        self.memory_core_config_path = self._resolve_related_path(
+            self.config_path,
+            self.config.get("memory_core_config_path"),
+        )
+        self.memory_core_config = self._load_memory_core_config(self.memory_core_config_path)
         self._current_tool_calls: List[Dict[str, Any]] = []
         self._last_tool_calls: List[Dict[str, Any]] = []
         self._last_question_plan: Optional[Dict[str, Any]] = None
-
-        self.macro_search_defaults: Dict[str, Any] = {
-            "use_threshold": True,
-            "threshold": 0.7,
-            "topk": 5,
-        }
-        macro_cfg = self.config.get("macro_search_defaults", {})
-        if isinstance(macro_cfg, dict):
-            self.macro_search_defaults.update(macro_cfg)
 
         self.detail_search_defaults: Dict[str, Any] = {
             "topk": 5,
@@ -216,7 +213,7 @@ class MemoryAgent:
         if isinstance(action_cfg, dict):
             self.detail_search_defaults.update(action_cfg)
 
-        self.memory_sys = self._init_memory_sys(self.config)
+        self.memory_sys = self._init_memory_sys(self.memory_core_config)
         if bool(self.config.get("auto_bootstrap_kg_data", True)):
             self._ensure_kg_data_initialized(self.memory_sys)
 
@@ -274,15 +271,45 @@ class MemoryAgent:
 
         if not isinstance(config.get("system_prompt"), str) or not config["system_prompt"].strip():
             raise ValueError("`system_prompt` is required in config/prompt/agent_sys.yaml")
+        if not isinstance(config.get("memory_core_config_path"), str) or not str(
+            config.get("memory_core_config_path")
+        ).strip():
+            raise ValueError("`memory_core_config_path` is required in agent config")
         return config
 
     @staticmethod
-    def _init_memory_sys(config: Dict[str, Any]) -> MemoryCore:
+    def _resolve_related_path(base_config_path: Path, raw_path: Any) -> Path:
+        if raw_path is None or not str(raw_path).strip():
+            return DEFAULT_MEMORY_CORE_CONFIG_PATH.resolve()
+        path = Path(str(raw_path).strip())
+        if path.is_absolute():
+            return path
+        return (base_config_path.parent / path).resolve()
+
+    @staticmethod
+    def _load_memory_core_config(path: Path) -> Dict[str, Any]:
+        if not path.exists():
+            raise FileNotFoundError(f"MemoryCore config not found: {path}")
+
+        with open(path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+
+        if not isinstance(config, dict):
+            raise ValueError(f"MemoryCore config must be a dict: {path}")
+
+        return config
+
+    @staticmethod
+    def _init_memory_sys(memory_core_config: Dict[str, Any]) -> MemoryCore:
+        config = memory_core_config
         workflow_id = str(config.get("workflow_id", "testrt"))
         llm_temperature = float(config.get("memory_llm_temperature", 0.0))
         similarity_threshold = float(config.get("memory_similarity_threshold", 0.88))
         top_k = int(config.get("memory_top_k", 3))
         use_threshold = bool(config.get("memory_use_threshold", True))
+        scene_prompt_version = str(config.get("scene_prompt_version", "v2"))
+        action_prompt_version = str(config.get("action_prompt_version", "v1"))
+        memory_owner_name = str(config.get("memory_owner_name", "changshengEVA"))
 
         embed_provider = str(
             config.get("embed_provider", os.getenv("EMBED_PROVIDER", "local"))
@@ -307,21 +334,29 @@ class MemoryAgent:
             similarity_threshold=similarity_threshold,
             top_k=top_k,
             use_threshold=use_threshold,
+            scene_prompt_version=scene_prompt_version,
+            action_prompt_version=action_prompt_version,
+            memory_owner_name=memory_owner_name,
         )
 
     @staticmethod
     def _ensure_kg_data_initialized(memory_core: MemoryCore) -> None:
-        kg_data_path = memory_core.kg_data_path
-        kg_candidates_path = memory_core.memory_root / "kg_candidates"
-        kg_files = [p for p in kg_data_path.rglob("*") if p.is_file()]
-        if kg_files:
-            logger.info("kg_data already has %d file(s), skip bootstrap import.", len(kg_files))
+        scene_files = [p for p in memory_core.scene_dir.glob("*.json") if p.is_file()]
+        if scene_files:
+            logger.info("scene already has %d file(s), skip bootstrap import.", len(scene_files))
             return
 
-        logger.info("kg_data is empty, bootstrap import from: %s", kg_candidates_path)
-        load_result = memory_core.load_from_dialogue_path(kg_candidates_path)
+        episodes_path = memory_core.episodes_dir
+        logger.info("scene is empty, bootstrap import from episodes: %s", episodes_path)
+        load_result = memory_core.load_from_episode_path(episodes_path)
         if not load_result.get("success", False):
-            raise RuntimeError(f"Failed to initialize kg_data from kg_candidates: {load_result}")
+            error_text = str(load_result.get("error", ""))
+            if "no episode json files found" in error_text or "path not found" in error_text:
+                logger.warning(
+                    "No episode data found for bootstrap, continue with empty memory state (0 entities/0 relations)."
+                )
+                return
+            raise RuntimeError(f"Failed to initialize from episodes: {load_result}")
         logger.info(
             "Bootstrap import completed: processed=%s, failed=%s",
             load_result.get("files_processed", 0),
@@ -329,92 +364,6 @@ class MemoryAgent:
         )
 
     def _build_tools(self):
-        @tool
-        def resolve_entity(name: str) -> Dict[str, Any]:
-            """Resolve a person/entity name to canonical entity UID in memory_sys."""
-
-            self._record_tool_call("resolve_entity", {"name": name})
-            logger.info("API call: resolve_entity(name=%s)", name)
-            result = self.memory_sys.resolve_entity(name=name)
-            logger.info(
-                "API response: resolve_entity(success=%s, entity_uid=%s)",
-                result.get("success") if isinstance(result, dict) else None,
-                result.get("entity_uid") if isinstance(result, dict) else None,
-            )
-            return result
-
-        @tool
-        def query_entity_property(entity_uid: str, query_text: str) -> Dict[str, Any]:
-            """Query structured attributes/features for an entity by UID and query text."""
-
-            self._record_tool_call(
-                "query_entity_property",
-                {"entity_uid": entity_uid, "query_text": query_text},
-            )
-            logger.info(
-                "API call: query_entity_property(entity_uid=%s, query_text_len=%d)",
-                entity_uid,
-                len(query_text or ""),
-            )
-            result = self.memory_sys.query_entity_property(
-                entity_uid=entity_uid,
-                query_text=query_text,
-            )
-            logger.info(
-                "API response: query_entity_property(success=%s)",
-                result.get("success") if isinstance(result, dict) else None,
-            )
-            return result
-
-        @tool
-        def search_macro_events(
-            theme: str,
-            use_threshold: Optional[bool] = None,
-            threshold: Optional[float] = None,
-            topk: Optional[int] = None,
-        ) -> Dict[str, Any]:
-            """Search relevant scenes by semantic theme. Returns scene IDs and episode references."""
-
-            cfg_use_threshold = (
-                self.macro_search_defaults["use_threshold"]
-                if use_threshold is None
-                else bool(use_threshold)
-            )
-            cfg_threshold = (
-                self.macro_search_defaults["threshold"] if threshold is None else float(threshold)
-            )
-            cfg_topk = self.macro_search_defaults["topk"] if topk is None else int(topk)
-            self._record_tool_call(
-                "search_macro_events",
-                {
-                    "theme": theme,
-                    "use_threshold": cfg_use_threshold,
-                    "threshold": cfg_threshold,
-                    "topk": cfg_topk,
-                },
-            )
-            logger.info(
-                "API call: search_macro_events(theme=%s, use_threshold=%s, threshold=%s, topk=%s)",
-                theme,
-                cfg_use_threshold,
-                cfg_threshold,
-                cfg_topk,
-            )
-            result = self.memory_sys.search_macro_events(
-                query={"theme": theme},
-                use_threshold=cfg_use_threshold,
-                threshold=cfg_threshold,
-                topk=cfg_topk,
-            )
-            logger.info(
-                "API response: search_macro_events(success=%s, result_count=%s)",
-                result.get("success") if isinstance(result, dict) else None,
-                len(result.get("results", []))
-                if isinstance(result, dict) and isinstance(result.get("results"), list)
-                else None,
-            )
-            return result
-
         @tool
         def search_content(dialogue_id: str, episode_id: str) -> Dict[str, Any]:
             """Fetch dialogue original text details and event/time info by dialogue_id + episode_id."""

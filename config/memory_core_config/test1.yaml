@@ -1,0 +1,20 @@
+﻿workflow_id: "test6"
+
+# model providers
+llm_provider: "openai"
+embed_provider: "aliyun"
+
+# optional model names (empty = loader defaults / env defaults)
+llm_model_name: "gpt-4o-mini"
+embed_model_name: "text-embedding-v4"
+
+# MemoryCore init settings
+memory_llm_temperature: 0.0
+memory_similarity_threshold: 0.88
+memory_top_k: 3
+memory_use_threshold: true
+
+# Build/import settings
+scene_prompt_version: "v2"
+action_prompt_version: "v1"
+memory_owner_name: "changshengEVA"

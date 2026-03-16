@@ -1,27 +1,12 @@
 model_name: "deepseek-chat"
 agent_temperature: 0.0
-workflow_id: "evallocomo"
+memory_core_config_path: "../memory_core_config/agent_sys_memory.yaml"
 thread_id: "memory-agent-1"
 recursion_limit: 60
 retry_recursion_limit: 120
 
-# MemoryCore init settings
-memory_llm_temperature: 0.0
-memory_similarity_threshold: 0.88
-memory_top_k: 3
-memory_use_threshold: true
-
-# Embedding provider: local/bge/alibaba/aliyun/dashscope
-embed_provider: "aliyun"
-
-# If true and kg_data is empty, import from data/memory/<workflow_id>/kg_candidates
+# If true and scene is empty, import from data/memory/<workflow_id>/episodes
 auto_bootstrap_kg_data: true
-
-# Default behavior for macro scene search tool
-macro_search_defaults:
-  use_threshold: true
-  threshold: 0.7
-  topk: 5
 
 detail_search_defaults:
   topk: 5

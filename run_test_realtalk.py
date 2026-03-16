@@ -29,6 +29,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(
 logger = logging.getLogger(__name__)
 
 PROMPT_CONFIG_PATH = Path("config/Eval_env/APP_LANGCHAIN_REALTALK_TEST.yaml")
+DEFAULT_MEMORY_CORE_CONFIG_PATH = Path("config/memory_core_config/realtalk_test_memory.yaml")
 memory_sys: MemoryCore | None = None
 detail_search_defaults: Dict[str, Any] = {
     "topk": 5,
@@ -96,12 +97,41 @@ def load_prompt_config(path: Path) -> Dict[str, Any]:
     return config
 
 
+def _resolve_related_path(base_config_path: Path, raw_path: Any) -> Path:
+    if raw_path is None or not str(raw_path).strip():
+        return DEFAULT_MEMORY_CORE_CONFIG_PATH.resolve()
+    path = Path(str(raw_path).strip())
+    if path.is_absolute():
+        return path
+    return (base_config_path.parent / path).resolve()
+
+
+def load_memory_core_config(prompt_config: Dict[str, Any], prompt_config_path: Path) -> Dict[str, Any]:
+    config_path = _resolve_related_path(prompt_config_path, prompt_config.get("memory_core_config_path"))
+    if not config_path.exists():
+        logger.warning(
+            "memory_core_config_path not found (%s), fallback to legacy inline memory settings in prompt config",
+            config_path,
+        )
+        return prompt_config
+
+    with open(config_path, "r", encoding="utf-8") as f:
+        memory_core_config = yaml.safe_load(f) or {}
+
+    if not isinstance(memory_core_config, dict):
+        raise ValueError(f"MemoryCore config must be a dict: {config_path}")
+    return memory_core_config
+
+
 def init_memory_sys(config: Dict[str, Any]) -> MemoryCore:
     workflow_id = str(config.get("workflow_id", "testrt"))
     llm_temperature = float(config.get("memory_llm_temperature", 0.0))
     similarity_threshold = float(config.get("memory_similarity_threshold", 0.88))
     top_k = int(config.get("memory_top_k", 3))
     use_threshold = bool(config.get("memory_use_threshold", True))
+    scene_prompt_version = str(config.get("scene_prompt_version", "v2"))
+    action_prompt_version = str(config.get("action_prompt_version", "v1"))
+    memory_owner_name = str(config.get("memory_owner_name", "changshengEVA"))
 
     embed_provider = str(config.get("embed_provider", os.getenv("EMBED_PROVIDER", "local"))).strip().lower()
     if embed_provider in {"alibaba", "aliyun", "dashscope"}:
@@ -124,22 +154,29 @@ def init_memory_sys(config: Dict[str, Any]) -> MemoryCore:
         similarity_threshold=similarity_threshold,
         top_k=top_k,
         use_threshold=use_threshold,
+        scene_prompt_version=scene_prompt_version,
+        action_prompt_version=action_prompt_version,
+        memory_owner_name=memory_owner_name,
     )
 
 
 def ensure_kg_data_initialized(memory_core: MemoryCore) -> None:
-    kg_data_path = memory_core.kg_data_path
-    kg_candidates_path = memory_core.memory_root / "kg_candidates"
-    kg_files = [p for p in kg_data_path.rglob("*") if p.is_file()]
-
-    if kg_files:
-        logger.info("kg_data already has %d file(s), skip bootstrap import.", len(kg_files))
+    scene_files = [p for p in memory_core.scene_dir.glob("*.json") if p.is_file()]
+    if scene_files:
+        logger.info("scene already has %d file(s), skip bootstrap import.", len(scene_files))
         return
 
-    logger.info("kg_data is empty, bootstrap import from: %s", kg_candidates_path)
-    load_result = memory_core.load_from_dialogue_path(kg_candidates_path)
+    episodes_path = memory_core.episodes_dir
+    logger.info("scene is empty, bootstrap import from episodes: %s", episodes_path)
+    load_result = memory_core.load_from_episode_path(episodes_path)
     if not load_result.get("success", False):
-        raise RuntimeError(f"Failed to initialize kg_data from kg_candidates: {load_result}")
+        error_text = str(load_result.get("error", ""))
+        if "no episode json files found" in error_text or "path not found" in error_text:
+            logger.warning(
+                "No episode data found for bootstrap, continue with empty memory state (0 entities/0 relations)."
+            )
+            return
+        raise RuntimeError(f"Failed to initialize from episodes: {load_result}")
     logger.info(
         "Bootstrap import completed: processed=%s, failed=%s",
         load_result.get("files_processed", 0),
@@ -151,12 +188,13 @@ def main() -> None:
     global memory_sys, detail_search_defaults
 
     prompt_config = load_prompt_config(PROMPT_CONFIG_PATH)
+    memory_core_config = load_memory_core_config(prompt_config, PROMPT_CONFIG_PATH)
 
     detail_cfg = prompt_config.get("detail_search_defaults", {})
     if isinstance(detail_cfg, dict):
         detail_search_defaults.update(detail_cfg)
 
-    memory_sys = init_memory_sys(prompt_config)
+    memory_sys = init_memory_sys(memory_core_config)
     ensure_kg_data_initialized(memory_sys)
 
     model_name = str(prompt_config.get("model_name", "deepseek-chat"))

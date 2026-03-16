@@ -1,13 +1,7 @@
 model_name: "deepseek-chat"
 agent_temperature: 0.0
-workflow_id: "testrt"
+memory_core_config_path: "../memory_core_config/realtalk_test_memory.yaml"
 thread_id: "realtalk-test-1"
-
-# MemoryCore init settings
-memory_llm_temperature: 0.0
-memory_similarity_threshold: 0.88
-memory_top_k: 3
-memory_use_threshold: true
 
 # Default behavior for detail search tool
 detail_search_defaults:
