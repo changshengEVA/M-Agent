@@ -1,4 +1,4 @@
-workflow_id: "evallocomo"
+workflow_id: "test6"
 
 # MemoryCore init settings
 memory_llm_temperature: 0.0
