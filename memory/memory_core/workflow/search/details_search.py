@@ -192,18 +192,3 @@ def _safe_int(value: Any, default: int, minimum: int = 1) -> int:
     except Exception:
         parsed = default
     return max(minimum, parsed)
-
-
-def search_actions(
-    action_query: str,
-    scene_dir: Path,
-    embed_func: Callable[[str], List[float]],
-    topk: int = 5,
-) -> Dict[str, Any]:
-    """Backward-compatible alias of `search_details`."""
-    return search_details(
-        detail_query=action_query,
-        scene_dir=scene_dir,
-        embed_func=embed_func,
-        topk=topk,
-    )

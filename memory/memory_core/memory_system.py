@@ -291,7 +291,7 @@ class MemoryCore:
         细节行为检索公开接口。
         基于 scene.facts[*].embedding（或 Atomic fact 文本回退 embedding）进行向量检索。
         """
-        from .workflow.search.action_search import search_details as workflow_search_details
+        from .workflow.search.details_search import search_details as workflow_search_details
 
         logger.info(
             "调用 search_details 接口: detail_query=%s, topk=%s, scene_dir=%s",
@@ -305,12 +305,6 @@ class MemoryCore:
             embed_func=self.embed_func,
             topk=topk,
         )
-
-    def search_actions(self, action_query: str, topk: int = 5) -> Dict[str, Any]:
-        """
-        兼容旧接口名，等价于 search_details。
-        """
-        return self.search_details(detail_query=action_query, topk=topk)
 
     # ============================================================================
     # 服务注册
