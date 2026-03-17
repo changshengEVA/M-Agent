@@ -160,7 +160,7 @@ def load_from_episode_path(
         force_update = False
 
         from memory.build_memory.form_scene import scan_and_form_scenes
-        from memory.build_memory.form_scene_action import scan_and_form_scene_actions
+        from memory.build_memory.form_scene_details import scan_and_form_scene_actions
 
         if not episodes_root_for_build.exists():
             build_result = {

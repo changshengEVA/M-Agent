@@ -15,6 +15,7 @@ action_extractio_v1: |
   6. Keep each Atomic fact concise, complete, and independently searchable.
   7. Prefer facts tied to meaningful events/activities/outcomes.
   8. Do not extract generic speaking acts such as "said", "asked", or "replied", unless the speaking itself is the important event.
+  9. Avoid pronouns and implicit references in Atomic facts. Unless the dialogue does not provide explicit information, always replace pronouns (e.g., he, she, it, they, this, that) with the explicit entity or object they refer to.itself is the important event.
 
   For each item return:
   - Atomic fact: one atomic factual statement

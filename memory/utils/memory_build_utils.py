@@ -13,6 +13,9 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from .path_utils import get_output_path
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -120,10 +123,10 @@ def build_episodes_with_id(
     """
     try:
         if project_root is None:
-            project_root = Path(__file__).parent.parent
+            project_root = Path(__file__).resolve().parents[2]
 
-        dialogues_root = Path(project_root) / "data" / "memory" / process_id / "dialogues"
-        episodes_root = Path(project_root) / "data" / "memory" / process_id / "episodes"
+        dialogues_root = get_output_path(process_id, "dialogues", project_root=project_root)
+        episodes_root = get_output_path(process_id, "episodes", project_root=project_root)
 
         dialogues_root.mkdir(parents=True, exist_ok=True)
         episodes_root.mkdir(parents=True, exist_ok=True)
@@ -274,10 +277,10 @@ def run_memory_build_for_id(
     try:
         import shutil
 
-        project_root = Path(__file__).parent.parent
+        project_root = Path(__file__).resolve().parents[2]
 
-        target_dialogues_root = project_root / "data" / "memory" / process_id / "dialogues"
-        episodes_root = project_root / "data" / "memory" / process_id / "episodes"
+        target_dialogues_root = get_output_path(process_id, "dialogues", project_root=project_root)
+        episodes_root = get_output_path(process_id, "episodes", project_root=project_root)
 
         target_dialogues_root.mkdir(parents=True, exist_ok=True)
         episodes_root.mkdir(parents=True, exist_ok=True)

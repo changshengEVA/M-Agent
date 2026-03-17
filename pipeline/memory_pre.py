@@ -39,14 +39,12 @@ except ImportError:
     from load_data.dialog_history_loader import load_dialogues
 
 try:
-    from utils import save_dialogue
-    from utils.memory_build_utils import build_episodes_with_id
+    from memory.utils import build_episodes_with_id, get_output_path, save_dialogue
 except ImportError:
     script_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(script_dir)
     sys.path.append(project_root)
-    from utils.dialogue_utils import save_dialogue
-    from utils.memory_build_utils import build_episodes_with_id
+    from memory.utils import build_episodes_with_id, get_output_path, save_dialogue
 
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -63,10 +61,6 @@ def init_llm_model() -> Optional[Callable[[str], str]]:
     except Exception as exc:
         logger.warning("LLM pre-init failed, fallback to lazy init: %s", exc)
         return None
-
-
-def get_output_path(process_id: str, stage_name: str) -> Path:
-    return PROJECT_ROOT / "data" / "memory" / process_id / stage_name
 
 
 def stage1_construct_dialogues_for_id(
