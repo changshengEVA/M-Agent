@@ -7,6 +7,7 @@ Memory Core 系统
 """
 
 import logging
+import json
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable, List
 
@@ -74,6 +75,9 @@ class MemoryCore:
         self.local_store_dir = self.memory_root / "local_store"
         self.entity_library_path = self.local_store_dir / "entity_library"
         self.scene_dir = self.memory_root / "scene"
+        self.facts_dir = self.memory_root / "facts"
+        self.facts_situation_file = self.memory_root / "facts_situation.json"
+        self.entity_statement_dir = self.memory_root / "entity_statement"
         self.dialogues_dir = self.memory_root / "dialogues"
         self.episodes_dir = self.memory_root / "episodes"
 
@@ -81,6 +85,8 @@ class MemoryCore:
         self.local_store_dir.mkdir(parents=True, exist_ok=True)
         self.entity_library_path.mkdir(parents=True, exist_ok=True)
         self.scene_dir.mkdir(parents=True, exist_ok=True)
+        self.facts_dir.mkdir(parents=True, exist_ok=True)
+        self.entity_statement_dir.mkdir(parents=True, exist_ok=True)
         self.dialogues_dir.mkdir(parents=True, exist_ok=True)
         self.episodes_dir.mkdir(parents=True, exist_ok=True)
 
@@ -89,6 +95,9 @@ class MemoryCore:
         logger.info(f"LocalStore目录: {self.local_store_dir}")
         logger.info(f"实体库路径: {self.entity_library_path}")
         logger.info(f"Scene目录: {self.scene_dir}")
+        logger.info(f"Facts目录: {self.facts_dir}")
+        logger.info(f"Facts状态文件: {self.facts_situation_file}")
+        logger.info(f"Entity statement目录: {self.entity_statement_dir}")
         logger.info(f"Dialogues目录: {self.dialogues_dir}")
         logger.info(f"Episodes目录: {self.episodes_dir}")
         logger.info(f"Scene prompt版本: {self.scene_prompt_version}")
@@ -174,7 +183,9 @@ class MemoryCore:
         初始化 EntityLibrary 与 KG 的同步（极简版）。
 
         当前模式下 KG 数据以 Neo4j 为主存储，本地 EntityLibrary 仅为解析辅助索引。
-        这里直接以 KG 为准重建 EntityLibrary，避免与旧文件持久层耦合。
+        同步策略：
+        - 若 KG 实体信息（仅比较 id/name）与当前 EntityLibrary 一致：跳过重建（避免重复初始化 embedding）。
+        - 若不一致：清空并按 KG 重建（rebuild_from_kg 内部会重算 embedding）。
         """
         try:
             kg_entity_ids = self.kg_base.list_entity_ids()
@@ -207,6 +218,12 @@ class MemoryCore:
                     }
                 )
 
+            kg_signature = self._build_kg_entity_signature(kg_data["entities"])
+            library_signature = self._build_library_entity_signature(service)
+            if kg_signature == library_signature:
+                logger.info("KG 实体信息未变化，跳过 EntityLibrary 重建与 embedding 初始化")
+                return
+
             rebuilt = service.entity_library.rebuild_from_kg(kg_data)
             if not rebuilt:
                 logger.warning("EntityLibrary rebuild_from_kg failed")
@@ -217,6 +234,32 @@ class MemoryCore:
             logger.info("EntityLibrary 已按 KG 重建完成: %s 个实体", len(kg_data["entities"]))
         except Exception as e:
             logger.warning(f"初始化 EntityLibrary 同步时出错: {e}")
+
+    def _build_kg_entity_signature(self, kg_entities: List[Dict[str, Any]]) -> tuple:
+        signature_items = []
+        for item in kg_entities:
+            if not isinstance(item, dict):
+                continue
+            entity_id = str(item.get("id") or "").strip()
+            if not entity_id:
+                continue
+            name = str(item.get("name") or entity_id).strip()
+            signature_items.append((entity_id, name))
+        return tuple(sorted(signature_items))
+
+    def _build_library_entity_signature(self, service: EntityResolutionService) -> tuple:
+        signature_items = []
+        entities = getattr(service.entity_library, "entities", {})
+        if not isinstance(entities, dict):
+            return tuple()
+
+        for entity_id, record in entities.items():
+            record_id = str(getattr(record, "entity_id", "") or entity_id).strip()
+            if not record_id:
+                continue
+            canonical_name = str(getattr(record, "canonical_name", "") or record_id).strip()
+            signature_items.append((record_id, canonical_name))
+        return tuple(sorted(signature_items))
     
     # ============================================================================
     # 数据导入
@@ -231,6 +274,63 @@ class MemoryCore:
 
         logger.info(f"调用 load_from_episode_path 接口，路径: {path}")
         return workflow_load_from_episode_path(path=path, memory_core=self)
+
+    def make_entity_statement(self, path: Path, force_update: bool = False) -> Dict[str, Any]:
+        """
+        从 episodes 路径导入并生成 entity statements。
+        """
+        from .workflow.build.make_entity_statement import (
+            make_entity_statement as workflow_make_entity_statement,
+        )
+
+        logger.info(f"调用 make_entity_statement 接口，路径: {path}, force_update: {force_update}")
+        return workflow_make_entity_statement(path=path, memory_core=self, force_update=force_update)
+
+    def extract_fact_entities(self, force_update: bool = False, use_tqdm: bool = True) -> Dict[str, Any]:
+        """
+        扫描 scene facts 并提取实体（main_entity / other_entities），
+        同步写入 data/memory/{workflow_id}/facts 与 episode_situation 状态。
+        """
+        from .workflow.build.extract_fact_entities import (
+            extract_fact_entities as workflow_extract_fact_entities,
+        )
+
+        logger.info(
+            "调用 extract_fact_entities 接口: workflow_id=%s, force_update=%s",
+            self.workflow_id,
+            force_update,
+        )
+        return workflow_extract_fact_entities(
+            memory_core=self,
+            force_update=force_update,
+            use_tqdm=use_tqdm,
+        )
+
+    def import_fact_entities(self, force_update: bool = False, use_tqdm: bool = True) -> Dict[str, Any]:
+        """
+        导入 facts 的实体信息（UID + name）到 KG，并更新 facts_situation.json。
+        """
+        from .workflow.build.import_fact_entities import (
+            import_fact_entities as workflow_import_fact_entities,
+        )
+
+        logger.info(
+            "调用 import_fact_entities 接口: workflow_id=%s, force_update=%s",
+            self.workflow_id,
+            force_update,
+        )
+        result = workflow_import_fact_entities(
+            memory_core=self,
+            force_update=force_update,
+            use_tqdm=use_tqdm,
+        )
+
+        # 对齐 EntityLibrary 与最新 KG，避免解析库滞后
+        try:
+            self._align_entity_library_with_kg(self.entity_resolution_service)
+        except Exception as exc:
+            logger.warning("import_fact_entities 后同步 EntityLibrary 失败: %s", exc)
+        return result
 
     
     # ============================================================================

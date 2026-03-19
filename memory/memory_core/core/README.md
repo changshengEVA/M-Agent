@@ -23,7 +23,7 @@ This `core` package is now minimized to KG entity/relation operations.
 - Unique constraint: `Entity.id` (unique inside one database)
 
 Notes:
-- Each `workflow_id` maps to one Neo4j database, for example `wf_<workflow_id>`.
+- Each `workflow_id` maps to one Neo4j database, for example `wf-<workflow_id>`.
 - Queries run in the selected workflow database only.
 - No extra `workflow_id` predicate is used in entity/relation Cypher.
 
@@ -40,7 +40,8 @@ Notes:
 
 ### Entity APIs
 
-- `add_entity(entity_id, entity_type=None, source_info=None)`
+- `add_entity(entity_id, entity_type=None, source_info=None, entity_uid=None, entity_name=None)`
+- `upsert_entity(entity_id, entity_name=None, entity_uid=None, entity_type=None, source_info=None)`
 - `get_entity(entity_id) -> (success, entity_data | None)`
 - `merge_entities(target_id, source_id, source_info=None)`
 - `delete_entity(entity_id, source_info=None)`
@@ -95,14 +96,14 @@ Priority:
   - `NEO4J_URL`
   - `NEO4J_USER`
   - `NEO4J_PASSWORD`
-  - `NEO4J_DATABASE_TEMPLATE` (default: `wf_{workflow_id}`)
+  - `NEO4J_DATABASE_TEMPLATE` (default: `wf-{workflow_id}`)
 - Otherwise fallback to `config/neo4j.yaml`
 
 Example:
 
 ```yaml
-url: "neo4j://127.0.0.1:7687"
+url: "bolt://127.0.0.1:7687"  # standalone server recommended
 user_name: "neo4j"
 password: "your_password"
-database_template: "wf_{workflow_id}"
+database_template: "wf-{workflow_id}"
 ```

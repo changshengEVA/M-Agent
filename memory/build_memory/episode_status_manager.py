@@ -219,7 +219,7 @@ class EpisodeStatusManager:
         if not episode:
             return False
         return episode.get("kg_candidates_generated", False)
-    
+
     def mark_scene_generated(self, episode_key: str, scene_file: str, created_at: Optional[str] = None):
         """
         标记 scene 已生成。
@@ -255,7 +255,7 @@ class EpisodeStatusManager:
             "kg_candidates_generated_at": created_at,
             "kg_candidate_file": kg_file
         })
-    
+
     def get_all_episodes(self) -> Dict[str, Dict]:
         """获取所有 episode 数据"""
         return self._data.get("episodes", {})

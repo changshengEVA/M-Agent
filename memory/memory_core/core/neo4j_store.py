@@ -54,17 +54,63 @@ class Neo4jStore:
             return
 
         try:
-            from neo4j import GraphDatabase
-
-            self.driver = GraphDatabase.driver(self.url, auth=(self.user, self.password))
+            self.driver = self._create_driver(self.url)
             self.driver.verify_connectivity()
             self.available = True
             self._ensure_schema()
             logger.info("Neo4j connected: %s", self.url)
         except Exception as exc:
+            if self._maybe_switch_to_direct(exc):
+                try:
+                    self.driver = self._create_driver(self.url)
+                    self.driver.verify_connectivity()
+                    self.available = True
+                    self._ensure_schema()
+                    logger.info("Neo4j connected (direct mode): %s", self.url)
+                    return
+                except Exception as retry_exc:
+                    exc = retry_exc
             self.available = False
             self.driver = None
             logger.warning("Neo4j unavailable (%s). Core graph ops become no-op/fail-safe.", exc)
+
+    def _create_driver(self, url: str):
+        from neo4j import GraphDatabase
+
+        return GraphDatabase.driver(url, auth=(self.user, self.password))
+
+    @staticmethod
+    def _is_routing_error(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return "routing information" in msg or "unable to retrieve routing" in msg
+
+    @staticmethod
+    def _to_direct_url(url: str) -> Optional[str]:
+        text = str(url or "").strip()
+        mappings = [
+            ("neo4j+ssc://", "bolt+ssc://"),
+            ("neo4j+s://", "bolt+s://"),
+            ("neo4j://", "bolt://"),
+        ]
+        for src, dst in mappings:
+            if text.startswith(src):
+                return dst + text[len(src) :]
+        return None
+
+    def _maybe_switch_to_direct(self, exc: Exception) -> bool:
+        if not self._is_routing_error(exc):
+            return False
+        direct_url = self._to_direct_url(self.url)
+        if not direct_url or direct_url == self.url:
+            return False
+        old_url = self.url
+        self.url = direct_url
+        logger.warning(
+            "Neo4j routing unavailable on '%s', fallback to direct URL '%s'.",
+            old_url,
+            direct_url,
+        )
+        return True
 
     def _load_config(self) -> Dict[str, Any]:
         env_url = os.getenv("NEO4J_URL")
@@ -106,51 +152,95 @@ class Neo4jStore:
             return
         self._ensure_schema_in_db(None)
 
-    def _ensure_schema_in_db(self, database: Optional[str]) -> None:
+    def _ensure_schema_in_db(self, database: Optional[str]) -> bool:
         if not self.available or self.driver is None:
-            return
+            return False
         constraints = [
             "DROP CONSTRAINT entity_workflow_id_unique IF EXISTS",
             "CREATE CONSTRAINT entity_id_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.id IS UNIQUE",
         ]
-        try:
-            session_kwargs: Dict[str, Any] = {}
-            db = self._sanitize_db_name(database or "")
-            if db:
-                session_kwargs["database"] = db
-            with self.driver.session(**session_kwargs) as session:
-                for query in constraints:
-                    session.run(query)
-        except Exception as exc:
-            target = db if db else "<default>"
-            logger.warning("Neo4j schema ensure failed for database '%s': %s", target, exc)
+        session_kwargs: Dict[str, Any] = {}
+        db = self._sanitize_db_name(database or "")
+        if db:
+            session_kwargs["database"] = db
+
+        for attempt in range(2):
+            try:
+                with self.driver.session(**session_kwargs) as session:
+                    for query in constraints:
+                        session.run(query)
+                return True
+            except Exception as exc:
+                if attempt == 0 and self._maybe_switch_to_direct(exc):
+                    self.driver = self._create_driver(self.url)
+                    self.driver.verify_connectivity()
+                    continue
+                target = db if db else "<default>"
+                logger.warning("Neo4j schema ensure failed for database '%s': %s", target, exc)
+                return False
+        return False
 
     @staticmethod
     def _sanitize_db_name(name: str) -> str:
         lowered = str(name or "").strip().lower()
-        return re.sub(r"[^a-z0-9_]", "_", lowered)
+        # Neo4j database names accept ascii letters, numbers, dots and dashes.
+        lowered = lowered.replace("_", "-")
+        sanitized = re.sub(r"[^a-z0-9.\-]", "-", lowered)
+        sanitized = re.sub(r"[-.]{2,}", "-", sanitized).strip("-.")
+        return sanitized
 
     def resolve_database(self, workflow_id: str) -> Optional[str]:
         template = str(
             os.getenv(
                 "NEO4J_DATABASE_TEMPLATE",
-                self.config.get("database_template", "wf_{workflow_id}"),
+                self.config.get("database_template", "wf-{workflow_id}"),
             )
         )
-        return self._sanitize_db_name(template.format(workflow_id=workflow_id))
+        database = self._sanitize_db_name(template.format(workflow_id=workflow_id))
+        if database:
+            return database
+        fallback = self._sanitize_db_name(f"wf-{workflow_id}") or "wf-default"
+        return fallback
 
-    def ensure_database(self, database: Optional[str]) -> None:
+    @staticmethod
+    def _is_create_database_unsupported(exc: Exception) -> bool:
+        msg = str(exc).lower()
+        return (
+            "unsupportedadministrationcommand" in msg
+            or "unsupported administration command" in msg
+            or ("create database" in msg and "community" in msg)
+            or ("create database" in msg and "not supported" in msg)
+        )
+
+    def ensure_database(self, database: Optional[str]) -> Optional[str]:
         if not self.available or self.driver is None:
-            return
+            return None
         db = self._sanitize_db_name(database or "")
         if not db:
-            return
-        try:
-            with self.driver.session(database="system") as session:
-                session.run(f"CREATE DATABASE `{db}` IF NOT EXISTS")
-            self._ensure_schema_in_db(db)
-        except Exception as exc:
-            logger.warning("Ensure database failed for '%s': %s", db, exc)
+            return None
+
+        for attempt in range(2):
+            try:
+                with self.driver.session(database="system") as session:
+                    session.run(f"CREATE DATABASE `{db}` IF NOT EXISTS")
+                self._ensure_schema_in_db(db)
+                return db
+            except Exception as exc:
+                if attempt == 0 and self._maybe_switch_to_direct(exc):
+                    self.driver = self._create_driver(self.url)
+                    self.driver.verify_connectivity()
+                    continue
+                if self._is_create_database_unsupported(exc):
+                    logger.warning(
+                        "CREATE DATABASE is unsupported on this Neo4j server; fallback to default database."
+                    )
+                    self._ensure_schema_in_db(None)
+                    return None
+                logger.warning("Ensure database failed for '%s': %s", db, exc)
+                # Keep system running: fallback to default database.
+                self._ensure_schema_in_db(None)
+                return None
+        return None
 
     def run(
         self,
@@ -170,7 +260,15 @@ class Neo4jStore:
         if db:
             session_kwargs["database"] = db
 
-        with self.driver.session(**session_kwargs) as session:
-            if write:
-                return session.execute_write(_tx, query, params or {})
-            return session.execute_read(_tx, query, params or {})
+        for attempt in range(2):
+            try:
+                with self.driver.session(**session_kwargs) as session:
+                    if write:
+                        return session.execute_write(_tx, query, params or {})
+                    return session.execute_read(_tx, query, params or {})
+            except Exception as exc:
+                if attempt == 0 and self._maybe_switch_to_direct(exc):
+                    self.driver = self._create_driver(self.url)
+                    self.driver.verify_connectivity()
+                    continue
+                raise

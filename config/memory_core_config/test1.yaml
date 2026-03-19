@@ -18,3 +18,7 @@ memory_use_threshold: true
 scene_prompt_version: "v2"
 action_prompt_version: "v1"
 memory_owner_name: "changshengEVA"
+# Entity statement build control
+# true: force regenerate all episodes this run
+# false: incremental mode based on episodes/episode_situation.json
+entity_statement_force_update: false

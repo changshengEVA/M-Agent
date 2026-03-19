@@ -46,8 +46,8 @@ class KGBase:
         self.workflow_id = str(workflow_id)
         self.event_bus = event_bus
         self.store = Neo4jStore.instance()
-        self.database = self.store.resolve_database(self.workflow_id)
-        self.store.ensure_database(self.database)
+        requested_database = self.store.resolve_database(self.workflow_id)
+        self.database = self.store.ensure_database(requested_database)
         logger.info(
             "KGBase initialized (neo4j=%s): workflow_id=%s database=%s",
             self.store.available,
@@ -99,6 +99,8 @@ class KGBase:
         entity_id: str,
         entity_type: Optional[str] = None,
         source_info: Optional[Dict[str, Any]] = None,
+        entity_uid: Optional[str] = None,
+        entity_name: Optional[str] = None,
     ) -> CoreResult:
         if not self.store.available:
             return self._disabled_result("add_entity")
@@ -112,10 +114,15 @@ class KGBase:
                 "details": {"operation": "add_entity", "error": f"entity already exists: {entity_id}"},
             }
 
+        uid_value = str(entity_uid or "").strip()
+        if not uid_value:
+            uid_value = str(uuid.uuid4())
+        name_value = str(entity_name or entity_id).strip() or entity_id
+
         payload = {
             "id": entity_id,
-            "uid": str(uuid.uuid4()),
-            "name": entity_id,
+            "uid": uid_value,
+            "name": name_value,
             "type": str(entity_type or ""),
             "confidence": 1.0,
             "sources_json": _safe_json_dumps([source_info] if source_info else [], []),
@@ -140,6 +147,114 @@ class KGBase:
             }
         except Exception as exc:
             return {"success": False, "changed": False, "details": {"operation": "add_entity", "error": str(exc)}}
+
+    def upsert_entity(
+        self,
+        entity_id: str,
+        entity_name: Optional[str] = None,
+        entity_uid: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        source_info: Optional[Dict[str, Any]] = None,
+    ) -> CoreResult:
+        if not self.store.available:
+            return self._disabled_result("upsert_entity")
+        entity_id = str(entity_id or "").strip()
+        if not entity_id:
+            return {"success": False, "changed": False, "details": {"operation": "upsert_entity", "error": "empty id"}}
+
+        if not self._entity_exists(entity_id):
+            add_result = self.add_entity(
+                entity_id=entity_id,
+                entity_type=entity_type,
+                source_info=source_info,
+                entity_uid=entity_uid,
+                entity_name=entity_name,
+            )
+            if not add_result.get("success"):
+                return {
+                    "success": False,
+                    "changed": False,
+                    "details": {
+                        "operation": "upsert_entity",
+                        "action": "create_failed",
+                        "entity_id": entity_id,
+                        "add_result": add_result,
+                    },
+                }
+            return {
+                "success": True,
+                "changed": True,
+                "details": {
+                    "operation": "upsert_entity",
+                    "action": "created",
+                    "entity_id": entity_id,
+                    "entity_uid": add_result.get("details", {}).get("entity_uid"),
+                },
+            }
+
+        ok, current = self.get_entity(entity_id)
+        if not ok or current is None:
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "upsert_entity", "error": f"failed to load entity: {entity_id}"},
+            }
+
+        current_name = str(current.get("name") or entity_id)
+        current_uid = str(current.get("uid") or "")
+        current_type = str(current.get("type") or "")
+        current_sources = current.get("sources", [])
+
+        next_name = str(entity_name or current_name or entity_id).strip() or entity_id
+        next_uid = str(entity_uid or current_uid).strip()
+        if not next_uid:
+            next_uid = str(uuid.uuid4())
+        next_type = str(entity_type or current_type).strip()
+        next_sources = self._merge_sources(current_sources, [source_info] if source_info else [])
+
+        changed = (
+            next_name != current_name
+            or next_uid != current_uid
+            or next_type != current_type
+            or next_sources != current_sources
+        )
+        if not changed:
+            return {
+                "success": True,
+                "changed": False,
+                "details": {"operation": "upsert_entity", "action": "noop", "entity_id": entity_id},
+            }
+
+        query = """
+        MATCH (e:Entity {id: $id})
+        SET e.uid = $uid,
+            e.name = $name,
+            e.type = $type,
+            e.sources_json = $sources_json
+        """
+        try:
+            self._run_write(
+                query,
+                {
+                    "id": entity_id,
+                    "uid": next_uid,
+                    "name": next_name,
+                    "type": next_type,
+                    "sources_json": _safe_json_dumps(next_sources, []),
+                },
+            )
+            return {
+                "success": True,
+                "changed": True,
+                "details": {
+                    "operation": "upsert_entity",
+                    "action": "updated",
+                    "entity_id": entity_id,
+                    "entity_uid": next_uid,
+                },
+            }
+        except Exception as exc:
+            return {"success": False, "changed": False, "details": {"operation": "upsert_entity", "error": str(exc)}}
 
     def get_entity(self, entity_id: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
         if not self.store.available:

@@ -190,18 +190,59 @@ def load_from_episode_path(
                 embed_model=memory_core.embed_func,
                 llm_model=memory_core.llm_func,
             )
+
+            if hasattr(memory_core, "extract_fact_entities"):
+                fact_entity_stats = memory_core.extract_fact_entities(
+                    force_update=force_update,
+                    use_tqdm=True,
+                )
+            else:
+                from memory.memory_core.workflow.build.extract_fact_entities import (
+                    extract_fact_entities as workflow_extract_fact_entities,
+                )
+
+                fact_entity_stats = workflow_extract_fact_entities(
+                    memory_core=memory_core,
+                    force_update=force_update,
+                    use_tqdm=True,
+                )
+
+            if hasattr(memory_core, "import_fact_entities"):
+                fact_import_stats = memory_core.import_fact_entities(
+                    force_update=force_update,
+                    use_tqdm=True,
+                )
+            else:
+                from memory.memory_core.workflow.build.import_fact_entities import (
+                    import_fact_entities as workflow_import_fact_entities,
+                )
+
+                fact_import_stats = workflow_import_fact_entities(
+                    memory_core=memory_core,
+                    force_update=force_update,
+                    use_tqdm=True,
+                )
+
             scene_file_count = len([p for p in scene_root.glob("*.json") if p.is_file()])
             build_result = {
-                "success": True,
+                "success": bool(fact_import_stats.get("success", True)),
                 "scene_file_count": scene_file_count,
                 "fact_stats": fact_stats,
+                "fact_entity_stats": fact_entity_stats,
+                "fact_import_stats": fact_import_stats,
                 "episodes_root": str(episodes_root_for_build),
                 "scene_root": str(scene_root),
+                "facts_root": str(getattr(memory_core, "facts_dir", memory_core.memory_root / "facts")),
+                "facts_situation_file": str(
+                    getattr(memory_core, "facts_situation_file", memory_core.memory_root / "facts_situation.json")
+                ),
                 "scene_prompt_version": scene_prompt_version,
                 "action_prompt_version": action_prompt_version,
                 "memory_owner_name": memory_owner_name,
                 "force_update": force_update,
             }
+            if not build_result["success"]:
+                build_result["error"] = "fact entity import failed"
 
         results["scene_build_result"] = build_result
         if not build_result.get("success", False):
