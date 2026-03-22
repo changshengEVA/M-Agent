@@ -25,6 +25,7 @@ _NETWORK_CLASS_TOKENS = (
 )
 
 _NETWORK_MESSAGE_TOKENS = (
+    "connection error",
     "connection aborted",
     "connection refused",
     "connection reset",
@@ -43,6 +44,8 @@ _NETWORK_MESSAGE_TOKENS = (
     "proxy error",
     "dns",
     "eof occurred in violation of protocol",
+    "incomplete chunked read",
+    "peer closed connection without sending complete message body",
     "ssl",
     "tls",
 )
@@ -58,6 +61,13 @@ def iter_exception_chain(exc: BaseException | None) -> Iterator[BaseException]:
         seen.add(obj_id)
         yield current
         current = current.__cause__ or current.__context__
+
+
+def is_network_error_text(text: object) -> bool:
+    message = str(text or "").strip().lower()
+    if not message:
+        return False
+    return any(token in message for token in _NETWORK_MESSAGE_TOKENS)
 
 
 def is_network_api_error(exc: BaseException | None) -> bool:
@@ -82,7 +92,7 @@ def is_network_api_error(exc: BaseException | None) -> bool:
             return True
 
         message = str(current).strip().lower()
-        if message and any(token in message for token in _NETWORK_MESSAGE_TOKENS):
+        if is_network_error_text(message):
             return True
 
     return False

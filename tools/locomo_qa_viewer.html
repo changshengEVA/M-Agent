@@ -581,6 +581,107 @@
       font-weight: 700;
     }
 
+    .memory-status {
+      margin-top: 2px;
+    }
+
+    .episode-evidence-wrap {
+      margin-top: 10px;
+    }
+
+    .episode-evidence-summary {
+      font-size: 12px;
+      color: #534936;
+      margin-bottom: 8px;
+    }
+
+    .episode-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .episode-card {
+      border: 1px solid #e1d4bf;
+      border-radius: 10px;
+      background: #fff;
+      padding: 10px;
+    }
+
+    .episode-card-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 8px;
+      flex-wrap: wrap;
+    }
+
+    .episode-card-title {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .episode-badge {
+      border: 1px solid #bfd8dc;
+      background: #ecf7f9;
+      color: #235664;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .episode-theme {
+      font-size: 13px;
+      font-weight: 700;
+      color: #2f5964;
+    }
+
+    .episode-meta {
+      font-size: 12px;
+      color: #6b604c;
+      line-height: 1.45;
+    }
+
+    .episode-subtitle {
+      font-size: 12px;
+      color: #6b5f49;
+      font-weight: 700;
+      margin: 8px 0 6px;
+    }
+
+    .episode-turns,
+    .episode-facts {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .episode-fact {
+      border: 1px solid #eee1cd;
+      border-radius: 8px;
+      background: #fbf6ec;
+      padding: 7px 8px;
+    }
+
+    .episode-fact-meta {
+      color: #7b6c55;
+      font-size: 11px;
+      margin-bottom: 3px;
+    }
+
+    .episode-fact-text {
+      color: #2f2b22;
+      font-size: 12px;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
     .raw-pre {
       margin: 0;
       background: #f7f1e6;
@@ -657,19 +758,22 @@
       <div>
         <h1 class="title">LoCoMo QA 数据查看器</h1>
         <p class="subtitle">
-          用于查看 `locomo10_agent_qa.json` 这类评估结果文件。支持按分类、分数字段与得分区间筛选，并查看每条 QA 的完整内容。
+          用于查看 `locomo10_agent_qa.json` 这类评估结果文件。支持按分类、分数字段与得分区间筛选，并查看每条 QA 的完整内容；如需查看证据所属的系统 Episode 与 facts，可额外加载 `data/memory/<workflow>` 目录。
         </p>
       </div>
       <div class="drop-zone" id="dropZone">
         <div class="drop-actions">
           <button class="primary-btn" id="pickBtn">选择预测 JSON</button>
           <button class="secondary-btn" id="pickSourceBtn">加载LoCoMo原始文件</button>
+          <button class="secondary-btn" id="pickMemoryBtn">加载系统Memory目录</button>
         </div>
         <input id="fileInput" type="file" accept=".json,application/json" hidden />
         <input id="sourceFileInput" type="file" accept=".json,application/json" hidden />
-        <div class="hint">也可直接将文件拖到这里</div>
+        <input id="memoryDirInput" type="file" webkitdirectory directory multiple hidden />
+        <div class="hint">也可直接将预测文件拖到这里</div>
         <div class="tiny" id="fileMeta">尚未加载文件</div>
         <div class="tiny" id="sourceMeta">原始数据: 未加载</div>
+        <div class="tiny memory-status" id="memoryMeta">系统Memory: 未加载</div>
       </div>
     </section>
 
@@ -774,15 +878,28 @@
       selectedRowKey: "",
       rawView: "readable",
       sourceSamplesById: new Map(),
+      memoryStore: {
+        mode: "none",
+        label: "",
+        rootPath: "",
+        rootPrefix: "",
+        fileIndex: new Map(),
+        episodeSceneMetaByKey: new Map(),
+        jsonCache: new Map(),
+      },
     };
     const METRIC_KEY_RE = /(f1|b1|score|acc|accuracy|recall|metric)/i;
+    const MEMORY_EPISODE_SITUATION_REL = "episodes/episode_situation.json";
 
     const fileInput = document.getElementById("fileInput");
     const sourceFileInput = document.getElementById("sourceFileInput");
+    const memoryDirInput = document.getElementById("memoryDirInput");
     const pickBtn = document.getElementById("pickBtn");
     const pickSourceBtn = document.getElementById("pickSourceBtn");
+    const pickMemoryBtn = document.getElementById("pickMemoryBtn");
     const fileMeta = document.getElementById("fileMeta");
     const sourceMeta = document.getElementById("sourceMeta");
+    const memoryMeta = document.getElementById("memoryMeta");
     const dropZone = document.getElementById("dropZone");
     const scoreFieldEl = document.getElementById("scoreField");
     const scoreMinEl = document.getElementById("scoreMin");
@@ -808,6 +925,7 @@
 
     pickBtn.addEventListener("click", () => fileInput.click());
     pickSourceBtn.addEventListener("click", () => sourceFileInput.click());
+    pickMemoryBtn.addEventListener("click", () => memoryDirInput.click());
     fileInput.addEventListener("change", (e) => {
       const file = e.target.files && e.target.files[0];
       if (file) readFile(file);
@@ -815,6 +933,15 @@
     sourceFileInput.addEventListener("change", (e) => {
       const file = e.target.files && e.target.files[0];
       if (file) readSourceFile(file);
+    });
+    memoryDirInput.addEventListener("change", async (e) => {
+      const files = e.target.files;
+      if (!files || !files.length) return;
+      try {
+        await loadMemoryDirectory(files);
+      } catch (error) {
+        memoryMeta.textContent = `系统Memory加载失败: ${error.message}`;
+      }
     });
 
     ["dragenter", "dragover"].forEach((evt) => {
@@ -920,6 +1047,15 @@
       reader.readAsText(file, "utf-8");
     }
 
+    function readFileAsText(file) {
+      return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ""));
+        reader.onerror = () => reject(new Error(`读取文件失败: ${file && file.name ? file.name : "unknown"}`));
+        reader.readAsText(file, "utf-8");
+      });
+    }
+
     function loadSourceJson(text, fileName) {
       let parsed;
       try {
@@ -947,6 +1083,7 @@
 
     async function tryAutoLoadSource() {
       const paths = [
+        "../data/locomo/data/locomo10.json",
         "data/locomo/data/locomo10.json",
         "./data/locomo/data/locomo10.json",
       ];
@@ -962,6 +1099,179 @@
           // ignore and continue
         }
       }
+    }
+
+    function normalizePath(text) {
+      return String(text || "").replace(/\\/g, "/").replace(/^\.\/+/, "").replace(/\/+/g, "/").replace(/^\//, "");
+    }
+
+    function buildEpisodeSceneMetaMap(payload) {
+      const map = new Map();
+      if (!payload || typeof payload !== "object") return map;
+
+      const candidateNodes = [];
+      if (payload.episodes && typeof payload.episodes === "object" && !Array.isArray(payload.episodes)) {
+        candidateNodes.push(...Object.entries(payload.episodes));
+      }
+      candidateNodes.push(...Object.entries(payload));
+
+      candidateNodes.forEach(([, value]) => {
+        if (!value || typeof value !== "object" || Array.isArray(value)) return;
+        const dialogueId = String(value.dialogue_id || "").trim();
+        const episodeId = String(value.episode_id || "").trim();
+        if (!dialogueId || !episodeId) return;
+
+        const episodeKey = String(value.episode_key || `${dialogueId}:${episodeId}`);
+        map.set(episodeKey, {
+          episodeKey,
+          dialogueId,
+          episodeId,
+          sceneFile: String(value.scene_file || "").trim(),
+          sceneAvailable: Boolean(value.scene_available),
+        });
+      });
+
+      return map;
+    }
+
+    function preferredEpisodeSituationPath(paths) {
+      const list = Array.isArray(paths) ? paths.filter(Boolean) : [];
+      if (!list.length) return "";
+      const preferred =
+        list.find((p) => /(^|\/)evallocomo\/episodes\/episode_situation\.json$/i.test(p)) ||
+        list.find((p) => /(^|\/)test6\/episodes\/episode_situation\.json$/i.test(p));
+      return preferred || list.sort()[0];
+    }
+
+    function setMemoryStore(store) {
+      state.memoryStore = store;
+      renderRawPanel();
+    }
+
+    async function loadMemoryDirectory(fileList) {
+      const files = Array.from(fileList || []);
+      if (!files.length) return;
+
+      memoryMeta.textContent = `系统Memory: 正在索引 ${files.length} 个文件...`;
+      const fileIndex = new Map();
+      files.forEach((file) => {
+        const rel = normalizePath(file.webkitRelativePath || file.name);
+        if (rel) fileIndex.set(rel, file);
+      });
+
+      const episodeSituationCandidates = [...fileIndex.keys()].filter(
+        (p) => p === MEMORY_EPISODE_SITUATION_REL || p.endsWith(`/${MEMORY_EPISODE_SITUATION_REL}`)
+      );
+      const pickedPath = preferredEpisodeSituationPath(episodeSituationCandidates);
+      if (!pickedPath) {
+        throw new Error("所选目录中未找到 episodes/episode_situation.json");
+      }
+
+      const episodeSituationText = await readFileAsText(fileIndex.get(pickedPath));
+      let episodeSituation;
+      try {
+        episodeSituation = JSON.parse(episodeSituationText);
+      } catch {
+        throw new Error(`无法解析 ${pickedPath}`);
+      }
+
+      const rootPrefix = pickedPath.slice(0, pickedPath.length - MEMORY_EPISODE_SITUATION_REL.length);
+      const episodeSceneMetaByKey = buildEpisodeSceneMetaMap(episodeSituation);
+      const label = rootPrefix.replace(/\/$/, "") || "已选目录";
+
+      setMemoryStore({
+        mode: "dir",
+        label,
+        rootPath: "",
+        rootPrefix,
+        fileIndex,
+        episodeSceneMetaByKey,
+        jsonCache: new Map([[MEMORY_EPISODE_SITUATION_REL, episodeSituation]]),
+      });
+
+      memoryMeta.textContent = `系统Memory: 已加载 ${label} | episodes=${episodeSceneMetaByKey.size} | files=${files.length}`;
+    }
+
+    async function tryAutoLoadMemory() {
+      const roots = [
+        "../data/memory/evallocomo/",
+        "data/memory/evallocomo/",
+        "./data/memory/evallocomo/",
+      ];
+
+      memoryMeta.textContent = "系统Memory: 尝试自动加载 evallocomo...";
+      for (const root of roots) {
+        try {
+          const resp = await fetch(`${root}${MEMORY_EPISODE_SITUATION_REL}`, { cache: "no-store" });
+          if (!resp.ok) continue;
+          const text = await resp.text();
+          const episodeSituation = JSON.parse(text);
+          const episodeSceneMetaByKey = buildEpisodeSceneMetaMap(episodeSituation);
+          setMemoryStore({
+            mode: "http",
+            label: "evallocomo",
+            rootPath: root,
+            rootPrefix: "",
+            fileIndex: new Map(),
+            episodeSceneMetaByKey,
+            jsonCache: new Map([[MEMORY_EPISODE_SITUATION_REL, episodeSituation]]),
+          });
+          memoryMeta.textContent = `系统Memory: 已自动加载 evallocomo | episodes=${episodeSceneMetaByKey.size}`;
+          return;
+        } catch {
+          // ignore and continue
+        }
+      }
+
+      memoryMeta.textContent = "系统Memory: 未自动加载，可点击上方“加载系统Memory目录”选择 data/memory/evallocomo";
+    }
+
+    async function readMemoryJson(relPath) {
+      const store = state.memoryStore;
+      if (!store || store.mode === "none") return null;
+
+      const normalizedRelPath = normalizePath(relPath);
+      if (store.jsonCache.has(normalizedRelPath)) {
+        return store.jsonCache.get(normalizedRelPath);
+      }
+
+      let parsed = null;
+      if (store.mode === "dir") {
+        const fullPath = normalizePath(`${store.rootPrefix || ""}${normalizedRelPath}`);
+        const file = store.fileIndex.get(fullPath);
+        if (!file) return null;
+        const text = await readFileAsText(file);
+        parsed = parseJsonLoose(text);
+      } else if (store.mode === "http") {
+        try {
+          const resp = await fetch(`${store.rootPath}${normalizedRelPath}`, { cache: "no-store" });
+          if (!resp.ok) return null;
+          const text = await resp.text();
+          parsed = parseJsonLoose(text);
+        } catch {
+          return null;
+        }
+      }
+
+      if (parsed !== null) {
+        store.jsonCache.set(normalizedRelPath, parsed);
+      }
+      return parsed;
+    }
+
+    async function loadEpisodePayload(dialogueId) {
+      if (!dialogueId) return null;
+      return readMemoryJson(`episodes/by_dialogue/${dialogueId}/episodes_v1.json`);
+    }
+
+    async function loadScenePayload(dialogueId, episodeId) {
+      const store = state.memoryStore;
+      if (!store || store.mode === "none") return null;
+
+      const episodeKey = `${dialogueId}:${episodeId}`;
+      const meta = store.episodeSceneMetaByKey.get(episodeKey);
+      if (!meta || !meta.sceneFile) return null;
+      return readMemoryJson(`scene/${meta.sceneFile}`);
     }
 
     function loadJson(text, fileName) {
@@ -1501,6 +1811,7 @@
         `category: <span class="mono">${escapeHtml(String(row.category))}</span>`;
       rawReadableEl.innerHTML = buildReadableHtml(row);
       rawContentEl.textContent = JSON.stringify(row.raw, null, 2);
+      hydrateEvidenceEpisodePanel(row);
       renderRawViewSwitch();
     }
 
@@ -1538,6 +1849,12 @@
 
       const toolCallInfo = buildToolCallsHtml(predictionToolCalls);
       const evidenceInfo = buildEvidenceHtml(row);
+      const evidenceEpisodeInfo = `
+        <div class="raw-section-title">证据所属系统 Episode</div>
+        <div class="episode-evidence-wrap" data-evidence-episode-slot="${escapeHtml(rowKey(row))}">
+          <div class="tiny">正在解析系统 Episode...</div>
+        </div>
+      `;
 
       const traceInfo = traceMessages.length
         ? `
@@ -1562,7 +1879,30 @@
           <div class="tiny">未识别到可解析的消息结构（这通常表示该字段不是 trace 串）。</div>
         `;
 
-      return `${basicInfo}${scoreInfo}${judgeInfo}${toolCallInfo}${predAnswerInfo}${evidenceInfo}${traceInfo}`;
+      return `${basicInfo}${scoreInfo}${judgeInfo}${toolCallInfo}${predAnswerInfo}${evidenceInfo}${evidenceEpisodeInfo}${traceInfo}`;
+    }
+
+    async function hydrateEvidenceEpisodePanel(row) {
+      const key = rowKey(row);
+      const slot = [...rawReadableEl.querySelectorAll("[data-evidence-episode-slot]")]
+        .find((el) => el.dataset.evidenceEpisodeSlot === key);
+      if (!slot) return;
+
+      slot.innerHTML = '<div class="tiny">正在解析系统 Episode...</div>';
+      try {
+        const html = await buildEvidenceEpisodeHtml(row);
+        if (state.selectedRowKey !== key) return;
+        const activeSlot = [...rawReadableEl.querySelectorAll("[data-evidence-episode-slot]")]
+          .find((el) => el.dataset.evidenceEpisodeSlot === key);
+        if (activeSlot) activeSlot.innerHTML = html;
+      } catch (error) {
+        if (state.selectedRowKey !== key) return;
+        const activeSlot = [...rawReadableEl.querySelectorAll("[data-evidence-episode-slot]")]
+          .find((el) => el.dataset.evidenceEpisodeSlot === key);
+        if (activeSlot) {
+          activeSlot.innerHTML = `<div class="tiny">解析系统 Episode 失败: ${escapeHtml(error.message || String(error))}</div>`;
+        }
+      }
     }
 
     function buildJudgeInfoHtml(raw) {
@@ -1829,6 +2169,296 @@
       `;
     }
 
+    async function buildEvidenceEpisodeHtml(row) {
+      const sourceSample = state.sourceSamplesById.get(String(row.sampleId));
+      if (!sourceSample) {
+        return '<div class="tiny">请先加载 LoCoMo 原始文件，才能定位证据所属的系统 Episode。</div>';
+      }
+
+      const store = state.memoryStore;
+      if (!store || store.mode === "none" || !store.episodeSceneMetaByKey.size) {
+        return '<div class="tiny">请先加载系统 Memory 目录（推荐 <code>data/memory/evallocomo</code>），才能查看 Episode 与 facts。</div>';
+      }
+
+      const sourceQa = Array.isArray(sourceSample.qa) ? sourceSample.qa[row.qaIndex] : null;
+      const evidenceIds = normalizeEvidenceIds(
+        (sourceQa && sourceQa.evidence) || row.raw.evidence || []
+      );
+      if (!evidenceIds.length) {
+        return '<div class="tiny">该题没有可解析的 evidence 字段。</div>';
+      }
+
+      const matchedEpisodes = new Map();
+      const unresolvedEvidenceIds = [];
+
+      for (const evidenceId of evidenceIds) {
+        const parts = parseEvidenceIdParts(evidenceId);
+        if (!parts) {
+          unresolvedEvidenceIds.push(evidenceId);
+          continue;
+        }
+
+        const dialogueId = buildDialogueIdForSession(row.sampleId, parts.sessionNum);
+        if (!dialogueId) {
+          unresolvedEvidenceIds.push(evidenceId);
+          continue;
+        }
+
+        const episodePayload = await loadEpisodePayload(dialogueId);
+        const episodes = episodePayload && Array.isArray(episodePayload.episodes)
+          ? episodePayload.episodes.filter((ep) => ep && typeof ep === "object")
+          : [];
+        const hitEpisodes = episodes.filter((ep) => turnSpanContains(ep.turn_span, parts.turnIndex));
+        if (!hitEpisodes.length) {
+          unresolvedEvidenceIds.push(evidenceId);
+          continue;
+        }
+
+        hitEpisodes.forEach((ep) => {
+          const episodeId = String(ep.episode_id || "").trim();
+          if (!episodeId) return;
+          const episodeKey = `${dialogueId}:${episodeId}`;
+          const existing = matchedEpisodes.get(episodeKey) || {
+            episodeKey,
+            dialogueId,
+            episodeId,
+            sessionNum: parts.sessionNum,
+            turnSpan: Array.isArray(ep.turn_span) ? ep.turn_span : null,
+            topic: String(ep.topic || "").trim(),
+            evidenceIds: new Set(),
+            matchedTurnIndices: new Set(),
+          };
+          existing.evidenceIds.add(evidenceId);
+          existing.matchedTurnIndices.add(parts.turnIndex);
+          matchedEpisodes.set(episodeKey, existing);
+        });
+      }
+
+      const episodeItems = await Promise.all(
+        [...matchedEpisodes.values()].map(async (item) => {
+          const scene = await loadScenePayload(item.dialogueId, item.episodeId);
+          const sceneEpisodes =
+            scene && scene.source && Array.isArray(scene.source.episodes)
+              ? scene.source.episodes.filter((ep) => ep && typeof ep === "object")
+              : [];
+          const sceneSourceEpisode = sceneEpisodes.find(
+            (ep) => String(ep.dialogue_id || "") === item.dialogueId && String(ep.episode_id || "") === item.episodeId
+          ) || null;
+          const facts =
+            scene && Array.isArray(scene.facts)
+              ? scene.facts.filter((fact) => fact && typeof fact === "object")
+              : [];
+          return {
+            ...item,
+            theme: scene && typeof scene.theme === "string" ? scene.theme.trim() : "",
+            scene,
+            sceneSourceEpisode,
+            facts,
+          };
+        })
+      );
+
+      if (!episodeItems.length) {
+        return `
+          <div class="tiny">
+            未在系统 Memory 中定位到这些证据对应的 Episode。
+            ${unresolvedEvidenceIds.length ? `未命中 evidence: ${escapeHtml(unresolvedEvidenceIds.join(", "))}` : ""}
+          </div>
+        `;
+      }
+
+      episodeItems.sort(sortEpisodeItems);
+      const summary =
+        `证据句子共命中 ${episodeItems.length} 个 Episode | ` +
+        `evidence_id: ${escapeHtml(evidenceIds.join(", "))}` +
+        (unresolvedEvidenceIds.length
+          ? ` | 未解析: ${escapeHtml(unresolvedEvidenceIds.join(", "))}`
+          : "");
+
+      const cards = episodeItems
+        .map((item) => {
+          const matchedEvidenceIds = [...item.evidenceIds];
+          const matchedTurnIndices = item.matchedTurnIndices;
+          const episodeTurns = renderEpisodeTurnsHtml(
+            sourceSample,
+            item.sessionNum,
+            item.turnSpan,
+            matchedTurnIndices
+          );
+          const timeInfo = item.sceneSourceEpisode
+            ? [item.sceneSourceEpisode.start_time, item.sceneSourceEpisode.end_time]
+                .filter((x) => String(x || "").trim() !== "")
+                .join(" -> ")
+            : "";
+          const factsHtml = item.facts.length
+            ? item.facts
+                .map((fact, index) => {
+                  const factText = toText(fact["Atomic fact"] || fact.atomic_fact || "").trim();
+                  const factEvidence = fact && typeof fact.evidence === "object" && fact.evidence
+                    ? `${toText(fact.evidence.dialogue_id || "")}/${toText(fact.evidence.episode_id || "")}`
+                    : "";
+                  return `
+                    <div class="episode-fact">
+                      <div class="episode-fact-meta">fact #${index + 1}${factEvidence ? ` | ${escapeHtml(factEvidence)}` : ""}</div>
+                      <div class="episode-fact-text">${escapeHtml(factText || "(空)")}</div>
+                    </div>
+                  `;
+                })
+                .join("")
+            : '<div class="tiny">该 Episode 暂无可展示的 facts。</div>';
+
+          return `
+            <div class="episode-card">
+              <div class="episode-card-head">
+                <div class="episode-card-title">
+                  <span class="episode-badge">${escapeHtml(item.episodeId)}</span>
+                  <span class="episode-theme">${escapeHtml(item.theme || item.topic || "(无主题)")}</span>
+                </div>
+                <div class="episode-meta mono">${escapeHtml(item.dialogueId)}</div>
+              </div>
+              <div class="episode-meta">
+                命中证据: <span class="mono">${escapeHtml(matchedEvidenceIds.join(", "))}</span> |
+                turn_span: <span class="mono">${escapeHtml(formatTurnSpan(item.turnSpan))}</span>
+                ${timeInfo ? ` | time: <span class="mono">${escapeHtml(timeInfo)}</span>` : ""}
+              </div>
+              <div class="episode-subtitle">Episode 内容</div>
+              <div class="episode-turns">${episodeTurns}</div>
+              <div class="episode-subtitle">Episode facts</div>
+              <div class="episode-facts">${factsHtml}</div>
+            </div>
+          `;
+        })
+        .join("");
+
+      return `
+        <div class="episode-evidence-summary">${summary}</div>
+        <div class="episode-list">${cards}</div>
+      `;
+    }
+
+    function parseEvidenceIdParts(evidenceId) {
+      const match = String(evidenceId || "").trim().match(/^D(\d+):(\d+)$/i);
+      if (!match) return null;
+      const sessionNum = Number(match[1]);
+      const turnNum = Number(match[2]);
+      if (!Number.isFinite(sessionNum) || !Number.isFinite(turnNum) || turnNum < 1) return null;
+      return {
+        sessionNum,
+        turnNum,
+        turnIndex: turnNum - 1,
+      };
+    }
+
+    function buildDialogueIdForSession(sampleId, sessionNum) {
+      const session = Number(sessionNum);
+      const rawId = String(sampleId || "").trim();
+      if (!rawId || !Number.isFinite(session) || session < 1) return "";
+
+      if (/^dlg_locomo10_conv-\d+_\d+$/i.test(rawId)) {
+        return rawId.replace(/_\d+$/i, `_${session}`);
+      }
+      if (/^dlg_locomo10_conv-\d+$/i.test(rawId)) {
+        return `${rawId}_${session}`;
+      }
+
+      const convMatch = rawId.match(/conv-\d+/i);
+      if (convMatch) {
+        return `dlg_locomo10_${convMatch[0]}_${session}`;
+      }
+
+      const numMatch = rawId.match(/\d+/);
+      if (numMatch) {
+        return `dlg_locomo10_conv-${Number(numMatch[0])}_${session}`;
+      }
+
+      return "";
+    }
+
+    function turnSpanContains(turnSpan, turnIndex) {
+      return (
+        Array.isArray(turnSpan) &&
+        turnSpan.length === 2 &&
+        Number.isInteger(turnSpan[0]) &&
+        Number.isInteger(turnSpan[1]) &&
+        turnIndex >= turnSpan[0] &&
+        turnIndex <= turnSpan[1]
+      );
+    }
+
+    function formatTurnSpan(turnSpan) {
+      if (
+        !Array.isArray(turnSpan) ||
+        turnSpan.length !== 2 ||
+        !Number.isInteger(turnSpan[0]) ||
+        !Number.isInteger(turnSpan[1])
+      ) {
+        return "-";
+      }
+      return `${turnSpan[0] + 1}-${turnSpan[1] + 1}`;
+    }
+
+    function sortEpisodeItems(a, b) {
+      const sessionDiff = Number(a.sessionNum || 0) - Number(b.sessionNum || 0);
+      if (sessionDiff !== 0) return sessionDiff;
+
+      const aStart = Array.isArray(a.turnSpan) && Number.isInteger(a.turnSpan[0]) ? a.turnSpan[0] : 999999;
+      const bStart = Array.isArray(b.turnSpan) && Number.isInteger(b.turnSpan[0]) ? b.turnSpan[0] : 999999;
+      if (aStart !== bStart) return aStart - bStart;
+
+      return String(a.episodeId || "").localeCompare(String(b.episodeId || ""));
+    }
+
+    function getSourceSessionTurns(sourceSample, sessionNum) {
+      const conversation =
+        sourceSample && typeof sourceSample.conversation === "object" && sourceSample.conversation
+          ? sourceSample.conversation
+          : {};
+      const sessionKey = `session_${sessionNum}`;
+      return Array.isArray(conversation[sessionKey]) ? conversation[sessionKey] : [];
+    }
+
+    function renderEpisodeTurnsHtml(sourceSample, sessionNum, turnSpan, matchedTurnIndices) {
+      const turns = getSourceSessionTurns(sourceSample, sessionNum);
+      if (!turns.length) {
+        return '<div class="tiny">原始会话中未找到该 Episode 的内容。</div>';
+      }
+
+      let selectedTurns = turns;
+      if (
+        Array.isArray(turnSpan) &&
+        turnSpan.length === 2 &&
+        Number.isInteger(turnSpan[0]) &&
+        Number.isInteger(turnSpan[1])
+      ) {
+        selectedTurns = turns.slice(Math.max(0, turnSpan[0]), turnSpan[1] + 1);
+      }
+
+      if (!selectedTurns.length) {
+        return '<div class="tiny">Episode turn_span 对应不到原始句子。</div>';
+      }
+
+      return selectedTurns
+        .map((turn, offset) => {
+          const absoluteIndex =
+            Array.isArray(turnSpan) && Number.isInteger(turnSpan[0]) ? turnSpan[0] + offset : offset;
+          const diaId = normalizeDiaId(turn && turn.dia_id ? turn.dia_id : `D${sessionNum}:${absoluteIndex + 1}`);
+          const hit = matchedTurnIndices instanceof Set && matchedTurnIndices.has(absoluteIndex);
+          const speaker = toText(turn && turn.speaker ? turn.speaker : "");
+          const text = toText(turn && turn.text ? turn.text : "");
+          const imgHint = turn && turn.img_file
+            ? ` [img] ${toText(turn.blip_caption || turn.img_file)}`
+            : "";
+          return `
+            <div class="ev-line ${hit ? "hit" : ""}">
+              <span class="mono ev-id">${escapeHtml(diaId)}</span>
+              <span class="ev-spk">${escapeHtml(speaker)}:</span>
+              ${escapeHtml(text + imgHint)}
+            </div>
+          `;
+        })
+        .join("");
+    }
+
     function normalizeEvidenceIds(rawEvidence) {
       if (!Array.isArray(rawEvidence)) return [];
       const out = [];
@@ -1974,6 +2604,7 @@
     renderPager();
     renderRawPanel();
     tryAutoLoadSource();
+    tryAutoLoadMemory();
   </script>
 </body>
 </html>

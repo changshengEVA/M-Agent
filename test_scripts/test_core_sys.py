@@ -210,32 +210,32 @@ def main() -> None:
         memory_owner_name=str(cfg.get("memory_owner_name", "changshengEVA")),
     )
 
-    load_result = memory_core.load_from_episode_path(memory_core.episodes_dir)
-    logger.info(
-        "load_from_episode_path summary: success=%s files_processed=%s files_failed=%s episodes_processed=%s",
-        load_result.get("success"),
-        load_result.get("files_processed"),
-        load_result.get("files_failed"),
-        load_result.get("episodes_processed"),
-    )
-    _validate_fact_outputs(memory_core=memory_core, load_result=load_result)
+    # load_result = memory_core.load_from_episode_path(memory_core.episodes_dir)
+    # logger.info(
+    #     "load_from_episode_path summary: success=%s files_processed=%s files_failed=%s episodes_processed=%s",
+    #     load_result.get("success"),
+    #     load_result.get("files_processed"),
+    #     load_result.get("files_failed"),
+    #     load_result.get("episodes_processed"),
+    # )
+    # _validate_fact_outputs(memory_core=memory_core, load_result=load_result)
 
-    entity_statement_force_update = _as_bool(cfg.get("entity_statement_force_update", False), default=False)
-    logger.info("make_entity_statement force_update=%s", entity_statement_force_update)
-    entity_statement_result = memory_core.make_entity_statement(
-        memory_core.episodes_dir,
-        force_update=entity_statement_force_update,
-    )
-    logger.info(
-        "make_entity_statement summary: success=%s force_update=%s episodes_processed=%s episodes_skipped_existing=%s total_statements_generated=%s total_context_filtered=%s",
-        entity_statement_result.get("success"),
-        entity_statement_result.get("force_update"),
-        entity_statement_result.get("episodes_processed"),
-        entity_statement_result.get("episodes_skipped_existing"),
-        entity_statement_result.get("total_statements_generated"),
-        entity_statement_result.get("total_context_filtered"),
-    )
-
+    # entity_statement_force_update = _as_bool(cfg.get("entity_statement_force_update", False), default=False)
+    # logger.info("make_entity_statement force_update=%s", entity_statement_force_update)
+    # entity_statement_result = memory_core.make_entity_statement(
+    #     memory_core.episodes_dir,
+    #     force_update=entity_statement_force_update,
+    # )
+    # logger.info(
+    #     "make_entity_statement summary: success=%s force_update=%s episodes_processed=%s episodes_skipped_existing=%s total_statements_generated=%s total_context_filtered=%s",
+    #     entity_statement_result.get("success"),
+    #     entity_statement_result.get("force_update"),
+    #     entity_statement_result.get("episodes_processed"),
+    #     entity_statement_result.get("episodes_skipped_existing"),
+    #     entity_statement_result.get("total_statements_generated"),S
+    #     entity_statement_result.get("total_context_filtered"),
+    # )
+    memory_core.run_entity_resolution_pass()
 
 if __name__ == "__main__":
     main()

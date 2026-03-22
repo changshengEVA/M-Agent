@@ -16,6 +16,10 @@ from memory.memory_core.services_bank.entity_resolution.service import (
     EntityResolutionService,
     create_default_resolution_service
 )
+from memory.memory_core.services_bank.entity_profile_sys.service import (
+    EntityProfileService,
+    create_default_entity_profile_service,
+)
 from memory.memory_core.system.event_bus import EventBus
 from memory.memory_core.system.event_types import EventType
 
@@ -74,6 +78,8 @@ class MemoryCore:
         self.memory_root = Path(f"data/memory/{workflow_id}")
         self.local_store_dir = self.memory_root / "local_store"
         self.entity_library_path = self.local_store_dir / "entity_library"
+        self.entity_profile_data_path = self.local_store_dir / "entity_profile"
+        self.entity_profile_facts_situation_file = self.local_store_dir / "facts_situation.json"
         self.scene_dir = self.memory_root / "scene"
         self.facts_dir = self.memory_root / "facts"
         self.facts_situation_file = self.memory_root / "facts_situation.json"
@@ -84,6 +90,7 @@ class MemoryCore:
         # 确保目录存在
         self.local_store_dir.mkdir(parents=True, exist_ok=True)
         self.entity_library_path.mkdir(parents=True, exist_ok=True)
+        self.entity_profile_data_path.mkdir(parents=True, exist_ok=True)
         self.scene_dir.mkdir(parents=True, exist_ok=True)
         self.facts_dir.mkdir(parents=True, exist_ok=True)
         self.entity_statement_dir.mkdir(parents=True, exist_ok=True)
@@ -94,6 +101,8 @@ class MemoryCore:
         logger.info(f"Memory根目录: {self.memory_root}")
         logger.info(f"LocalStore目录: {self.local_store_dir}")
         logger.info(f"实体库路径: {self.entity_library_path}")
+        logger.info(f"实体档案库路径: {self.entity_profile_data_path}")
+        logger.info(f"实体档案facts状态文件: {self.entity_profile_facts_situation_file}")
         logger.info(f"Scene目录: {self.scene_dir}")
         logger.info(f"Facts目录: {self.facts_dir}")
         logger.info(f"Facts状态文件: {self.facts_situation_file}")
@@ -121,7 +130,11 @@ class MemoryCore:
         self.entity_resolution_service = self._init_entity_resolution_service()
         self.register_service(self.entity_resolution_service)
         
-        # 6. 发布初始化事件
+        # 6. 初始化 EntityProfileService 并进行注册
+        self.entity_profile_service = self._init_entity_profile_service()
+        self.register_service(self.entity_profile_service)
+        
+        # 7. 发布初始化事件
         self.event_bus.publish(EventType.SYSTEM_INITIALIZED, {})
         
         logger.info("MemoryCore 初始化完成")
@@ -175,6 +188,22 @@ class MemoryCore:
         self._align_entity_library_with_kg(service)
         
         return service
+    
+    def _init_entity_profile_service(self) -> EntityProfileService:
+        """初始化 EntityProfileService 实例"""
+        logger.info("初始化 EntityProfileService")
+        service = create_default_entity_profile_service(
+            llm_func=self.llm_func,
+            embed_func=self.embed_func,
+            memory_root=str(self.memory_root),
+            profile_data_path=str(self.entity_profile_data_path),
+            facts_situation_path=str(self.entity_profile_facts_situation_file),
+            similarity_threshold=self.similarity_threshold,
+            top_k=self.top_k,
+            auto_align_on_init=True,
+        )
+        return service
+
     # ============================================================================
     # 与附属数据库的对齐操作
     # ============================================================================
@@ -330,7 +359,19 @@ class MemoryCore:
             self._align_entity_library_with_kg(self.entity_resolution_service)
         except Exception as exc:
             logger.warning("import_fact_entities 后同步 EntityLibrary 失败: %s", exc)
+
+        # 对齐实体档案系统与最新 facts 状态
+        try:
+            self.entity_profile_service.align_with_master_facts(force_rebuild=False)
+        except Exception as exc:
+            logger.warning("import_fact_entities 后同步 EntityProfileService 失败: %s", exc)
         return result
+
+    def sync_entity_profile(self, force_rebuild: bool = False) -> Dict[str, Any]:
+        """
+        手动触发实体档案与 facts 对齐。
+        """
+        return self.entity_profile_service.align_with_master_facts(force_rebuild=force_rebuild)
 
     
     # ============================================================================
@@ -406,6 +447,65 @@ class MemoryCore:
             topk=topk,
         )
 
+    def resolve_entity_id(self, entity_name_or_id: str) -> Dict[str, Any]:
+        """
+        解析实体名称到规范实体ID（暴露 entity_resolution 的外部接口）。
+        """
+        from .workflow.search.entity_search import resolve_entity_id as workflow_resolve_entity_id
+
+        logger.info("调用 resolve_entity_id 接口: query=%s", entity_name_or_id)
+        return workflow_resolve_entity_id(
+            entity_name_or_id=entity_name_or_id,
+            entity_library=self.entity_resolution_service.entity_library,
+            llm_func=self.llm_func,
+            embed_func=self.embed_func,
+            max_candidates=max(3, int(self.top_k)),
+            string_similarity_threshold=0.72,
+            embedding_similarity_threshold=max(0.45, float(self.similarity_threshold) - 0.25),
+        )
+
+    def search_entity_feature(self, entity_id: str, feature_query: str, topk: int = 5) -> Dict[str, Any]:
+        """
+        实体ID + 特征 检索接口（含证据 dialogue_id / episode_id）。
+        """
+        return self.entity_profile_service.query_entity_feature(
+            entity_id=entity_id,
+            feature_query=feature_query,
+            topk=topk,
+        )
+
+    def search_entity_event(self, entity_id: str, event_query: str, topk: int = 5) -> Dict[str, Any]:
+        """
+        实体ID + 事件 检索接口（含证据 dialogue_id / episode_id）。
+        """
+        return self.entity_profile_service.query_entity_event(
+            entity_id=entity_id,
+            event_query=event_query,
+            topk=topk,
+        )
+
+    def search_entity_events_by_time(
+        self,
+        entity_id: str,
+        start_time: str,
+        end_time: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        实体ID + 时间窗口 检索接口（返回命中事件及证据 dialogue_id / episode_id）。
+        当 end_time 为空时，按时间点查询处理（等价于 start_time=end_time）。
+        """
+        return self.entity_profile_service.query_entity_time(
+            entity_id=entity_id,
+            start_time=start_time,
+            end_time=end_time,
+        )
+
+    def get_entity_profile(self, entity_id: str) -> Dict[str, Any]:
+        """
+        获取实体档案摘要（summary）。
+        """
+        return self.entity_profile_service.get_entity_profile(entity_id)
+
     # ============================================================================
     # 服务注册
     # ============================================================================
@@ -449,6 +549,10 @@ class MemoryCore:
     def get_entity_resolution_stats(self) -> Dict[str, Any]:
         """获取实体解析服务统计信息"""
         return self.entity_resolution_service.get_library_stats()
+    
+    def get_entity_profile_stats(self) -> Dict[str, Any]:
+        """获取实体档案服务统计信息"""
+        return self.entity_profile_service.get_stats()
     
     def __str__(self) -> str:
         """字符串表示"""

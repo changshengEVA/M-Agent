@@ -13,7 +13,7 @@ from calendar import monthrange
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 from dotenv import load_dotenv
@@ -56,6 +56,14 @@ class MemoryAgent:
         flags=re.IGNORECASE,
     )
     _JSON_BLOCK_PATTERN = re.compile(r"\{[\s\S]*\}")
+    _TRACE_PREFIX_QUESTION_STRATEGY = "QUESTION STRATEGY: "
+    _TRACE_PREFIX_DIRECT_ANSWER = "DIRECT ANSWER PAYLOAD: "
+    _TRACE_PREFIX_DIRECT_FALLBACK = "DIRECT ANSWER FALLBACK: "
+    _TRACE_PREFIX_TOOL_CALL = "TOOL CALL DETAIL: "
+    _TRACE_PREFIX_TOOL_RESULT = "TOOL RESULT DETAIL: "
+    _TRACE_PREFIX_FINAL_PAYLOAD = "FINAL ANSWER PAYLOAD: "
+    _MULTI_HOP_MARKERS = ("respectively", "both", "either", "together", "combined", "in addition")
+    _TEMPORAL_CHAIN_MARKERS = ("before", "after", "during", "between", "while")
 
     @staticmethod
     def _is_unanswerable_text(text: Any) -> bool:
@@ -150,10 +158,10 @@ class MemoryAgent:
 
     @staticmethod
     def _safe_trace_value(value: Any, depth: int = 0) -> Any:
-        if depth > 6:
-            return "<max_depth>"
         if value is None or isinstance(value, (bool, int, float, str)):
             return value
+        if depth > 6:
+            return "<max_depth>"
         if is_dataclass(value):
             return MemoryAgent._safe_trace_value(asdict(value), depth=depth + 1)
         if isinstance(value, dict):
@@ -165,13 +173,74 @@ class MemoryAgent:
             return [MemoryAgent._safe_trace_value(v, depth=depth + 1) for v in value]
         return str(value)
 
-    def _record_tool_call(self, tool_name: str, params: Dict[str, Any]) -> None:
-        self._current_tool_calls.append(
-            {
-                "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
-                "tool_name": str(tool_name),
-                "params": self._safe_trace_value(params),
-            }
+    @classmethod
+    def _compact_trace_value(cls, value: Any, depth: int = 0) -> Any:
+        if value is None or isinstance(value, (bool, int, float)):
+            return value
+        if isinstance(value, str):
+            compact = re.sub(r"\s+", " ", value).strip()
+            if len(compact) > 400:
+                return compact[:397] + "..."
+            return compact
+        if depth > 4:
+            return "<max_depth>"
+        if is_dataclass(value):
+            return cls._compact_trace_value(asdict(value), depth=depth + 1)
+        if isinstance(value, dict):
+            items = list(value.items())
+            compact_dict: Dict[str, Any] = {}
+            for idx, (k, v) in enumerate(items):
+                if idx >= 16:
+                    compact_dict["<truncated>"] = f"{len(items) - 16} more fields"
+                    break
+                compact_dict[str(k)] = cls._compact_trace_value(v, depth=depth + 1)
+            return compact_dict
+        if isinstance(value, (list, tuple, set)):
+            seq = list(value)
+            compact_list = [
+                cls._compact_trace_value(item, depth=depth + 1) for item in seq[:8]
+            ]
+            if len(seq) > 8:
+                compact_list.append(f"<truncated {len(seq) - 8} more items>")
+            return compact_list
+        return cls._compact_trace_value(str(value), depth=depth + 1)
+
+    def _log_structured_trace(self, prefix: str, payload: Dict[str, Any]) -> None:
+        logger.info(
+            "%s%s",
+            prefix,
+            json.dumps(self._compact_trace_value(payload), ensure_ascii=False),
+        )
+
+    def _record_tool_call(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
+        self._tool_call_seq += 1
+        entry = {
+            "call_id": self._tool_call_seq,
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "tool_name": str(tool_name),
+            "params": self._safe_trace_value(params),
+            "status": "started",
+        }
+        self._current_tool_calls.append(entry)
+        self._log_structured_trace(self._TRACE_PREFIX_TOOL_CALL, entry)
+        return entry
+
+    def _finalize_tool_call(
+        self,
+        entry: Dict[str, Any],
+        *,
+        result: Any = None,
+        error: BaseException | None = None,
+    ) -> None:
+        if error is None:
+            entry["status"] = "completed"
+            entry["result"] = self._compact_trace_value(result)
+        else:
+            entry["status"] = "failed"
+            entry["error"] = str(error)
+        self._log_structured_trace(
+            self._TRACE_PREFIX_TOOL_RESULT,
+            entry,
         )
 
     def _consume_current_tool_calls(self) -> List[Dict[str, Any]]:
@@ -201,6 +270,7 @@ class MemoryAgent:
         self._current_tool_calls: List[Dict[str, Any]] = []
         self._last_tool_calls: List[Dict[str, Any]] = []
         self._last_question_plan: Optional[Dict[str, Any]] = None
+        self._tool_call_seq = 0
 
         self.detail_search_defaults: Dict[str, Any] = {
             "topk": 5,
@@ -222,6 +292,25 @@ class MemoryAgent:
         self.retry_recursion_limit = int(
             self.config.get("retry_recursion_limit", max(self.recursion_limit, 120))
         )
+        self.model_timeout = self.config.get("model_timeout_seconds")
+        if self.model_timeout is not None:
+            self.model_timeout = float(self.model_timeout)
+            if self.model_timeout <= 0:
+                self.model_timeout = None
+        self.model_max_retries = max(0, int(self.config.get("model_max_retries", 2)))
+        self.network_retry_attempts = max(1, int(self.config.get("network_retry_attempts", 4)))
+        self.network_retry_backoff_seconds = max(
+            0.0,
+            float(self.config.get("network_retry_backoff_seconds", 2.0)),
+        )
+        self.network_retry_backoff_multiplier = max(
+            1.0,
+            float(self.config.get("network_retry_backoff_multiplier", 2.0)),
+        )
+        self.network_retry_max_backoff_seconds = max(
+            self.network_retry_backoff_seconds,
+            float(self.config.get("network_retry_max_backoff_seconds", 20.0)),
+        )
         self.system_prompt = str(self.config["system_prompt"])
         self.planner_prompt = str(
             self.config.get(
@@ -235,7 +324,15 @@ class MemoryAgent:
                     "temporal, causal, multi_hop.\n"
                     "sub_questions must be an ordered list of concrete, answerable questions.\n"
                     "suggested_tool_order must be an ordered list chosen from: "
+                    "resolve_entity_id, get_entity_profile, search_entity_feature, "
+                    "search_entity_event, search_entity_events_by_time, "
                     "search_events_by_time_range, search_details, search_content.\n"
+                    "The entity-profile tools are macro/coarse retrieval tools, not the default for ordinary detail lookup.\n"
+                    "Use resolve_entity_id early only when you truly plan to use an entity-profile tool.\n"
+                    "If the question exposes a concrete semantic anchor besides the entity, prefer search_details.\n"
+                    "For overview/profile-summary questions, prefer resolve_entity_id -> get_entity_profile.\n"
+                    "For macro entity comparison, use resolve_entity_id plus macro entity tools as needed.\n"
+                    "For entity-centered time-bounded macro questions, prefer resolve_entity_id -> search_entity_events_by_time.\n"
                     "Keep the plan minimal and goal-directed."
                 ),
             )
@@ -247,8 +344,8 @@ class MemoryAgent:
             self.model_name,
             temperature=self.agent_temperature,
             max_tokens=None,
-            timeout=None,
-            max_retries=2,
+            timeout=self.model_timeout,
+            max_retries=self.model_max_retries,
         )
         self.tools = self._build_tools()
         self.agent = create_agent(
@@ -365,10 +462,187 @@ class MemoryAgent:
 
     def _build_tools(self):
         @tool
+        def resolve_entity_id(entity_name_or_id: str) -> Dict[str, Any]:
+            """
+            Resolve a mentioned entity name/alias/id into a canonical entity_id.
+            Use this before any entity-specific retrieval tool.
+            """
+
+            call_entry = self._record_tool_call(
+                "resolve_entity_id",
+                {"entity_name_or_id": entity_name_or_id},
+            )
+            logger.info(
+                "API call: resolve_entity_id(entity_name_or_id=%s)",
+                entity_name_or_id,
+            )
+            try:
+                result = self.memory_sys.resolve_entity_id(
+                    entity_name_or_id=entity_name_or_id,
+                )
+            except Exception as exc:
+                self._finalize_tool_call(call_entry, error=exc)
+                raise
+            self._finalize_tool_call(call_entry, result=result)
+            logger.info(
+                "API response: resolve_entity_id(hit=%s, entity_id=%s, match_type=%s)",
+                result.get("hit") if isinstance(result, dict) else None,
+                result.get("entity_id") if isinstance(result, dict) else None,
+                result.get("match_type") if isinstance(result, dict) else None,
+            )
+            return result
+
+        @tool
+        def get_entity_profile(entity_id: str) -> Dict[str, Any]:
+            """
+            Get a short profile summary for one resolved entity_id.
+            Use for macro overview, not as the default path for ordinary detail lookup.
+            """
+
+            call_entry = self._record_tool_call(
+                "get_entity_profile",
+                {"entity_id": entity_id},
+            )
+            logger.info(
+                "API call: get_entity_profile(entity_id=%s)",
+                entity_id,
+            )
+            try:
+                result = self.memory_sys.get_entity_profile(entity_id=entity_id)
+            except Exception as exc:
+                self._finalize_tool_call(call_entry, error=exc)
+                raise
+            self._finalize_tool_call(call_entry, result=result)
+            logger.info(
+                "API response: get_entity_profile(hit=%s, summary_len=%s)",
+                result.get("hit") if isinstance(result, dict) else None,
+                len(str(result.get("summary", "") or ""))
+                if isinstance(result, dict)
+                else None,
+            )
+            return result
+
+        @tool
+        def search_entity_feature(
+            entity_id: str,
+            feature_query: str,
+            topk: Optional[int] = None,
+        ) -> Dict[str, Any]:
+            """
+            Coarse semantic search over one resolved entity's profile features.
+            Use for macro profile retrieval, not routine detail lookup.
+            """
+
+            cfg_topk = self.detail_search_defaults["topk"] if topk is None else int(topk)
+            call_entry = self._record_tool_call(
+                "search_entity_feature",
+                {"entity_id": entity_id, "feature_query": feature_query, "topk": cfg_topk},
+            )
+            logger.info(
+                "API call: search_entity_feature(entity_id=%s, feature_query=%s, topk=%s)",
+                entity_id,
+                feature_query,
+                cfg_topk,
+            )
+            try:
+                result = self.memory_sys.search_entity_feature(
+                    entity_id=entity_id,
+                    feature_query=feature_query,
+                    topk=cfg_topk,
+                )
+            except Exception as exc:
+                self._finalize_tool_call(call_entry, error=exc)
+                raise
+            self._finalize_tool_call(call_entry, result=result)
+            logger.info(
+                "API response: search_entity_feature(hit=%s, matched_count=%s)",
+                result.get("hit") if isinstance(result, dict) else None,
+                result.get("matched_count") if isinstance(result, dict) else None,
+            )
+            return result
+
+        @tool
+        def search_entity_event(
+            entity_id: str,
+            event_query: str,
+            topk: Optional[int] = None,
+        ) -> Dict[str, Any]:
+            """
+            Coarse event recall for one resolved entity_id.
+            Use for macro entity-centered event retrieval.
+            """
+
+            cfg_topk = self.detail_search_defaults["topk"] if topk is None else int(topk)
+            call_entry = self._record_tool_call(
+                "search_entity_event",
+                {"entity_id": entity_id, "event_query": event_query, "topk": cfg_topk},
+            )
+            logger.info(
+                "API call: search_entity_event(entity_id=%s, event_query=%s, topk=%s)",
+                entity_id,
+                event_query,
+                cfg_topk,
+            )
+            try:
+                result = self.memory_sys.search_entity_event(
+                    entity_id=entity_id,
+                    event_query=event_query,
+                    topk=cfg_topk,
+                )
+            except Exception as exc:
+                self._finalize_tool_call(call_entry, error=exc)
+                raise
+            self._finalize_tool_call(call_entry, result=result)
+            logger.info(
+                "API response: search_entity_event(hit=%s, matched_count=%s)",
+                result.get("hit") if isinstance(result, dict) else None,
+                result.get("matched_count") if isinstance(result, dict) else None,
+            )
+            return result
+
+        @tool
+        def search_entity_events_by_time(
+            entity_id: str,
+            start_time: str,
+            end_time: Optional[str] = None,
+        ) -> Dict[str, Any]:
+            """
+            Search one resolved entity_id's events within a time window.
+            Use when the question is entity-centered, time-bounded, and macro in nature.
+            """
+
+            call_entry = self._record_tool_call(
+                "search_entity_events_by_time",
+                {"entity_id": entity_id, "start_time": start_time, "end_time": end_time},
+            )
+            logger.info(
+                "API call: search_entity_events_by_time(entity_id=%s, start_time=%s, end_time=%s)",
+                entity_id,
+                start_time,
+                end_time,
+            )
+            try:
+                result = self.memory_sys.search_entity_events_by_time(
+                    entity_id=entity_id,
+                    start_time=start_time,
+                    end_time=end_time,
+                )
+            except Exception as exc:
+                self._finalize_tool_call(call_entry, error=exc)
+                raise
+            self._finalize_tool_call(call_entry, result=result)
+            logger.info(
+                "API response: search_entity_events_by_time(hit=%s, matched_count=%s)",
+                result.get("hit") if isinstance(result, dict) else None,
+                result.get("matched_count") if isinstance(result, dict) else None,
+            )
+            return result
+
+        @tool
         def search_content(dialogue_id: str, episode_id: str) -> Dict[str, Any]:
             """Fetch dialogue original text details and event/time info by dialogue_id + episode_id."""
 
-            self._record_tool_call(
+            call_entry = self._record_tool_call(
                 "search_content",
                 {"dialogue_id": dialogue_id, "episode_id": episode_id},
             )
@@ -377,10 +651,15 @@ class MemoryAgent:
                 dialogue_id,
                 episode_id,
             )
-            result = self.memory_sys.search_content(
-                dialogue_id=dialogue_id,
-                episode_id=episode_id,
-            )
+            try:
+                result = self.memory_sys.search_content(
+                    dialogue_id=dialogue_id,
+                    episode_id=episode_id,
+                )
+            except Exception as exc:
+                self._finalize_tool_call(call_entry, error=exc)
+                raise
+            self._finalize_tool_call(call_entry, result=result)
             logger.info(
                 "API response: search_content(success=%s)",
                 result.get("success") if isinstance(result, dict) else None,
@@ -394,7 +673,7 @@ class MemoryAgent:
             Returns a list of items with scene_id, theme, starttime, endtime.
             """
 
-            self._record_tool_call(
+            call_entry = self._record_tool_call(
                 "search_events_by_time_range",
                 {"start_time": start_time, "end_time": end_time},
             )
@@ -403,10 +682,15 @@ class MemoryAgent:
                 start_time,
                 end_time,
             )
-            result = self.memory_sys.search_events_by_time_range(
-                start_time=start_time,
-                end_time=end_time,
-            )
+            try:
+                result = self.memory_sys.search_events_by_time_range(
+                    start_time=start_time,
+                    end_time=end_time,
+                )
+            except Exception as exc:
+                self._finalize_tool_call(call_entry, error=exc)
+                raise
+            self._finalize_tool_call(call_entry, result=result)
             logger.info(
                 "API response: search_events_by_time_range(result_count=%s)",
                 len(result) if isinstance(result, list) else None,
@@ -417,11 +701,11 @@ class MemoryAgent:
         def search_details(detail: str, topk: Optional[int] = None) -> Dict[str, Any]:
             """
             Search concrete behavior/action details from scene memories by semantic similarity.
-            Returns top-K matched details with atomic-fact/evidence.
+            This is the default retrieval tool for most detail questions.
             """
 
             cfg_topk = self.detail_search_defaults["topk"] if topk is None else int(topk)
-            self._record_tool_call(
+            call_entry = self._record_tool_call(
                 "search_details",
                 {"detail": detail, "topk": cfg_topk},
             )
@@ -430,10 +714,15 @@ class MemoryAgent:
                 detail,
                 cfg_topk,
             )
-            result = self.memory_sys.search_details(
-                detail_query=detail,
-                topk=cfg_topk,
-            )
+            try:
+                result = self.memory_sys.search_details(
+                    detail_query=detail,
+                    topk=cfg_topk,
+                )
+            except Exception as exc:
+                self._finalize_tool_call(call_entry, error=exc)
+                raise
+            self._finalize_tool_call(call_entry, result=result)
             logger.info(
                 "API response: search_details(success=%s, result_count=%s)",
                 result.get("hit") if isinstance(result, dict) else None,
@@ -443,7 +732,16 @@ class MemoryAgent:
             )
             return result
 
-        return [search_content, search_events_by_time_range, search_details]
+        return [
+            resolve_entity_id,
+            get_entity_profile,
+            search_entity_feature,
+            search_entity_event,
+            search_entity_events_by_time,
+            search_content,
+            search_events_by_time_range,
+            search_details,
+        ]
 
     @staticmethod
     def _extract_message_text(message: Any) -> str:
@@ -563,10 +861,7 @@ class MemoryAgent:
             ]
         else:
             question_type = "direct_lookup"
-            sub_questions = [
-                f"What concrete evidence directly answers: {normalized}",
-                f"What final answer is supported by that evidence for: {normalized}",
-            ]
+            sub_questions = [normalized]
 
         return {
             "goal": normalized,
@@ -580,14 +875,59 @@ class MemoryAgent:
             "completion_criteria": "Each core sub-question is answered with tool-grounded evidence.",
         }
 
+    @classmethod
+    def _detect_direct_answer_strategy(cls, question_text: str) -> Tuple[bool, str]:
+        normalized = str(question_text or "").strip()
+        lowered = normalized.lower()
+        heuristic_plan = cls._fallback_question_plan(normalized)
+        question_type = str(heuristic_plan.get("question_type", "direct_lookup") or "direct_lookup")
+
+        if question_type in {"comparison", "counting", "summary", "causal"}:
+            return True, f"Obvious {question_type} question; decompose first."
+
+        wh_hits = 0
+        for pattern in (r"\bwho\b", r"\bwhat\b", r"\bwhen\b", r"\bwhere\b", r"\bwhich\b", r"\bhow\b"):
+            if re.search(pattern, lowered):
+                wh_hits += 1
+
+        marker_hits = 0
+        for token in cls._MULTI_HOP_MARKERS:
+            if token in lowered:
+                marker_hits += 1
+
+        temporal_chain_hits = 0
+        for token in cls._TEMPORAL_CHAIN_MARKERS:
+            if token in lowered:
+                temporal_chain_hits += 1
+
+        if wh_hits >= 2 and (" and " in lowered or marker_hits > 0):
+            return True, "Question contains multiple explicit query targets; decompose first."
+
+        if temporal_chain_hits >= 2 and (" and " in lowered or " then " in lowered):
+            return True, "Question chains multiple temporal constraints; decompose first."
+
+        if marker_hits >= 2 and len(normalized) >= 80:
+            return True, "Question has clear multi-hop coordination markers; decompose first."
+
+        return False, "Question appears to be a single-goal lookup; answer directly first."
+
+    @staticmethod
+    def _build_direct_question_plan(question_text: str, reason: str) -> Dict[str, Any]:
+        normalized = str(question_text or "").strip()
+        return {
+            "goal": normalized,
+            "question_type": "direct_lookup",
+            "decomposition_reason": reason,
+            "sub_questions": [],
+            "suggested_tool_order": ["search_details", "search_content"],
+            "completion_criteria": "Answer the original question directly with tool-grounded evidence.",
+        }
+
     def _decompose_question(self, question_text: str) -> Dict[str, Any]:
-        logger.info(
-            "API call: decompose_question(question_len=%d)",
-            len(question_text or ""),
-        )
         try:
-            response = self.model.invoke(
-                f"{self.planner_prompt}\n\n[User Question]\n{question_text}"
+            response = self._invoke_model_with_network_retry(
+                prompt_text=f"{self.planner_prompt}\n\n[User Question]\n{question_text}",
+                call_name="decompose_question",
             )
             plan_text = self._extract_message_text(response)
             parsed = self._parse_json_block(plan_text)
@@ -639,6 +979,15 @@ class MemoryAgent:
             "[Task]\n"
             "- Answer only the current sub-question.\n"
             "- Use tools if needed.\n"
+            "- search_details is the default tool for ordinary detail questions.\n"
+            "- Use the entity-profile tools only for macro/coarse retrieval questions.\n"
+            "- If the sub-question is a macro entity question, resolve_entity_id before using entity-specific tools.\n"
+            "- Never pass a raw name directly into get_entity_profile, search_entity_feature, "
+            "search_entity_event, or search_entity_events_by_time.\n"
+            "- If the question includes a concrete semantic anchor besides the entity, prefer search_details.\n"
+            "- Use get_entity_profile for overview, entity_feature for macro profile recall, entity_event for coarse actions, "
+            "and entity_events_by_time for entity + time-window macro questions.\n"
+            "- Use search_content when you need raw dialogue details, exact timing, or final verification.\n"
             "- Keep the answer concrete and grounded in evidence.\n"
             "- gold_answer should be the concise value for this sub-question when possible."
         )
@@ -662,7 +1011,51 @@ class MemoryAgent:
             f"{json.dumps(sub_question_results, ensure_ascii=False, indent=2)}"
         )
 
-    def _invoke_tool_agent(self, prompt_text: str, thread_id: str) -> Dict[str, Any]:
+    def _compute_network_retry_delay(self, attempt: int) -> float:
+        exponent = max(attempt - 1, 0)
+        delay = self.network_retry_backoff_seconds * (
+            self.network_retry_backoff_multiplier ** exponent
+        )
+        return min(delay, self.network_retry_max_backoff_seconds)
+
+    def _invoke_model_with_network_retry(self, prompt_text: str, call_name: str) -> Any:
+        total_attempts = max(self.network_retry_attempts, 1)
+        for attempt in range(1, total_attempts + 1):
+            invoke_start = time.perf_counter()
+            try:
+                logger.info(
+                    "API call: %s(attempt=%d/%d, prompt_len=%d)",
+                    call_name,
+                    attempt,
+                    total_attempts,
+                    len(prompt_text or ""),
+                )
+                response = self.model.invoke(prompt_text)
+                logger.info(
+                    "API response: %s(attempt=%d/%d, elapsed_ms=%.2f)",
+                    call_name,
+                    attempt,
+                    total_attempts,
+                    (time.perf_counter() - invoke_start) * 1000.0,
+                )
+                return response
+            except Exception as exc:
+                if not is_network_api_error(exc) or attempt >= total_attempts:
+                    raise
+                delay = self._compute_network_retry_delay(attempt)
+                logger.warning(
+                    "%s hit network/API error on attempt %d/%d: %s; retrying in %.2fs",
+                    call_name,
+                    attempt,
+                    total_attempts,
+                    exc,
+                    delay,
+                )
+                if delay > 0:
+                    time.sleep(delay)
+        raise RuntimeError(f"{call_name} exhausted retry attempts unexpectedly")
+
+    def _invoke_tool_agent_once(self, prompt_text: str, thread_id: str) -> Dict[str, Any]:
         invoke_config = {
             "configurable": {"thread_id": thread_id},
             "recursion_limit": self.recursion_limit,
@@ -713,6 +1106,33 @@ class MemoryAgent:
                 (time.perf_counter() - retry_start) * 1000.0,
             )
             return response
+
+    def _invoke_tool_agent(self, prompt_text: str, thread_id: str) -> Dict[str, Any]:
+        total_attempts = max(self.network_retry_attempts, 1)
+        for attempt in range(1, total_attempts + 1):
+            attempt_thread_id = thread_id if attempt == 1 else f"{thread_id}:netretry:{attempt}"
+            try:
+                return self._invoke_tool_agent_once(
+                    prompt_text=prompt_text,
+                    thread_id=attempt_thread_id,
+                )
+            except Exception as exc:
+                if not is_network_api_error(exc) or attempt >= total_attempts:
+                    raise
+                delay = self._compute_network_retry_delay(attempt)
+                next_thread_id = f"{thread_id}:netretry:{attempt + 1}"
+                logger.warning(
+                    "agent.invoke(thread_id=%s) hit network/API error on attempt %d/%d: %s; retrying with fresh thread_id=%s in %.2fs",
+                    attempt_thread_id,
+                    attempt,
+                    total_attempts,
+                    exc,
+                    next_thread_id,
+                    delay,
+                )
+                if delay > 0:
+                    time.sleep(delay)
+        raise RuntimeError("agent.invoke exhausted retry attempts unexpectedly")
 
     def _normalize_agent_structured_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
         structured = response.get("structured_response")
@@ -815,11 +1235,10 @@ class MemoryAgent:
             question_plan=question_plan,
             sub_question_results=sub_question_results,
         )
-        logger.info(
-            "API call: synthesize_final_answer(sub_question_count=%d)",
-            len(sub_question_results),
+        response = self._invoke_model_with_network_retry(
+            prompt_text=synthesis_prompt,
+            call_name="synthesize_final_answer",
         )
-        response = self.model.invoke(synthesis_prompt)
         response_text = self._extract_message_text(response)
         parsed = self._parse_json_block(response_text)
         if isinstance(parsed, dict):
@@ -852,6 +1271,76 @@ class MemoryAgent:
             "- Do not skip the sub-questions for comparison, summary, counting, or multi-hop questions."
         )
 
+    @staticmethod
+    def _build_direct_execution_prompt(question_text: str) -> str:
+        return (
+            "[Original Question]\n"
+            f"{question_text}\n\n"
+            "[Execution Mode]\n"
+            "Answer directly first.\n\n"
+            "[Task]\n"
+            "- Answer the original question directly with the minimum necessary tool calls.\n"
+            "- Do not explicitly decompose into sub-questions unless the question clearly requires comparison, counting, summary, causal explanation, or another obvious multi-hop structure.\n"
+            "- search_details is the default tool for ordinary detail questions.\n"
+            "- Use the entity-profile tools only for macro/coarse retrieval questions.\n"
+            "- If the question is an ordinary single-goal lookup, keep sub_questions as an empty list.\n"
+            "- If direct retrieval is insufficient, state what remains unknown instead of inventing facts.\n"
+            "- gold_answer must be the concise final value only.\n"
+            "- evidence should briefly cite the supporting tool results."
+        )
+
+    @classmethod
+    def _should_retry_with_decomposition(cls, payload: Dict[str, Any]) -> Tuple[bool, str]:
+        answer_text = str(payload.get("answer", "") or "").strip()
+        gold_answer = payload.get("gold_answer")
+        evidence_text = str(payload.get("evidence", "") or "").strip()
+
+        if not answer_text:
+            return True, "Direct answer was empty."
+
+        if cls._is_unanswerable_text(answer_text):
+            return True, "Direct answer reported insufficient information."
+
+        if gold_answer is None:
+            return True, "Direct answer lacked a concise gold_answer."
+
+        if not evidence_text:
+            return True, "Direct answer lacked supporting evidence."
+
+        return False, "Direct answer is sufficient."
+
+    def _answer_directly(self, question_text: str, active_thread_id: str) -> Dict[str, Any]:
+        prompt_text = self._build_direct_execution_prompt(question_text)
+        response = self._invoke_tool_agent(
+            prompt_text=prompt_text,
+            thread_id=f"{active_thread_id}:direct",
+        )
+        payload = self._normalize_agent_structured_response(response)
+        answer_text = str(payload.get("answer", "") or "").strip()
+        if (
+            payload.get("gold_answer") is None
+            and answer_text
+            and not self._is_unanswerable_text(answer_text)
+            and len(answer_text) <= 120
+            and "\n" not in answer_text
+        ):
+            payload["gold_answer"] = answer_text
+        if not isinstance(payload.get("sub_questions"), list):
+            payload["sub_questions"] = []
+        if not payload.get("plan_summary"):
+            payload["plan_summary"] = "Answered directly without explicit decomposition."
+        self._log_structured_trace(
+            self._TRACE_PREFIX_DIRECT_ANSWER,
+            payload,
+        )
+        logger.info(
+            "API response: direct_answer(answer_len=%d, gold_answer_present=%s, evidence_present=%s)",
+            len(str(payload.get("answer", "") or "")),
+            payload.get("gold_answer") is not None,
+            bool(str(payload.get("evidence", "") or "").strip()),
+        )
+        return payload
+
     def ask(self, question: str, thread_id: Optional[str] = None) -> Dict[str, Any]:
         """Run one QA round: input question -> output structured answer dict."""
         if not isinstance(question, str) or not question.strip():
@@ -862,9 +1351,61 @@ class MemoryAgent:
         self._current_tool_calls = []
         self._last_tool_calls = []
         self._last_question_plan = None
-        question_plan = self._decompose_question(question_text)
-        self._last_question_plan = question_plan
         try:
+            decompose_first, strategy_reason = self._detect_direct_answer_strategy(question_text)
+            logger.info(
+                "QUESTION STRATEGY: %s",
+                json.dumps(
+                    {
+                        "question": question_text,
+                        "decompose_first": decompose_first,
+                        "reason": strategy_reason,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+
+            if not decompose_first:
+                direct_plan = self._build_direct_question_plan(question_text, strategy_reason)
+                self._last_question_plan = direct_plan
+                try:
+                    payload = self._answer_directly(
+                        question_text=question_text,
+                        active_thread_id=active_thread_id,
+                    )
+                    retry_with_decomposition, retry_reason = self._should_retry_with_decomposition(payload)
+                    if not retry_with_decomposition:
+                        tool_calls = self._consume_current_tool_calls()
+                        payload["tool_calls"] = tool_calls
+                        payload["question_plan"] = direct_plan
+                        payload["sub_question_results"] = []
+                        if not payload.get("sub_questions"):
+                            payload["sub_questions"] = []
+                        if not payload.get("plan_summary"):
+                            payload["plan_summary"] = direct_plan.get("decomposition_reason")
+                        self._log_structured_trace(
+                            self._TRACE_PREFIX_FINAL_PAYLOAD,
+                            payload,
+                        )
+                        self._last_tool_calls = tool_calls
+                        return payload
+                    self._log_structured_trace(
+                        self._TRACE_PREFIX_DIRECT_FALLBACK,
+                        {
+                            "reason": retry_reason,
+                            "question": question_text,
+                        },
+                    )
+                except Exception as exc:
+                    if is_network_api_error(exc):
+                        raise
+                    logger.warning(
+                        "Direct answer path failed; fallback to decomposition: %s",
+                        exc,
+                    )
+
+            question_plan = self._decompose_question(question_text)
+            self._last_question_plan = question_plan
             sub_question_results = self._solve_sub_questions(
                 question_text=question_text,
                 question_plan=question_plan,
@@ -883,6 +1424,10 @@ class MemoryAgent:
                 payload["sub_questions"] = question_plan.get("sub_questions", [])
             if not payload.get("plan_summary"):
                 payload["plan_summary"] = question_plan.get("decomposition_reason")
+            self._log_structured_trace(
+                self._TRACE_PREFIX_FINAL_PAYLOAD,
+                payload,
+            )
             self._last_tool_calls = tool_calls
             return payload
         except Exception:
