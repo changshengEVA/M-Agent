@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Set, Tuple
@@ -74,6 +75,7 @@ class EntityProfileService(BaseService):
         enable_summary_llm: bool = True,
         enable_progress: bool = True,
         auto_align_on_init: bool = True,
+        rebuild_checkpoint_every: int = 100,
     ):
         self.llm_func = llm_func
         self.embed_func = embed_func
@@ -86,6 +88,8 @@ class EntityProfileService(BaseService):
         self.local_store_dir.mkdir(parents=True, exist_ok=True)
         self.profile_data_path = Path(profile_data_path) if profile_data_path else self.local_store_dir / "entity_profile"
         self.profile_data_path.mkdir(parents=True, exist_ok=True)
+        self.rebuild_profile_checkpoint_path = self.local_store_dir / "entity_profile_rebuild_checkpoint"
+        self.rebuild_checkpoint_every = max(1, int(rebuild_checkpoint_every or 100))
 
         self.local_facts_situation_file = (
             Path(facts_situation_path) if facts_situation_path else self.local_store_dir / "facts_situation.json"
@@ -225,10 +229,12 @@ class EntityProfileService(BaseService):
         lib_stats = self.entity_profile_library.get_stats()
         local_state = self._load_local_facts_situation()
         summary = local_state.get("summary", {}) if isinstance(local_state, dict) else {}
+        metadata = local_state.get("metadata", {}) if isinstance(local_state, dict) else {}
         return {
             **lib_stats,
             "workflow_id": self.workflow_id,
             "facts_summary": summary if isinstance(summary, dict) else {},
+            "rebuild_checkpoint": self._extract_rebuild_checkpoint_meta(metadata),
             "local_facts_situation_file": str(self.local_facts_situation_file),
             "master_facts_situation_file": str(self.master_facts_situation_file),
         }
@@ -247,6 +253,9 @@ class EntityProfileService(BaseService):
     def align_with_master_facts(self, force_rebuild: bool = False) -> Dict[str, Any]:
         scanned_facts = self._scan_fact_files()
         local_state = self._load_local_facts_situation()
+        if self._has_active_rebuild_checkpoint(local_state):
+            return self.rebuild_from_facts(scanned_facts=scanned_facts, reason="resume_checkpoint")
+
         local_facts = local_state.get("facts", {}) if isinstance(local_state.get("facts"), dict) else {}
 
         current_ids = set(scanned_facts.keys())
@@ -328,16 +337,41 @@ class EntityProfileService(BaseService):
         fact_map = scanned_facts if isinstance(scanned_facts, dict) else self._scan_fact_files()
         master_state = self._load_master_facts_situation()
         master_fact_nodes = master_state.get("facts", {}) if isinstance(master_state.get("facts"), dict) else {}
-
-        self.entity_profile_library.clear()
-        local_state = self._empty_local_facts_situation()
-        local_facts: Dict[str, Dict[str, Any]] = {}
-        touched_entities: Set[str] = set()
-        failed = 0
-
         ordered_fact_ids = sorted(fact_map.keys())
+
+        resume_state = self._load_rebuild_checkpoint_state(fact_map)
+        resumed_from_checkpoint = bool(resume_state)
+        started_at = str((resume_state or {}).get("started_at") or self._now_iso())
+        effective_reason = str((resume_state or {}).get("reason") or reason or "")
+
+        if resume_state:
+            local_state = resume_state["local_state"]
+            local_facts = resume_state["local_facts"]
+            self.entity_profile_library.load_from_path(str(self.rebuild_profile_checkpoint_path))
+        else:
+            self._reset_rebuild_checkpoint_dir()
+            self.entity_profile_library.clear()
+            local_state = self._empty_local_facts_situation()
+            local_facts = {}
+            local_state["facts"] = local_facts
+            self._save_rebuild_checkpoint(
+                local_state=local_state,
+                processed_facts=0,
+                total_facts=len(ordered_fact_ids),
+                failed_facts=0,
+                reason=effective_reason,
+                started_at=started_at,
+                dirty_entities=set(),
+                resumed_from_checkpoint=False,
+            )
+
+        processed = len(local_facts)
+        failed = self._count_failed_facts(local_facts)
+        dirty_entities: Set[str] = set()
+        remaining_fact_ids = [fact_id for fact_id in ordered_fact_ids if fact_id not in local_facts]
+
         for fact_id in self._progress_iter(
-            ordered_fact_ids,
+            remaining_fact_ids,
             desc="EntityProfile rebuild",
             unit="fact",
         ):
@@ -348,30 +382,61 @@ class EntityProfileService(BaseService):
                 master_fact_node=master_fact_nodes.get(fact_id, {}),
             )
             local_facts[fact_id] = node
+            processed += 1
             if node.get("status") == "failed":
                 failed += 1
             if entity_uid:
-                touched_entities.add(entity_uid)
+                dirty_entities.add(entity_uid)
+            if processed % self.rebuild_checkpoint_every == 0:
+                self._save_rebuild_checkpoint(
+                    local_state=local_state,
+                    processed_facts=processed,
+                    total_facts=len(ordered_fact_ids),
+                    failed_facts=failed,
+                    reason=effective_reason,
+                    started_at=started_at,
+                    dirty_entities=dirty_entities,
+                    resumed_from_checkpoint=resumed_from_checkpoint,
+                )
+                dirty_entities = set()
 
-        for entity_uid in sorted(touched_entities):
-            self._refresh_entity_summary(entity_uid)
-
+        self._save_rebuild_checkpoint(
+            local_state=local_state,
+            processed_facts=processed,
+            total_facts=len(ordered_fact_ids),
+            failed_facts=failed,
+            reason=effective_reason,
+            started_at=started_at,
+            dirty_entities=dirty_entities,
+            resumed_from_checkpoint=resumed_from_checkpoint,
+        )
+        self.entity_profile_library.save_to_path(str(self.profile_data_path))
         local_state["facts"] = local_facts
         self._refresh_local_summary(local_state)
-        local_state["metadata"] = {
-            "last_updated": self._now_iso(),
-            "source": "entity_profile_sys",
-            "rebuild_reason": str(reason or ""),
-        }
+        metadata = local_state.get("metadata", {}) if isinstance(local_state.get("metadata"), dict) else {}
+        metadata["rebuild_reason"] = effective_reason
+        self._update_rebuild_checkpoint_meta(
+            metadata=metadata,
+            status="completed",
+            reason=effective_reason,
+            started_at=started_at,
+            total_facts=len(ordered_fact_ids),
+            processed_facts=processed,
+            failed_facts=failed,
+            resumed_from_checkpoint=resumed_from_checkpoint,
+        )
+        local_state["metadata"] = metadata
         self._save_local_facts_situation(local_state)
-        self.entity_profile_library.save_to_path(str(self.profile_data_path))
+        self._clear_rebuild_checkpoint_dir()
 
         return {
             "success": failed == 0,
             "mode": "rebuild",
             "facts_scanned": len(fact_map),
+            "facts_processed": processed,
             "facts_failed": failed,
-            "rebuild_reason": str(reason or ""),
+            "rebuild_reason": effective_reason,
+            "resumed_from_checkpoint": resumed_from_checkpoint,
         }
 
     def query_entity_feature(self, entity_id: str, feature_query: str, topk: int = 5) -> Dict[str, Any]:
@@ -992,6 +1057,148 @@ class EntityProfileService(BaseService):
             "updated_at": self._now_iso(),
         }
 
+    def _refresh_entity_summaries(self, entity_ids: Set[str]) -> None:
+        for entity_uid in sorted({str(x or "").strip() for x in entity_ids if str(x or "").strip()}):
+            self._refresh_entity_summary(entity_uid)
+
+    @staticmethod
+    def _count_failed_facts(local_facts: Dict[str, Dict[str, Any]]) -> int:
+        failed = 0
+        for node in local_facts.values():
+            if isinstance(node, dict) and str(node.get("status", "") or "") == "failed":
+                failed += 1
+        return failed
+
+    @staticmethod
+    def _extract_rebuild_checkpoint_meta(metadata: Any) -> Dict[str, Any]:
+        if not isinstance(metadata, dict):
+            return {}
+        node = metadata.get("rebuild_checkpoint", {})
+        return dict(node) if isinstance(node, dict) else {}
+
+    def _has_active_rebuild_checkpoint(self, local_state: Dict[str, Any]) -> bool:
+        metadata = local_state.get("metadata", {}) if isinstance(local_state.get("metadata"), dict) else {}
+        checkpoint_meta = self._extract_rebuild_checkpoint_meta(metadata)
+        return str(checkpoint_meta.get("status", "") or "").strip().lower() == "in_progress"
+
+    def _update_rebuild_checkpoint_meta(
+        self,
+        metadata: Dict[str, Any],
+        status: str,
+        reason: str,
+        started_at: str,
+        total_facts: int,
+        processed_facts: int,
+        failed_facts: int,
+        resumed_from_checkpoint: bool,
+    ) -> None:
+        metadata["rebuild_reason"] = str(reason or "")
+        metadata["rebuild_checkpoint"] = {
+            "status": str(status or "").strip().lower(),
+            "reason": str(reason or ""),
+            "started_at": str(started_at or self._now_iso()),
+            "updated_at": self._now_iso(),
+            "total_facts": max(0, int(total_facts)),
+            "processed_facts": max(0, int(processed_facts)),
+            "failed_facts": max(0, int(failed_facts)),
+            "remaining_facts": max(0, int(total_facts) - int(processed_facts)),
+            "checkpoint_every": self.rebuild_checkpoint_every,
+            "checkpoint_dir": str(self.rebuild_profile_checkpoint_path),
+            "resumed_from_checkpoint": bool(resumed_from_checkpoint),
+        }
+        if str(status or "").strip().lower() == "completed":
+            metadata["rebuild_checkpoint"]["completed_at"] = self._now_iso()
+
+    def _clear_rebuild_checkpoint_dir(self) -> None:
+        if self.rebuild_profile_checkpoint_path.exists():
+            shutil.rmtree(self.rebuild_profile_checkpoint_path, ignore_errors=True)
+
+    def _reset_rebuild_checkpoint_dir(self) -> None:
+        self._clear_rebuild_checkpoint_dir()
+        self.rebuild_profile_checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+    def _load_rebuild_checkpoint_state(
+        self, fact_map: Dict[str, Dict[str, Any]]
+    ) -> Optional[Dict[str, Any]]:
+        local_state = self._load_local_facts_situation()
+        if not self._has_active_rebuild_checkpoint(local_state):
+            return None
+
+        local_facts = local_state.get("facts", {})
+        if not isinstance(local_facts, dict):
+            return None
+        if not local_facts:
+            return None
+
+        for fact_id, node in local_facts.items():
+            if not isinstance(node, dict):
+                logger.info("EntityProfile rebuild checkpoint invalid: fact node is not dict (%s)", fact_id)
+                self._clear_rebuild_checkpoint_dir()
+                return None
+            current = fact_map.get(fact_id)
+            if current is None:
+                logger.info("EntityProfile rebuild checkpoint invalid: fact removed (%s)", fact_id)
+                self._clear_rebuild_checkpoint_dir()
+                return None
+            checkpoint_fp = str(node.get("fingerprint", "") or "")
+            current_fp = str(current.get("fingerprint", "") or "")
+            if checkpoint_fp != current_fp:
+                logger.info("EntityProfile rebuild checkpoint invalid: fingerprint changed (%s)", fact_id)
+                self._clear_rebuild_checkpoint_dir()
+                return None
+
+        self.rebuild_profile_checkpoint_path.mkdir(parents=True, exist_ok=True)
+        metadata = local_state.get("metadata", {}) if isinstance(local_state.get("metadata"), dict) else {}
+        checkpoint_meta = self._extract_rebuild_checkpoint_meta(metadata)
+        return {
+            "local_state": local_state,
+            "local_facts": local_facts,
+            "started_at": str(checkpoint_meta.get("started_at", "") or self._now_iso()),
+            "reason": str(checkpoint_meta.get("reason", "") or ""),
+        }
+
+    def _save_rebuild_checkpoint(
+        self,
+        local_state: Dict[str, Any],
+        processed_facts: int,
+        total_facts: int,
+        failed_facts: int,
+        reason: str,
+        started_at: str,
+        dirty_entities: Set[str],
+        resumed_from_checkpoint: bool,
+    ) -> None:
+        local_facts = local_state.get("facts", {})
+        if not isinstance(local_facts, dict):
+            local_facts = {}
+            local_state["facts"] = local_facts
+
+        self._refresh_entity_summaries(dirty_entities)
+        self.rebuild_profile_checkpoint_path.mkdir(parents=True, exist_ok=True)
+
+        dirty_ids = sorted({str(x or "").strip() for x in dirty_entities if str(x or "").strip()})
+        if dirty_ids:
+            self.entity_profile_library.save_to_path(
+                str(self.rebuild_profile_checkpoint_path),
+                prune_missing=False,
+                entity_ids=dirty_ids,
+            )
+
+        self._refresh_local_summary(local_state)
+        metadata = local_state.get("metadata", {}) if isinstance(local_state.get("metadata"), dict) else {}
+        self._update_rebuild_checkpoint_meta(
+            metadata=metadata,
+            status="in_progress",
+            reason=reason,
+            started_at=started_at,
+            total_facts=total_facts,
+            processed_facts=processed_facts,
+            failed_facts=failed_facts,
+            resumed_from_checkpoint=resumed_from_checkpoint,
+        )
+        local_state["metadata"] = metadata
+        self._save_local_facts_situation(local_state)
+
     # ------------------------------------------------------------------
     # Fact/evidence parsing
     # ------------------------------------------------------------------
@@ -1435,6 +1642,7 @@ def create_default_entity_profile_service(
     enable_summary_llm: bool = True,
     enable_progress: bool = True,
     auto_align_on_init: bool = True,
+    rebuild_checkpoint_every: int = 100,
 ) -> EntityProfileService:
     """Convenience constructor for default entity profile service."""
 
@@ -1451,4 +1659,5 @@ def create_default_entity_profile_service(
         enable_summary_llm=enable_summary_llm,
         enable_progress=enable_progress,
         auto_align_on_init=auto_align_on_init,
+        rebuild_checkpoint_every=rebuild_checkpoint_every,
     )

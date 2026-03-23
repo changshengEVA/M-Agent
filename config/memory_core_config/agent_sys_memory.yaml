@@ -8,7 +8,7 @@ memory_use_threshold: true
 
 # Build/import settings
 scene_prompt_version: "v2"
-action_prompt_version: "v1"
+fact_prompt_version: "v2"
 memory_owner_name: "changshengEVA"
 # Entity statement build control
 # true: force regenerate all episodes this run

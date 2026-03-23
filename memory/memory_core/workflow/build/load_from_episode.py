@@ -153,14 +153,14 @@ def load_from_episode_path(
         dialogues_root = memory_core.dialogues_dir
         scene_root = memory_core.scene_dir
         scene_prompt_version = str(getattr(memory_core, "scene_prompt_version", "v2"))
-        action_prompt_version = str(getattr(memory_core, "action_prompt_version", "v1"))
+        fact_prompt_version = str(getattr(memory_core, "fact_prompt_version", "v2"))
         memory_owner_name = str(getattr(memory_core, "memory_owner_name", "changshengEVA"))
 
         # system-owned behavior: import flow controls force_update internally
         force_update = False
 
         from memory.build_memory.form_scene import scan_and_form_scenes
-        from memory.build_memory.form_scene_details import scan_and_form_scene_actions
+        from memory.build_memory.form_scene_details import scan_and_form_scene_facts
 
         if not episodes_root_for_build.exists():
             build_result = {
@@ -182,9 +182,9 @@ def load_from_episode_path(
                 llm_model=memory_core.llm_func,
             )
 
-            fact_stats = scan_and_form_scene_actions(
+            fact_stats = scan_and_form_scene_facts(
                 workflow_id=memory_core.workflow_id,
-                prompt_version=action_prompt_version,
+                prompt_version=fact_prompt_version,
                 force_update=force_update,
                 use_tqdm=True,
                 embed_model=memory_core.embed_func,
@@ -237,7 +237,7 @@ def load_from_episode_path(
                     getattr(memory_core, "facts_situation_file", memory_core.memory_root / "facts_situation.json")
                 ),
                 "scene_prompt_version": scene_prompt_version,
-                "action_prompt_version": action_prompt_version,
+                "fact_prompt_version": fact_prompt_version,
                 "memory_owner_name": memory_owner_name,
                 "force_update": force_update,
             }

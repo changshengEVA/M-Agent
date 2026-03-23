@@ -1,4 +1,4 @@
-﻿workflow_id: "test6"
+﻿workflow_id: "test7"
 
 # model providers
 llm_provider: "openai"
@@ -16,9 +16,9 @@ memory_use_threshold: true
 
 # Build/import settings
 scene_prompt_version: "v2"
-action_prompt_version: "v1"
+fact_prompt_version: "v2"
 memory_owner_name: "changshengEVA"
 # Entity statement build control
 # true: force regenerate all episodes this run
 # false: incremental mode based on episodes/episode_situation.json
-entity_statement_force_update: false
+entity_statement_force_update: true

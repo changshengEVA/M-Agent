@@ -1,266 +1,467 @@
 #!/usr/bin/env python3
-# 2025-12-27 changshengEVA
 """
-构建记忆 episodes 的模块。
-扫描 dialogues 目录下的原始对话文件，将其分割为语义 episodes。
+Build memory episodes from raw dialogues.
+
+This module scans dialogue files and segments each dialogue into episodes.
+The segmentation now follows a true buffer-based flow in code:
+the script scans turns in order, maintains an episode_buffer, and asks
+the LLM whether each new turn should append to the current buffer or
+start a new episode.
 """
 
-import os
-import sys
+from __future__ import annotations
+
 import json
-import yaml
 import logging
+import re
+import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+import yaml
 from tqdm import tqdm
 
-# 添加项目根目录到 Python 路径，确保可以导入 load_model
+
 PROJECT_ROOT = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
 
-# 配置日志：只显示 WARNING 及以上级别，减少输出噪音
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logging.basicConfig(
+    level=logging.WARNING,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 logger = logging.getLogger(__name__)
 
-# 路径配置
 DIALOGUES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "dialogues"
 EPISODES_ROOT = PROJECT_ROOT / "data" / "memory" / "default" / "episodes"
 CONFIG_PATH = PROJECT_ROOT / "config" / "prompt" / "episode.yaml"
 
-def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict:
-    """从 config/prompt.yaml 加载 prompts，并替换 <memory_owner_name> 占位符"""
-    with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
-    prompts = config.get('dialogue_segmentation', {})
-    # 替换 prompts 中的 <memory_owner_name> 占位符
-    if isinstance(prompts, dict):
-        for key, value in prompts.items():
-            if isinstance(value, str):
-                prompts[key] = value.replace('<memory_owner_name>', memory_owner_name)
-    return prompts
 
-def ensure_directory(path: Path):
-    """确保目录存在"""
+def _replace_prompt_placeholders(value: Any, memory_owner_name: str) -> Any:
+    if isinstance(value, str):
+        return value.replace("<memory_owner_name>", memory_owner_name)
+    if isinstance(value, dict):
+        return {
+            key: _replace_prompt_placeholders(sub_value, memory_owner_name)
+            for key, sub_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_replace_prompt_placeholders(item, memory_owner_name) for item in value]
+    return value
+
+
+def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict[str, Any]:
+    """Load dialogue segmentation prompts from config/prompt/episode.yaml."""
+    with open(CONFIG_PATH, "r", encoding="utf-8") as file:
+        config = yaml.safe_load(file) or {}
+
+    prompts = config.get("dialogue_segmentation", {})
+    if not isinstance(prompts, dict):
+        return {}
+
+    return _replace_prompt_placeholders(prompts, memory_owner_name)
+
+
+def ensure_directory(path: Path) -> None:
+    """Ensure a directory exists."""
     path.mkdir(parents=True, exist_ok=True)
 
-def scan_dialogue_files(dialogues_root: Path = None) -> List[Path]:
+
+def scan_dialogue_files(dialogues_root: Optional[Path] = None) -> List[Path]:
     """
-    扫描所有对话文件。
-    返回所有找到的对话文件路径列表。
-    
-    支持多种目录结构：
-    1. 新的扁平结构: {dialogues_root}/{year-month}/{dialogue_id}.json
-    2. 旧的用户ID结构: {dialogues_root}/{user_id}/{year-month}/{dialogue_id}.json
-    3. 特殊的旧结构: {dialogues_root}/by_user/{user_id}/{year-month}/{dialogue_id}.json 等
-    
-    Args:
-        dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
+    Scan all dialogue JSON files.
+
+    Supported layouts:
+    1. {dialogues_root}/{year-month}/{dialogue_id}.json
+    2. {dialogues_root}/{user_id}/{year-month}/{dialogue_id}.json
+    3. {dialogues_root}/by_user/{user_id}/{year-month}/{dialogue_id}.json
     """
     if dialogues_root is None:
         dialogues_root = DIALOGUES_ROOT
-    
-    dialogue_files = []
-    import re
-    
-    # 年月目录的正则表达式 (例如 "2025-10", "2026-01")
-    year_month_pattern = re.compile(r'^\d{4}-\d{2}$')
-    
-    # 递归扫描所有目录，查找符合年月格式的目录
-    for root_dir in [dialogues_root]:
-        # 使用 rglob 递归遍历所有目录
-        for dir_path in root_dir.rglob('*'):
-            if dir_path.is_dir() and year_month_pattern.match(dir_path.name):
-                # 找到年月目录，收集其中的 JSON 文件
-                for file in dir_path.glob('*.json'):
-                    dialogue_files.append(file)
-    
-    # 去重（理论上不需要，但为了安全）
-    dialogue_files = list(set(dialogue_files))
-    
-    return dialogue_files
 
-def get_episode_path(dialogue_file: Path, episodes_root: Path = None) -> Path:
+    dialogue_files: List[Path] = []
+    year_month_pattern = re.compile(r"^\d{4}-\d{2}$")
+
+    for dir_path in dialogues_root.rglob("*"):
+        if dir_path.is_dir() and year_month_pattern.match(dir_path.name):
+            dialogue_files.extend(dir_path.glob("*.json"))
+
+    return sorted(set(dialogue_files))
+
+
+def get_episode_path(dialogue_file: Path, episodes_root: Optional[Path] = None) -> Path:
     """
-    根据对话文件路径生成对应的 episode 文件路径。
-    格式: episodes/by_dialogue/{dialogue_id}/episodes_v1.json
-    
-    Args:
-        dialogue_file: 对话文件路径
-        episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
+    Build the target episode file path for a dialogue.
+
+    Format: episodes/by_dialogue/{dialogue_id}/episodes_v1.json
     """
     if episodes_root is None:
         episodes_root = EPISODES_ROOT
-    
-    dialogue_id = dialogue_file.stem  # 例如 dlg_2025-12-23_21-53-05
+
+    dialogue_id = dialogue_file.stem
     episode_dir = episodes_root / "by_dialogue" / dialogue_id
     return episode_dir / "episodes_v1.json"
 
-def dialogue_needs_episodes(dialogue_file: Path, episodes_root: Path = None) -> bool:
-    """检查对话是否需要生成 episodes（episode 文件不存在）"""
+
+def dialogue_needs_episodes(dialogue_file: Path, episodes_root: Optional[Path] = None) -> bool:
+    """Return True when the dialogue still needs an episodes_v1.json file."""
     episode_file = get_episode_path(dialogue_file, episodes_root)
     return not episode_file.exists()
 
-def load_dialogue(dialogue_file: Path) -> Dict:
-    """加载对话 JSON 文件"""
-    with open(dialogue_file, 'r', encoding='utf-8') as f:
-        return json.load(f)
 
-def call_openai_for_segmentation(
-    dialogue_json: Dict,
-    prompts: Dict,
-    llm_model: Optional[Callable[[str], str]] = None
-) -> Dict:
-    """
-    调用 OpenAI 进行对话分割。
-    返回包含 episodes 的字典。
-    """
-    if llm_model is None:
-        from load_model.OpenAIcall import get_llm
-        llm_model = get_llm(model_temperature=0.1)
-    
-    # 获取 LLM 实例，温度设为 0.1 以获得更确定性的输出
-    
-    # 构建完整的 prompt
-    system_prompt = prompts.get('system_prompt', '')
-    user_prompt_template = prompts.get('user_prompt', '')
-    
-    # 将对话 JSON 转换为字符串用于插入
-    dialogue_str = json.dumps(dialogue_json, ensure_ascii=False, indent=2)
-    user_prompt = user_prompt_template.replace('<INPUT_JSON>', dialogue_str)
-    
-    # 组合 system 和 user prompt（适用于 text completion 模型）
-    full_prompt = f"{system_prompt}\n\n{user_prompt}"
-    
+def load_dialogue(dialogue_file: Path) -> Dict[str, Any]:
+    """Load one dialogue JSON file."""
+    with open(dialogue_file, "r", encoding="utf-8") as file:
+        return json.load(file)
+
+
+def _get_llm_model(llm_model: Optional[Callable[[str], str]] = None) -> Callable[[str], str]:
+    if llm_model is not None:
+        return llm_model
+
+    from load_model.OpenAIcall import get_llm
+
+    return get_llm(model_temperature=0.1)
+
+
+def _parse_json_response(response_text: str) -> Dict[str, Any]:
+    text = response_text.strip()
+    json_match = re.search(r"\{.*\}", text, re.DOTALL)
+    if json_match:
+        text = json_match.group(0)
+
+    parsed = json.loads(text)
+    if not isinstance(parsed, dict):
+        raise ValueError("LLM response is not a JSON object.")
+    return parsed
+
+
+def _render_prompt(system_prompt: str, user_prompt_template: str, replacements: Dict[str, str]) -> str:
+    user_prompt = user_prompt_template
+    for key, value in replacements.items():
+        user_prompt = user_prompt.replace(key, value)
+    return f"{system_prompt}\n\n{user_prompt}".strip()
+
+
+def _call_llm_json(
+    *,
+    system_prompt: str,
+    user_prompt_template: str,
+    replacements: Dict[str, str],
+    llm_model: Callable[[str], str],
+) -> Dict[str, Any]:
+    prompt = _render_prompt(system_prompt, user_prompt_template, replacements)
+    response_text = llm_model(prompt)
+    return _parse_json_response(response_text)
+
+
+def _serialize_json(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _normalize_turns(dialogue_json: Dict[str, Any]) -> List[Dict[str, Any]]:
+    raw_turns = dialogue_json.get("turns", [])
+    if not isinstance(raw_turns, list):
+        return []
+
+    sortable_turns: List[Tuple[int, int, Dict[str, Any]]] = []
+    for original_index, raw_turn in enumerate(raw_turns):
+        if not isinstance(raw_turn, dict):
+            continue
+
+        turn = dict(raw_turn)
+        if "turn_id" not in turn:
+            turn["turn_id"] = original_index
+
+        raw_turn_id = turn.get("turn_id")
+        try:
+            sort_turn_id = int(raw_turn_id)
+        except (TypeError, ValueError):
+            sort_turn_id = original_index
+
+        sortable_turns.append((sort_turn_id, original_index, turn))
+
+    sortable_turns.sort(key=lambda item: (item[0], item[1]))
+    return [turn for _, _, turn in sortable_turns]
+
+
+def _build_dialogue_context(dialogue_json: Dict[str, Any], turns: List[Dict[str, Any]]) -> Dict[str, Any]:
+    return {
+        "dialogue_id": dialogue_json.get("dialogue_id", ""),
+        "user_id": dialogue_json.get("user_id", ""),
+        "participants": dialogue_json.get("participants", []),
+        "meta": dialogue_json.get("meta", {}),
+        "turn_count": len(turns),
+    }
+
+
+def _normalize_decision(raw_decision: str) -> str:
+    decision = raw_decision.strip().lower()
+    append_aliases = {
+        "append",
+        "continue",
+        "continue_current_episode",
+        "same_episode",
+        "keep",
+        "stay",
+    }
+    split_aliases = {
+        "split",
+        "new_episode",
+        "start_new_episode",
+        "start_new",
+        "boundary",
+        "close_and_start_new",
+    }
+
+    if decision in append_aliases:
+        return "append"
+    if decision in split_aliases:
+        return "split"
+    raise ValueError(f"Unsupported segmentation decision: {raw_decision!r}")
+
+
+def _decide_turn_transition(
+    dialogue_context: Dict[str, Any],
+    current_buffer: List[Dict[str, Any]],
+    candidate_turn: Dict[str, Any],
+    prompts: Dict[str, Any],
+    llm_model: Callable[[str], str],
+) -> str:
+    system_prompt = str(prompts.get("system_prompt", ""))
+    decision_prompt = str(prompts.get("decision_prompt", ""))
+    if not decision_prompt.strip():
+        raise ValueError("dialogue_segmentation.decision_prompt is missing.")
+
+    result = _call_llm_json(
+        system_prompt=system_prompt,
+        user_prompt_template=decision_prompt,
+        replacements={
+            "<DIALOGUE_CONTEXT_JSON>": _serialize_json(dialogue_context),
+            "<CURRENT_BUFFER_JSON>": _serialize_json(current_buffer),
+            "<CANDIDATE_TURN_JSON>": _serialize_json(candidate_turn),
+        },
+        llm_model=llm_model,
+    )
+    return _normalize_decision(str(result.get("decision", "")))
+
+
+def _fallback_topic(episode_buffer: List[Dict[str, Any]]) -> str:
+    texts = [str(turn.get("text", "")).strip() for turn in episode_buffer if str(turn.get("text", "")).strip()]
+    if texts:
+        snippet = " ".join(texts[0].split()[:8]).strip(" .,;:!?")
+        if snippet:
+            return snippet
+
+    if episode_buffer:
+        return f"interaction around turn {episode_buffer[0].get('turn_id', 0)}"
+    return "empty interaction"
+
+
+def _generate_episode_topic(
+    dialogue_context: Dict[str, Any],
+    episode_buffer: List[Dict[str, Any]],
+    prompts: Dict[str, Any],
+    llm_model: Callable[[str], str],
+) -> str:
+    system_prompt = str(prompts.get("system_prompt", ""))
+    topic_prompt = str(prompts.get("topic_prompt", ""))
+    if not topic_prompt.strip():
+        return _fallback_topic(episode_buffer)
+
     try:
-        response_text = llm_model(full_prompt)
-        # 解析 JSON 响应
-        # 响应可能包含额外的文本，尝试提取 JSON 部分
-        import re
-        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
-        if json_match:
-            response_text = json_match.group(0)
-        
-        result = json.loads(response_text)
-        return result
-    except json.JSONDecodeError as e:
-        logger.error(f"解析 OpenAI 响应失败: {e}")
-        logger.error(f"响应文本: {response_text[:500]}...")
-        raise
-    except Exception as e:
-        logger.error(f"调用 OpenAI 失败: {e}")
-        raise
+        result = _call_llm_json(
+            system_prompt=system_prompt,
+            user_prompt_template=topic_prompt,
+            replacements={
+                "<DIALOGUE_CONTEXT_JSON>": _serialize_json(dialogue_context),
+                "<EPISODE_BUFFER_JSON>": _serialize_json(episode_buffer),
+            },
+            llm_model=llm_model,
+        )
+        topic = str(result.get("topic", "")).strip()
+        if topic:
+            return topic
+    except Exception as exc:
+        logger.warning("Episode topic generation failed, use fallback topic: %s", exc)
 
-def build_episode_structure(dialogue_id: str, openai_result: Dict) -> Dict:
+    return _fallback_topic(episode_buffer)
+
+
+def _build_episode_entry(
+    dialogue_id: str,
+    episode_index: int,
+    episode_buffer: List[Dict[str, Any]],
+    dialogue_context: Dict[str, Any],
+    prompts: Dict[str, Any],
+    llm_model: Callable[[str], str],
+) -> Dict[str, Any]:
+    topic = _generate_episode_topic(
+        dialogue_context=dialogue_context,
+        episode_buffer=episode_buffer,
+        prompts=prompts,
+        llm_model=llm_model,
+    )
+    return {
+        "episode_id": f"ep_{episode_index:03d}",
+        "topic": topic,
+        "dialogue_id": dialogue_id,
+        "turn_span": [
+            episode_buffer[0]["turn_id"],
+            episode_buffer[-1]["turn_id"],
+        ],
+    }
+
+
+def segment_dialogue_with_buffer(
+    dialogue_json: Dict[str, Any],
+    prompts: Dict[str, Any],
+    llm_model: Optional[Callable[[str], str]] = None,
+) -> Dict[str, Any]:
     """
-    构建最终的 episode 结构，符合要求的格式。
+    Segment a dialogue with explicit script-level buffer control.
+
+    The script owns the scanning order and buffer lifecycle.
+    The LLM only decides whether each next turn appends or splits, and
+    later summarizes each finalized buffer with a topic.
     """
+    resolved_llm_model = _get_llm_model(llm_model)
+    turns = _normalize_turns(dialogue_json)
+    if not turns:
+        return {"episodes": []}
+
+    dialogue_id = str(dialogue_json.get("dialogue_id", ""))
+    dialogue_context = _build_dialogue_context(dialogue_json, turns)
+
+    episodes: List[Dict[str, Any]] = []
+    current_buffer: List[Dict[str, Any]] = [turns[0]]
+
+    for candidate_turn in turns[1:]:
+        decision = _decide_turn_transition(
+            dialogue_context=dialogue_context,
+            current_buffer=current_buffer,
+            candidate_turn=candidate_turn,
+            prompts=prompts,
+            llm_model=resolved_llm_model,
+        )
+
+        if decision == "append":
+            current_buffer.append(candidate_turn)
+            continue
+
+        episodes.append(
+            _build_episode_entry(
+                dialogue_id=dialogue_id,
+                episode_index=len(episodes) + 1,
+                episode_buffer=current_buffer,
+                dialogue_context=dialogue_context,
+                prompts=prompts,
+                llm_model=resolved_llm_model,
+            )
+        )
+        current_buffer = [candidate_turn]
+
+    episodes.append(
+        _build_episode_entry(
+            dialogue_id=dialogue_id,
+            episode_index=len(episodes) + 1,
+            episode_buffer=current_buffer,
+            dialogue_context=dialogue_context,
+            prompts=prompts,
+            llm_model=resolved_llm_model,
+        )
+    )
+
+    return {"episodes": episodes}
+
+
+def build_episode_structure(dialogue_id: str, segmentation_result: Dict[str, Any]) -> Dict[str, Any]:
+    """Build the final episodes_v1.json payload."""
     return {
         "dialogue_id": dialogue_id,
         "episode_version": "v1",
         "generated_at": datetime.utcnow().isoformat() + "Z",
-        "episodes": openai_result.get("episodes", [])
+        "episodes": segmentation_result.get("episodes", []),
     }
 
-def save_episodes(episode_data: Dict, episode_file: Path):
-    """保存 episodes 到文件"""
+
+def save_episodes(episode_data: Dict[str, Any], episode_file: Path) -> None:
+    """Save episodes to disk."""
     ensure_directory(episode_file.parent)
-    with open(episode_file, 'w', encoding='utf-8') as f:
-        json.dump(episode_data, f, ensure_ascii=False, indent=2)
+    with open(episode_file, "w", encoding="utf-8") as file:
+        json.dump(episode_data, file, ensure_ascii=False, indent=2)
+
 
 def process_dialogue_file(
     dialogue_file: Path,
-    prompts: Dict,
-    episodes_root: Path = None,
+    prompts: Dict[str, Any],
+    episodes_root: Optional[Path] = None,
     memory_owner_name: str = "changshengEVA",
-    llm_model: Optional[Callable[[str], str]] = None
+    llm_model: Optional[Callable[[str], str]] = None,
 ) -> bool:
-    """处理单个对话文件，生成 episodes"""
+    """Process one dialogue file and generate episodes_v1.json."""
+    _ = memory_owner_name
     try:
-        # 加载对话
         dialogue_data = load_dialogue(dialogue_file)
-        dialogue_id = dialogue_data.get('dialogue_id', dialogue_file.stem)
-        
-        # 调用 OpenAI 进行分割
-        openai_result = call_openai_for_segmentation(
+        dialogue_id = dialogue_data.get("dialogue_id", dialogue_file.stem)
+        if "dialogue_id" not in dialogue_data:
+            dialogue_data = dict(dialogue_data)
+            dialogue_data["dialogue_id"] = dialogue_id
+
+        segmentation_result = segment_dialogue_with_buffer(
             dialogue_data,
             prompts,
-            llm_model=llm_model
+            llm_model=llm_model,
         )
-        
-        # 构建最终结构
-        episode_data = build_episode_structure(dialogue_id, openai_result)
-        
-        # 保存文件
+        episode_data = build_episode_structure(dialogue_id, segmentation_result)
+
         episode_file = get_episode_path(dialogue_file, episodes_root)
         save_episodes(episode_data, episode_file)
-        
         return True
-    except Exception as e:
-        logger.error(f"处理对话文件 {dialogue_file} 失败: {e}")
+    except Exception as exc:
+        logger.error("Failed to process dialogue file %s: %s", dialogue_file, exc)
         return False
+
 
 def scan_and_build_episodes(
     use_tqdm: bool = True,
-    dialogues_root: Path = None,
-    episodes_root: Path = None,
+    dialogues_root: Optional[Path] = None,
+    episodes_root: Optional[Path] = None,
     memory_owner_name: str = "changshengEVA",
-    llm_model: Optional[Callable[[str], str]] = None
-):
+    llm_model: Optional[Callable[[str], str]] = None,
+) -> None:
     """
-    主函数：扫描所有对话文件，为需要生成 episodes 的对话创建 episodes。
-    
-    Args:
-        use_tqdm: 是否使用 tqdm 显示进度条
-        dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
-        episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
-        memory_owner_name: 记忆所有者的名称，用于替换prompt中的<memory_owner_name>占位符
+    Scan dialogues and build episodes for files that do not yet have output.
     """
-    # 确定使用的根目录
     if episodes_root is None:
         episodes_root = EPISODES_ROOT
     if dialogues_root is None:
         dialogues_root = DIALOGUES_ROOT
-    
-    # 确保 episodes 根目录存在
+
     ensure_directory(episodes_root)
-    
-    # 加载 prompts，并替换占位符
+
     prompts = load_prompts(memory_owner_name)
     if not prompts:
-        logger.error("未找到 dialogue_segmentation prompts")
+        logger.error("dialogue_segmentation prompts not found")
         return
-    
-    # 扫描所有对话文件
+
     dialogue_files = scan_dialogue_files(dialogues_root)
-    
-    # 过滤需要处理的文件
-    files_to_process = []
-    for file in dialogue_files:
-        if dialogue_needs_episodes(file, episodes_root):
-            files_to_process.append(file)
-    
+    files_to_process = [file for file in dialogue_files if dialogue_needs_episodes(file, episodes_root)]
+
     if not files_to_process:
-        # 没有需要处理的文件，静默退出
         return
-    
-    # 处理文件
-    if use_tqdm:
-        file_iter = tqdm(files_to_process, desc="构建 episodes")
-    else:
-        file_iter = files_to_process
-    
-    success_count = 0
+
+    file_iter = tqdm(files_to_process, desc="Building episodes") if use_tqdm else files_to_process
+
     for dialogue_file in file_iter:
-        if process_dialogue_file(
+        process_dialogue_file(
             dialogue_file,
             prompts,
             episodes_root,
             memory_owner_name,
-            llm_model=llm_model
-        ):
-            success_count += 1
+            llm_model=llm_model,
+        )
+
 
 if __name__ == "__main__":
-    # 直接运行此脚本时执行扫描和构建
     scan_and_build_episodes()

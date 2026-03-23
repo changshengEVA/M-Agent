@@ -421,25 +421,37 @@ class EntityProfileLibrary:
         logger.info("EntityProfileLibrary loaded %s profiles from %s", loaded, root)
         return loaded > 0
 
-    def save_to_path(self, data_path: Optional[str] = None) -> bool:
+    def save_to_path(
+        self,
+        data_path: Optional[str] = None,
+        prune_missing: bool = True,
+        entity_ids: Optional[List[str]] = None,
+    ) -> bool:
         target = Path(data_path or self.data_path or "")
         if not str(target):
             logger.warning("EntityProfileLibrary save skipped: empty target path")
             return False
 
         target.mkdir(parents=True, exist_ok=True)
-        current_ids = set(self.profiles.keys())
-        existing_ids = {p.stem for p in target.glob("*.json") if p.is_file()}
-        ghost_ids = existing_ids - {self._safe_file_stem(x) for x in current_ids}
-        for ghost in ghost_ids:
-            ghost_file = target / f"{ghost}.json"
-            try:
-                ghost_file.unlink()
-            except Exception:
-                pass
+        if prune_missing:
+            current_ids = set(self.profiles.keys())
+            existing_ids = {p.stem for p in target.glob("*.json") if p.is_file()}
+            ghost_ids = existing_ids - {self._safe_file_stem(x) for x in current_ids}
+            for ghost in ghost_ids:
+                ghost_file = target / f"{ghost}.json"
+                try:
+                    ghost_file.unlink()
+                except Exception:
+                    pass
+
+        raw_ids = list(self.profiles.keys()) if entity_ids is None else list(entity_ids)
+        save_ids = [str(x or "").strip() for x in raw_ids]
 
         saved = 0
-        for entity_id, record in self.profiles.items():
+        for entity_id in save_ids:
+            record = self.profiles.get(entity_id)
+            if record is None:
+                continue
             file_name = f"{self._safe_file_stem(entity_id)}.json"
             ok = self._save_json(target / file_name, record.to_dict())
             if ok:

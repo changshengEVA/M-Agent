@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Scene action extraction module.
+Scene fact extraction module.
 
 Scan scene files under one workflow and write back a `facts` field for each
-scene. Each action item stores one extracted atomic fact from source dialogue
+scene. Each fact item stores one extracted atomic fact from source episode
 spans referenced by scene.source.episodes.
 """
 
@@ -29,7 +29,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = PROJECT_ROOT / "config" / "prompt" / "action_extraction.yaml"
+CONFIG_PATH = PROJECT_ROOT / "config" / "prompt" / "fact_extraction.yaml"
 
 
 def get_memory_root(workflow_id: str) -> Path:
@@ -180,13 +180,113 @@ def extract_json_from_text(text: str) -> Any:
 
     object_match = re.search(r"\{[\s\S]*\}", payload)
     if object_match:
-        return [json.loads(object_match.group(0))]
+        return json.loads(object_match.group(0))
 
     raise ValueError("No JSON payload found in LLM response")
 
 
-def call_action_extraction(
+def resolve_episode_time(
+    source_ep: Dict[str, Any],
+    turns: List[Dict[str, Any]],
+    dialogue_data: Dict[str, Any],
+    field_name: str,
+) -> str:
+    direct_value = str(source_ep.get(field_name, "")).strip()
+    if direct_value:
+        return direct_value
+
+    if turns:
+        turn_index = 0 if field_name == "start_time" else -1
+        turn_value = str(turns[turn_index].get("timestamp", "")).strip()
+        if turn_value:
+            return turn_value
+
+    meta = dialogue_data.get("meta", {})
+    if isinstance(meta, dict):
+        meta_value = str(meta.get(field_name, "")).strip()
+        if meta_value:
+            return meta_value
+    return ""
+
+
+def build_episode_payload(
+    source_ep: Dict[str, Any],
+    turns: List[Dict[str, Any]],
+    dialogue_data: Dict[str, Any],
+) -> Dict[str, Any]:
+    normalized_turns: List[Dict[str, Any]] = []
+    for turn in turns:
+        if not isinstance(turn, dict):
+            continue
+        normalized_turns.append(
+            {
+                "turn_id": turn.get("turn_id"),
+                "speaker": str(turn.get("speaker", "Unknown")),
+                "text": str(turn.get("text", "")),
+                "timestamp": str(turn.get("timestamp", "")),
+            }
+        )
+
+    payload: Dict[str, Any] = {
+        "episode_id": str(source_ep.get("episode_id", "")),
+        "dialogue_id": str(source_ep.get("dialogue_id", "")),
+        "turn_span": source_ep.get("turn_span", []),
+        "start_time": resolve_episode_time(source_ep, turns, dialogue_data, "start_time"),
+        "end_time": resolve_episode_time(source_ep, turns, dialogue_data, "end_time"),
+        "turns": normalized_turns,
+    }
+
+    participants = dialogue_data.get("participants", [])
+    if isinstance(participants, list) and participants:
+        payload["participants"] = participants
+    return payload
+
+
+def normalize_fact_items(parsed_payload: Any) -> List[Dict[str, Any]]:
+    candidate_payload = parsed_payload
+    if isinstance(candidate_payload, dict):
+        event_log = candidate_payload.get("event_log")
+        if isinstance(event_log, dict):
+            candidate_payload = (
+                event_log.get("atomic_fact")
+                or event_log.get("atomic_facts")
+                or event_log.get("facts")
+                or event_log.get("fact_list")
+                or []
+            )
+        else:
+            candidate_payload = (
+                candidate_payload.get("atomic_fact")
+                or candidate_payload.get("atomic_facts")
+                or candidate_payload.get("facts")
+                or candidate_payload.get("fact_list")
+                or [candidate_payload]
+            )
+
+    if not isinstance(candidate_payload, list):
+        raise ValueError("Fact extraction result is not a JSON list")
+
+    normalized: List[Dict[str, Any]] = []
+    for item in candidate_payload:
+        if isinstance(item, dict):
+            atomic_fact = extract_atomic_fact(item)
+            evidence_sentence = str(item.get("evidence_sentence", "")).strip()
+            if atomic_fact:
+                normalized.append(
+                    {
+                        "Atomic fact": atomic_fact,
+                        "evidence_sentence": evidence_sentence,
+                    }
+                )
+        elif isinstance(item, str) and item.strip():
+            normalized.append({"Atomic fact": item.strip()})
+    return normalized
+
+
+def call_fact_extraction(
     dialogue_block: str,
+    episode_payload_text: str,
+    start_time: str,
     prompt_template: str,
     llm_model: Optional[Callable[[str], str]] = None,
 ) -> List[Dict[str, Any]]:
@@ -195,24 +295,17 @@ def call_action_extraction(
 
         llm_model = get_llm(model_temperature=0.1)
 
-    full_prompt = prompt_template.replace("{dialogue_block}", dialogue_block)
+    full_prompt = (
+        prompt_template.replace("{dialogue_block}", dialogue_block)
+        .replace("{episode}", episode_payload_text)
+        .replace("{start_time}", start_time)
+    )
     response = llm_model(full_prompt)
     parsed = extract_json_from_text(response)
-
-    if isinstance(parsed, dict):
-        parsed = [parsed]
-    if not isinstance(parsed, list):
-        raise ValueError("Action extraction result is not a JSON list")
-    normalized: List[Dict[str, Any]] = []
-    for item in parsed:
-        if isinstance(item, dict):
-            normalized.append(item)
-        elif isinstance(item, str) and item.strip():
-            normalized.append({"Atomic fact": item.strip()})
-    return normalized
+    return normalize_fact_items(parsed)
 
 
-def fallback_extract_actions(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def fallback_extract_facts(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     keywords = (
         "perform",
         "festival",
@@ -280,7 +373,7 @@ def build_atomic_fact_embedding_text(atomic_fact: str) -> str:
     return (atomic_fact or "").strip()
 
 
-def complete_action_item(
+def complete_fact_item(
     raw_item: Dict[str, Any],
     source_ep: Dict[str, Any],
     embed_model: Callable[[Any], Any],
@@ -309,17 +402,12 @@ def complete_action_item(
     }
 
 
-def deduplicate_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def deduplicate_facts(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     unique: List[Dict[str, Any]] = []
     seen = set()
-    for item in actions:
+    for item in facts:
         evidence = item.get("evidence", {})
-        atomic_fact = str(
-            item.get("Atomic fact")
-            or item.get("atomic_fact")
-            or item.get("atomic fact")
-            or ""
-        ).strip().lower()
+        atomic_fact = extract_atomic_fact(item).strip().lower()
         key = (
             atomic_fact,
             str(evidence.get("episode_id", "")).strip(),
@@ -332,7 +420,7 @@ def deduplicate_actions(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return unique
 
 
-def build_actions_from_source_episode(
+def build_facts_from_source_episode(
     source_ep: Dict[str, Any],
     dialogues_root: Path,
     prompt_template: str,
@@ -360,24 +448,38 @@ def build_actions_from_source_episode(
     if not dialogue_block.strip():
         return []
 
-    try:
-        raw_actions = call_action_extraction(dialogue_block, prompt_template, llm_model=llm_model)
-    except Exception as exc:
-        logger.warning("LLM extraction failed for dialogue_id=%s, fallback enabled: %s", dialogue_id, exc)
-        raw_actions = fallback_extract_actions(turns)
+    episode_payload = build_episode_payload(
+        source_ep=source_ep,
+        turns=turns,
+        dialogue_data=dialogue_data,
+    )
+    episode_payload_text = json.dumps(episode_payload, ensure_ascii=False, indent=2)
+    start_time = str(episode_payload.get("start_time", "")).strip()
 
-    if not raw_actions:
+    try:
+        raw_facts = call_fact_extraction(
+            dialogue_block=dialogue_block,
+            episode_payload_text=episode_payload_text,
+            start_time=start_time,
+            prompt_template=prompt_template,
+            llm_model=llm_model,
+        )
+    except Exception as exc:
+        logger.warning("LLM fact extraction failed for dialogue_id=%s, fallback enabled: %s", dialogue_id, exc)
+        raw_facts = fallback_extract_facts(turns)
+
+    if not raw_facts:
         return []
 
     completed = [
-        complete_action_item(
+        complete_fact_item(
             raw_item=item,
             source_ep=source_ep,
             embed_model=embed_model,
         )
-        for item in raw_actions
+        for item in raw_facts
     ]
-    return deduplicate_actions(completed)
+    return deduplicate_facts(completed)
 
 
 def process_scene_file(
@@ -407,7 +509,7 @@ def process_scene_file(
         if not isinstance(source_ep, dict):
             continue
         facts.extend(
-            build_actions_from_source_episode(
+            build_facts_from_source_episode(
                 source_ep=source_ep,
                 dialogues_root=dialogues_root,
                 prompt_template=prompt_template,
@@ -416,7 +518,7 @@ def process_scene_file(
             )
         )
 
-    scene_data["facts"] = deduplicate_actions(facts)
+    scene_data["facts"] = deduplicate_facts(facts)
     scene_data.pop("actions", None)
 
     try:
@@ -427,9 +529,9 @@ def process_scene_file(
         return "failed", 0
 
 
-def scan_and_form_scene_actions(
+def scan_and_form_scene_facts(
     workflow_id: str = "default",
-    prompt_version: str = "v1",
+    prompt_version: str = "v2",
     force_update: bool = False,
     use_tqdm: bool = True,
     embed_model: Optional[Callable[[Any], Any]] = None,
@@ -450,7 +552,7 @@ def scan_and_form_scene_actions(
         return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "with_facts": 0, "empty_facts": 0}
 
     prompts = load_prompts()
-    prompt_keys = [f"action_extractio_{prompt_version}", f"action_extraction_{prompt_version}"]
+    prompt_keys = [f"fact_extraction_{prompt_version}"]
     prompt_template = ""
     for prompt_key in prompt_keys:
         value = prompts.get(prompt_key, "")
@@ -485,7 +587,7 @@ def scan_and_form_scene_actions(
 
     file_iter = tqdm(scene_files, desc="Extract scene facts") if use_tqdm else scene_files
     for scene_file in file_iter:
-        status, action_count = process_scene_file(
+        status, fact_count = process_scene_file(
             scene_file=scene_file,
             dialogues_root=dialogues_root,
             prompt_template=prompt_template,
@@ -496,13 +598,13 @@ def scan_and_form_scene_actions(
 
         if status == "updated":
             stats["updated"] += 1
-            if action_count > 0:
+            if fact_count > 0:
                 stats["with_facts"] += 1
             else:
                 stats["empty_facts"] += 1
         elif status == "skipped":
             stats["skipped"] += 1
-            if action_count > 0:
+            if fact_count > 0:
                 stats["with_facts"] += 1
             else:
                 stats["empty_facts"] += 1
@@ -520,18 +622,17 @@ def scan_and_form_scene_actions(
     )
     return stats
 
-
 if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="Extract facts for scene files")
     parser.add_argument("--workflow-id", type=str, default="default", help="Workflow ID under data/memory")
-    parser.add_argument("--prompt-version", type=str, default="v1", help="Action prompt version suffix")
+    parser.add_argument("--prompt-version", type=str, default="v2", help="Fact prompt version suffix")
     parser.add_argument("--force-update", action="store_true", help="Regenerate facts even if already present")
     parser.add_argument("--no-tqdm", action="store_true", help="Disable tqdm progress bar")
     args = parser.parse_args()
 
-    scan_and_form_scene_actions(
+    scan_and_form_scene_facts(
         workflow_id=args.workflow_id,
         prompt_version=args.prompt_version,
         force_update=args.force_update,

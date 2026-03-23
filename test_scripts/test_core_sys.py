@@ -206,19 +206,19 @@ def main() -> None:
         top_k=int(cfg.get("memory_top_k", 3)),
         use_threshold=_as_bool(cfg.get("memory_use_threshold", True), default=True),
         scene_prompt_version=str(cfg.get("scene_prompt_version", "v2")),
-        action_prompt_version=str(cfg.get("action_prompt_version", "v1")),
+        fact_prompt_version=str(cfg.get("fact_prompt_version", "v2")),
         memory_owner_name=str(cfg.get("memory_owner_name", "changshengEVA")),
     )
 
-    # load_result = memory_core.load_from_episode_path(memory_core.episodes_dir)
-    # logger.info(
-    #     "load_from_episode_path summary: success=%s files_processed=%s files_failed=%s episodes_processed=%s",
-    #     load_result.get("success"),
-    #     load_result.get("files_processed"),
-    #     load_result.get("files_failed"),
-    #     load_result.get("episodes_processed"),
-    # )
-    # _validate_fact_outputs(memory_core=memory_core, load_result=load_result)
+    load_result = memory_core.load_from_episode_path(memory_core.episodes_dir)
+    logger.info(
+        "load_from_episode_path summary: success=%s files_processed=%s files_failed=%s episodes_processed=%s",
+        load_result.get("success"),
+        load_result.get("files_processed"),
+        load_result.get("files_failed"),
+        load_result.get("episodes_processed"),
+    )
+    _validate_fact_outputs(memory_core=memory_core, load_result=load_result)
 
     # entity_statement_force_update = _as_bool(cfg.get("entity_statement_force_update", False), default=False)
     # logger.info("make_entity_statement force_update=%s", entity_statement_force_update)

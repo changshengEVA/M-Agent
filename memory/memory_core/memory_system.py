@@ -47,7 +47,7 @@ class MemoryCore:
         top_k: int = 3,
         use_threshold: bool = True,
         scene_prompt_version: str = "v2",
-        action_prompt_version: str = "v1",
+        fact_prompt_version: str = "v2",
         memory_owner_name: str = "changshengEVA",
     ):
         """
@@ -62,7 +62,7 @@ class MemoryCore:
             top_k: 实体解析返回前K个候选
             use_threshold: 是否使用阈值模式
             scene_prompt_version: Scene 构建 prompt 版本
-            action_prompt_version: Atomic facts 构建 prompt 版本
+            fact_prompt_version: Atomic facts 构建 prompt 版本
             memory_owner_name: 记忆主体名称
         """
         self.workflow_id = workflow_id
@@ -71,7 +71,7 @@ class MemoryCore:
         self.top_k = top_k
         self.use_threshold = use_threshold
         self.scene_prompt_version = str(scene_prompt_version or "v2")
-        self.action_prompt_version = str(action_prompt_version or "v1")
+        self.fact_prompt_version = str(fact_prompt_version or "v2")
         self.memory_owner_name = str(memory_owner_name or "changshengEVA")
         
         # 1. 构建数据路径（极简化：不再使用 kg_data/entity/relation 文件结构）
@@ -110,7 +110,7 @@ class MemoryCore:
         logger.info(f"Dialogues目录: {self.dialogues_dir}")
         logger.info(f"Episodes目录: {self.episodes_dir}")
         logger.info(f"Scene prompt版本: {self.scene_prompt_version}")
-        logger.info(f"Action prompt版本: {self.action_prompt_version}")
+        logger.info(f"Fact prompt版本: {self.fact_prompt_version}")
         logger.info(f"Memory owner: {self.memory_owner_name}")
         
         # 2. 初始化 EventBus
