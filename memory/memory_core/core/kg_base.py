@@ -1,634 +1,852 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Core 统一入口
+"""Core facade: implement KGBase directly on Neo4j (no persistence layer)."""
 
-core 的门面层（Facade）
-workflow 只能通过该类调用 core 能力。
-"""
+from __future__ import annotations
 
+import json
 import logging
-from typing import Dict, Any, Optional, List
-from pathlib import Path
+import uuid
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from .repo_context import RepoContext
-from .entity_ops import (
-    add_entity as core_add_entity,
-    merge_entities as core_merge_entities,
-    delete_entity_and_edges as core_delete_entity_and_edges,
-    rename_entity as core_rename_entity
-)
-from .relation_ops import (
-    redirect_relations as core_redirect_relations,
-    delete_relations_of_entity as core_delete_relations_of_entity,
-    add_relation as core_add_relation,
-    find_relations_by_entities as core_find_relations_by_entities,
-    delete_all_relations_by_entities as core_delete_all_relations_by_entities,
-    delete_relation as core_delete_relation
-)
-from .content_ops import (
-    append_feature as core_append_feature,
-    append_attribute as core_append_attribute,
-    move_features as core_move_features,
-    move_attributes as core_move_attributes
-)
-from .integrity_ops import (
-    remove_dangling_relations as core_remove_dangling_relations,
-    assert_entity_exists as core_assert_entity_exists,
-    validate_kg_integrity as core_validate_kg_integrity
-)
+from .neo4j_store import Neo4jStore
+
+if TYPE_CHECKING:
+    from ..system.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
 
-# Core 接口统一返回格式
 CoreResult = Dict[str, Any]
 
 
+def _safe_json_dumps(value: Any, fallback: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except Exception:
+        return json.dumps(fallback, ensure_ascii=False)
+
+
+def _safe_json_loads(value: Any, fallback: Any):
+    if not isinstance(value, str) or not value.strip():
+        return fallback
+    try:
+        return json.loads(value)
+    except Exception:
+        return fallback
+
+
 class KGBase:
-    """
-    Core 统一入口类
-    
-    提供对知识图谱核心算子的统一访问接口。
-    workflow 只能通过该类调用 core 能力。
-    """
-    
+    """Entity/relation operations implemented directly against Neo4j."""
+
     def __init__(
         self,
-        entity_dir: Path,
-        relation_dir: Path,
-        repos: Optional[RepoContext] = None,
-        event_bus: Optional["EventBus"] = None
-    ):
-        """
-        初始化 KGBase
-        
-        Args:
-            entity_dir: 实体文件目录路径
-            relation_dir: 关系文件目录路径
-            repos: 可选的 RepoContext 实例，如果为 None 则自动创建
-            event_bus: 可选的事件总线实例，用于发布事件
-        """
-        self.entity_dir = entity_dir
-        self.relation_dir = relation_dir
+        workflow_id: str,
+        event_bus: Optional["EventBus"] = None,
+    ) -> None:
+        self.workflow_id = str(workflow_id)
         self.event_bus = event_bus
-        
-        # 创建或使用提供的 RepoContext
-        if repos is None:
-            self.repos = RepoContext.from_directories(
-                entity_dir=entity_dir,
-                relation_dir=relation_dir
-            )
-        else:
-            self.repos = repos
-        
-        logger.info(f"初始化 KGBase: 实体目录={entity_dir}, 关系目录={relation_dir}")
-    
-    def _publish_event(self, event_type: str, payload: Dict[str, Any]):
-        """
-        发布事件到事件总线（如果存在）
-        
-        Args:
-            event_type: 事件类型字符串
-            payload: 事件负载字典
-        """
+        self.store = Neo4jStore.instance()
+        requested_database = self.store.resolve_database(self.workflow_id)
+        self.database = self.store.ensure_database(requested_database)
+        logger.info(
+            "KGBase initialized (neo4j=%s): workflow_id=%s database=%s",
+            self.store.available,
+            self.workflow_id,
+            self.database or "<default>",
+        )
+
+    def _publish_event(self, event_type: str, payload: Dict[str, Any]) -> None:
         if self.event_bus is not None:
             self.event_bus.publish(event_type, payload)
-    
-    # ============================================================================
-    # 实体操作接口（对外暴露的方法）
-    # ============================================================================
-    
+
+    def _disabled_result(self, operation: str) -> CoreResult:
+        return {
+            "success": False,
+            "changed": False,
+            "details": {"operation": operation, "error": "Neo4j is not available"},
+        }
+
+    def _run_read(self, query: str, params: Optional[Dict[str, Any]] = None):
+        return self.store.run(
+            query,
+            params or {},
+            write=False,
+            database=self.database,
+        )
+
+    def _run_write(self, query: str, params: Optional[Dict[str, Any]] = None):
+        return self.store.run(
+            query,
+            params or {},
+            write=True,
+            database=self.database,
+        )
+
+    def _entity_exists(self, entity_id: str) -> bool:
+        if not entity_id or not self.store.available:
+            return False
+        rows = self._run_read(
+            "MATCH (e:Entity {id: $entity_id}) RETURN count(e) AS c",
+            {"entity_id": entity_id},
+        )
+        return bool(rows and int(rows[0]["c"]) > 0)
+
+    # ------------------------------------------------------------------
+    # Entity operations
+    # ------------------------------------------------------------------
     def add_entity(
         self,
         entity_id: str,
         entity_type: Optional[str] = None,
-        source_info: Optional[Dict[str, Any]] = None
+        source_info: Optional[Dict[str, Any]] = None,
+        entity_uid: Optional[str] = None,
+        entity_name: Optional[str] = None,
     ) -> CoreResult:
+        if not self.store.available:
+            return self._disabled_result("add_entity")
+        entity_id = str(entity_id or "").strip()
+        if not entity_id:
+            return {"success": False, "changed": False, "details": {"operation": "add_entity", "error": "empty id"}}
+        if self._entity_exists(entity_id):
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "add_entity", "error": f"entity already exists: {entity_id}"},
+            }
+
+        uid_value = str(entity_uid or "").strip()
+        if not uid_value:
+            uid_value = str(uuid.uuid4())
+        name_value = str(entity_name or entity_id).strip() or entity_id
+
+        payload = {
+            "id": entity_id,
+            "uid": uid_value,
+            "name": name_value,
+            "type": str(entity_type or ""),
+            "confidence": 1.0,
+            "sources_json": _safe_json_dumps([source_info] if source_info else [], []),
+            "features_json": _safe_json_dumps([], []),
+            "attributes_json": _safe_json_dumps([], []),
+            "metadata_json": _safe_json_dumps({}, {}),
+        }
+        query = """
+        CREATE (e:Entity {
+            id: $id, uid: $uid, name: $name, type: $type, confidence: $confidence,
+            sources_json: $sources_json, features_json: $features_json,
+            attributes_json: $attributes_json, metadata_json: $metadata_json
+        })
         """
-        创建实体
-        
-        在 KG 中创建一个新的实体节点，初始化为最小合法结构。
-        
-        Args:
-            entity_id: 新实体 ID
-            entity_type: 实体类型（可选）
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 创建实体 {entity_id}")
-        result = core_add_entity(
-            entity_id=entity_id,
-            repos=self.repos,
-            entity_type=entity_type,
-            source_info=source_info
-        )
-        if result.get("success"):
+        try:
+            self._run_write(query, payload)
             self._publish_event("ENTITY_ADDED", {"entity_id": entity_id})
-        return result
-    
+            return {
+                "success": True,
+                "changed": True,
+                "details": {"operation": "add_entity", "entity_id": entity_id, "entity_uid": payload["uid"]},
+            }
+        except Exception as exc:
+            return {"success": False, "changed": False, "details": {"operation": "add_entity", "error": str(exc)}}
+
+    def upsert_entity(
+        self,
+        entity_id: str,
+        entity_name: Optional[str] = None,
+        entity_uid: Optional[str] = None,
+        entity_type: Optional[str] = None,
+        source_info: Optional[Dict[str, Any]] = None,
+    ) -> CoreResult:
+        if not self.store.available:
+            return self._disabled_result("upsert_entity")
+        entity_id = str(entity_id or "").strip()
+        if not entity_id:
+            return {"success": False, "changed": False, "details": {"operation": "upsert_entity", "error": "empty id"}}
+
+        if not self._entity_exists(entity_id):
+            add_result = self.add_entity(
+                entity_id=entity_id,
+                entity_type=entity_type,
+                source_info=source_info,
+                entity_uid=entity_uid,
+                entity_name=entity_name,
+            )
+            if not add_result.get("success"):
+                return {
+                    "success": False,
+                    "changed": False,
+                    "details": {
+                        "operation": "upsert_entity",
+                        "action": "create_failed",
+                        "entity_id": entity_id,
+                        "add_result": add_result,
+                    },
+                }
+            return {
+                "success": True,
+                "changed": True,
+                "details": {
+                    "operation": "upsert_entity",
+                    "action": "created",
+                    "entity_id": entity_id,
+                    "entity_uid": add_result.get("details", {}).get("entity_uid"),
+                },
+            }
+
+        ok, current = self.get_entity(entity_id)
+        if not ok or current is None:
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "upsert_entity", "error": f"failed to load entity: {entity_id}"},
+            }
+
+        current_name = str(current.get("name") or entity_id)
+        current_uid = str(current.get("uid") or "")
+        current_type = str(current.get("type") or "")
+        current_sources = current.get("sources", [])
+
+        next_name = str(entity_name or current_name or entity_id).strip() or entity_id
+        next_uid = str(entity_uid or current_uid).strip()
+        if not next_uid:
+            next_uid = str(uuid.uuid4())
+        next_type = str(entity_type or current_type).strip()
+        next_sources = self._merge_sources(current_sources, [source_info] if source_info else [])
+
+        changed = (
+            next_name != current_name
+            or next_uid != current_uid
+            or next_type != current_type
+            or next_sources != current_sources
+        )
+        if not changed:
+            return {
+                "success": True,
+                "changed": False,
+                "details": {"operation": "upsert_entity", "action": "noop", "entity_id": entity_id},
+            }
+
+        query = """
+        MATCH (e:Entity {id: $id})
+        SET e.uid = $uid,
+            e.name = $name,
+            e.type = $type,
+            e.sources_json = $sources_json
+        """
+        try:
+            self._run_write(
+                query,
+                {
+                    "id": entity_id,
+                    "uid": next_uid,
+                    "name": next_name,
+                    "type": next_type,
+                    "sources_json": _safe_json_dumps(next_sources, []),
+                },
+            )
+            return {
+                "success": True,
+                "changed": True,
+                "details": {
+                    "operation": "upsert_entity",
+                    "action": "updated",
+                    "entity_id": entity_id,
+                    "entity_uid": next_uid,
+                },
+            }
+        except Exception as exc:
+            return {"success": False, "changed": False, "details": {"operation": "upsert_entity", "error": str(exc)}}
+
+    def get_entity(self, entity_id: str) -> Tuple[bool, Optional[Dict[str, Any]]]:
+        if not self.store.available:
+            return False, None
+        entity_id = str(entity_id or "").strip()
+        if not entity_id:
+            return False, None
+        query = """
+        MATCH (e:Entity {id: $entity_id})
+        RETURN e.id AS id, e.uid AS uid, e.name AS name, e.type AS type,
+               e.confidence AS confidence, e.sources_json AS sources_json,
+               e.features_json AS features_json, e.attributes_json AS attributes_json,
+               e.metadata_json AS metadata_json
+        """
+        try:
+            rows = self._run_read(query, {"entity_id": entity_id})
+            if not rows:
+                return False, None
+            row = rows[0]
+            return True, {
+                "id": str(row.get("id") or entity_id),
+                "uid": str(row.get("uid") or ""),
+                "name": str(row.get("name") or entity_id),
+                "type": str(row.get("type") or ""),
+                "confidence": float(row.get("confidence") or 1.0),
+                "sources": _safe_json_loads(row.get("sources_json"), []),
+                "features": _safe_json_loads(row.get("features_json"), []),
+                "attributes": _safe_json_loads(row.get("attributes_json"), []),
+                "metadata": _safe_json_loads(row.get("metadata_json"), {}),
+            }
+        except Exception:
+            return False, None
+
     def merge_entities(
         self,
         target_id: str,
         source_id: str,
-        source_info: Optional[Dict[str, Any]] = None
+        source_info: Optional[Dict[str, Any]] = None,
     ) -> CoreResult:
+        if not self.store.available:
+            return self._disabled_result("merge_entities")
+        target_id = str(target_id or "").strip()
+        source_id = str(source_id or "").strip()
+        if not target_id or not source_id or target_id == source_id:
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "merge_entities", "error": "invalid target/source"},
+            }
+        ok_t, target = self.get_entity(target_id)
+        ok_s, source = self.get_entity(source_id)
+        if not ok_t or not ok_s or target is None or source is None:
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "merge_entities", "error": "target/source entity not found"},
+            }
+
+        # Merge entity payload (keep target as canonical).
+        target["sources"] = self._merge_sources(target.get("sources"), source.get("sources"))
+        target["features"] = self._merge_features(target.get("features"), source.get("features"))
+        target["attributes"] = self._merge_attributes(target.get("attributes"), source.get("attributes"))
+        if source_info:
+            target["sources"] = self._merge_sources(target.get("sources"), [source_info])
+        if not target.get("type") and source.get("type"):
+            target["type"] = source.get("type")
+
+        update_query = """
+        MATCH (e:Entity {id: $id})
+        SET e.sources_json = $sources_json,
+            e.features_json = $features_json,
+            e.attributes_json = $attributes_json,
+            e.metadata_json = $metadata_json,
+            e.type = $type
         """
-        合并两个实体
-        
-        在已确认两个实体指向同一现实对象的前提下，将 source_id 的所有信息合并进 target_id，
-        并清理 source_id。
-        
-        Args:
-            target_id: 目标实体 ID（保留）
-            source_id: 被合并实体 ID（将被移除）
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 合并实体 {source_id} -> {target_id}")
-        result = core_merge_entities(
-            target_id=target_id,
-            source_id=source_id,
-            repos=self.repos,
-            source_info=source_info
-        )
-        if result.get("success"):
+        try:
+            self._run_write(
+                update_query,
+                {
+                    "id": target_id,
+                    "sources_json": _safe_json_dumps(target.get("sources", []), []),
+                    "features_json": _safe_json_dumps(target.get("features", []), []),
+                    "attributes_json": _safe_json_dumps(target.get("attributes", []), []),
+                    "metadata_json": _safe_json_dumps(target.get("metadata", {}), {}),
+                    "type": str(target.get("type") or ""),
+                },
+            )
+
+            redirect_result = self.redirect_relations(source_id, target_id)
+            if not redirect_result.get("success", False):
+                return {
+                    "success": False,
+                    "changed": False,
+                    "details": {
+                        "operation": "merge_entities",
+                        "error": "relation redirect failed",
+                        "redirect_result": redirect_result,
+                    },
+                }
+
+            self._run_write(
+                "MATCH (e:Entity {id: $source_id}) DETACH DELETE e",
+                {"source_id": source_id},
+            )
             self._publish_event("ENTITY_MERGED", {"target_id": target_id, "source_id": source_id})
-        return result
-    
+            return {
+                "success": True,
+                "changed": True,
+                "details": {"operation": "merge_entities", "target_id": target_id, "source_id": source_id},
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "merge_entities", "error": str(exc)},
+            }
+
     def delete_entity(
         self,
         entity_id: str,
-        source_info: Optional[Dict[str, Any]] = None
+        source_info: Optional[Dict[str, Any]] = None,
     ) -> CoreResult:
-        """
-        删除实体及其所有相邻关系
-        
-        从 KG 中彻底删除指定实体，同时删除所有以该实体为端点的关系。
-        
-        Args:
-            entity_id: 目标实体 ID
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 删除实体 {entity_id}")
-        result = core_delete_entity_and_edges(
-            entity_id=entity_id,
-            repos=self.repos,
-            source_info=source_info
-        )
-        if result.get("success"):
+        if not self.store.available:
+            return self._disabled_result("delete_entity")
+        entity_id = str(entity_id or "").strip()
+        if not entity_id:
+            return {"success": False, "changed": False, "details": {"operation": "delete_entity", "error": "empty id"}}
+        if not self._entity_exists(entity_id):
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "delete_entity", "error": f"entity not found: {entity_id}"},
+            }
+        try:
+            self._run_write(
+                "MATCH (e:Entity {id: $id}) DETACH DELETE e",
+                {"id": entity_id},
+            )
             self._publish_event("ENTITY_DELETED", {"entity_id": entity_id})
-        return result
-    
+            return {"success": True, "changed": True, "details": {"operation": "delete_entity", "entity_id": entity_id}}
+        except Exception as exc:
+            return {"success": False, "changed": False, "details": {"operation": "delete_entity", "error": str(exc)}}
+
     def rename_entity(
         self,
         old_id: str,
         new_id: str,
-        source_info: Optional[Dict[str, Any]] = None
+        source_info: Optional[Dict[str, Any]] = None,
     ) -> CoreResult:
-        """
-        重命名实体
-        
-        将实体的标识符从 old_id 变更为 new_id，并同步更新所有相关关系。
-        
-        Args:
-            old_id: 原实体 ID
-            new_id: 新实体 ID
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 重命名实体 {old_id} -> {new_id}")
-        result = core_rename_entity(
-            old_id=old_id,
-            new_id=new_id,
-            repos=self.repos,
-            source_info=source_info
-        )
-        if result.get("success"):
+        if not self.store.available:
+            return self._disabled_result("rename_entity")
+        old_id = str(old_id or "").strip()
+        new_id = str(new_id or "").strip()
+        if not old_id or not new_id or old_id == new_id:
+            return {"success": False, "changed": False, "details": {"operation": "rename_entity", "error": "invalid id"}}
+        if not self._entity_exists(old_id):
+            return {"success": False, "changed": False, "details": {"operation": "rename_entity", "error": f"entity not found: {old_id}"}}
+        if self._entity_exists(new_id):
+            return {"success": False, "changed": False, "details": {"operation": "rename_entity", "error": f"target id exists: {new_id}"}}
+        try:
+            self._run_write(
+                "MATCH (e:Entity {id: $old_id}) SET e.id = $new_id, e.name = $new_id",
+                {"old_id": old_id, "new_id": new_id},
+            )
             self._publish_event("ENTITY_RENAMED", {"old_id": old_id, "new_id": new_id})
-        return result
-    
-    # ============================================================================
-    # 关系操作接口
-    # ============================================================================
-    
-    def redirect_relations(
-        self,
-        old_entity_id: str,
-        new_entity_id: str,
-        source_info: Optional[Dict[str, Any]] = None
-    ) -> CoreResult:
-        """
-        关系端点重定向
-        
-        将所有指向 old_entity_id 的关系端点重定向至 new_entity_id。
-        
-        Args:
-            old_entity_id: 原实体 ID
-            new_entity_id: 新实体 ID
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 重定向关系端点 {old_entity_id} -> {new_entity_id}")
-        result = core_redirect_relations(
-            old_entity_id=old_entity_id,
-            new_entity_id=new_entity_id,
-            repos=self.repos,
-            source_info=source_info
-        )
-        if result.get("success"):
-            self._publish_event("RELATIONS_REDIRECTED", {"old_entity_id": old_entity_id, "new_entity_id": new_entity_id})
-        return result
-    
-    def delete_relations_of_entity(
-        self,
-        entity_id: str,
-        source_info: Optional[Dict[str, Any]] = None
-    ) -> CoreResult:
-        """
-        删除与某实体相关的所有关系
-        
-        删除所有以该实体作为 subject 或 object 的关系。
-        
-        Args:
-            entity_id: 目标实体 ID
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 删除实体关系 {entity_id}")
-        result = core_delete_relations_of_entity(
-            entity_id=entity_id,
-            repos=self.repos,
-            source_info=source_info
-        )
-        if result.get("success"):
-            self._publish_event("RELATION_DELETED", {"entity_id": entity_id})
-        return result
-    
+            return {"success": True, "changed": True, "details": {"operation": "rename_entity", "old_id": old_id, "new_id": new_id}}
+        except Exception as exc:
+            return {"success": False, "changed": False, "details": {"operation": "rename_entity", "error": str(exc)}}
+
+    # ------------------------------------------------------------------
+    # Relation operations
+    # ------------------------------------------------------------------
     def add_relation(
         self,
         subject: str,
         relation: str,
         object: str,
         confidence: float = 1.0,
-        source_info: Optional[Dict[str, Any]] = None
+        source_info: Optional[Dict[str, Any]] = None,
     ) -> CoreResult:
+        if not self.store.available:
+            return self._disabled_result("add_relation")
+        subject = str(subject or "").strip()
+        relation = str(relation or "").strip()
+        object = str(object or "").strip()
+        if not subject or not relation or not object:
+            return {"success": False, "changed": False, "details": {"operation": "add_relation", "error": "invalid relation input"}}
+        if not self._entity_exists(subject) or not self._entity_exists(object):
+            return {"success": False, "changed": False, "details": {"operation": "add_relation", "error": "subject/object entity missing"}}
+
+        relation_id = str(uuid.uuid4())
+        query = """
+        MATCH (s:Entity {id: $subject}), (o:Entity {id: $object})
+        CREATE (s)-[r:RELATED {
+          id: $id, relation: $relation, confidence: $confidence, sources_json: $sources_json
+        }]->(o)
+        RETURN r.id AS id
         """
-        添加一条关系
-        
-        在 KG 中创建一条新的关系边，连接两个实体。
-        
-        Args:
-            subject: 主语实体 ID
-            relation: 关系类型
-            object: 宾语实体 ID
-            confidence: 关系置信度，默认 1.0
-            source_info: 来源信息（可选）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 添加关系 {subject} -[{relation}]-> {object}")
-        result = core_add_relation(
-            subject=subject,
-            relation=relation,
-            object=object,
-            repos=self.repos,
-            confidence=confidence,
-            source_info=source_info
-        )
-        if result.get("success"):
+        try:
+            rows = self._run_write(
+                query,
+                {
+                    "subject": subject,
+                    "object": object,
+                    "id": relation_id,
+                    "relation": relation,
+                    "confidence": float(confidence),
+                    "sources_json": _safe_json_dumps([source_info] if source_info else [], []),
+                },
+            )
+            if not rows:
+                return {"success": False, "changed": False, "details": {"operation": "add_relation", "error": "create relation failed"}}
             self._publish_event("RELATION_ADDED", {"subject": subject, "relation": relation, "object": object})
-        return result
-    
+            return {"success": True, "changed": True, "details": {"operation": "add_relation", "relation_id": relation_id}}
+        except Exception as exc:
+            return {"success": False, "changed": False, "details": {"operation": "add_relation", "error": str(exc)}}
+
+    def delete_relation(
+        self,
+        relation_id: str,
+        source_info: Optional[Dict[str, Any]] = None,
+    ) -> CoreResult:
+        if not self.store.available:
+            return self._disabled_result("delete_relation")
+        relation_id = str(relation_id or "").strip()
+        if not relation_id:
+            return {"success": False, "changed": False, "details": {"operation": "delete_relation", "error": "empty id"}}
+        try:
+            rows = self._run_read(
+                "MATCH ()-[r:RELATED {id: $id}]->() RETURN count(r) AS c",
+                {"id": relation_id},
+            )
+            if not rows or int(rows[0]["c"]) <= 0:
+                return {"success": False, "changed": False, "details": {"operation": "delete_relation", "error": "relation not found"}}
+            self._run_write(
+                "MATCH ()-[r:RELATED {id: $id}]->() DELETE r",
+                {"id": relation_id},
+            )
+            self._publish_event("RELATION_DELETED", {"relation_id": relation_id})
+            return {"success": True, "changed": True, "details": {"operation": "delete_relation", "relation_id": relation_id}}
+        except Exception as exc:
+            return {"success": False, "changed": False, "details": {"operation": "delete_relation", "error": str(exc)}}
+
+    def delete_relations_of_entity(
+        self,
+        entity_id: str,
+        source_info: Optional[Dict[str, Any]] = None,
+    ) -> CoreResult:
+        if not self.store.available:
+            return self._disabled_result("delete_relations_of_entity")
+        entity_id = str(entity_id or "").strip()
+        if not entity_id:
+            return {"success": False, "changed": False, "details": {"operation": "delete_relations_of_entity", "error": "empty id"}}
+        try:
+            rows = self._run_read(
+                """
+                MATCH (e:Entity {id: $entity_id})-[r:RELATED]-(:Entity)
+                RETURN collect(r.id) AS relation_ids
+                """,
+                {"entity_id": entity_id},
+            )
+            relation_ids = rows[0].get("relation_ids", []) if rows else []
+            self._run_write(
+                """
+                MATCH (e:Entity {id: $entity_id})-[r:RELATED]-(:Entity)
+                DELETE r
+                """,
+                {"entity_id": entity_id},
+            )
+            self._publish_event("RELATION_DELETED", {"entity_id": entity_id})
+            return {
+                "success": True,
+                "changed": bool(relation_ids),
+                "details": {
+                    "operation": "delete_relations_of_entity",
+                    "entity_id": entity_id,
+                    "deleted_count": len(relation_ids),
+                    "deleted_relations": relation_ids,
+                },
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "delete_relations_of_entity", "error": str(exc)},
+            }
+
     def find_relations_by_entities(
         self,
         entity1_id: str,
         entity2_id: str,
-        source_info: Optional[Dict[str, Any]] = None
+        source_info: Optional[Dict[str, Any]] = None,
     ) -> CoreResult:
+        if not self.store.available:
+            return self._disabled_result("find_relations_by_entities")
+        entity1_id = str(entity1_id or "").strip()
+        entity2_id = str(entity2_id or "").strip()
+        if not entity1_id or not entity2_id:
+            return {"success": False, "changed": False, "details": {"operation": "find_relations_by_entities", "error": "invalid entity ids"}}
+        query = """
+        MATCH (a:Entity)-[r:RELATED]->(b:Entity)
+        WHERE (
+            (a.id = $e1 AND b.id = $e2) OR (a.id = $e2 AND b.id = $e1)
+          )
+        RETURN r.id AS id, a.id AS subject, r.relation AS relation, b.id AS object,
+               r.confidence AS confidence, r.sources_json AS sources_json
         """
-        查找两个实体之间的所有关系
-        
-        输入两个实体ID，返回两个实体之间的所有关系。
-        
-        Args:
-            entity1_id: 第一个实体ID
-            entity2_id: 第二个实体ID
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 查找实体间关系 {entity1_id} <-> {entity2_id}")
-        return core_find_relations_by_entities(
-            entity1_id=entity1_id,
-            entity2_id=entity2_id,
-            repos=self.repos,
-            source_info=source_info
-        )
-    
+        try:
+            rows = self._run_read(
+                query,
+                {"e1": entity1_id, "e2": entity2_id},
+            )
+            relations = []
+            for row in rows:
+                relations.append(
+                    {
+                        "id": str(row.get("id") or ""),
+                        "subject": str(row.get("subject") or ""),
+                        "relation": str(row.get("relation") or ""),
+                        "object": str(row.get("object") or ""),
+                        "confidence": float(row.get("confidence") or 1.0),
+                        "sources": _safe_json_loads(row.get("sources_json"), []),
+                    }
+                )
+            return {
+                "success": True,
+                "changed": False,
+                "details": {
+                    "operation": "find_relations_by_entities",
+                    "entity1_id": entity1_id,
+                    "entity2_id": entity2_id,
+                    "relations": relations,
+                    "count": len(relations),
+                },
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "find_relations_by_entities", "error": str(exc)},
+            }
+
     def delete_all_relations_by_entities(
         self,
         entity1_id: str,
         entity2_id: str,
-        source_info: Optional[Dict[str, Any]] = None
+        source_info: Optional[Dict[str, Any]] = None,
     ) -> CoreResult:
-        """
-        删除两个实体之间的所有关系
-        
-        输入两个实体ID，删除两个实体之间的所有关系。
-        
-        Args:
-            entity1_id: 第一个实体ID
-            entity2_id: 第二个实体ID
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 删除实体间关系 {entity1_id} <-> {entity2_id}")
-        result = core_delete_all_relations_by_entities(
-            entity1_id=entity1_id,
-            entity2_id=entity2_id,
-            repos=self.repos,
-            source_info=source_info
-        )
-        if result.get("success"):
-            self._publish_event("RELATION_DELETED", {"entity1_id": entity1_id, "entity2_id": entity2_id})
-        return result
-    
-    def delete_relation(
-        self,
-        relation_id: str,
-        source_info: Optional[Dict[str, Any]] = None
-    ) -> CoreResult:
-        """
-        删除指定关系
-        
-        输入关系ID，删除这条关系。
-        
-        Args:
-            relation_id: 关系ID
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 删除关系 {relation_id}")
-        result = core_delete_relation(
-            relation_id=relation_id,
-            repos=self.repos,
-            source_info=source_info
-        )
-        if result.get("success"):
-            self._publish_event("RELATION_DELETED", {"relation_id": relation_id})
-        return result
-    
-    # ============================================================================
-    # 内容操作接口
-    # ============================================================================
-    
-    def append_feature(
-        self,
-        entity_id: str,
-        feature_record: Dict[str, Any],
-        source_info: Optional[Dict[str, Any]] = None
-    ) -> CoreResult:
-        """
-        向实体追加一条特征
-        
-        Args:
-            entity_id: 目标实体 ID
-            feature_record: 特征记录
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 向实体 {entity_id} 追加特征")
-        result = core_append_feature(
-            entity_id=entity_id,
-            feature_record=feature_record,
-            repos=self.repos,
-            source_info=source_info
-        )
-        if result.get("success"):
-            self._publish_event("ENTITY_UPDATED", {"entity_id": entity_id})
-        return result
-    
-    def append_attribute(
-        self,
-        entity_id: str,
-        attribute_record: Dict[str, Any],
-        source_info: Optional[Dict[str, Any]] = None
-    ) -> CoreResult:
-        """
-        向实体追加一条属性
-        
-        Args:
-            entity_id: 目标实体 ID
-            attribute_record: 属性记录
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 向实体 {entity_id} 追加属性")
-        result = core_append_attribute(
-            entity_id=entity_id,
-            attribute_record=attribute_record,
-            repos=self.repos,
-            source_info=source_info
-        )
-        if result.get("success"):
-            self._publish_event("ENTITY_UPDATED", {"entity_id": entity_id})
-        return result
-    
-    def move_features(
-        self,
-        from_entity: str,
-        to_entity: str,
-        source_info: Optional[Dict[str, Any]] = None
-    ) -> CoreResult:
-        """
-        迁移实体特征
-        
-        将源实体的特征迁移至目标实体，通常作为合并或重构操作的子步骤。
-        
-        Args:
-            from_entity: 源实体 ID
-            to_entity: 目标实体 ID
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 迁移特征 {from_entity} -> {to_entity}")
-        result = core_move_features(
-            from_entity=from_entity,
-            to_entity=to_entity,
-            repos=self.repos,
-            source_info=source_info
-        )
-        if result.get("success"):
-            self._publish_event("ENTITY_UPDATED", {"from_entity": from_entity, "to_entity": to_entity})
-        return result
-    
-    def move_attributes(
-        self,
-        from_entity: str,
-        to_entity: str,
-        source_info: Optional[Dict[str, Any]] = None
-    ) -> CoreResult:
-        """
-        迁移实体属性
-        
-        将源实体的属性迁移至目标实体，通常作为合并或重构操作的子步骤。
-        
-        Args:
-            from_entity: 源实体 ID
-            to_entity: 目标实体 ID
-            source_info: 来源信息（当前阶段不使用）
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.info(f"KGBase: 迁移属性 {from_entity} -> {to_entity}")
-        result = core_move_attributes(
-            from_entity=from_entity,
-            to_entity=to_entity,
-            repos=self.repos,
-            source_info=source_info
-        )
-        if result.get("success"):
-            self._publish_event("ENTITY_UPDATED", {"from_entity": from_entity, "to_entity": to_entity})
-        return result
-    
-    # ============================================================================
-    # 完整性维护接口
-    # ============================================================================
-    
-    def remove_dangling_relations(self) -> CoreResult:
-        """
-        清理悬挂关系
-        
-        删除指向不存在实体的关系，保证图结构完整性。
-        
-        Returns:
-            CoreResult 结构
-        """
-        logger.info("KGBase: 清理悬挂关系")
-        return core_remove_dangling_relations(self.repos)
-    
-    def assert_entity_exists(
-        self,
-        entity_id: str
-    ) -> CoreResult:
-        """
-        检查实体是否存在
-        
-        检查指定实体是否存在于 KG 中，不存在则返回失败结果。
-        
-        Args:
-            entity_id: 实体ID
-            
-        Returns:
-            CoreResult 结构
-        """
-        logger.debug(f"KGBase: 检查实体是否存在 {entity_id}")
-        return core_assert_entity_exists(entity_id, self.repos)
-    
-    def validate_kg_integrity(self) -> CoreResult:
-        """
-        验证知识图谱完整性
-        
-        检查 KG 的完整性，包括悬挂关系、孤立实体和数据格式验证。
-        
-        Returns:
-            CoreResult 结构
-        """
-        logger.info("KGBase: 验证知识图谱完整性")
-        return core_validate_kg_integrity(self.repos)
-    
-    # ============================================================================
-    # 辅助方法
-    # ============================================================================
-    
-    def get_repo_context(self) -> RepoContext:
-        """
-        获取 RepoContext 实例
-        
-        Returns:
-            当前使用的 RepoContext 实例
-        """
-        return self.repos
-    
-    def get_entity_count(self) -> int:
-        """
-        获取实体数量
-        
-        Returns:
-            实体数量
-        """
-        return len(self.repos.entity.list_ids())
-    
-    def list_entity_ids(self) -> List[str]:
-        """
-        获取所有实体ID列表
-        
-        Returns:
-            实体ID列表
-        """
-        logger.debug("KGBase: 获取所有实体ID列表")
-        return self.repos.entity.list_ids()
-    
-    def get_relation_count(self) -> int:
-        """
-        获取关系数量
-        
-        Returns:
-            关系数量
-        """
-        return len(self.repos.relation.list_all())
-    
-    def get_kg_stats(self) -> Dict[str, Any]:
-        """
-        获取知识图谱统计信息
-        
-        Returns:
-            包含统计信息的字典
-        """
-        entity_ids = self.repos.entity.list_ids()
-        relations = self.repos.relation.list_all()
-        
-        # 计算特征和属性总数
-        total_features = 0
-        total_attributes = 0
-        
-        for entity_id in entity_ids:
-            success, entity_data = self.repos.entity.load(entity_id)
-            if success:
-                total_features += len(entity_data.get('features', []))
-                total_attributes += len(entity_data.get('attributes', []))
-        
+        if not self.store.available:
+            return self._disabled_result("delete_all_relations_by_entities")
+        find_result = self.find_relations_by_entities(entity1_id, entity2_id)
+        if not find_result.get("success", False):
+            return find_result
+        relation_ids = [r.get("id") for r in find_result.get("details", {}).get("relations", []) if r.get("id")]
+        deleted = 0
+        for rid in relation_ids:
+            res = self.delete_relation(rid)
+            if res.get("success", False):
+                deleted += 1
+        self._publish_event("RELATION_DELETED", {"entity1_id": entity1_id, "entity2_id": entity2_id})
         return {
-            "entity_count": len(entity_ids),
-            "relation_count": len(relations),
-            "feature_count": total_features,
-            "attribute_count": total_attributes,
-            "entity_dir": str(self.entity_dir),
-            "relation_dir": str(self.relation_dir)
+            "success": deleted == len(relation_ids),
+            "changed": deleted > 0,
+            "details": {
+                "operation": "delete_all_relations_by_entities",
+                "entity1_id": entity1_id,
+                "entity2_id": entity2_id,
+                "deleted_count": deleted,
+                "target_count": len(relation_ids),
+            },
         }
+
+    def redirect_relations(
+        self,
+        old_entity_id: str,
+        new_entity_id: str,
+        source_info: Optional[Dict[str, Any]] = None,
+    ) -> CoreResult:
+        if not self.store.available:
+            return self._disabled_result("redirect_relations")
+        old_entity_id = str(old_entity_id or "").strip()
+        new_entity_id = str(new_entity_id or "").strip()
+        if not old_entity_id or not new_entity_id or old_entity_id == new_entity_id:
+            return {"success": False, "changed": False, "details": {"operation": "redirect_relations", "error": "invalid entity ids"}}
+        if not self._entity_exists(old_entity_id) or not self._entity_exists(new_entity_id):
+            return {"success": False, "changed": False, "details": {"operation": "redirect_relations", "error": "old/new entity missing"}}
+
+        query = """
+        MATCH (s:Entity)-[r:RELATED]->(o:Entity)
+        WHERE s.id = $old_id OR o.id = $old_id
+        RETURN r.id AS id, s.id AS subject, r.relation AS relation, o.id AS object,
+               r.confidence AS confidence, r.sources_json AS sources_json
+        """
+        try:
+            rows = self._run_read(
+                query,
+                {"old_id": old_entity_id},
+            )
+            if not rows:
+                return {
+                    "success": True,
+                    "changed": False,
+                    "details": {"operation": "redirect_relations", "updated_count": 0, "deleted_count": 0},
+                }
+
+            rel_ids = [str(r.get("id") or "") for r in rows if r.get("id")]
+            if rel_ids:
+                self._run_write(
+                    "MATCH ()-[r:RELATED]->() WHERE r.id IN $ids DELETE r",
+                    {"ids": rel_ids},
+                )
+
+            updated_count = 0
+            deleted_count = 0
+            seen = set()
+            for row in rows:
+                rel_id = str(row.get("id") or "")
+                subj = str(row.get("subject") or "")
+                obj = str(row.get("object") or "")
+                rel_type = str(row.get("relation") or "")
+                if subj == old_entity_id:
+                    subj = new_entity_id
+                if obj == old_entity_id:
+                    obj = new_entity_id
+                if subj == obj:
+                    deleted_count += 1
+                    continue
+                key = (subj, rel_type, obj)
+                if key in seen:
+                    deleted_count += 1
+                    continue
+                seen.add(key)
+                self._run_write(
+                    """
+                    MATCH (s:Entity {id: $subject}), (o:Entity {id: $object})
+                    CREATE (s)-[:RELATED {
+                      id: $id, relation: $relation, confidence: $confidence, sources_json: $sources_json
+                    }]->(o)
+                    """,
+                    {
+                        "subject": subj,
+                        "object": obj,
+                        "id": rel_id or str(uuid.uuid4()),
+                        "relation": rel_type,
+                        "confidence": float(row.get("confidence") or 1.0),
+                        "sources_json": str(row.get("sources_json") or "[]"),
+                    },
+                )
+                updated_count += 1
+
+            self._publish_event("RELATIONS_REDIRECTED", {"old_entity_id": old_entity_id, "new_entity_id": new_entity_id})
+            return {
+                "success": True,
+                "changed": updated_count > 0 or deleted_count > 0,
+                "details": {
+                    "operation": "redirect_relations",
+                    "old_entity_id": old_entity_id,
+                    "new_entity_id": new_entity_id,
+                    "updated_count": updated_count,
+                    "deleted_count": deleted_count,
+                },
+            }
+        except Exception as exc:
+            return {"success": False, "changed": False, "details": {"operation": "redirect_relations", "error": str(exc)}}
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+    def list_entity_ids(self) -> List[str]:
+        if not self.store.available:
+            return []
+        try:
+            rows = self._run_read("MATCH (e:Entity) RETURN e.id AS id")
+            ids = [str(r.get("id")).strip() for r in rows if isinstance(r.get("id"), str) and str(r.get("id")).strip()]
+            return sorted(set(ids))
+        except Exception:
+            return []
+
+    def get_entity_count(self) -> int:
+        if not self.store.available:
+            return 0
+        try:
+            rows = self._run_read("MATCH (e:Entity) RETURN count(e) AS c")
+            return int(rows[0]["c"]) if rows else 0
+        except Exception:
+            return 0
+
+    def get_relation_count(self) -> int:
+        if not self.store.available:
+            return 0
+        try:
+            rows = self._run_read("MATCH ()-[r:RELATED]->() RETURN count(r) AS c")
+            return int(rows[0]["c"]) if rows else 0
+        except Exception:
+            return 0
+
+    def get_kg_stats(self) -> Dict[str, Any]:
+        feature_count = 0
+        attribute_count = 0
+        for entity_id in self.list_entity_ids():
+            ok, data = self.get_entity(entity_id)
+            if ok and data:
+                features = data.get("features", [])
+                attributes = data.get("attributes", [])
+                if isinstance(features, list):
+                    feature_count += len(features)
+                if isinstance(attributes, list):
+                    attribute_count += len(attributes)
+        return {
+            "entity_count": self.get_entity_count(),
+            "relation_count": self.get_relation_count(),
+            "feature_count": feature_count,
+            "attribute_count": attribute_count,
+            "storage_backend": "neo4j",
+            "neo4j_available": bool(self.store.available),
+            "workflow_id": self.workflow_id,
+            "neo4j_database": self.database or "default",
+        }
+
+    @staticmethod
+    def _merge_sources(a: Any, b: Any) -> List[Dict[str, Any]]:
+        left = a if isinstance(a, list) else []
+        right = b if isinstance(b, list) else []
+        out: List[Dict[str, Any]] = []
+        seen = set()
+        for item in left + right:
+            if not isinstance(item, dict):
+                continue
+            key = (
+                item.get("dialogue_id"),
+                item.get("episode_id"),
+                item.get("scene_id"),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(item)
+        return out
+
+    @staticmethod
+    def _merge_features(a: Any, b: Any) -> List[Dict[str, Any]]:
+        left = a if isinstance(a, list) else []
+        right = b if isinstance(b, list) else []
+        merged: Dict[str, Dict[str, Any]] = {}
+        for item in left + right:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("feature") or "").strip()
+            if not key:
+                continue
+            if key not in merged:
+                merged[key] = dict(item)
+                continue
+            current = merged[key]
+            current["sources"] = KGBase._merge_sources(current.get("sources"), item.get("sources"))
+            try:
+                if float(item.get("confidence", 0)) > float(current.get("confidence", 0)):
+                    current["confidence"] = item.get("confidence")
+            except Exception:
+                pass
+        return list(merged.values())
+
+    @staticmethod
+    def _merge_attributes(a: Any, b: Any) -> List[Dict[str, Any]]:
+        left = a if isinstance(a, list) else []
+        right = b if isinstance(b, list) else []
+        merged: Dict[str, Dict[str, Any]] = {}
+        for item in left + right:
+            if not isinstance(item, dict):
+                continue
+            field = str(item.get("field") or "").strip()
+            if not field:
+                continue
+            if field not in merged:
+                merged[field] = dict(item)
+                values = merged[field].get("values")
+                if not isinstance(values, list):
+                    merged[field]["values"] = [merged[field].get("value")]
+                continue
+            current = merged[field]
+            current["sources"] = KGBase._merge_sources(current.get("sources"), item.get("sources"))
+            values = current.get("values")
+            if not isinstance(values, list):
+                values = [current.get("value")]
+            incoming_val = item.get("value")
+            if incoming_val not in values:
+                values.append(incoming_val)
+            current["values"] = values
+            try:
+                if float(item.get("confidence", 0)) > float(current.get("confidence", 0)):
+                    current["value"] = incoming_val
+                    current["confidence"] = item.get("confidence")
+            except Exception:
+                pass
+        return list(merged.values())

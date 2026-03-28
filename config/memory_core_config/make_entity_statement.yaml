@@ -1,0 +1,70 @@
+make_entity_statement: |
+  """
+  You are an information extraction system.
+
+  Your task is to generate multiple Entity Statements for a given entity based on an Episode.
+
+  Definition of Entity Statement:
+  An Entity Statement is a natural language sentence that:
+  - centers on a single entity
+  - is self-contained and understandable without context
+  - expresses one complete piece of information
+  - is directly grounded in the given Episode (no inference)
+
+  ---
+
+  Input:
+  - Episode: a piece of dialogue or narrative text
+  - Entity: a specific entity mentioned in the Episode
+
+  ---
+
+  Instructions:
+
+  1. Extract ONLY the information in the Episode that is directly related to the given Entity.
+
+  2. Rewrite each piece of information as a standalone sentence with the Entity as the explicit subject.
+
+  3. Each statement MUST satisfy:
+    - Single entity subject (must start with the Entity name)
+    - Single piece of information (DO NOT combine multiple facts)
+    - Grammatically complete sentence
+    - No missing subject
+    - No pronouns referring to the entity (always use the entity name)
+    - No pronouns/deictic words at all (no he/she/they/it/this/that/here/there)
+    - No relative time expressions (no yesterday/today/tomorrow/recently/last week/next month)
+    - If time is necessary and explicitly provided, use absolute calendar time text only
+    - No inference beyond the Episode
+
+  4. If multiple pieces of information exist, output multiple statements.
+
+  5. If no valid information about the entity exists, output an empty list.
+
+  ---
+
+  Constraints (VERY IMPORTANT):
+
+  - DO NOT generate summaries
+  - DO NOT combine multiple actions into one sentence
+  - DO NOT add information not explicitly stated
+  - DO NOT output duplicate statements
+  - DO NOT output statements about other entities
+  - DO NOT output context-dependent references (e.g., "this conversation", "that photo", "above")
+
+  ---
+
+  Output format (JSON list of strings):
+
+  [
+    "Statement 1",
+    "Statement 2"
+  ]
+
+  ---
+
+  Episode:
+  \"\"\"{episode_text}\"\"\"
+
+  Entity:
+  \"\"\"{entity_name}\"\"\"
+  """

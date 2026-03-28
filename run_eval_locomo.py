@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from Agents.memory_agent import create_memory_agent
+from utils.api_error_utils import is_network_api_error, is_network_error_text
 
 try:
     from tqdm import tqdm
@@ -40,6 +41,8 @@ PREDICTION_FILE_NAME = "locomo10_agent_qa.json"
 STATS_FILE_NAME = "locomo10_agent_qa_stats.json"
 RUN_LOG_FILE_NAME = "locomo10_agent_qa_run.log"
 TRACE_FILE_NAME = "locomo10_agent_qa_qa_trace.jsonl"
+SKIPPED_QA_CATEGORIES = {5}
+EVAL_CATEGORY_ORDER = [4, 1, 2, 3]
 
 
 def parse_args() -> argparse.Namespace:
@@ -136,6 +139,17 @@ def _sanitize_test_id(test_id: str) -> str:
     return cleaned or DEFAULT_TEST_ID
 
 
+def _get_qa_category(qa: Dict[str, Any]) -> int:
+    try:
+        return int(qa.get("category", -1))
+    except Exception:
+        return -1
+
+
+def should_evaluate_qa(qa: Dict[str, Any]) -> bool:
+    return _get_qa_category(qa) not in SKIPPED_QA_CATEGORIES
+
+
 def _build_output_paths(test_id: str) -> Dict[str, str]:
     out_dir = Path("log") / _sanitize_test_id(test_id)
     return {
@@ -179,6 +193,8 @@ def count_pending_questions(
         for qa in qas:
             if not isinstance(qa, dict):
                 continue
+            if not should_evaluate_qa(qa):
+                continue
             if (not overwrite) and is_qa_processed(qa, prediction_key):
                 continue
             count += 1
@@ -188,6 +204,10 @@ def count_pending_questions(
 
 
 def is_qa_processed(qa: Dict[str, Any], prediction_key: str) -> bool:
+    error_text = qa.get(prediction_key + "_error")
+    if error_text is not None and is_network_error_text(error_text):
+        return False
+
     if prediction_key in qa:
         return True
 
@@ -228,6 +248,18 @@ def _apply_trace_record_to_qa(
 
     if record.get("prediction_tool_calls") is not None:
         qa[prediction_key + "_tool_calls"] = record.get("prediction_tool_calls")
+        applied = True
+
+    if record.get("prediction_plan") is not None:
+        qa[prediction_key + "_plan"] = record.get("prediction_plan")
+        applied = True
+
+    if record.get("prediction_sub_questions") is not None:
+        qa[prediction_key + "_sub_questions"] = record.get("prediction_sub_questions")
+        applied = True
+
+    if record.get("prediction_plan_summary") is not None:
+        qa[prediction_key + "_plan_summary"] = record.get("prediction_plan_summary")
         applied = True
 
     error_text = record.get("error")
@@ -389,6 +421,12 @@ def eval_question_answering_locomo(
     all_recall: List[float] = []
 
     for qa in qas:
+        if not should_evaluate_qa(qa):
+            all_scores.append(0.0)
+            all_b1_scores.append(0.0)
+            all_recall.append(1.0)
+            continue
+
         category = int(qa.get("category", -1))
         output = str(qa.get(prediction_key, "") or "")
         answer = str(qa.get("answer", "") or "")
@@ -402,15 +440,6 @@ def eval_question_answering_locomo(
         elif category == 1:
             score = f1_score_multi(output, answer)
             b1 = b1_score_multi(output, answer)
-        elif category == 5:
-            lowered = output.lower()
-            both_empty = (normalize_answer(output) == "") and (normalize_answer(answer) == "")
-            score = (
-                1.0
-                if both_empty or ("no information available" in lowered or "not mentioned" in lowered)
-                else 0.0
-            )
-            b1 = score
         else:
             score = 0.0
             b1 = 0.0
@@ -508,7 +537,9 @@ def analyze_aggr_acc_locomo(
         id2length = get_conversation_lengths(conversation if isinstance(conversation, dict) else {})
 
         for qa in output.get("qa", []):
-            category = int(qa.get("category", -1))
+            if not isinstance(qa, dict) or not should_evaluate_qa(qa):
+                continue
+            category = _get_qa_category(qa)
             total_counts[category] += 1
             if metric_key not in qa:
                 continue
@@ -548,7 +579,7 @@ def analyze_aggr_acc_locomo(
                 context_len_og[context_bin] += 1
                 context_len_counts[context_bin] += score
 
-    keys = [4, 1, 2, 3, 5]
+    keys = EVAL_CATEGORY_ORDER
     summary_by_cat = {}
     total_q = 0.0
     total_score = 0.0
@@ -597,13 +628,13 @@ def summarize_metric_by_category(
 
     for sample in out_samples:
         for qa in sample.get("qa", []):
-            if not isinstance(qa, dict):
+            if not isinstance(qa, dict) or not should_evaluate_qa(qa):
                 continue
-            category = int(qa.get("category", -1))
+            category = _get_qa_category(qa)
             total_counts[category] += 1
             metric_sums[category] += float(qa.get(metric_key, 0.0))
 
-    keys = [4, 1, 2, 3, 5]
+    keys = EVAL_CATEGORY_ORDER
     summary_by_cat = {}
     total_q = 0.0
     total_score = 0.0
@@ -678,7 +709,7 @@ def _uniform_sample_by_fraction(
     return [samples[i] for i in picked_indices]
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
 
     data_file = args.data_file
@@ -699,6 +730,7 @@ def main() -> None:
     logger.info("stats_file=%s", stats_file)
     logger.info("log_file=%s", log_file)
     logger.info("trace_file=%s", trace_file)
+    logger.info("Skipped QA categories: %s", sorted(SKIPPED_QA_CATEGORIES))
 
     samples = _load_json(data_file)
     if not isinstance(samples, list):
@@ -769,6 +801,7 @@ def main() -> None:
     asked_count = 0
     processed_samples = 0
     changed = False
+    fatal_error: Exception | None = None
 
     stop = False
     try:
@@ -780,11 +813,13 @@ def main() -> None:
                 continue
 
             for q_idx, qa in enumerate(qas):
+                if not isinstance(qa, dict):
+                    continue
+                if not should_evaluate_qa(qa):
+                    continue
                 if args.max_questions and asked_count >= args.max_questions:
                     stop = True
                     break
-                if not isinstance(qa, dict):
-                    continue
 
                 if (not args.overwrite) and is_qa_processed(qa, args.prediction_key):
                     continue
@@ -796,6 +831,9 @@ def main() -> None:
                 answer = ""
                 evidence = None
                 tool_calls: Any = None
+                question_plan: Any = None
+                sub_questions: Any = None
+                plan_summary = None
 
                 if not question:
                     error_text = "empty_question"
@@ -811,6 +849,9 @@ def main() -> None:
                         pred = str(result.get("gold_answer", "") or "")
                         evidence = result.get("evidence")
                         tool_calls = result.get("tool_calls", [])
+                        question_plan = result.get("question_plan")
+                        sub_questions = result.get("sub_questions")
+                        plan_summary = result.get("plan_summary")
                         qa[args.prediction_key] = pred
                         qa[args.prediction_key + "_answer"] = answer
                         qa[args.prediction_key + "_gold_answer"] = pred
@@ -818,15 +859,43 @@ def main() -> None:
                         qa[args.prediction_key + "_tool_calls"] = (
                             tool_calls if isinstance(tool_calls, list) else []
                         )
+                        qa[args.prediction_key + "_plan"] = (
+                            question_plan if isinstance(question_plan, dict) else None
+                        )
+                        qa[args.prediction_key + "_sub_questions"] = (
+                            sub_questions if isinstance(sub_questions, list) else []
+                        )
+                        qa[args.prediction_key + "_plan_summary"] = (
+                            str(plan_summary) if plan_summary is not None else None
+                        )
+                        qa.pop(args.prediction_key + "_error", None)
                     except Exception as exc:
                         error_text = str(exc)
-                        qa[args.prediction_key] = ""
-                        qa[args.prediction_key + "_error"] = error_text
+                        if hasattr(agent, "get_last_question_plan"):
+                            try:
+                                qa[args.prediction_key + "_plan"] = agent.get_last_question_plan()
+                            except Exception:
+                                pass
                         if hasattr(agent, "get_last_tool_calls"):
                             try:
                                 qa[args.prediction_key + "_tool_calls"] = agent.get_last_tool_calls()
                             except Exception:
                                 pass
+                        if is_network_api_error(exc):
+                            for suffix in ("", "_answer", "_gold_answer", "_evidence"):
+                                qa.pop(args.prediction_key + suffix, None)
+                            qa[args.prediction_key + "_error"] = error_text
+                            fatal_error = exc
+                            stop = True
+                            logger.exception(
+                                "Detected network/API error at sample_id=%s qa_index=%s thread_id=%s; stopping evaluation.",
+                                sid,
+                                q_idx,
+                                thread_id,
+                            )
+                        else:
+                            qa[args.prediction_key] = ""
+                            qa[args.prediction_key + "_error"] = error_text
 
                     changed = True
 
@@ -844,6 +913,9 @@ def main() -> None:
                     "prediction_gold_answer": qa.get(args.prediction_key + "_gold_answer"),
                     "prediction_evidence": qa.get(args.prediction_key + "_evidence"),
                     "prediction_tool_calls": qa.get(args.prediction_key + "_tool_calls"),
+                    "prediction_plan": qa.get(args.prediction_key + "_plan"),
+                    "prediction_sub_questions": qa.get(args.prediction_key + "_sub_questions"),
+                    "prediction_plan_summary": qa.get(args.prediction_key + "_plan_summary"),
                     "error": error_text,
                 }
                 append_trace(trace_fp, trace_record)
@@ -854,6 +926,9 @@ def main() -> None:
 
                 if args.sleep_seconds > 0:
                     time.sleep(args.sleep_seconds)
+
+                if stop:
+                    break
 
             processed_samples += 1
             if changed and args.save_every > 0 and processed_samples % args.save_every == 0:
@@ -878,6 +953,11 @@ def main() -> None:
         f1_scores, b1_scores, recalls = eval_question_answering_locomo(qas, args.prediction_key)
         for i, qa in enumerate(qas):
             if not isinstance(qa, dict):
+                continue
+            if not should_evaluate_qa(qa):
+                qa.pop(f1_metric_key, None)
+                qa.pop(b1_metric_key, None)
+                qa.pop(args.model_key + "_recall", None)
                 continue
             qa[f1_metric_key] = round(f1_scores[i], 3)
             qa[b1_metric_key] = round(b1_scores[i], 3)
@@ -910,7 +990,11 @@ def main() -> None:
     logger.info("Overall accuracy (%s): %.3f", args.model_key, stats["overall_accuracy"])
     logger.info("Overall B1 (%s): %.3f", args.model_key, stats["overall_b1"])
     logger.info("Category accuracy: %s", json.dumps(stats["summary_by_category"], ensure_ascii=False))
+    if fatal_error is not None:
+        logger.error("Evaluation stopped early due to network/API error: %s", fatal_error)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

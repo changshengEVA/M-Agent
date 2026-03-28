@@ -2,43 +2,89 @@ dialogue_segmentation:
   system_prompt: |
     You are a dialogue segmentation module.
 
-    Your task is to segment a dialogue into multiple Episode Candidates.
+    Your job is to support buffer-based Dialogue -> Episode segmentation.
 
-    An Episode Candidate is a continuous span of dialogue turns
-    that mainly revolves around ONE semantically focused topic,
-    and is used as an atomic unit for efficient retrieval.
+    The script scans dialogue turns in order and maintains an episode_buffer.
+    For each new turn, you only decide whether that turn should:
+    - continue the current episode_buffer
+    - start a new Episode
 
-    Your responsibility is limited to deciding segmentation boundaries,
-    without performing additional abstraction or complex reasoning.
+    An Episode should be a complete interaction fragment that is:
+    - semantically self-contained
+    - temporally / situationally continuous
+    - centered on one stable interaction goal
 
-  user_prompt: |
-    Given the following raw dialogue log in JSON format:
+    An Episode is NOT the smallest factual unit.
+    Do not over-segment brief acknowledgements, clarification questions,
+    local elaborations, or minor subtopic drift if the broader interaction
+    fragment is still the same.
 
-    <INPUT_JSON>
+    Your responsibility is limited to:
+    - deciding whether a candidate turn should append or split
+    - summarizing a completed episode_buffer with a short topic label
 
-    Please segment the dialogue into one or more Episode Candidates.
+    Do not change downstream JSON structure.
+    Do not output any text outside JSON.
 
-    Segmentation Rules:
-    1. Each Episode Candidate must be a continuous turn_span,
-       in the form [start_turn_id, end_turn_id].
-    2. Do NOT split based on speaker change alone.
-    3. When the PRIMARY topic changes clearly,
-       a segmentation boundary should be introduced,
-       even if the dialogue appears continuous on the surface.
-    4. Each Episode should correspond to ONE primary topic.
-    5. The output MUST be valid JSON matching the schema below.
+  decision_prompt: |
+    The script is currently scanning one dialogue turn at a time.
 
-    Output schema:
+    Dialogue context:
+    <DIALOGUE_CONTEXT_JSON>
+
+    Current episode_buffer:
+    <CURRENT_BUFFER_JSON>
+
+    Candidate next turn:
+    <CANDIDATE_TURN_JSON>
+
+    Decide whether the candidate turn still belongs to the SAME Episode
+    as the current episode_buffer.
+
+    Decision criteria:
+    1. The interaction goal is still the same or highly continuous.
+    2. The time / life situation / scene is still continuous.
+    3. The discussion focus is still globally stable.
+
+    Choose "append" when the candidate turn is still part of the same
+    complete interaction fragment, even if it introduces:
+    - a brief acknowledgement
+    - a follow-up question
+    - a small elaboration
+    - a minor local topic shift inside the same broader exchange
+
+    Choose "split" only when there is a meaningful break in the broader
+    interaction fragment, such as:
+    - a new interaction goal
+    - a clear scene or life-context transition
+    - a clear overall focus shift that makes the previous buffer feel complete
+
+    Output JSON schema:
     {
-      "episodes": [
-        {
-          "episode_id": "ep_001",
-          "topic":"<what topic does the episode focus on>"
-          "dialogue_id": "<same as input>",
-          "turn_span": [start_turn_id, end_turn_id]
-        },
-        ...
-      ]
+      "decision": "append" | "split",
+      "reason": "<short explanation>"
+    }
+
+  topic_prompt: |
+    A complete episode_buffer has been finalized by the script.
+
+    Dialogue context:
+    <DIALOGUE_CONTEXT_JSON>
+
+    Completed episode_buffer:
+    <EPISODE_BUFFER_JSON>
+
+    Write one short topic label that summarizes the WHOLE interaction fragment.
+
+    Requirements:
+    1. The topic must summarize the full Episode, not only the last turn.
+    2. Prefer a concise noun phrase or short descriptive phrase.
+    3. Avoid over-specific wording unless it is central to the whole Episode.
+    4. Do not mention "episode", "buffer", or turn ids.
+
+    Output JSON schema:
+    {
+      "topic": "<short topic label>"
     }
 
 

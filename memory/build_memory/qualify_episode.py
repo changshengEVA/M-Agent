@@ -200,7 +200,7 @@ def call_openai_for_scoring(
     full_prompt = f"{system_prompt}\n\n{user_prompt}"
     
     try:
-        response_text = llm(full_prompt)
+        response_text = llm_model(full_prompt)
         # 解析 JSON 响应
         # 响应可能包含额外的文本，尝试提取 JSON 部分
         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)

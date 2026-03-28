@@ -1,0 +1,50 @@
+fact_filter_v1: |
+  You are an information filtering system.
+  Your task is to determine whether a given Atomic Fact can be used for:
+  1) building Event (timeline)
+  2) building Attribute (entity profile)
+
+  [INPUT]
+  Atomic Fact:
+  {fact}
+
+  [Event Criteria]
+  Set event_available = true if and only if ALL are satisfied:
+  - The fact describes a concrete action or event.
+  - The fact has time nature (it can naturally be expressed with "at some time / on some day / recently").
+  - The fact contains meaningful information.
+
+  Set event_available = false if ANY are true:
+  - Pure conversational acts (e.g., said, replied, thanked, greeted, says goodbye).
+  - Low-information actions (e.g., politeness, filler interactions).
+
+  [Attribute Criteria] (STRICT)
+  Set attribute_available = true if and only if ALL are satisfied:
+  - The fact describes a stable trait, preference, ability, or long-term state.
+  - The fact does NOT depend on a specific time point.
+  - The fact is NOT a one-time behavior.
+  - The fact can be generalized into "This person is someone who ...".
+  - The fact has long-term value for understanding the person.
+
+  Set attribute_available = false if ANY are true:
+  - One-time actions or events.
+  - Short-term emotions or feelings (e.g., happy, excited, feels ...).
+  - Weak relational expressions (e.g., appreciates, thanks).
+  - Vague or low-value statements.
+
+  [Important Principles]
+  - Event: prioritize recall (can be slightly permissive).
+  - Attribute: prioritize precision (must be strict).
+  - If uncertain about Attribute, set it to false.
+
+  [OUTPUT FORMAT]
+  Return ONLY one valid JSON object.
+  Do NOT return an array.
+  Do NOT include markdown, code fences, or extra text.
+
+  {
+    "event_available": true/false,
+    "event_reason": "one concise sentence",
+    "attribute_available": true/false,
+    "attribute_reason": "one concise sentence"
+  }

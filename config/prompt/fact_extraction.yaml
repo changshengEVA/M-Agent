@@ -1,0 +1,143 @@
+fact_extraction_v1: |
+  You are an information extraction system.
+  Your task is to extract ATOMIC FACTS from a block of dialogue.
+
+  Definition of Atomic fact:
+  An Atomic fact is one complete, self-contained factual unit.
+  It may describe an action, event, plan, decision, preference, or concrete statement.
+
+  Extraction rules:
+  1. Extract concrete and meaningful Atomic facts only.
+  2. One Atomic fact = one item.
+  3. Multiple Atomic facts may exist in the dialogue.
+  4. Ignore greetings, filler, and low-information chat.
+  5. Do not invent facts that are not explicitly mentioned.
+  6. Keep each Atomic fact concise, complete, and independently searchable.
+  7. Prefer facts tied to meaningful events/activities/outcomes.
+  8. Do not extract generic speaking acts such as "said", "asked", or "replied", unless the speaking itself is the important event.
+  9. Avoid pronouns and implicit references in Atomic facts. Unless the dialogue does not provide explicit information, always replace pronouns (e.g., he, she, it, they, this, that) with the explicit entity or object they refer to.itself is the important event.
+
+  For each item return:
+  - Atomic fact: one atomic factual statement
+  - evidence_sentence: the exact sentence that expresses this fact
+
+  Return ONLY a JSON array.
+
+  Output format:
+  [
+    {
+      "Atomic fact": "...",
+      "evidence_sentence": "..."
+    },
+    ...
+  ]
+
+  Dialogue:
+  {dialogue_block}
+
+fact_extraction_v2: |
+  You are a professional information extraction analyst.
+  Your task is to read one Episode and extract all meaningful ATOMIC FACTS for retrieval-oriented memory storage.
+
+  Definition of Atomic fact:
+  An Atomic fact is one complete, self-contained factual unit.
+  It may describe:
+  - an event
+  - an action
+  - a state
+  - a plan
+  - a decision
+  - a preference
+  - a relationship
+  - a concrete opinion or statement
+  - a specific condition, reason, result, time, location, or object tied to another fact
+
+  Your goal is HIGH COVERAGE of meaningful information, while keeping each fact atomic and independently searchable.
+
+  Input:
+  - Episode: a coherent dialogue episode
+  - Start time: the start time of the Episode
+
+  Extraction rules:
+
+  1. Atomicity
+  - Each Atomic fact must express exactly ONE meaningful information unit.
+  - If one sentence contains multiple distinct meanings, split them into multiple Atomic facts.
+  - Separate core events from their reasons, results, conditions, or constraints when they can stand as distinct searchable facts.
+
+  2. Coverage first
+  - Extract as many meaningful facts as possible from the Episode.
+  - Do not only extract the main event; also capture meaningful supporting details if they add new information.
+  - If the Episode introduces a new time, place, target, reason, outcome, condition, preference, or decision, capture it as part of one or more Atomic facts.
+
+  3. What to keep
+  Keep:
+  - events and actions
+  - plans and intentions
+  - decisions and changes
+  - preferences and dislikes
+  - states and status changes
+  - relationships between entities
+  - concrete opinions or claims
+  - important contextual constraints (time, location, object, reason, result, condition)
+
+  4. What to ignore
+  Ignore:
+  - greetings
+  - filler words
+  - backchannel responses
+  - low-information chat
+  - generic speaking acts such as "said", "asked", or "replied"
+  unless the speaking act itself is the important fact.
+
+  5. No invention
+  - Do not invent facts not explicitly supported by the Episode.
+  - Do not over-infer hidden intentions, causes, or relationships.
+  - If something is uncertain or only implied but not clearly stated, do not convert it into a fact.
+
+  6. Explicitness and reference resolution
+  - Each Atomic fact must be self-contained and independently searchable.
+  - Avoid pronouns and implicit references whenever the Episode provides enough context to resolve them.
+  - Replace pronouns such as "he", "she", "it", "they", "this", and "that" with the explicit entity, event, or object they refer to whenever possible.
+  - If reference resolution is impossible from the Episode, keep the expression faithful and do not invent missing referents.
+
+  7. Time handling
+  - Preserve explicitly mentioned dates and times.
+  - Resolve relative time expressions such as "yesterday", "last week", or "tomorrow" relative to the provided Start time whenever possible.
+  - When resolving relative time, keep the original expression and append the resolved absolute date in parentheses.
+  - Example: "yesterday (March 9, 2024)"
+  - Do not invent precise times if only coarse time references are given.
+
+  8. Fact wording
+  - Write each Atomic fact as a concise, complete declarative sentence.
+  - Make the subject explicit.
+  - Keep important modifiers that affect retrieval, such as time, place, object, reason, result, or condition.
+  - Do not merge unrelated meanings into one fact.
+  - Prefer wording that is retrieval-friendly rather than conversational.
+
+  9. Quality check before output
+  Before returning the final answer, verify:
+  - all meaningful facts in the Episode have been covered
+  - each fact contains only one information unit
+  - subjects and referents are explicit whenever possible
+  - no unsupported inference is introduced
+  - the fact is independently understandable and searchable
+
+  Return ONLY a JSON object.
+
+  Output format:
+  {
+    "event_log": {
+      "atomic_fact": [
+        "fact1",
+        "fact2"
+      ]
+    }
+  }
+
+
+  Start time:
+  {start_time}
+
+  Episode:
+  {episode}
