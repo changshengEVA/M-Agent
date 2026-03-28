@@ -11,7 +11,14 @@ import re
 from abc import ABC, abstractmethod
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
+from .errors import EntityProfileNetworkError
 from .library import AttributeEntry, EventEntry
+
+try:
+    from utils.api_error_utils import is_network_api_error
+except ImportError:
+    def is_network_api_error(exc: BaseException | None) -> bool:
+        return False
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +288,12 @@ class EmbedThenLLMProfileMergeStrategy(ProfileMergeStrategy):
             result = self.llm_func(prompt)
             return str(result or "").strip()
         except Exception as exc:
+            if isinstance(exc, EntityProfileNetworkError):
+                raise
+            if is_network_api_error(exc):
+                raise EntityProfileNetworkError(
+                    f"Profile dedup LLM call hit network/API error: {exc}"
+                ) from exc
             logger.warning("Profile dedup LLM call failed: %s", exc)
             return ""
 
@@ -341,6 +354,12 @@ class EmbedThenLLMProfileMergeStrategy(ProfileMergeStrategy):
         try:
             vec = self.embed_func(cleaned)
         except Exception as exc:
+            if isinstance(exc, EntityProfileNetworkError):
+                raise
+            if is_network_api_error(exc):
+                raise EntityProfileNetworkError(
+                    f"Profile dedup embedding hit network/API error: {exc}"
+                ) from exc
             logger.warning("Profile dedup embedding failed: %s", exc)
             return None
         if isinstance(vec, list) and vec:

@@ -214,6 +214,41 @@ def normalize_entity_uid(raw_value: Any) -> str:
     return str(raw_value or "").strip()
 
 
+def normalize_fact_output_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+    raw_payload = payload if isinstance(payload, dict) else {}
+    evidence = raw_payload.get("evidence", {})
+    if not isinstance(evidence, dict):
+        evidence = {}
+    embedding = raw_payload.get("embedding", [])
+    if not isinstance(embedding, list):
+        embedding = []
+    main_entity, other_entities = normalize_entities(
+        raw_payload.get("main_entity"),
+        raw_payload.get("other_entities"),
+    )
+    return {
+        "scene_id": str(raw_payload.get("scene_id", "") or "").strip(),
+        "fact_id": str(raw_payload.get("fact_id", "") or "").strip(),
+        "Atomic fact": extract_atomic_fact(raw_payload),
+        "evidence": evidence,
+        "embedding": embedding,
+        "main_entity": main_entity,
+        "other_entities": other_entities,
+        "entity_UID": normalize_entity_uid(raw_payload.get("entity_UID")),
+    }
+
+
+def should_write_fact_file(path: Path, output_payload: Dict[str, Any]) -> bool:
+    normalized_output = normalize_fact_output_payload(output_payload)
+    if not path.exists():
+        return True
+    try:
+        existing_payload = load_json(path)
+    except Exception:
+        return True
+    return normalize_fact_output_payload(existing_payload) != normalized_output
+
+
 def parse_entity_payload(parsed_payload: Any) -> Tuple[str, List[str]]:
     if isinstance(parsed_payload, list) and parsed_payload:
         parsed_payload = parsed_payload[0]
@@ -423,19 +458,21 @@ def scan_and_extract_fact_entities(
                 "entity_UID": entity_uid,
             }
 
-            try:
-                save_json(facts_root / fact_file_name, output_payload)
-                stats["fact_files_written"] += 1
-            except Exception as exc:
-                logger.error("Failed to save fact file %s: %s", fact_file_name, exc)
-                stats["fact_files_failed"] += 1
-                for episode_key in resolve_episode_key_for_fact(fact_item, scene_episode_keys):
-                    tracked = episode_fact_index.setdefault(
-                        episode_key,
-                        {"file_count": 0, "last_file": None, "error": ""},
-                    )
-                    tracked["error"] = str(exc)
-                continue
+            fact_output_path = facts_root / fact_file_name
+            if should_write_fact_file(fact_output_path, output_payload):
+                try:
+                    save_json(fact_output_path, output_payload)
+                    stats["fact_files_written"] += 1
+                except Exception as exc:
+                    logger.error("Failed to save fact file %s: %s", fact_file_name, exc)
+                    stats["fact_files_failed"] += 1
+                    for episode_key in resolve_episode_key_for_fact(fact_item, scene_episode_keys):
+                        tracked = episode_fact_index.setdefault(
+                            episode_key,
+                            {"file_count": 0, "last_file": None, "error": ""},
+                        )
+                        tracked["error"] = str(exc)
+                    continue
 
             for episode_key in resolve_episode_key_for_fact(fact_item, scene_episode_keys):
                 tracked = episode_fact_index.setdefault(

@@ -200,7 +200,8 @@ class MemoryCore:
             facts_situation_path=str(self.entity_profile_facts_situation_file),
             similarity_threshold=self.similarity_threshold,
             top_k=self.top_k,
-            auto_align_on_init=True,
+            auto_align_on_init=False,
+            align_on_system_initialized=False,
         )
         return service
 
@@ -367,11 +368,54 @@ class MemoryCore:
             logger.warning("import_fact_entities 后同步 EntityProfileService 失败: %s", exc)
         return result
 
-    def sync_entity_profile(self, force_rebuild: bool = False) -> Dict[str, Any]:
+    def sync_entity_profile(
+        self,
+        force_rebuild: bool = False,
+        sample_ratio: Optional[float] = None,
+        sample_seed: int = 42,
+        sample_output_tag: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         手动触发实体档案与 facts 对齐。
         """
+        if sample_ratio is not None:
+            return self.entity_profile_service.rebuild_from_sampled_facts(
+                sample_ratio=sample_ratio,
+                sample_seed=sample_seed,
+                output_tag=sample_output_tag,
+            )
         return self.entity_profile_service.align_with_master_facts(force_rebuild=force_rebuild)
+
+    def sample_entity_profile_rebuild(
+        self,
+        sample_ratio: float = 0.01,
+        sample_seed: int = 42,
+        sample_output_tag: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        使用采样 facts 进行低成本 EntityProfile 重建演练，输出写入独立 sample 目录。
+        """
+        return self.entity_profile_service.rebuild_from_sampled_facts(
+            sample_ratio=sample_ratio,
+            sample_seed=sample_seed,
+            output_tag=sample_output_tag,
+        )
+
+    def reset_entity_profile_alignment_state(
+        self,
+        confirm_token: str,
+        clear_checkpoint: bool = True,
+        clear_sample_outputs: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        手动清空 EntityProfile 的本地 facts 对齐状态与产物。
+        该操作危险，必须显式提供确认 token。
+        """
+        return self.entity_profile_service.reset_alignment_state(
+            confirm_token=confirm_token,
+            clear_checkpoint=clear_checkpoint,
+            clear_sample_outputs=clear_sample_outputs,
+        )
 
     
     # ============================================================================

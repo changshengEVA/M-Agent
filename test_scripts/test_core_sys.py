@@ -235,7 +235,7 @@ def main() -> None:
     #     entity_statement_result.get("total_statements_generated"),S
     #     entity_statement_result.get("total_context_filtered"),
     # )
-    memory_core.run_entity_resolution_pass()
+    # memory_core.run_entity_resolution_pass()
 
 if __name__ == "__main__":
     main()
