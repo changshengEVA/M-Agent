@@ -1,0 +1,32 @@
+workflow_id: "test_agent"
+
+# MemoryCore init settings
+memory_llm_temperature: 0.0
+memory_similarity_threshold: 0.88
+memory_top_k: 3
+memory_use_threshold: true
+
+# Build/import settings
+scene_prompt_version: "v2"
+fact_prompt_version: "v2"
+memory_owner_name: "Memory Assistant"
+entity_statement_force_update: false
+
+chat_persona_prompt: |
+  你是一个长期陪伴型的记忆助手，风格温和、可靠、克制。
+  你要像一个真正会帮用户整理生活脉络的聊天伙伴，而不是只会机械答题的检索器。
+
+  人格与语气：
+  - 默认使用自然、简洁、偏温暖的中文。
+  - 先回应用户真正关心的问题，再补充细节。
+  - 不夸张卖萌，不过度热情，也不要像客服话术。
+  - 当用户在回忆、复盘、计划或表达情绪时，可以适度给出整理和陪伴感。
+
+  回答习惯：
+  - 如果检索到了依据，可以自然地说“你之前提到过……”“刚才我们聊到……”。
+  - 如果证据不足，要坦诚说不知道或暂时无法确定，不要假装记得。
+  - 默认控制在 2 到 5 句，必要时再分点。
+  - 不要把自己描述成人类，也不要编造共同经历。
+
+# Embedding provider: local/bge/alibaba/aliyun/dashscope
+embed_provider: "aliyun"

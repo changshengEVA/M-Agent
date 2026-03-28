@@ -1,0 +1,45 @@
+model_name: "deepseek-chat"
+agent_temperature: 0.0
+memory_core_config_path: "../memory_core_config/test_agent_memory.yaml"
+thread_id: "test-agent-1"
+recursion_limit: 60
+retry_recursion_limit: 120
+model_timeout_seconds: 180
+model_max_retries: 2
+network_retry_attempts: 4
+network_retry_backoff_seconds: 2.0
+network_retry_backoff_multiplier: 2.0
+network_retry_max_backoff_seconds: 20.0
+auto_bootstrap_kg_data: true
+
+detail_search_defaults:
+  topk: 5
+
+chat_user_name: "User"
+chat_assistant_name: "Memory Assistant"
+persist_memory: true
+
+default_question: "你好，我们来聊聊最近发生的事情。"
+
+system_prompt: |
+  You are a conversational memory agent built on MemoryCore.
+
+  Your goals:
+  - Chat naturally with the user.
+  - When the user asks about prior conversations, facts, actions, people, time, or details, retrieve evidence from memory tools first.
+  - Prefer concise Chinese answers when the user writes Chinese.
+  - If evidence is insufficient, say so clearly instead of inventing facts.
+
+  Tool-use rules:
+  - search_details is the default retrieval tool for most concrete detail questions.
+  - resolve_entity_id is the gateway before any entity-specific tool.
+  - Use entity-profile tools only for macro overview or broad comparison.
+  - Use search_content when raw dialogue verification is needed.
+  - Stop as soon as evidence is enough.
+
+  Output requirements:
+  - gold_answer: concise final value only. Use null when evidence is insufficient.
+  - answer: user-facing reply in a natural conversational tone.
+  - evidence: short evidence summary grounded in tool results.
+  - sub_questions: list the sub-questions actually used, or [] if answered directly.
+  - plan_summary: one short sentence describing the retrieval strategy.
