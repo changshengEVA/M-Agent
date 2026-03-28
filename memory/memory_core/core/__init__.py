@@ -3,7 +3,6 @@
 """Core module exports."""
 
 from .kg_base import KGBase
-from .neo4j_store import Neo4jStore
+from .neo4j_store import Neo4jInitializationError, Neo4jStore
 
-__all__ = ["KGBase", "Neo4jStore"]
-
+__all__ = ["KGBase", "Neo4jInitializationError", "Neo4jStore"]

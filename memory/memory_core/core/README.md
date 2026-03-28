@@ -78,7 +78,7 @@ Write operations return:
 }
 ```
 
-If Neo4j is unavailable:
+If Neo4j write/query execution fails after startup:
 
 ```python
 {
@@ -87,6 +87,12 @@ If Neo4j is unavailable:
   "details": {"operation": "...", "error": "Neo4j is not available"}
 }
 ```
+
+On startup, Neo4j now defaults to fail-fast mode:
+
+- Missing `url` / `user_name` or connection verification failure raises `Neo4jInitializationError`
+- This prevents MemoryCore from continuing into local alignment while the KG backend is unavailable
+- You can explicitly opt out with `NEO4J_FAIL_FAST=false` if you really need degraded mode
 
 ## Neo4j Config
 
@@ -97,6 +103,7 @@ Priority:
   - `NEO4J_USER`
   - `NEO4J_PASSWORD`
   - `NEO4J_DATABASE_TEMPLATE` (default: `wf-{workflow_id}`)
+  - `NEO4J_FAIL_FAST` (default: `true`)
 - Otherwise fallback to `config/neo4j.yaml`
 
 Example:

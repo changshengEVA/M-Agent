@@ -19,6 +19,10 @@ except Exception:
 logger = logging.getLogger(__name__)
 
 
+class Neo4jInitializationError(RuntimeError):
+    """Raised when Neo4j cannot be initialized in fail-fast mode."""
+
+
 class Neo4jStore:
     """Singleton Neo4j driver holder with local-config bootstrap."""
 
@@ -32,6 +36,7 @@ class Neo4jStore:
         self.password = ""
         self.driver = None
         self.available = False
+        self.fail_fast = self._is_fail_fast_enabled()
         self._init_driver()
 
     @classmethod
@@ -50,7 +55,9 @@ class Neo4jStore:
         self.password = str(cfg.get("password") or "").strip()
 
         if not self.url or not self.user:
-            logger.warning("Neo4j config missing url/user_name, core runs in disabled mode.")
+            self._handle_init_failure(
+                "Neo4j config missing url/user_name; aborting to protect memory alignment."
+            )
             return
 
         try:
@@ -72,7 +79,25 @@ class Neo4jStore:
                     exc = retry_exc
             self.available = False
             self.driver = None
-            logger.warning("Neo4j unavailable (%s). Core graph ops become no-op/fail-safe.", exc)
+            self._handle_init_failure(
+                f"Neo4j unavailable ({exc}); aborting to protect memory alignment.",
+                exc,
+            )
+
+    @staticmethod
+    def _is_fail_fast_enabled() -> bool:
+        raw = str(os.getenv("NEO4J_FAIL_FAST", "true")).strip().lower()
+        return raw not in {"0", "false", "no", "off"}
+
+    def _handle_init_failure(self, message: str, exc: Optional[Exception] = None) -> None:
+        self.available = False
+        self.driver = None
+        if self.fail_fast:
+            logger.error(message)
+            if exc is None:
+                raise Neo4jInitializationError(message)
+            raise Neo4jInitializationError(message) from exc
+        logger.warning("%s", message)
 
     def _create_driver(self, url: str):
         from neo4j import GraphDatabase
