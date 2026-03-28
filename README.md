@@ -21,6 +21,12 @@ Current refactor direction:
 2. `Episode -> Scene -> Atomic facts` is generated inside `MemoryCore`.
 3. `persistence` layer is removed; `KGBase` now executes entity/relation operations directly on local Neo4j.
 ---
+### **Project Layout**
+
+Core source code now lives under `src/m_agent/`, runnable entry scripts live under `scripts/`, automated tests live under `tests/`, examples live under `examples/`, and experimental integrations live under `experiments/`.
+
+For a fuller tree and rationale, see `docs/project-structure.md`.
+---
 ### **Quick_start**
 
 The following steps only cover the path from zero to running `run_eval_locomo.py`.
@@ -47,7 +53,7 @@ pip install -r requirements.txt
 3. Create `.env` in the project root and fill the fields below
 
 ```dotenv
-# MemoryCore LLM: load_model/OpenAIcall.py
+# MemoryCore LLM: src/m_agent/load_model/OpenAIcall.py
 # Fill one of API_SECRET_KEY or OPENAI_API_KEY
 API_SECRET_KEY=YOUR_OPENAI_COMPATIBLE_KEY
 OPENAI_API_KEY=
@@ -74,7 +80,7 @@ LLM_PROVIDER=deepseek
 > where `workflow_id` is configured. Keep preprocessing `--id` consistent with that `workflow_id`.
 
 ```bash
-python pipeline/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo
+python scripts/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo
 ```
 
 After preprocessing, these folders will be generated/updated under `data/memory/testlocomo/`:
@@ -87,10 +93,10 @@ After preprocessing, these folders will be generated/updated under `data/memory/
 
 ```bash
 # Quick check: sampled run
-python run_eval_locomo.py --test-id quickstart --sample-fraction 0.1
+python scripts/run_eval_locomo.py --test-id quickstart --sample-fraction 0.1
 
 # Full run: 10/10 samples
-# python run_eval_locomo.py --test-id quickstart-full --sample-fraction 1.0
+# python scripts/run_eval_locomo.py --test-id quickstart-full --sample-fraction 1.0
 ```
 
 6. Check outputs
