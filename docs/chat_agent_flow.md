@@ -71,7 +71,7 @@ flowchart TD
     D -->|是| DP[构建 direct question plan]
     DP --> DA[_answer_directly]
     DA --> RETRY{_should_retry_with_decomposition?}
-    RETRY -->|否| DIRECT_OK[消费本轮 tool_calls<br/>补齐 question_plan / sub_questions / plan_summary]
+    RETRY -->|否| DIRECT_OK[统计本轮工具调用数<br/>补齐 question_plan / sub_questions / plan_summary]
     DIRECT_OK --> FINAL1[记录 FINAL ANSWER PAYLOAD]
     FINAL1 --> RETURN1[返回 payload]
 
@@ -90,7 +90,7 @@ flowchart TD
     end
 
     SQ2 --> SYN[_synthesize_final_answer]
-    SYN --> FINAL2[消费本轮 tool_calls<br/>补齐 question_plan / sub_question_results / plan_summary]
+    SYN --> FINAL2[统计本轮工具调用数<br/>补齐 question_plan / sub_question_results / plan_summary]
     FINAL2 --> FINAL3[记录 FINAL ANSWER PAYLOAD]
     FINAL3 --> RETURN2[返回 payload]
 ```

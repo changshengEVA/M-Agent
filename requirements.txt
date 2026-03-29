@@ -19,3 +19,5 @@ py2neo
 ipywidgets
 openai
 sentence-transformers
+fastapi
+uvicorn

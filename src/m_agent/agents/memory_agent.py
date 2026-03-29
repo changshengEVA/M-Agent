@@ -181,7 +181,7 @@ class MemoryAgent:
     def _safe_trace_value(value: Any, depth: int = 0) -> Any:
         if value is None or isinstance(value, (bool, int, float, str)):
             return value
-        if depth > 6:
+        if depth > 24:
             return "<max_depth>"
         if is_dataclass(value):
             return MemoryAgent._safe_trace_value(asdict(value), depth=depth + 1)
@@ -194,43 +194,11 @@ class MemoryAgent:
             return [MemoryAgent._safe_trace_value(v, depth=depth + 1) for v in value]
         return str(value)
 
-    @classmethod
-    def _compact_trace_value(cls, value: Any, depth: int = 0) -> Any:
-        if value is None or isinstance(value, (bool, int, float)):
-            return value
-        if isinstance(value, str):
-            compact = re.sub(r"\s+", " ", value).strip()
-            if len(compact) > 400:
-                return compact[:397] + "..."
-            return compact
-        if depth > 4:
-            return "<max_depth>"
-        if is_dataclass(value):
-            return cls._compact_trace_value(asdict(value), depth=depth + 1)
-        if isinstance(value, dict):
-            items = list(value.items())
-            compact_dict: Dict[str, Any] = {}
-            for idx, (k, v) in enumerate(items):
-                if idx >= 16:
-                    compact_dict["<truncated>"] = f"{len(items) - 16} more fields"
-                    break
-                compact_dict[str(k)] = cls._compact_trace_value(v, depth=depth + 1)
-            return compact_dict
-        if isinstance(value, (list, tuple, set)):
-            seq = list(value)
-            compact_list = [
-                cls._compact_trace_value(item, depth=depth + 1) for item in seq[:8]
-            ]
-            if len(seq) > 8:
-                compact_list.append(f"<truncated {len(seq) - 8} more items>")
-            return compact_list
-        return cls._compact_trace_value(str(value), depth=depth + 1)
-
     def _log_structured_trace(self, prefix: str, payload: Dict[str, Any]) -> None:
         logger.info(
             "%s%s",
             prefix,
-            json.dumps(self._compact_trace_value(payload), ensure_ascii=False),
+            json.dumps(self._safe_trace_value(payload), ensure_ascii=False),
         )
 
     def _record_tool_call(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -255,7 +223,7 @@ class MemoryAgent:
     ) -> None:
         if error is None:
             entry["status"] = "completed"
-            entry["result"] = self._compact_trace_value(result)
+            entry["result"] = self._safe_trace_value(result)
         else:
             entry["status"] = "failed"
             entry["error"] = str(error)
@@ -270,7 +238,7 @@ class MemoryAgent:
         return calls
 
     def get_last_tool_calls(self) -> List[Dict[str, Any]]:
-        return [dict(call) for call in self._last_tool_calls]
+        return [self._safe_trace_value(call) for call in self._last_tool_calls]
 
     def get_last_question_plan(self) -> Optional[Dict[str, Any]]:
         if not isinstance(self._last_question_plan, dict):
@@ -279,6 +247,11 @@ class MemoryAgent:
             str(k): self._safe_trace_value(v)
             for k, v in self._last_question_plan.items()
         }
+
+    def _reset_round_state(self) -> None:
+        self._current_tool_calls = []
+        self._last_tool_calls = []
+        self._last_question_plan = None
 
     def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH):
         self.config_path = resolve_project_path(config_path).resolve()
@@ -572,6 +545,35 @@ class MemoryAgent:
             load_result.get("files_failed", 0),
         )
 
+    def _search_details_with_trace(self, detail: str, topk: Optional[int] = None) -> Dict[str, Any]:
+        cfg_topk = self.detail_search_defaults["topk"] if topk is None else int(topk)
+        call_entry = self._record_tool_call(
+            "search_details",
+            {"detail": detail, "topk": cfg_topk},
+        )
+        logger.info(
+            "API call: search_details(detail=%s, topk=%s)",
+            detail,
+            cfg_topk,
+        )
+        try:
+            result = self.memory_sys.search_details(
+                detail_query=detail,
+                topk=cfg_topk,
+            )
+        except Exception as exc:
+            self._finalize_tool_call(call_entry, error=exc)
+            raise
+        self._finalize_tool_call(call_entry, result=result)
+        logger.info(
+            "API response: search_details(success=%s, result_count=%s)",
+            result.get("hit") if isinstance(result, dict) else None,
+            len(result.get("results", []))
+            if isinstance(result, dict) and isinstance(result.get("results"), list)
+            else None,
+        )
+        return result
+
     def _build_tools(self):
         @tool
         def resolve_entity_id(entity_name_or_id: str) -> Dict[str, Any]:
@@ -815,34 +817,7 @@ class MemoryAgent:
             Search concrete behavior/action details from scene memories by semantic similarity.
             This is the default retrieval tool for most detail questions.
             """
-
-            cfg_topk = self.detail_search_defaults["topk"] if topk is None else int(topk)
-            call_entry = self._record_tool_call(
-                "search_details",
-                {"detail": detail, "topk": cfg_topk},
-            )
-            logger.info(
-                "API call: search_details(detail=%s, topk=%s)",
-                detail,
-                cfg_topk,
-            )
-            try:
-                result = self.memory_sys.search_details(
-                    detail_query=detail,
-                    topk=cfg_topk,
-                )
-            except Exception as exc:
-                self._finalize_tool_call(call_entry, error=exc)
-                raise
-            self._finalize_tool_call(call_entry, result=result)
-            logger.info(
-                "API response: search_details(success=%s, result_count=%s)",
-                result.get("hit") if isinstance(result, dict) else None,
-                len(result.get("results", []))
-                if isinstance(result, dict) and isinstance(result.get("results"), list)
-                else None,
-            )
-            return result
+            return self._search_details_with_trace(detail=detail, topk=topk)
 
         return [
             resolve_entity_id,
@@ -1035,6 +1010,17 @@ class MemoryAgent:
             "completion_criteria": "Answer the original question directly with tool-grounded evidence.",
         }
 
+    @staticmethod
+    def _build_shallow_question_plan(question_text: str) -> Dict[str, Any]:
+        return {
+            "goal": "",
+            "question_type": "",
+            "decomposition_reason": "",
+            "sub_questions": [],
+            "suggested_tool_order": [],
+            "completion_criteria": "",
+        }
+
     def _decompose_question(self, question_text: str) -> Dict[str, Any]:
         try:
             response = self._invoke_model_with_network_retry(
@@ -1121,6 +1107,23 @@ class MemoryAgent:
             f"{json.dumps(question_plan, ensure_ascii=False, indent=2)}\n\n"
             "[Solved Sub-questions]\n"
             f"{json.dumps(sub_question_results, ensure_ascii=False, indent=2)}"
+        )
+
+    @staticmethod
+    def _build_shallow_recall_prompt(
+        question_text: str,
+        search_result: Dict[str, Any],
+    ) -> str:
+        return (
+            "You are the lightweight summary stage of a memory recall pipeline.\n"
+            "Use only the provided search_details results.\n"
+            "Return JSON only with keys: answer, gold_answer, evidence.\n"
+            "If the recalled details do not actually answer the question, say that the current memory is insufficient and set gold_answer to null.\n"
+            "Do not invent facts, names, links, or times that are not grounded in the recalled data.\n\n"
+            "[User Question]\n"
+            f"{question_text}\n\n"
+            "[search_details Result]\n"
+            f"{json.dumps(search_result, ensure_ascii=False, indent=2)}"
         )
 
     def _compute_network_retry_delay(self, attempt: int) -> float:
@@ -1421,6 +1424,29 @@ class MemoryAgent:
 
         return False, "Direct answer is sufficient."
 
+    def _finalize_recall_payload(
+        self,
+        payload: Dict[str, Any],
+        *,
+        question_plan: Dict[str, Any],
+        sub_question_results: List[Dict[str, Any]],
+        tool_calls: List[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        payload["tool_call_count"] = len(tool_calls)
+        payload["question_plan"] = question_plan
+        payload["sub_question_results"] = sub_question_results
+        if not isinstance(payload.get("sub_questions"), list):
+            maybe_sub_questions = question_plan.get("sub_questions", [])
+            payload["sub_questions"] = maybe_sub_questions if isinstance(maybe_sub_questions, list) else []
+        if not payload.get("plan_summary"):
+            payload["plan_summary"] = question_plan.get("decomposition_reason")
+        self._log_structured_trace(
+            self._TRACE_PREFIX_FINAL_PAYLOAD,
+            payload,
+        )
+        self._last_tool_calls = tool_calls
+        return payload
+
     def _answer_directly(self, question_text: str, active_thread_id: str) -> Dict[str, Any]:
         prompt_text = self._build_direct_execution_prompt(question_text)
         response = self._invoke_tool_agent(
@@ -1453,16 +1479,67 @@ class MemoryAgent:
         )
         return payload
 
-    def ask(self, question: str, thread_id: Optional[str] = None) -> Dict[str, Any]:
-        """Run one QA round: input question -> output structured answer dict."""
+    def shallow_recall(self, question: str, thread_id: Optional[str] = None) -> Dict[str, Any]:
+        """Run a lightweight recall path using search_details only."""
+        if not isinstance(question, str) or not question.strip():
+            raise ValueError("question must be a non-empty string")
+
+        question_text = question.strip()
+        self._reset_round_state()
+        try:
+            question_plan = self._build_shallow_question_plan(question_text)
+            self._last_question_plan = question_plan
+            search_result = self._search_details_with_trace(question_text)
+            response = self._invoke_model_with_network_retry(
+                prompt_text=self._build_shallow_recall_prompt(question_text, search_result),
+                call_name="shallow_recall",
+            )
+            response_text = self._extract_message_text(response)
+            parsed = self._parse_json_block(response_text)
+            if isinstance(parsed, dict):
+                payload = self._normalize_output(parsed)
+            else:
+                payload = self._normalize_output(
+                    {
+                        "answer": response_text.strip(),
+                        "gold_answer": None,
+                        "evidence": None,
+                    }
+                )
+
+            answer_text = str(payload.get("answer", "") or "").strip()
+            if (
+                payload.get("gold_answer") is None
+                and answer_text
+                and not self._is_unanswerable_text(answer_text)
+                and len(answer_text) <= 120
+                and "\n" not in answer_text
+            ):
+                payload["gold_answer"] = answer_text
+            if not isinstance(payload.get("sub_questions"), list):
+                payload["sub_questions"] = []
+            if not payload.get("plan_summary"):
+                payload["plan_summary"] = question_plan["decomposition_reason"]
+
+            tool_calls = self._consume_current_tool_calls()
+            return self._finalize_recall_payload(
+                payload,
+                question_plan=question_plan,
+                sub_question_results=[],
+                tool_calls=tool_calls,
+            )
+        except Exception:
+            self._last_tool_calls = self._consume_current_tool_calls()
+            raise
+
+    def deep_recall(self, question: str, thread_id: Optional[str] = None) -> Dict[str, Any]:
+        """Run the full multi-step memory QA pipeline."""
         if not isinstance(question, str) or not question.strip():
             raise ValueError("question must be a non-empty string")
 
         question_text = question.strip()
         active_thread_id = thread_id or self.thread_id
-        self._current_tool_calls = []
-        self._last_tool_calls = []
-        self._last_question_plan = None
+        self._reset_round_state()
         try:
             decompose_first, strategy_reason = self._detect_direct_answer_strategy(question_text)
             logger.info(
@@ -1488,19 +1565,12 @@ class MemoryAgent:
                     retry_with_decomposition, retry_reason = self._should_retry_with_decomposition(payload)
                     if not retry_with_decomposition:
                         tool_calls = self._consume_current_tool_calls()
-                        payload["tool_calls"] = tool_calls
-                        payload["question_plan"] = direct_plan
-                        payload["sub_question_results"] = []
-                        if not payload.get("sub_questions"):
-                            payload["sub_questions"] = []
-                        if not payload.get("plan_summary"):
-                            payload["plan_summary"] = direct_plan.get("decomposition_reason")
-                        self._log_structured_trace(
-                            self._TRACE_PREFIX_FINAL_PAYLOAD,
+                        return self._finalize_recall_payload(
                             payload,
+                            question_plan=direct_plan,
+                            sub_question_results=[],
+                            tool_calls=tool_calls,
                         )
-                        self._last_tool_calls = tool_calls
-                        return payload
                     self._log_structured_trace(
                         self._TRACE_PREFIX_DIRECT_FALLBACK,
                         {
@@ -1529,22 +1599,19 @@ class MemoryAgent:
                 sub_question_results=sub_question_results,
             )
             tool_calls = self._consume_current_tool_calls()
-            payload["tool_calls"] = tool_calls
-            payload["question_plan"] = question_plan
-            payload["sub_question_results"] = sub_question_results
-            if not payload.get("sub_questions"):
-                payload["sub_questions"] = question_plan.get("sub_questions", [])
-            if not payload.get("plan_summary"):
-                payload["plan_summary"] = question_plan.get("decomposition_reason")
-            self._log_structured_trace(
-                self._TRACE_PREFIX_FINAL_PAYLOAD,
+            return self._finalize_recall_payload(
                 payload,
+                question_plan=question_plan,
+                sub_question_results=sub_question_results,
+                tool_calls=tool_calls,
             )
-            self._last_tool_calls = tool_calls
-            return payload
         except Exception:
             self._last_tool_calls = self._consume_current_tool_calls()
             raise
+
+    def ask(self, question: str, thread_id: Optional[str] = None) -> Dict[str, Any]:
+        """Backward-compatible alias of deep_recall()."""
+        return self.deep_recall(question=question, thread_id=thread_id)
 
 
 def create_memory_agent(config_path: str | Path = DEFAULT_CONFIG_PATH) -> MemoryAgent:
