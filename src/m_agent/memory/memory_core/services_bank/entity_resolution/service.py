@@ -1,17 +1,17 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-瀹炰綋瑙ｆ瀽鏈嶅姟涓诲叆鍙?
+实体解析服务主入口。
 
-鑱岃矗锛?
-- 鍚姩闃舵锛氫粠 KG 閲嶅缓 EntityLibrary锛堟淳鐢熺储寮曪級
-- 杩愯闃舵锛氭帴鏀舵柊 entity_id锛岃皟鐢ㄨВ鏋愮瓥鐣ヨ繘琛屽垽瀹?
-- 鏍规嵁鍒ゅ畾缁撴灉锛氭洿鏂?EntityLibrary锛屽湪蹇呰鏃惰皟鐢?kg_core 杩涜瀹炰綋鍚堝苟
+职责：
+- 启动阶段：从 KG 重建 EntityLibrary（派生索引）
+- 运行阶段：接收新 entity_id，调用解析策略进行判定
+- 根据判定结果：更新 EntityLibrary，在必要时调用 kg_core 进行实体合并
 
-璁捐鍘熷垯锛?
-- 鍒ゅ畾锛坮esolve锛変笌鎵ц锛坅pply锛夊垎绂?
-- 涓嶅寘鍚叿浣撳垽瀹氱瓥鐣ラ€昏緫
-- 涓嶇洿鎺ユ搷浣?KG 瀛樺偍
+设计原则：
+- 判定（resolve）与执行（apply）分离
+- 不包含具体判定策略逻辑
+- 不直接操作 KG 存储
 """
 
 import logging
@@ -20,32 +20,32 @@ from typing import Dict, Any, Optional, List, Callable, TYPE_CHECKING
 from dataclasses import dataclass, field
 
 try:
-    # 灏濊瘯鐩稿瀵煎叆锛堝綋浣滀负鍖呯殑涓€閮ㄥ垎鏃讹級
+    # 尝试相对导入（当作为包的一部分时）
     from .decision import ResolutionDecision, ResolutionType
     from .library import EntityLibrary, EntityRecord
     from .strategies import ResolutionStrategy, AliasThenEmbeddingLLMStrategy
 except ImportError:
-    # 鍥為€€鍒扮洿鎺ュ鍏ワ紙褰撶洿鎺ヨ繍琛屾椂锛?
+    # 回到直接导入（当直接运行时）
     from decision import ResolutionDecision, ResolutionType
     from library import EntityLibrary, EntityRecord
     from strategies import ResolutionStrategy, AliasThenEmbeddingLLMStrategy
 
-# 瀵煎叆浜嬩欢鎬荤嚎鐩稿叧妯″潡
+# 导入事件总线相关模块
 try:
     from m_agent.memory.memory_core.services_bank.base_service import BaseService
     from m_agent.memory.memory_core.system.event_types import EventType
 except ImportError:
-    # 鍥為€€鍒扮浉瀵瑰鍏?
+    # 回到相对导入
     import sys
     sys.path.append("..")
     from base_service import BaseService
     from system.event_types import EventType
 
-# 绫诲瀷妫€鏌ユ椂瀵煎叆KGBase锛岄伩鍏嶅惊鐜鍏?
+# 类型检查时导入 KGBase，避免循环导入
 if TYPE_CHECKING:
     from m_agent.memory.memory_core.core.kg_base import KGBase
 else:
-    # 杩愯鏃朵娇鐢ㄥ瓧绗︿覆绫诲瀷鎻愮ず
+    # 运行时使用字符串类型提示
     KGBase = "KGBase"  # type: ignore
 
 logger = logging.getLogger(__name__)
@@ -53,13 +53,13 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class ResolutionResult:
-    """瀹炰綋瑙ｆ瀽瀹屾暣缁撴灉"""
-    decision: ResolutionDecision  # 瑙ｆ瀽鍒ゅ畾
-    applied: bool = False  # 鏄惁宸插簲鐢ㄥ垽瀹氱粨鏋?
-    library_updated: bool = False  # EntityLibrary 鏄惁宸叉洿鏂?
-    kg_operation_performed: bool = False  # 鏄惁鎵ц浜?KG 鎿嶄綔
-    kg_operation_result: Optional[Dict[str, Any]] = None  # KG 鎿嶄綔缁撴灉
-    error: Optional[str] = None  # 閿欒淇℃伅
+    """实体解析完整结果"""
+    decision: ResolutionDecision  # 解析判定
+    applied: bool = False  # 是否已应用判定结果
+    library_updated: bool = False  # EntityLibrary 是否已更新
+    kg_operation_performed: bool = False  # 是否执行 KG 操作
+    kg_operation_result: Optional[Dict[str, Any]] = None  # KG 操作结果
+    error: Optional[str] = None  # 错误信息
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert the result to a dictionary payload."""
@@ -97,27 +97,27 @@ class EntityResolutionService(BaseService):
             use_threshold: Whether to enforce threshold-based filtering.
             data_path: Optional path for persisting the entity library.
         """
-        # 鍒濆鍖栧疄浣撳簱锛屼紶鍏mbed_func鍜宒ata_path
+        # 初始化实体库，传入embed_func和data_path
         self.entity_library = EntityLibrary(embed_func=embed_func, data_path=data_path)
         self.strategies: List[ResolutionStrategy] = []
         self.llm_func = llm_func
         self.embed_func = embed_func
         self.data_path = data_path
         
-        # 鍒濆鍖栭粯璁ょ瓥鐣ワ紙鍗曚竴绛栫暐锛?
+        # 初始化默认策略（单一策略）
         self._init_default_strategy(
             similarity_threshold=similarity_threshold,
             top_k=top_k,
             use_threshold=use_threshold
         )
         
-        logger.info("鍒濆鍖?EntityResolutionService")
+        logger.info("初始化 EntityResolutionService")
     
     def get_subscribed_events(self):
         """
-        杩斿洖鐩戝惉鐨?EventType 鍒楄〃
+        返回监听的 EventType 列表。
         
-        瀹炰綋瑙ｆ瀽鏈嶅姟闇€瑕佺洃鍚疄浣撴坊鍔犮€佸悎骞跺拰閲嶅懡鍚嶄簨浠讹紝浠ヤ究鏇存柊 EntityLibrary銆?
+        实体解析服务需要监听实体添加、合并和重命名事件，以便更新 EntityLibrary。
         """
         return [
             EventType.ENTITY_ADDED,
@@ -127,11 +127,11 @@ class EntityResolutionService(BaseService):
     
     def handle_event(self, event_type: str, payload: dict) -> None:
         """
-        澶勭悊浜嬩欢
+        处理事件
         
         Args:
-            event_type: 浜嬩欢绫诲瀷瀛楃涓?
-            payload: 浜嬩欢璐熻浇瀛楀吀
+            event_type: 事件类型字符串
+            payload: 事件负载字典
         """
         self._log_event_handling(event_type, payload)
         
@@ -150,59 +150,59 @@ class EntityResolutionService(BaseService):
             if old_id and new_id:
                 self.on_entity_renamed(old_id, new_id)
         else:
-            logger.debug(f"EntityResolutionService 蹇界暐鏈鐞嗕簨浠? {event_type}")
+            logger.debug(f"EntityResolutionService 忽略未处理事件: {event_type}")
     
     def on_entity_merged(self, source_id: str, target_id: str, **kwargs) -> None:
         """
-        鐩戝惉瀹炰綋鍚堝苟浜嬩欢
+        监听实体合并事件
         
-        褰?MemoryCore 鎵ц瀹炰綋鍚堝苟鏃惰皟鐢ㄦ鏂规硶锛岀敤浜庢洿鏂?EntityLibrary
+        当 MemoryCore 执行实体合并时调用此方法，用于更新 EntityLibrary。
         
         Args:
-            source_id: 婧愬疄浣揑D锛堝皢琚悎骞讹級
-            target_id: 鐩爣瀹炰綋ID锛堜繚鐣欙級
-            **kwargs: 鍏朵粬鍙傛暟锛堝鍚堝苟缁撴灉绛夛級
+            source_id: 源实体ID（将被合并）
+            target_id: 目标实体ID（保留）
+            **kwargs: 其他参数（如合并结果等）
         """
-        logger.info(f"鏀跺埌瀹炰綋鍚堝苟浜嬩欢: {source_id} -> {target_id}")
+        logger.info(f"收到实体合并事件: {source_id} -> {target_id}")
         
         try:
-            # Step 1: 鏀堕泦婧愬疄浣撶殑鎵€鏈夊埆鍚嶏紙鍦ㄥ垹闄や箣鍓嶏級
+            # Step 1: 收集源实体的所有别名（在删除之前）
             source_aliases = []
             if source_id in self.entity_library.entities:
-                # 鑾峰彇婧愬疄浣撶殑鎵€鏈夊悕绉帮紙鍖呮嫭瑙勮寖鍚嶇О鍜屽埆鍚嶏級
+                # 获取源实体的所有名称（包括规范名称和别名）
                 source_record = self.entity_library.entities[source_id]
                 source_aliases = source_record.get_all_names()
-                logger.debug(f"婧愬疄浣?{source_id} 鐨勫埆鍚? {source_aliases}")
+                logger.debug(f"源实体 {source_id} 的别名: {source_aliases}")
             
-            # Step 2: 濡傛灉 source_id 瀛樺湪浜?EntityLibrary.entities锛屽垹闄ょ浉鍏虫暟鎹?
+            # Step 2: 如果 source_id 存在于 EntityLibrary.entities，删除相关数据
             if source_id in self.entity_library.entities:
                 logger.info(f"Removing source entity state for {source_id}")
                 
-                # 鑾峰彇婧愬疄浣撶殑鎵€鏈夊悕绉帮紙鍖呮嫭瑙勮寖鍚嶇О鍜屽埆鍚嶏級
+                # 获取源实体的所有名称（包括规范名称和别名）
                 source_record = self.entity_library.entities[source_id]
                 source_names = source_record.get_all_names()
                 
-                # 浠?name_to_entity 鏄犲皠涓垹闄ゆ簮瀹炰綋鐨勬墍鏈夊悕绉?
+                # 从 name_to_entity 映射中删除源实体的所有名称
                 names_removed = 0
                 for name in source_names:
                     if name in self.entity_library.name_to_entity:
                         if self.entity_library.name_to_entity[name] == source_id:
                             del self.entity_library.name_to_entity[name]
                             names_removed += 1
-                            logger.debug(f"浠?name_to_entity 涓垹闄ゅ悕绉版槧灏? {name} -> {source_id}")
+                            logger.debug(f"从 name_to_entity 中删除名称映射: {name} -> {source_id}")
                 
                 logger.info(f"Removed {names_removed} name mappings for {source_id}")
                 
-                # 浠?embeddings 涓垹闄?source_id
+                # 从 embeddings 中删除 source_id
                 if source_id in self.entity_library.embeddings:
                     del self.entity_library.embeddings[source_id]
-                    logger.debug(f"鍒犻櫎宓屽叆鍚戦噺: {source_id}")
+                    logger.debug(f"删除嵌入向量: {source_id}")
                 
-                # 浠?entities 涓垹闄?source_id
+                # 从 entities 中删除 source_id
                 del self.entity_library.entities[source_id]
-                logger.debug(f"鍒犻櫎瀹炰綋璁板綍: {source_id}")
+                logger.debug(f"删除实体记录: {source_id}")
             
-            # Step 3: 纭繚 target_id 瀛樺湪锛堝鏋滀笉瀛樺湪鍏?add_entity锛?
+            # Step 3: 确保 target_id 存在（如果不存在则 add_entity）
             if target_id not in self.entity_library.entities:
                 logger.info(f"Target entity {target_id} was missing; creating it first")
                 add_success = self.entity_library.add_entity(
@@ -216,20 +216,20 @@ class EntityResolutionService(BaseService):
                 )
                 
                 if not add_success:
-                    logger.warning(f"鏃犳硶娣诲姞鐩爣瀹炰綋鍒?EntityLibrary: {target_id}")
+                    logger.warning(f"无法添加目标实体到 EntityLibrary: {target_id}")
                     return
             
-            # Step 4: 灏嗘簮瀹炰綋鐨勬墍鏈夊埆鍚嶉噸鏂版槧灏勫埌鐩爣瀹炰綋
+            # Step 4: 将源实体的所有别名重新映射到目标实体
             aliases_added = 0
             aliases_failed = 0
             
             for alias in source_aliases:
-                # 璺宠繃鐩爣瀹炰綋鏈韩锛堝鏋滃埆鍚嶄笌鐩爣瀹炰綋ID鐩稿悓锛?
+                # 跳过目标实体本身（如果别名与目标实体 ID 相同）
                 if alias == target_id:
-                    logger.debug(f"璺宠繃鍒悕 {alias}锛屽洜涓哄畠涓庣洰鏍囧疄浣揑D鐩稿悓")
+                    logger.debug(f"跳过别名 {alias}，因为它与目标实体ID相同")
                     continue
                     
-                # 娣诲姞鍒悕鍒扮洰鏍囧疄浣?
+                # 添加别名到目标实体
                 success = self.entity_library.add_alias(
                     entity_id=target_id,
                     alias=alias
@@ -237,24 +237,24 @@ class EntityResolutionService(BaseService):
                 
                 if success:
                     aliases_added += 1
-                    logger.debug(f"鎴愬姛娣诲姞鍒悕: {alias} -> {target_id}")
+                    logger.debug(f"成功添加别名: {alias} -> {target_id}")
                 else:
                     aliases_failed += 1
                     logger.warning(f"Failed to add alias mapping {alias} -> {target_id}")
             
             logger.info(f"Alias remap finished: added={aliases_added}, failed={aliases_failed}")
             
-            # Step 5: 楠岃瘉鏈€缁堜笉鍙橀噺
+            # Step 5: 验证最终不变量
             if source_id in self.entity_library.entities:
                 logger.error(f"Merge verification failed: source entity still exists: {source_id}")
             else:
                 logger.debug(f"Merge verification passed for removed source entity {source_id}")
             
-            # Step 6: 淇濆瓨 EntityLibrary 鍒扮鐩?
+            # Step 6: 保存 EntityLibrary 到磁盘
             if self.data_path:
                 save_success = self.entity_library.save_to_path(self.data_path)
                 if save_success:
-                    logger.info(f"EntityLibrary 宸蹭繚瀛樺埌纾佺洏: {self.data_path}")
+                    logger.info(f"EntityLibrary 已保存到磁盘: {self.data_path}")
                 else:
                     logger.error(f"Failed to save EntityLibrary to disk: {self.data_path}")
             else:
@@ -265,19 +265,19 @@ class EntityResolutionService(BaseService):
     
     def on_entity_added(self, entity_id: str) -> None:
         """
-        鐩戝惉瀹炰綋娣诲姞浜嬩欢
+        监听实体添加事件
         
-        褰?KG 涓坊鍔犳柊瀹炰綋鏃讹紝浠呭悓姝ョ姸鎬佸埌 EntityLibrary锛屼笉瑙﹀彂瑙ｆ瀽銆?
+        当 KG 中添加新实体时，仅同步状态到 EntityLibrary，不触发解析。
         
         Args:
-            entity_id: 鏂版坊鍔犵殑瀹炰綋ID
+            entity_id: 新添加的实体ID
         """
-        logger.info(f"鏀跺埌瀹炰綋娣诲姞浜嬩欢锛屽悓姝ュ埌 EntityLibrary: {entity_id}")
+        logger.info(f"收到实体添加事件，同步到 EntityLibrary: {entity_id}")
         
         try:
-            # 妫€鏌ュ疄浣撴槸鍚﹀凡鍦?EntityLibrary 涓?
+            # 检查实体是否已在 EntityLibrary 中
             if not self.entity_library.entity_exists(entity_id):
-                # 娣诲姞瀹炰綋鍒?EntityLibrary
+                # 添加实体到 EntityLibrary
                 success = self.entity_library.add_entity(
                     entity_id=entity_id,
                     canonical_name=entity_id,
@@ -288,52 +288,52 @@ class EntityResolutionService(BaseService):
                 )
                 
                 if success:
-                    # 鏍囪瀹炰綋涓烘湭瑙ｆ瀽鐘舵€?
+                    # 标记实体为未解析状态
                     record = self.entity_library.get_entity(entity_id)
                     if record:
                         record.mark_as_unresolved()
-                        logger.info(f"瀹炰綋宸叉坊鍔犲埌 EntityLibrary 骞舵爣璁颁负鏈В鏋? {entity_id}")
+                        logger.info(f"实体已添加到 EntityLibrary 并标记为未解析: {entity_id}")
                     else:
-                        logger.warning(f"鏃犳硶鑾峰彇鏂版坊鍔犵殑瀹炰綋璁板綍: {entity_id}")
+                        logger.warning(f"无法获取新添加的实体记录: {entity_id}")
                 else:
-                    logger.warning(f"鏃犳硶娣诲姞瀹炰綋鍒?EntityLibrary: {entity_id}")
+                    logger.warning(f"无法添加实体到 EntityLibrary: {entity_id}")
             else:
-                # 瀹炰綋宸插瓨鍦紝纭繚鏍囪涓烘湭瑙ｆ瀽鐘舵€?
+                # 实体已存在，确保标记为未解析状态
                 record = self.entity_library.get_entity(entity_id)
                 if record:
                     record.mark_as_unresolved()
-                    logger.info(f"瀹炰綋宸插瓨鍦紝鏍囪涓烘湭瑙ｆ瀽: {entity_id}")
+                    logger.info(f"实体已存在，标记为未解析: {entity_id}")
                 else:
-                    logger.warning(f"瀹炰綋瀛樺湪浣嗘棤娉曡幏鍙栬褰? {entity_id}")
+                    logger.warning(f"实体存在但无法获取记录: {entity_id}")
                 
         except Exception as e:
-            logger.error(f"澶勭悊瀹炰綋娣诲姞浜嬩欢鏃跺嚭閿?{entity_id}: {e}")
+            logger.error(f"处理实体添加事件时出错 {entity_id}: {e}")
     
     def on_entity_renamed(self, old_id: str, new_id: str) -> None:
         """
-        鐩戝惉瀹炰綋閲嶅懡鍚嶄簨浠?
+        监听实体重命名事件。
         
-        褰?KG 涓疄浣撻噸鍛藉悕鏃讹紝鏇存柊 EntityLibrary 浠ヤ繚鎸佸悓姝ャ€?
+        当 KG 中实体重命名时，更新 EntityLibrary 以保持同步。
         
         Args:
-            old_id: 鍘熷疄浣?ID
-            new_id: 鏂板疄浣?ID
+            old_id: 原实体 ID
+            new_id: 新实体 ID
         """
-        logger.info(f"鏀跺埌瀹炰綋閲嶅懡鍚嶄簨浠? {old_id} -> {new_id}")
+        logger.info(f"收到实体重命名事件: {old_id} -> {new_id}")
         
-        # 妫€鏌ュ師瀹炰綋鏄惁鍦?EntityLibrary 涓?
+        # 检查原实体是否在 EntityLibrary 中
         if old_id not in self.entity_library.entities:
-            logger.debug(f"鍘熷疄浣?{old_id} 涓嶅湪 EntityLibrary 涓紝璺宠繃")
+            logger.debug(f"原实体 {old_id} 不在 EntityLibrary 中，跳过")
             return
         
         try:
-            # 鑾峰彇鍘熷疄浣撹褰?
+            # 获取原实体记录
             old_record = self.entity_library.entities[old_id]
             
-            # 鍒涘缓鏂板疄浣撹褰曪紝缁ф壙鍘熻褰曠殑鎵€鏈夊睘鎬?
+            # 创建新实体记录，继承原记录的所有属性
             new_record = EntityRecord(
                 entity_id=new_id,
-                canonical_name=new_id,  # 浣跨敤鏂癐D浣滀负瑙勮寖鍖栧悕绉?
+                canonical_name=new_id,  # 使用新 ID 作为规范化名称
                 aliases=old_record.aliases.copy(),
                 embedding=old_record.embedding,
                 entity_type=old_record.entity_type,
@@ -342,36 +342,36 @@ class EntityResolutionService(BaseService):
                 last_decision=old_record.last_decision
             )
             
-            # 灏?old_id 娣诲姞涓烘柊瀹炰綋鐨勫埆鍚?
+            # 将 old_id 添加为新实体的别名
             new_record.aliases.append(old_id)
             
-            # 浠庣储寮曚腑绉婚櫎鍘熷疄浣?
+            # 从索引中移除原实体
             del self.entity_library.entities[old_id]
             
-            # 浠庡悕绉版槧灏勪腑绉婚櫎鍘熷疄浣撶殑鎵€鏈夊悕绉?
+            # 从名称映射中移除原实体的所有名称
             for name in old_record.get_all_names():
                 if name in self.entity_library.name_to_entity and self.entity_library.name_to_entity[name] == old_id:
                     del self.entity_library.name_to_entity[name]
             
-            # 浠庡祵鍏ュ悜閲忔槧灏勪腑绉婚櫎鍘熷疄浣?
+            # 从嵌入向量映射中移除原实体
             if old_id in self.entity_library.embeddings:
                 del self.entity_library.embeddings[old_id]
             
-            # 娣诲姞鏂板疄浣撳埌绱㈠紩
+            # 添加新实体到索引
             self.entity_library.entities[new_id] = new_record
             
-            # 寤虹珛鏂板疄浣撶殑鍚嶇О鏄犲皠
+            # 建立新实体的名称映射
             for name in new_record.get_all_names():
                 self.entity_library.name_to_entity[name] = new_id
             
-            # 娣诲姞宓屽叆鍚戦噺
+            # 添加嵌入向量
             if new_record.embedding:
                 self.entity_library.embeddings[new_id] = new_record.embedding
             
-            logger.info(f"EntityLibrary 鏇存柊鎴愬姛: {old_id} -> {new_id}")
+            logger.info(f"EntityLibrary 更新成功: {old_id} -> {new_id}")
             
         except Exception as e:
-            logger.error(f"澶勭悊瀹炰綋閲嶅懡鍚嶄簨浠跺け璐?{old_id} -> {new_id}: {e}")
+            logger.error(f"处理实体重命名事件失败 {old_id} -> {new_id}: {e}")
     
     def _init_default_strategy(
         self,
@@ -380,8 +380,8 @@ class EntityResolutionService(BaseService):
         use_threshold: bool = True
     ) -> None:
         """Initialize the default strategy list."""
-        # 鍒涘缓鍗曚竴绛栫暐锛氬埆鍚嶁啋鍚戦噺鐩镐技搴︹啋LLM鍒ゅ埆
-        # 浣跨敤涓庢枃浠堕《閮ㄧ浉鍚岀殑瀵煎叆妯″紡
+        # 创建单一策略：别名→向量相似度→LLM判别
+        # 使用与文件顶部相同的导入模式
         try:
             from .strategies import AliasThenEmbeddingLLMStrategy
         except ImportError:
@@ -396,17 +396,17 @@ class EntityResolutionService(BaseService):
         )
         
         self.strategies = [strategy]
-        logger.info(f"鍒濆鍖栭粯璁ょ瓥鐣? {strategy.name}")
+        logger.info(f"初始化默认策略: {strategy.name}")
     
     def add_strategy(self, strategy: ResolutionStrategy) -> None:
-        """娣诲姞瑙ｆ瀽绛栫暐"""
+        """添加解析策略"""
         self.strategies.append(strategy)
-        logger.info(f"娣诲姞瑙ｆ瀽绛栫暐: {strategy.name}")
+        logger.info(f"添加解析策略: {strategy.name}")
     
     def set_strategies(self, strategies: List[ResolutionStrategy]) -> None:
-        """璁剧疆瑙ｆ瀽绛栫暐鍒楄〃锛堟浛鎹㈢幇鏈夌瓥鐣ワ級"""
+        """设置解析策略列表（替换现有策略）"""
         self.strategies = strategies
-        logger.info(f"璁剧疆瑙ｆ瀽绛栫暐: {[s.name for s in self.strategies]}")
+        logger.info(f"设置解析策略: {[s.name for s in self.strategies]}")
     
     
     def resolve_entity(
@@ -415,19 +415,19 @@ class EntityResolutionService(BaseService):
         context: Optional[Dict[str, Any]] = None
     ) -> ResolutionDecision:
         """
-        瑙ｆ瀽瀹炰綋
+        解析实体
         
         Args:
-            entity_id: 寰呰В鏋愮殑瀹炰綋ID
-            context: 涓婁笅鏂囦俊鎭紙濡傚祵鍏ュ悜閲忕瓑锛?
+            entity_id: 待解析的实体ID
+            context: 上下文信息（如嵌入向量等）
             
         Returns:
-            ResolutionDecision 鍒ゅ畾缁撴灉
+            ResolutionDecision 判定结果
         """
-        logger.info(f"寮€濮嬭В鏋愬疄浣? {entity_id}")
+        logger.info(f"开始解析实体: {entity_id}")
         
         if not self.strategies:
-            logger.warning("鏈厤缃В鏋愮瓥鐣ワ紝杩斿洖鏂板缓瀹炰綋")
+            logger.warning("未配置解析策略，返回新建实体")
             return ResolutionDecision(
                 resolution_type=ResolutionType.NEW_ENTITY,
                 source_entity_id=entity_id,
@@ -437,21 +437,21 @@ class EntityResolutionService(BaseService):
                 timestamp=time.time()
             )
         
-        # 浣跨敤绗竴涓瓥鐣ヨ繘琛岃В鏋愶紙閫氬父鏄粍鍚堢瓥鐣ワ級
+        # 使用第一个策略进行解析（通常是组合策略）
         strategy = self.strategies[0]
         
         try:
             decision = strategy.resolve(entity_id, self.entity_library, context)
-            decision.timestamp = time.time()  # 璁剧疆鏃堕棿鎴?
+            decision.timestamp = time.time()  # 设置时间戳
             
-            logger.info(f"瀹炰綋瑙ｆ瀽瀹屾垚: {entity_id} -> {decision.resolution_type.value}")
+            logger.info(f"实体解析完成: {entity_id} -> {decision.resolution_type.value}")
             if decision.is_same_as_existing():
-                logger.info(f"  鐩爣瀹炰綋: {decision.target_entity_id}, 缃俊搴? {decision.confidence:.2f}")
+                logger.info(f"  目标实体: {decision.target_entity_id}, 置信度: {decision.confidence:.2f}")
             
             return decision
             
         except Exception as e:
-            logger.error(f"瑙ｆ瀽瀹炰綋澶辫触 {entity_id}: {e}")
+            logger.error(f"解析实体失败 {entity_id}: {e}")
             return ResolutionDecision(
                 resolution_type=ResolutionType.NEW_ENTITY,
                 source_entity_id=entity_id,
@@ -472,10 +472,10 @@ class EntityResolutionService(BaseService):
     
     def save_library(self) -> bool:
         """
-        淇濆瓨瀹炰綋搴撴暟鎹埌鏂囦欢
+        保存实体库数据到文件
         
         Returns:
-            鏄惁鎴愬姛淇濆瓨
+            是否成功保存
         """
         if not self.data_path:
             logger.warning("No data_path configured; cannot save entity library")
@@ -489,33 +489,33 @@ class EntityResolutionService(BaseService):
                 logger.warning(f"Failed to save entity library to {self.data_path}")
             return success
         except Exception as e:
-            logger.error(f"淇濆瓨瀹炰綋搴撴暟鎹椂鍑洪敊: {e}")
+            logger.error(f"保存实体库数据时出错: {e}")
             return False
     
     def resolve_unresolved_entities(self) -> List[ResolutionDecision]:
         """
-        鎵归噺瑙ｆ瀽鏈В鏋愮殑瀹炰綋
+        批量解析未解析的实体
         
-        閬嶅巻 EntityLibrary 涓墍鏈夊疄浣擄紝鎵惧埌 resolved == False 鐨勫疄浣擄紝
-        璋冪敤绛栫暐杩涜瑙ｆ瀽锛屼繚瀛樿В鏋愮粨鏋滐紝骞舵爣璁颁负宸茶В鏋愩€?
+        遍历 EntityLibrary 中所有实体，找到 resolved == False 的实体，
+        调用策略进行解析，保存解析结果，并标记为已解析。
         
-        杩斿洖瑙ｆ瀽寤鸿闆嗗悎锛坧roposal锛夛紝涓嶆墽琛屼换浣?KG 淇敼銆?
+        返回解析建议集合（proposal），不执行任何 KG 修改。
         
         Returns:
-            List[ResolutionDecision] 瑙ｆ瀽寤鸿鍒楄〃
+            List[ResolutionDecision] 解析建议列表
         """
         logger.info("Resolving unresolved entities in batch")
         
         decisions = []
         
         if not self.strategies:
-            logger.warning("鏈厤缃В鏋愮瓥鐣ワ紝鏃犳硶瑙ｆ瀽")
+            logger.warning("未配置解析策略，无法解析")
             return decisions
         
-        # 浣跨敤绗竴涓瓥鐣ヨ繘琛岃В鏋?
+        # 使用第一个策略进行解析
         strategy = self.strategies[0]
         
-        # 棣栧厛缁熻鏈В鏋愬疄浣撶殑鎬绘暟
+        # 首先统计未解析实体的总数
         unresolved_entities = []
         for entity_id, record in self.entity_library.entities.items():
             if not record.resolved:
@@ -528,59 +528,59 @@ class EntityResolutionService(BaseService):
             logger.info("No unresolved entities to process")
             return decisions
         
-        # 浣跨敤 tqdm 鏄剧ず杩涘害鏉?
+        # 使用 tqdm 显示进度
         try:
             from tqdm import tqdm
             
-            # 閰嶇疆 tqdm 浠ョ‘淇濊繘搴︽潯鑳芥纭樉绀?
-            # 浣跨敤 ascii 杩涘害鏉＄‘淇濆湪涓嶅悓缁堢涓兘鑳芥樉绀?
-            # 璁剧疆 mininterval 浠ュ噺灏戝埛鏂伴鐜囷紝閬垮厤涓庢棩蹇楀啿绐?
+            # 配置 tqdm 以确保进度条能正确显示
+            # 使用 ascii 进度条确保在不同终端中都能显示
+            # 设置 mininterval 以减少刷新频率，避免与日志冲突
             tqdm_kwargs = {
-                "desc": "瑙ｆ瀽瀹炰綋",
-                "unit": "瀹炰綋",
+                "desc": "解析实体",
+                "unit": "实体",
                 "total": total_unresolved,
-                "ascii": True,  # 浣跨敤 ASCII 瀛楃纭繚鍏煎鎬?
-                "mininterval": 0.5,  # 鏈€灏忓埛鏂伴棿闅?
+                "ascii": True,  # 使用 ASCII 字符确保兼容性
+                "mininterval": 0.5,  # 最小刷新间隔
                 "bar_format": "{l_bar}{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}]"
             }
             
-            # 鍒涘缓杩涘害鏉¤凯浠ｅ櫒
+            # 创建进度条迭代器
             progress_iterator = tqdm(unresolved_entities, **tqdm_kwargs)
             
         except ImportError:
             logger.warning("tqdm is not installed; using a plain iterator")
-            # 鍥為€€鍒扮畝鍗曟灇涓?
+            # 回退到简单枚举
             progress_iterator = unresolved_entities
         
-        # 浣跨敤杩涘害鏉¤凯浠ｅ櫒閬嶅巻鏈В鏋愬疄浣?
+        # 使用进度条迭代器遍历未解析实体
         for entity_id, record in progress_iterator:
             try:
-                # 鏇存柊杩涘害鏉℃弿杩帮紝鏄剧ず褰撳墠澶勭悊鐨勫疄浣?
+                # 更新进度条描述，显示当前处理的实体
                 if hasattr(progress_iterator, "set_description"):
-                    progress_iterator.set_description(f"瑙ｆ瀽: {entity_id[:20]}...")
+                    progress_iterator.set_description(f"解析: {entity_id[:20]}...")
                 
-                # 璋冪敤绛栫暐杩涜瑙ｆ瀽
+                # 调用策略进行解析
                 decision = strategy.resolve(entity_id, self.entity_library, context=None)
                 decision.timestamp = time.time()
                 decision.source_entity_id = entity_id
                 
-                # 淇濆瓨 decision 鍒?last_decision
+                # 保存 decision 到 last_decision
                 record.last_decision = decision.to_dict()
                 
-                # 鏍囪涓哄凡瑙ｆ瀽
+                # 标记为已解析
                 record.mark_as_resolved(record.last_decision)
                 
-                # 娣诲姞鍒拌繑鍥炲垪琛?
+                # 添加到返回列表
                 decisions.append(decision)
                 
-                # 鏇存柊杩涘害鏉″悗鎻忚堪
+                # 更新进度条后描述
                 if hasattr(progress_iterator, "set_postfix"):
                     result_type = decision.resolution_type.value[:10]
                     progress_iterator.set_postfix(result=result_type, conf=f"{decision.confidence:.2f}")
                 
             except Exception as e:
-                logger.error(f"瑙ｆ瀽瀹炰綋澶辫触 {entity_id}: {e}")
-                # 鍒涘缓涓€涓敊璇喅绛?
+                logger.error(f"解析实体失败 {entity_id}: {e}")
+                # 创建一个错误决策
                 error_decision = ResolutionDecision(
                     resolution_type=ResolutionType.NEW_ENTITY,
                     source_entity_id=entity_id,
@@ -591,13 +591,13 @@ class EntityResolutionService(BaseService):
                 )
                 decisions.append(error_decision)
                 
-                # 鏇存柊杩涘害鏉℃樉绀洪敊璇?
+                # 更新进度条显示错误
                 if hasattr(progress_iterator, "set_postfix"):
-                    progress_iterator.set_postfix(error="澶辫触")
+                    progress_iterator.set_postfix(error="失败")
         
         logger.info(f"Batch entity resolution finished with {len(decisions)} decisions")
         
-        # 瑙ｆ瀽瀹屾垚鍚庤嚜鍔ㄥ瓨妗?
+        # 解析完成后自动保存
         if decisions and self.data_path:
             save_success = self.save_library()
             if save_success:
@@ -612,13 +612,13 @@ class EntityResolutionService(BaseService):
         stats = self.get_library_stats()
         strategy_names = [s.name for s in self.strategies]
         
-        # 缁熻鏈В鏋愬疄浣撴暟閲?
+        # 统计未解析实体数量
         unresolved_count = sum(1 for record in self.entity_library.entities.values() if not record.resolved)
         
         return f"EntityResolutionService(entities={stats['entity_count']}, unresolved={unresolved_count}, strategies={strategy_names})"
 
 
-# 渚挎嵎鍑芥暟
+# 便捷函数
 def create_default_resolution_service(
     llm_func: Callable[[str], str],
     embed_func: Callable[[str], List[float]],
@@ -628,18 +628,18 @@ def create_default_resolution_service(
     data_path: Optional[str] = None
 ) -> EntityResolutionService:
     """
-    鍒涘缓榛樿閰嶇疆鐨勫疄浣撹В鏋愭湇鍔?
+    创建默认配置的实体解析服务。
     
     Args:
-        llm_func: LLM鍑芥暟锛屾帴鏀秔rompt杩斿洖鍥炵瓟
-        embed_func: 宓屽叆鍚戦噺鐢熸垚鍑芥暟锛屾帴鏀舵枃鏈繑鍥炲祵鍏ュ悜閲?
-        similarity_threshold: 鍚戦噺鐩镐技搴﹂槇鍊?
-        top_k: 杩斿洖鍓岾涓€欓€?
-        use_threshold: 鏄惁浣跨敤闃堝€兼ā寮?
-        data_path: 瀹炰綋搴撴暟鎹枃浠惰矾寰勶紝濡傛灉鎻愪緵鍒欎粠璇ヨ矾寰勫姞杞芥暟鎹?
+        llm_func: LLM函数，接收prompt返回回答
+        embed_func: 嵌入向量生成函数，接收文本并返回嵌入向量
+        similarity_threshold: 向量相似度阈值
+        top_k: 返回前 K 个候选
+        use_threshold: 是否使用阈值模式
+        data_path: 实体库数据文件路径，如果提供则从该路径加载数据
         
     Returns:
-        EntityResolutionService 瀹炰緥
+        EntityResolutionService 实例
     """
     service = EntityResolutionService(
         llm_func=llm_func,

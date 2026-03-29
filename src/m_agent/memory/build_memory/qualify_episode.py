@@ -1,9 +1,9 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # 2025-12-27 changshengEVA
 """
-Episode Information Scoring 妯″潡銆?
-鎵弿 episodes 鐩綍涓嬬殑 episode 鏂囦欢锛屽姣忎釜 episode 杩涜淇℃伅璇勫垎璇勪及銆?
-鎻愪緵娓呯悊 qualifications 鏂囦欢鐨勬帴鍙ｃ€?
+Episode Information Scoring 模块。
+扫描 episodes 目录下的 episode 文件，对每个 episode 进行信息评分评估。
+提供清理 qualifications 文件的接口。
 """
 
 import os
@@ -17,13 +17,13 @@ from typing import Dict, List, Optional, Tuple, Callable
 from tqdm import tqdm
 
 from m_agent.paths import CONFIG_DIR, memory_stage_dir
-# 娣诲姞椤圭洰鏍圭洰褰曞埌 Python 璺緞锛岀‘淇濆彲浠ュ鍏?load_model
+# 添加项目根目录到 Python 路径，确保可以导入 load_model
 
-# 閰嶇疆鏃ュ織锛氬彧鏄剧ず WARNING 鍙婁互涓婄骇鍒紝鍑忓皯杈撳嚭鍣煶
+# 配置日志：只显示 WARNING 及以上级别，减少输出噪音
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 璺緞閰嶇疆
+# 路径配置
 DIALOGUES_ROOT = memory_stage_dir("default", "dialogues")
 EPISODES_ROOT = memory_stage_dir("default", "episodes")
 CONFIG_PATH = CONFIG_DIR / "prompt" / "episode.yaml"
@@ -33,13 +33,13 @@ def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict:
     with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
         config = yaml.safe_load(f)
     prompts = config.get('scoring_sys', {})
-    # 鏇挎崲 prompts 涓殑 <memory_owner_name> 鍗犱綅绗?
+    # 替换 prompts 中的 <memory_owner_name> 占位符
     if isinstance(prompts, dict):
         for key, value in prompts.items():
             if isinstance(value, str):
                 prompts[key] = value.replace('<memory_owner_name>', memory_owner_name)
             elif isinstance(value, dict):
-                # 澶勭悊宓屽瀛楀吀锛堜緥濡?scoring_sys 涓殑鍚勪釜璇勫垎缁村害锛?
+                # 处理嵌套字典（例如 scoring_sys 中的各个评分维度）
                 for sub_key, sub_value in value.items():
                     if isinstance(sub_value, str):
                         value[sub_key] = sub_value.replace('<memory_owner_name>', memory_owner_name)
@@ -60,7 +60,7 @@ def scan_episode_files(episodes_root: Path = None) -> List[Path]:
         episodes_root = EPISODES_ROOT
     
     episode_files = []
-    # 鎵弿 by_dialogue 鐩綍
+    # 扫描 by_dialogue 目录
     by_dialogue_dir = episodes_root / "by_dialogue"
     if not by_dialogue_dir.exists():
         return episode_files
@@ -89,27 +89,27 @@ def episode_needs_qualification(episode_file: Path) -> bool:
     return not qualification_file.exists()
 
 def load_episodes(episode_file: Path) -> Dict:
-    """鍔犺浇 episode JSON 鏂囦欢"""
+    """加载 episode JSON 文件"""
     with open(episode_file, 'r', encoding='utf-8') as f:
         return json.load(f)
 
 def find_dialogue_file(dialogue_id: str, dialogues_root: Path = None) -> Optional[Path]:
     """
-    鏍规嵁 dialogue_id 鏌ユ壘瀵瑰簲鐨勫璇濇枃浠躲€?
-    鎼滅储 dialogues 鐩綍涓嬬殑鎵€鏈夊瓙鐩綍銆?
+    根据 dialogue_id 查找对应的对话文件。
+    搜索 dialogues 目录下的所有子目录。
     
     Args:
-        dialogue_id: 瀵硅瘽ID
-        dialogues_root: 瀵硅瘽鏍圭洰褰曪紝濡傛灉涓篘one鍒欎娇鐢ㄩ粯璁ょ殑DIALOGUES_ROOT
+        dialogue_id: 对话ID
+        dialogues_root: 对话根目录，如果为None则使用默认的DIALOGUES_ROOT
     """
     if dialogues_root is None:
         dialogues_root = DIALOGUES_ROOT
     
-    # 鎼滅储鎵€鏈夊彲鑳界殑鐩綍缁撴瀯
+    # 搜索所有可能的目录结构
     search_patterns = [
         ("by_user", "*", "*"),      # by_user/{user_id}/{year-month}/
         ("by_flipflop", "*", "*"),  # by_flipflop/{flipflop_id}/{year-month}/
-        ("", "*", "*"),             # 鐩存帴鎼滅储鏍圭洰褰曚笅鐨?{user_id}/{year-month}/
+        ("", "*", "*"),             # 直接搜索根目录下的 {user_id}/{year-month}/
     ]
     
     for base_dir, user_pattern, date_pattern in search_patterns:
@@ -117,17 +117,17 @@ def find_dialogue_file(dialogue_id: str, dialogues_root: Path = None) -> Optiona
         if not search_dir.exists():
             continue
             
-        # 閬嶅巻鐢ㄦ埛鐩綍
+        # 遍历用户目录
         for user_dir in search_dir.iterdir():
             if user_dir.is_dir():
-                # 閬嶅巻骞存湀鐩綍
+                # 遍历年月目录
                 for year_month_dir in user_dir.iterdir():
                     if year_month_dir.is_dir():
                         dialogue_file = year_month_dir / f"{dialogue_id}.json"
                         if dialogue_file.exists():
                             return dialogue_file
     
-    # 濡傛灉娌℃湁鎵惧埌锛屽皾璇曢€掑綊鎼滅储鏁翠釜鐩綍
+    # 如果没有找到，尝试归搜索整个目录
     for file_path in dialogues_root.rglob(f"{dialogue_id}.json"):
         if file_path.is_file():
             return file_path
@@ -135,26 +135,26 @@ def find_dialogue_file(dialogue_id: str, dialogues_root: Path = None) -> Optiona
     return None
 
 def load_dialogue(dialogue_file: Path) -> Dict:
-    """鍔犺浇瀵硅瘽 JSON 鏂囦欢"""
+    """加载对话 JSON 文件"""
     with open(dialogue_file, 'r', encoding='utf-8') as f:
         return json.load(f)
 
 def build_episode_with_content(episode_meta: Dict, dialogue_data: Dict) -> Dict:
     """
-    鏍规嵁 episode 鍏冩暟鎹拰瀵硅瘽鏁版嵁鏋勫缓瀹屾暣鐨?episode 鍐呭銆?
+    根据 episode 元数据和对话数据构建完整的 episode 内容。
     
     Args:
-        episode_meta: episode 鍏冩暟鎹紙鏉ヨ嚜 episodes_v1.json锛?
-        dialogue_data: 瀹屾暣鐨勫璇濇暟鎹?
+        episode_meta: episode 元数据（来自 episodes_v1.json）
+        dialogue_data: 完整的对话数据
         
     Returns:
-        鍖呭惈瀹屾暣鍐呭鐨?episode 瀛楀吀
+        包含完整内容的 episode 字典
     """
-    # 鎻愬彇 turn_span
+    # 提取 turn_span
     turn_span = episode_meta.get('turn_span', [0, 0])
     start_id, end_id = turn_span[0], turn_span[1]
     
-    # 鎻愬彇瀵瑰簲鐨勫璇濊疆娆?
+    # 提取对应的对话轮次
     turns = dialogue_data.get('turns', [])
     episode_turns = []
     
@@ -163,7 +163,7 @@ def build_episode_with_content(episode_meta: Dict, dialogue_data: Dict) -> Dict:
         if start_id <= turn_id <= end_id:
             episode_turns.append(turn)
     
-    # 鏋勫缓瀹屾暣鐨?episode 缁撴瀯
+    # 构建完整的 episode 结构
     episode_with_content = episode_meta.copy()
     episode_with_content['turns'] = episode_turns
     episode_with_content['dialogue_content'] = {
@@ -182,26 +182,26 @@ def call_openai_for_scoring(
     llm_model: Optional[Callable[[str], str]] = None
 ) -> Dict:
     """
-    璋冪敤 OpenAI 杩涜鍗曚釜璇勫垎缁村害鐨勮瘎鍒嗐€?
-    杩斿洖瑙ｆ瀽鍚庣殑 JSON 缁撴灉銆?
+    调用 OpenAI 进行单个评分维度的评分。
+    返回解析后的 JSON 结果。
     """
     if llm_model is None:
         from m_agent.load_model.OpenAIcall import get_llm
         llm_model = get_llm(model_temperature=0.1)
     
-    # 鑾峰彇 LLM 瀹炰緥锛屾俯搴﹁涓?0.1 浠ヨ幏寰楁洿纭畾鎬х殑杈撳嚭
+    # 获取 LLM 实例，温度设为 0.1 以获得更确定性的输出
     
-    # 灏?episode JSON 杞崲涓哄瓧绗︿覆鐢ㄤ簬鎻掑叆
+    # 将 episode JSON 转换为字符串用于插入
     episode_str = json.dumps(episode_with_content, ensure_ascii=False, indent=2)
     user_prompt = user_prompt_template.replace('<EPISODE_JSON>', episode_str)
     
-    # 缁勫悎 system 鍜?user prompt锛堥€傜敤浜?text completion 妯″瀷锛?
+    # 组合 system 和 user prompt（用于 text completion 模型）
     full_prompt = f"{system_prompt}\n\n{user_prompt}"
     
     try:
         response_text = llm_model(full_prompt)
-        # 瑙ｆ瀽 JSON 鍝嶅簲
-        # 鍝嶅簲鍙兘鍖呭惈棰濆鐨勬枃鏈紝灏濊瘯鎻愬彇 JSON 閮ㄥ垎
+        # 解析 JSON 响应
+        # 响应可能包含额外的文本，尝试提取 JSON 部分
         json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
         if json_match:
             response_text = json_match.group(0)
@@ -209,11 +209,11 @@ def call_openai_for_scoring(
         result = json.loads(response_text)
         return result
     except json.JSONDecodeError as e:
-        logger.error(f"瑙ｆ瀽 OpenAI 鍝嶅簲澶辫触: {e}")
-        logger.error(f"鍝嶅簲鏂囨湰: {response_text[:500]}...")
+        logger.error(f"解析 OpenAI 响应失败: {e}")
+        logger.error(f"响应文本: {response_text[:500]}...")
         raise
     except Exception as e:
-        logger.error(f"璋冪敤 OpenAI 澶辫触: {e}")
+        logger.error(f"调用 OpenAI 失败: {e}")
         raise
 
 
@@ -223,8 +223,8 @@ def call_openai_for_qualification(
     llm_model: Optional[Callable[[str], str]] = None
 ) -> Dict:
     """
-    璋冪敤 OpenAI 杩涜澶氫釜璇勫垎缁村害鐨勮瘎鍒嗐€?
-    渚濇鎸夌収 scoring_sys 涓殑鍐呭鍒嗗埆鎵撳垎锛岃繑鍥炴墍鏈夎瘎鍒嗙粨鏋滅殑瀛楀吀銆?
+    调用 OpenAI 进行多个评分维度的评分。
+    依次按照 scoring_sys 中的内容分别打分，返回所有评分结果的字典。
     """
     scoring_results = {}
     
@@ -246,38 +246,38 @@ def call_openai_for_qualification(
             )
             scoring_results[score_name] = result
         except Exception as e:
-            logger.error(f"璇勫垎妯″潡 {scoring_name} 澶辫触: {e}")
-            # 缁х画澶勭悊鍏朵粬璇勫垎妯″潡
+            logger.error(f"评分模块 {scoring_name} 失败: {e}")
+            # 继续处理其他评分模块
             continue
     
     return scoring_results
 
 def build_qualification_structure(dialogue_id: str, episode_id: str, scoring_results: Dict) -> Dict:
     """
-    鏋勫缓鏈€缁堢殑 qualification 缁撴瀯锛岀鍚堣姹傜殑鏍煎紡銆?
-    鍙繚鐣?scoring_sys 涓畾涔夌殑璇勫垎缁村害锛屼笉娣诲姞棰濆瀛楁銆?
+    构建最终的 qualification 结构，符合要求的格式。
+    只保留 scoring_sys 中定义的评分维度，不添加额外字段。
     
     Args:
-        dialogue_id: 瀵硅瘽ID
-        episode_id: 鐗囨ID
-        scoring_results: 瀛楀吀锛岄敭涓?score_name锛屽€间负璇勫垎妯″潡鐨勫師濮嬭緭鍑?
+        dialogue_id: 对话ID
+        episode_id: 片段ID
+        scoring_results: 字典，键为 score_name，值为评分模块的原始输出
     """
     scene_potential_score = {}
     rationale = {}
     
-    # 閬嶅巻鎵€鏈夎瘎鍒嗙粨鏋滐紝鎻愬彇鍒嗘暟鍜岀悊鐢?
+    # 遍历所有评分结果，提取分数和理由
     for score_name, result in scoring_results.items():
-        # 鏍规嵁鐢ㄦ埛瑕佹眰锛屽瓧娈靛悕浣跨敤 score_name + "_novelty"
+        # 根据用户要求，字段名使用 score_name + "_novelty"
         expected_field = f"{score_name}_novelty"
         score_value = None
         
-        # 灏濊瘯浠庨鏈熷瓧娈佃幏鍙栧垎鏁?
+        # 尝试从预期字段获取分数
         if expected_field in result and isinstance(result[expected_field], int):
             score_value = result[expected_field]
             scene_potential_score[expected_field] = score_value
             rationale[expected_field] = result.get("rationale", "No rationale provided")
         else:
-            # 濡傛灉棰勬湡瀛楁涓嶅瓨鍦紝灏濊瘯鏌ユ壘鍏朵粬鍒嗘暟瀛楁
+            # 如果预期字段不存在，尝试查找其他分数字段
             for key, value in result.items():
                 if isinstance(value, int) and (key.endswith("_novelty") or key.endswith("_score")):
                     score_value = value
@@ -285,15 +285,15 @@ def build_qualification_structure(dialogue_id: str, episode_id: str, scoring_res
                     rationale[key] = result.get("rationale", "No rationale provided")
                     break
             if score_value is None:
-                # 濡傛灉娌℃湁鎵惧埌鍒嗘暟瀛楁锛岃烦杩囪璇勫垎妯″潡
-                logger.warning(f"璇勫垎妯″潡 {score_name} 鏈壘鍒板垎鏁板瓧娈碉紝璺宠繃")
+                # 如果没有找到分数字段，跳过该评分模块
+                logger.warning(f"评分模块 {score_name} 未找到分数字段，跳过")
     
-    # 濡傛灉娌℃湁浠讳綍璇勫垎缁撴灉锛屽垱寤虹┖缁撴瀯
+    # 如果没有任何评分结果，创建空结构
     if not scene_potential_score:
         scene_potential_score = {}
         rationale = {}
     
-    # 鍐崇瓥瀛楁鏆傛椂璁句负 pending锛堜笅娓哥▼搴忎細鍔ㄦ€佹娴嬶級
+    # 决策字段暂时设为 pending（下游程序会自动检测）
     decision = "pending"
     
     return {
@@ -313,52 +313,52 @@ def process_episode_file(
     memory_owner_name: str = "changshengEVA",
     llm_model: Optional[Callable[[str], str]] = None
 ) -> bool:
-    """澶勭悊鍗曚釜 episode 鏂囦欢锛岀敓鎴?qualification"""
+    """处理单个 episode 文件，生成 qualification。"""
     try:
-        # 鍔犺浇 episodes
+        # 加载 episodes
         episode_data = load_episodes(episode_file)
         dialogue_id = episode_data.get('dialogue_id', episode_file.parent.name)
         
-        # 鏌ユ壘骞跺姞杞藉搴旂殑瀵硅瘽鏂囦欢
+        # 查找并加载对应的对话文件
         dialogue_file = find_dialogue_file(dialogue_id, dialogues_root)
         if not dialogue_file:
-            logger.error(f"鎵句笉鍒板璇濇枃浠? {dialogue_id}")
+            logger.error(f"找不到对话文件: {dialogue_id}")
             return False
         
         dialogue_data = load_dialogue(dialogue_file)
         
-        # 鑾峰彇鎵€鏈?episodes
+        # 获取所有 episodes
         episodes = episode_data.get('episodes', [])
         if not episodes:
             logger.warning(f"Skipping dialogue {dialogue_id}: no episodes found")
             return False
         
-        # 涓烘瘡涓?episode 鐢熸垚 qualification
+        # 为每个 episode 生成 qualification
         qualifications = []
         for episode in episodes:
             episode_id = episode.get('episode_id', 'unknown')
             
-            # 鏋勫缓鍖呭惈瀹屾暣鍐呭鐨?episode
+            # 构建包含完整内容的 episode
             episode_with_content = build_episode_with_content(episode, dialogue_data)
             
-            # 璋冪敤 OpenAI 杩涜 qualification
+            # 调用 OpenAI 进行 qualification
             openai_result = call_openai_for_qualification(
                 episode_with_content,
                 prompts,
                 llm_model=llm_model
             )
             
-            # 鏋勫缓鏈€缁堢粨鏋?
+            # 构建最终结果
             qualification = build_qualification_structure(dialogue_id, episode_id, openai_result)
             qualifications.append(qualification)
         
-        # 淇濆瓨鏂囦欢
+        # 保存文件
         qualification_file = get_qualification_path(episode_file)
         save_qualifications(qualifications, qualification_file)
         
         return True
     except Exception as e:
-        logger.error(f"澶勭悊 episode 鏂囦欢 {episode_file} 澶辫触: {e}")
+        logger.error(f"处理 episode 文件 {episode_file} 失败: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return False
@@ -389,38 +389,38 @@ def scan_and_qualify_episodes(
         episodes_root: Optional episodes root override.
         memory_owner_name: Placeholder value injected into prompt templates.
     """
-    # 纭畾浣跨敤鐨勬牴鐩綍
+    # 确定使用的根目录
     if episodes_root is None:
         episodes_root = EPISODES_ROOT
     if dialogues_root is None:
         dialogues_root = DIALOGUES_ROOT
     
-    # 纭繚 episodes 鏍圭洰褰曞瓨鍦?
+    # 确保 episodes 根目录存在
     ensure_directory(episodes_root)
     
-    # 鍔犺浇 prompts锛屽苟鏇挎崲鍗犱綅绗?
+    # 加载 prompts，并替换占位符
     prompts = load_prompts(memory_owner_name)
     if not prompts:
-        logger.error("鏈壘鍒?episode_information_scoring prompts")
+        logger.error("未找到 episode_information_scoring prompts")
         return
     
-    # 鎵弿鎵€鏈?episode 鏂囦欢
+    # 扫描所有 episode 文件
     episode_files = scan_episode_files(episodes_root)
     
-    # 杩囨护闇€瑕佸鐞嗙殑鏂囦欢
+    # 过滤需要处理的文件
     files_to_process = []
     for file in episode_files:
         if episode_needs_qualification(file):
             files_to_process.append(file)
     
     if not files_to_process:
-        # 娌℃湁闇€瑕佸鐞嗙殑鏂囦欢锛岄潤榛橀€€鍑?
-        logger.info("娌℃湁闇€瑕佸鐞嗙殑 episode 鏂囦欢")
+        # 没有需要处理的文件，静默退出
+        logger.info("没有需要处理的 episode 文件")
         return
     
-    # 澶勭悊鏂囦欢
+    # 处理文件
     if use_tqdm:
-        file_iter = tqdm(files_to_process, desc="璇勪及 episodes")
+        file_iter = tqdm(files_to_process, desc="评估 episodes")
     else:
         file_iter = files_to_process
     
@@ -435,7 +435,7 @@ def scan_and_qualify_episodes(
         ):
             success_count += 1
     
-    logger.info(f"鎴愬姛澶勭悊 {success_count}/{len(files_to_process)} 涓?episode 鏂囦欢")
+    logger.info(f"成功处理 {success_count}/{len(files_to_process)} 个 episode 文件")
 
 def clear_all_qualifications(confirm: bool = False):
     """
@@ -444,7 +444,7 @@ def clear_all_qualifications(confirm: bool = False):
     Args:
         confirm: When False, show a preview only.
     """
-    # 鎵弿鎵€鏈?episode 鏂囦欢
+    # 扫描所有 episode 文件
     episode_files = scan_episode_files()
     
     qualification_files = []
@@ -454,26 +454,26 @@ def clear_all_qualifications(confirm: bool = False):
             qualification_files.append(qual_file)
     
     if not qualification_files:
-        print("娌℃湁鎵惧埌 qualifications_v1.json 鏂囦欢")
+        print("没有找到 qualifications_v1.json 文件")
         return
     
-    print(f"鎵惧埌 {len(qualification_files)} 涓?qualifications_v1.json 鏂囦欢:")
+    print(f"找到 {len(qualification_files)} 个 qualifications_v1.json 文件:")
     for qual_file in qualification_files:
         print(f"  - {qual_file}")
     
     if not confirm:
-        print("\n杩欏彧鏄瑙堛€傝瀹為檯鍒犻櫎杩欎簺鏂囦欢锛岃杩愯: clear_all_qualifications(confirm=True)")
+        print("\n这只是预览要实际删除这些文件，请运行: clear_all_qualifications(confirm=True)")
         return
     
-    # 瀹為檯鍒犻櫎鏂囦欢
+    # 实际删除文件
     deleted_count = 0
     for qual_file in qualification_files:
         try:
             qual_file.unlink()
-            print(f"宸插垹闄? {qual_file}")
+            print(f"已删除 {qual_file}")
             deleted_count += 1
         except Exception as e:
-            print(f"鍒犻櫎澶辫触 {qual_file}: {e}")
+            print(f"删除失败 {qual_file}: {e}")
     
     print(f"\nDeleted {deleted_count}/{len(qualification_files)} files.")
 
@@ -492,7 +492,5 @@ if __name__ == "__main__":
     elif args.scan:
         scan_and_qualify_episodes()
     else:
-        # 榛樿琛屼负锛氭壂鎻忓苟璇勪及
+        # 默认行为：扫描并评估
         scan_and_qualify_episodes()
-
-

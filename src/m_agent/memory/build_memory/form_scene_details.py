@@ -312,9 +312,9 @@ def fallback_extract_facts(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "practice",
         "plan",
         "鍑嗗",
-        "缁冧範",
-        "鍙傚姞",
-        "鎵撶畻",
+        "练习",
+        "参加",
+        "打算",
     )
     results: List[Dict[str, Any]] = []
 
@@ -326,7 +326,7 @@ def fallback_extract_facts(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
         if any(k in lower for k in keywords) or any(k in text for k in keywords):
             atomic_fact = text
-            sentences = re.split(r"(?<=[.!?銆傦紒锛焆)\s+", text)
+            sentences = re.split(r"(?<=[.!?。！？])\s+", text)
             for sentence in sentences:
                 if any(k in sentence.lower() for k in keywords) or any(k in sentence for k in keywords):
                     atomic_fact = sentence.strip()

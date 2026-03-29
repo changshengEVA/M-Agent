@@ -1,7 +1,7 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
-Episode 鐘舵€佺鐞嗗櫒銆?
-鐢ㄤ簬鍦ㄧ敓鎴愯繃绋嬩腑鏇存柊鍜屾鏌?episode_situation.json 鏂囦欢銆?
+Episode 状态管理器。
+用于在生成过程中更新和检查 `episode_situation.json` 文件。
 """
 
 import json
@@ -13,15 +13,15 @@ from typing import Dict, Optional, Any
 from m_agent.paths import memory_stage_dir
 
 class EpisodeStatusManager:
-    """绠＄悊 episode_situation.json 鏂囦欢鐨勮鍙栧拰鏇存柊"""
+    """管理 episode_situation.json 文件的读取和更新"""
     
     def __init__(self, situation_file_path: Optional[Path] = None, workflow_id: str = "test"):
         """
-        鍒濆鍖栫姸鎬佺鐞嗗櫒銆?
+        初始化状态管理器。
         
         Args:
-            situation_file_path: episode_situation.json 鏂囦欢璺緞锛屽鏋滀负 None 鍒欎娇鐢ㄩ粯璁よ矾寰?
-            workflow_id: 宸ヤ綔娴両D锛岀敤浜庢瀯寤洪粯璁よ矾寰勶紙渚嬪 "test", "default"锛?
+            situation_file_path: `episode_situation.json` 文件路径，如果为 `None` 则使用默认路径。
+            workflow_id: 工作流 ID，用于构建默认路径（例如 `"test"`、`"default"`）。
         """
         if situation_file_path is None:
             self.situation_file = memory_stage_dir(workflow_id, "episodes") / "episode_situation.json"
@@ -32,9 +32,9 @@ class EpisodeStatusManager:
         self._load_data()
     
     def _load_data(self):
-        """鍔犺浇 episode_situation.json 鏁版嵁"""
+        """加载 episode_situation.json 数据"""
         if not self.situation_file.exists():
-            # 濡傛灉鏂囦欢涓嶅瓨鍦紝鍒涘缓鍩烘湰缁撴瀯
+            # 如果文件不存在，创建基本结构
             self._data = {
                 "statistics": {
                     "total_episodes": 0,
@@ -50,7 +50,7 @@ class EpisodeStatusManager:
                     "episode_count": 0
                 }
             }
-            # 灏濊瘯浠庣幇鏈夌殑 eligibility 鏂囦欢鑷姩鍒濆鍖?episode 鐘舵€?
+            # 尝试从现有的 eligibility 文件自动初始化 episode 状态
             self._auto_initialize_from_eligibility_files()
         else:
             with open(self.situation_file, 'r', encoding='utf-8') as f:
@@ -58,23 +58,23 @@ class EpisodeStatusManager:
     
     def _auto_initialize_from_eligibility_files(self):
         """
-        浠庣幇鏈夌殑 eligibility_v1.json 鏂囦欢鑷姩鍒濆鍖?episode 鐘舵€併€?
-        鎵弿 episodes 鐩綍涓嬬殑鎵€鏈?eligibility_v1.json 鏂囦欢锛屽皢鍏朵腑鐨勮祫鏍间俊鎭?
-        瀵煎叆鍒?episode_situation.json 涓€?
+        从现有的 `eligibility_v1.json` 文件自动初始化 episode 状态。
+        扫描 episodes 目录下的所有 `eligibility_v1.json` 文件，将其中的资格信息
+        导入到 `episode_situation.json` 中。
         """
         import logging
         logger = logging.getLogger(__name__)
         
-        # 鑾峰彇 episodes 鐩綍
+        # 获取 episodes 目录
         episodes_dir = self.situation_file.parent
         if not episodes_dir.exists():
-            logger.warning(f"Episodes 鐩綍涓嶅瓨鍦? {episodes_dir}")
+            logger.warning(f"Episodes 目录不存在: {episodes_dir}")
             return
         
-        # 鎵弿 by_dialogue 瀛愮洰褰?
+        # 扫描 by_dialogue 子目录
         by_dialogue_dir = episodes_dir / "by_dialogue"
         if not by_dialogue_dir.exists():
-            logger.warning(f"by_dialogue 鐩綍涓嶅瓨鍦? {by_dialogue_dir}")
+            logger.warning(f"by_dialogue 目录不存在: {by_dialogue_dir}")
             return
         
         initialized_count = 0
@@ -82,7 +82,7 @@ class EpisodeStatusManager:
             if not dialogue_dir.is_dir():
                 continue
             
-            # 鏌ユ壘 eligibility_v1.json 鏂囦欢
+            # 查找 eligibility_v1.json 文件
             eligibility_file = dialogue_dir / "eligibility_v1.json"
             if not eligibility_file.exists():
                 continue
@@ -98,11 +98,11 @@ class EpisodeStatusManager:
                     episode_id = result.get("episode_id", "")
                     episode_key = f"{dialogue_id}:{episode_id}"
                     
-                    # 濡傛灉 episode 宸插瓨鍦紝璺宠繃
+                    # 如果 episode 已存在，跳过
                     if episode_key in self._data.get("episodes", {}):
                         continue
                     
-                    # 鍒涘缓 episode 鏉＄洰
+                    # 创建 episode 条目
                     self._data.setdefault("episodes", {})[episode_key] = {
                         "episode_key": episode_key,
                         "episode_id": episode_id,
@@ -126,7 +126,7 @@ class EpisodeStatusManager:
                     initialized_count += 1
                     
             except Exception as e:
-                logger.warning(f"鍔犺浇 eligibility 鏂囦欢澶辫触 {eligibility_file}: {e}")
+                logger.warning(f"加载 eligibility 文件失败 {eligibility_file}: {e}")
                 continue
         
         if initialized_count > 0:
@@ -134,17 +134,17 @@ class EpisodeStatusManager:
                 "Auto-initialized %s episode records from eligibility files.",
                 initialized_count,
             )
-            # 鏇存柊缁熻淇℃伅
+            # 更新统计信息
             self.update_statistics()
-            # 淇濆瓨鍒版枃浠?
+            # 保存到文件
             self._save_data()
     
     def _save_data(self):
         """Save data to disk."""
-        # 纭繚鐩綍瀛樺湪
+        # 确保目录存在
         self.situation_file.parent.mkdir(parents=True, exist_ok=True)
 
-        # 鏇存柊 metadata
+        # 更新 metadata
         if "metadata" not in self._data:
             self._data["metadata"] = {}
 
@@ -159,17 +159,17 @@ class EpisodeStatusManager:
     
     def update_episode(self, episode_key: str, updates: Dict[str, Any]):
         """
-        鏇存柊鎸囧畾 episode 鐨勬暟鎹€?
+        更新指定 episode 的数据。
         
         Args:
-            episode_key: episode 閿紙鏍煎紡锛歞ialogue_id:episode_id锛?
-            updates: 瑕佹洿鏂扮殑瀛楁瀛楀吀
+            episode_key: episode 键，格式为 `dialogue_id:episode_id`。
+            updates: 要更新的字段字典
         """
         if "episodes" not in self._data:
             self._data["episodes"] = {}
         
         if episode_key not in self._data["episodes"]:
-            # 濡傛灉 episode 涓嶅瓨鍦紝鍒涘缓鍩烘湰缁撴瀯
+            # 如果 episode 不存在，创建基本结构
             dialogue_id, episode_id = self._parse_episode_key(episode_key)
             self._data["episodes"][episode_key] = {
                 "episode_key": episode_key,
@@ -191,33 +191,33 @@ class EpisodeStatusManager:
                 "kg_candidate_file": None
             }
         
-        # 鏇存柊瀛楁
+        # 更新字段
         for key, value in updates.items():
             self._data["episodes"][episode_key][key] = value
         
-        # 鏇存柊鏇存柊鏃堕棿鎴?
+        # 更新更新时间戳
         self._data["episodes"][episode_key]["updated_at"] = datetime.utcnow().isoformat() + "Z"
         
         self._save_data()
     
     def _parse_episode_key(self, episode_key: str) -> tuple[str, str]:
-        """瑙ｆ瀽 episode_key 涓?dialogue_id 鍜?episode_id"""
+        """解析 `episode_key` 中的 `dialogue_id` 和 `episode_id`。"""
         if ":" in episode_key:
             parts = episode_key.split(":")
             return parts[0], parts[1]
         else:
-            # 濡傛灉娌℃湁鍐掑彿锛屽亣璁炬暣涓瓧绗︿覆鏄?dialogue_id锛宔pisode_id 涓?ep_001
+            # 如果没有冒号，假设整个字符串是 dialogue_id，episode_id 默认为 ep_001
             return episode_key, "ep_001"
     
     def is_scene_generated(self, episode_key: str) -> bool:
-        """妫€鏌ユ槸鍚﹀凡鐢熸垚 scene"""
+        """检查是否已生成 scene。"""
         episode = self.get_episode(episode_key)
         if not episode:
             return False
         return episode.get("scene_generated", False)
     
     def is_kg_candidates_generated(self, episode_key: str) -> bool:
-        """妫€鏌ユ槸鍚﹀凡鐢熸垚 kg_candidates"""
+        """检查是否已生成 kg_candidates。"""
         episode = self.get_episode(episode_key)
         if not episode:
             return False
@@ -225,12 +225,12 @@ class EpisodeStatusManager:
 
     def mark_scene_generated(self, episode_key: str, scene_file: str, created_at: Optional[str] = None):
         """
-        鏍囪 scene 宸茬敓鎴愩€?
+        标记 scene 已生成。
         
         Args:
-            episode_key: episode 閿?
-            scene_file: scene 鏂囦欢鍚?
-            created_at: 鐢熸垚鏃堕棿锛屽鏋滀负 None 鍒欎娇鐢ㄥ綋鍓嶆椂闂?
+            episode_key: episode 键。
+            scene_file: scene 文件名。
+            created_at: 生成时间，如果为 `None` 则使用当前时间。
         """
         if created_at is None:
             created_at = datetime.utcnow().isoformat() + "Z"
@@ -243,12 +243,12 @@ class EpisodeStatusManager:
     
     def mark_kg_candidates_generated(self, episode_key: str, kg_file: str, created_at: Optional[str] = None):
         """
-        鏍囪 kg_candidates 宸茬敓鎴愩€?
+        标记 kg_candidates 已生成。
         
         Args:
-            episode_key: episode 閿?
-            kg_file: kg_candidate 鏂囦欢鍚?
-            created_at: 鐢熸垚鏃堕棿锛屽鏋滀负 None 鍒欎娇鐢ㄥ綋鍓嶆椂闂?
+            episode_key: episode 键。
+            kg_file: kg_candidate 文件名。
+            created_at: 生成时间，如果为 `None` 则使用当前时间。
         """
         if created_at is None:
             created_at = datetime.utcnow().isoformat() + "Z"
@@ -260,20 +260,20 @@ class EpisodeStatusManager:
         })
 
     def get_all_episodes(self) -> Dict[str, Dict]:
-        """鑾峰彇鎵€鏈?episode 鏁版嵁"""
+        """获取所有 episode 数据。"""
         return self._data.get("episodes", {})
     
     def update_statistics(self):
-        """鏇存柊缁熻淇℃伅"""
+        """更新统计信息"""
         episodes = self.get_all_episodes()
         
-        # 璁＄畻鍚勭缁熻
+        # 计算各种统计
         total_episodes = len(episodes)
         scene_available_keys = [k for k, v in episodes.items() if v.get("scene_available", False)]
         kg_available_keys = [k for k, v in episodes.items() if v.get("kg_available", False)]
         emo_available_keys = [k for k, v in episodes.items() if v.get("emo_available", False)]
         
-        # 鏇存柊 statistics
+        # 更新 statistics
         if "statistics" not in self._data:
             self._data["statistics"] = {}
         
@@ -294,28 +294,28 @@ class EpisodeStatusManager:
         self._save_data()
 
 
-# 鍏ㄥ眬瀹炰緥缂撳瓨
+# 全局实例缓存
 _managers = {}
 
 def get_status_manager(situation_file_path: Optional[Path] = None, workflow_id: str = "test") -> EpisodeStatusManager:
     """
-    鑾峰彇鐘舵€佺鐞嗗櫒瀹炰緥锛堝熀浜庡弬鏁扮紦瀛橈級銆?
+    获取状态管理器实例（基于参数缓存）。
     
     Args:
-        situation_file_path: episode_situation.json 鏂囦欢璺緞锛屽鏋滀负 None 鍒欎娇鐢ㄩ粯璁よ矾寰?
-        workflow_id: 宸ヤ綔娴両D锛岀敤浜庢瀯寤洪粯璁よ矾寰勶紙渚嬪 "test", "default"锛?
+        situation_file_path: `episode_situation.json` 文件路径，如果为 `None` 则使用默认路径。
+        workflow_id: 工作流 ID，用于构建默认路径（例如 `"test"`、`"default"`）。
     
     Returns:
-        EpisodeStatusManager 瀹炰緥
+        EpisodeStatusManager 实例
     """
     global _managers
     
-    # 鐢熸垚缂撳瓨閿?
+    # 生成缓存键
     if situation_file_path is not None:
-        # 濡傛灉鎻愪緵浜嗗叿浣撹矾寰勶紝浣跨敤璺緞瀛楃涓蹭綔涓洪敭
+        # 如果提供了具体路径，使用路径字符串作为键
         key = str(situation_file_path)
     else:
-        # 鍚﹀垯浣跨敤 workflow_id
+        # 否则使用 workflow_id
         key = workflow_id
     
     if key not in _managers:

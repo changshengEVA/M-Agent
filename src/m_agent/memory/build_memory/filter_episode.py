@@ -1,8 +1,8 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # 2025-12-28 changshengEVA
 """
-Episode Filtering 妯″潡銆?
-鎵弿 qualifications 鏂囦欢锛屾牴鎹?eligibility 瑙勫垯杩囨护 episodes锛岀敓鎴?eligibility 鏂囦欢銆?
+Episode Filtering 模块。
+扫描 qualifications 文件，根据 eligibility 规则过滤 episodes，并生成 eligibility 文件。
 """
 
 import os
@@ -14,32 +14,32 @@ from typing import Dict, List, Optional
 from tqdm import tqdm
 
 from m_agent.paths import memory_stage_dir
-# 娣诲姞椤圭洰鏍圭洰褰曞埌 Python 璺緞锛岀‘淇濆彲浠ュ鍏?load_model
+# 添加项目根目录到 Python 路径，确保可以导入 load_model
 
-# 閰嶇疆鏃ュ織锛氬彧鏄剧ず WARNING 鍙婁互涓婄骇鍒紝鍑忓皯杈撳嚭鍣煶
+# 配置日志：只显示 WARNING 及以上级别，减少输出噪音
 logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-# 璺緞閰嶇疆
+# 路径配置
 EPISODES_ROOT = memory_stage_dir("default", "episodes")
 
 def ensure_directory(path: Path):
-    """纭繚鐩綍瀛樺湪"""
+    """确保目录存在"""
     path.mkdir(parents=True, exist_ok=True)
 
 def scan_qualification_files(episodes_root: Path = None) -> List[Path]:
     """
-    鎵弿鎵€鏈?qualification 鏂囦欢銆?
-    杩斿洖鎵€鏈夋壘鍒扮殑 qualification 鏂囦欢璺緞鍒楄〃銆?
+    扫描所有 qualification 文件。
+    返回所有找到的 qualification 文件路径列表。
     
     Args:
-        episodes_root: episodes鏍圭洰褰曪紝濡傛灉涓篘one鍒欎娇鐢ㄩ粯璁ょ殑EPISODES_ROOT
+        episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
     """
     if episodes_root is None:
         episodes_root = EPISODES_ROOT
     
     qualification_files = []
-    # 鎵弿 by_dialogue 鐩綍
+    # 扫描 by_dialogue 目录
     by_dialogue_dir = episodes_root / "by_dialogue"
     if not by_dialogue_dir.exists():
         return qualification_files
@@ -54,24 +54,24 @@ def scan_qualification_files(episodes_root: Path = None) -> List[Path]:
 
 def get_eligibility_path(qualification_file: Path, eligibility_version: str = "v1") -> Path:
     """
-    鏍规嵁 qualification 鏂囦欢璺緞鐢熸垚瀵瑰簲鐨?eligibility 鏂囦欢璺緞銆?
-    鏍煎紡: episodes/by_dialogue/{dialogue_id}/eligibility_{version}.json
+    根据 qualification 文件路径生成对应的 eligibility 文件路径。
+    格式: episodes/by_dialogue/{dialogue_id}/eligibility_{version}.json
     """
     dialogue_dir = qualification_file.parent
     return dialogue_dir / f"eligibility_{eligibility_version}.json"
 
 def needs_eligibility_filter(qualification_file: Path, eligibility_version: str = "v1") -> bool:
-    """妫€鏌?qualification 鏄惁闇€瑕佺敓鎴?eligibility锛坋ligibility 鏂囦欢涓嶅瓨鍦級"""
+    """检查 qualification 是否需要生成 eligibility（eligibility 文件不存在）。"""
     eligibility_file = get_eligibility_path(qualification_file, eligibility_version)
     return not eligibility_file.exists()
 
 def load_qualifications(qualification_file: Path) -> Dict:
-    """鍔犺浇 qualification JSON 鏂囦欢"""
+    """加载 qualification JSON 文件"""
     with open(qualification_file, 'r', encoding='utf-8') as f:
         return json.load(f)
 
 def load_episodes(dialogue_dir: Path, episode_version: str = "v1") -> Dict:
-    """鍔犺浇 episode JSON 鏂囦欢"""
+    """加载 episode JSON 文件"""
     episode_file = dialogue_dir / f"episodes_{episode_version}.json"
     if not episode_file.exists():
         raise FileNotFoundError(f"Episode file not found: {episode_file}")
@@ -81,7 +81,7 @@ def load_episodes(dialogue_dir: Path, episode_version: str = "v1") -> Dict:
 
 def build_episode_index(episode_data: Dict) -> Dict[str, Dict]:
     """
-    寤虹珛 episode_id 鍒?episode 鍏冩暟鎹殑绱㈠紩銆?
+    建立 episode_id 到 episode 元数据的索引。
     """
     episode_index = {}
     for ep in episode_data.get("episodes", []):
@@ -92,25 +92,25 @@ def build_episode_index(episode_data: Dict) -> Dict[str, Dict]:
 
 def apply_eligibility_rules(episode: Dict, qualification: Dict) -> Dict:
     """
-    搴旂敤 eligibility 瑙勫垯锛岃繑鍥炶繃婊ょ粨鏋溿€?
+    应用 eligibility 规则，返回过滤结果。
     
     Args:
-        episode: episode 鍏冩暟鎹?
-        qualification: qualification 鏁版嵁
+        episode: episode 元数据
+        qualification: qualification 数据
         
     Returns:
-        鍖呭惈 eligible, reason, rule_hits, scene_available, kg_available, emo_available 鐨勫瓧鍏?
+        包含 eligible、reason、rule_hits、scene_available、kg_available、emo_available 的字典
     """
     score = qualification.get("scene_potential_score", {})
     rule_hits = []
     eligible = True
     reason = "scene_buildable"
     
-    # 鑾峰彇 novelty 鍊?
+    # 获取 novelty 值
     factual_novelty = score.get("factual_novelty", 0)
     emotional_novelty = score.get("emotional_novelty", 0)
     
-    # 璁＄畻鏂扮殑鍒ゅ畾鏉′欢
+    # 计算新的判定条件
     scene_available = (
         factual_novelty >= 1
         and (factual_novelty == 2 or emotional_novelty == 1)
@@ -150,16 +150,16 @@ def apply_eligibility_rules(episode: Dict, qualification: Dict) -> Dict:
 
 def filter_qualifications(qualification_data: Dict, episode_data: Dict) -> List[Dict]:
     """
-    杩囨护 qualifications锛岀敓鎴?eligibility 缁撴灉銆?
+    过滤 qualifications，生成 eligibility 结果。
     
     Args:
-        qualification_data: qualification 鏁版嵁
-        episode_data: episode 鏁版嵁
+        qualification_data: qualification 数据
+        episode_data: episode 数据
         
     Returns:
-        eligibility 缁撴灉鍒楄〃锛堝寘鍚畬鏁翠俊鎭級
+        eligibility 结果列表（包含完整信息）
     """
-    # 寤虹珛 episode 绱㈠紩
+    # 建立 episode 索引
     episode_index = build_episode_index(episode_data)
     
     results = []
@@ -173,7 +173,7 @@ def filter_qualifications(qualification_data: Dict, episode_data: Dict) -> List[
             logger.warning(f"Episode {ep_id} not found in episode data, skipping")
             continue
         
-        # 搴旂敤 eligibility 瑙勫垯
+        # 应用 eligibility 规则
         eligibility_result = apply_eligibility_rules(ep, q)
         
         results.append({
@@ -221,17 +221,17 @@ def save_episode_situation(results: List[Dict], dialogue_id: str, episodes_root:
     
     situation_file = episodes_root / "episode_situation.json"
     
-    # 鍔犺浇鐜版湁鐨?situation 鏁版嵁锛堝鏋滃瓨鍦級
+    # 加载现有 situation 数据（如果存在）
     existing_data = {}
     if situation_file.exists():
         try:
             with open(situation_file, 'r', encoding='utf-8') as f:
                 existing_data = json.load(f)
         except Exception as e:
-            logger.warning(f"鍔犺浇鐜版湁 episode_situation.json 澶辫触: {e}")
+            logger.warning(f"加载现有 episode_situation.json 失败: {e}")
             existing_data = {}
     
-    # 纭繚鏁版嵁缁撴瀯姝ｇ‘
+    # 确保数据结构正确
     if "statistics" not in existing_data:
         existing_data["statistics"] = {
             "total_episodes": 0,
@@ -250,17 +250,17 @@ def save_episode_situation(results: List[Dict], dialogue_id: str, episodes_root:
     if "episodes" not in existing_data:
         existing_data["episodes"] = {}
     
-    # 鏇存柊鎴栨坊鍔犲綋鍓?dialogue 鐨?episode 淇℃伅
+    # 更新或添加当前 dialogue 的 episode 信息
     for result in results:
         ep_id = result["episode_id"]
-        # 浣跨敤缁勫悎閿綔涓哄敮涓€鏍囪瘑锛歞ialogue_id:episode_id
+        # 使用组合键作为唯一标识：dialogue_id:episode_id
         episode_key = f"{dialogue_id}:{ep_id}"
         
-        # 淇濆瓨瀹屾暣鐨?episode 淇℃伅锛屼繚鐣欑幇鏈夊瓧娈碉紙濡?scene_generated 绛夛級
+        # 保存完整的 episode 信息，保留现有字段（如 scene_generated 等）
         if episode_key in existing_data["episodes"]:
-            # 鍚堝苟鐜版湁瀛楁
+            # 合并现有字段
             existing_episode = existing_data["episodes"][episode_key]
-            # 鏇存柊鍩虹瀛楁
+            # 更新基础字段
             existing_episode.update({
                 "scene_available": result["scene_available"],
                 "kg_available": result["kg_available"],
@@ -271,14 +271,14 @@ def save_episode_situation(results: List[Dict], dialogue_id: str, episodes_root:
                 "reason": result["reason"],
                 "updated_at": datetime.utcnow().isoformat() + "Z"
             })
-            # 纭繚 episode_key, episode_id, dialogue_id 涓嶅彉锛堜絾搴旇宸茬粡瀛樺湪锛?
+            # 确保 episode_key、episode_id、dialogue_id 不变（但应该已经存在）
             existing_episode["episode_key"] = episode_key
             existing_episode["episode_id"] = ep_id
             existing_episode["dialogue_id"] = dialogue_id
-            # 淇濈暀鍏朵粬瀛楁锛堝 scene_generated, scene_generated_at, scene_file 绛夛級
+            # 保留其他字段（如 scene_generated, scene_generated_at, scene_file 等）
             existing_data["episodes"][episode_key] = existing_episode
         else:
-            # 鍒涘缓鏂版潯鐩?
+            # 创建新条目
             existing_data["episodes"][episode_key] = {
                 "episode_key": episode_key,
                 "episode_id": ep_id,
@@ -293,7 +293,7 @@ def save_episode_situation(results: List[Dict], dialogue_id: str, episodes_root:
                 "updated_at": datetime.utcnow().isoformat() + "Z"
             }
     
-    # 閲嶆柊璁＄畻缁熻淇℃伅
+    # 重新计算统计信息
     scene_available_keys = []
     kg_available_keys = []
     emo_available_keys = []
@@ -312,7 +312,7 @@ def save_episode_situation(results: List[Dict], dialogue_id: str, episodes_root:
         if ep_data.get("emo_available"):
             emo_available_keys.append(episode_key)
         
-        # 鎸?novelty 鍒嗙被
+        # 按 novelty 分类
         factual_novelty = ep_data.get("factual_novelty", 0)
         if factual_novelty == 0:
             factual_novelty_0_keys.append(episode_key)
@@ -327,7 +327,7 @@ def save_episode_situation(results: List[Dict], dialogue_id: str, episodes_root:
         elif emotional_novelty == 1:
             emotional_novelty_1_keys.append(episode_key)
     
-    # 鏇存柊缁熻淇℃伅
+    # 更新统计信息
     existing_data["statistics"] = {
         "total_episodes": len(existing_data["episodes"]),
         "scene_available": {
@@ -366,50 +366,50 @@ def save_episode_situation(results: List[Dict], dialogue_id: str, episodes_root:
         }
     }
     
-    # 娣诲姞鍏冩暟鎹?
+    # 添加元数据
     existing_data["metadata"] = {
         "last_updated": datetime.utcnow().isoformat() + "Z",
         "source_dialogue": dialogue_id,
         "episode_count": len(results)
     }
     
-    # 淇濆瓨鏂囦欢
+    # 保存文件
     ensure_directory(situation_file.parent)
     with open(situation_file, 'w', encoding='utf-8') as f:
         json.dump(existing_data, f, ensure_ascii=False, indent=2)
     
-    #logger.info(f"鏇存柊 episode_situation.json: 缁熻淇℃伅宸叉洿鏂帮紝鎬昏 {len(existing_data['episodes'])} 涓?episodes")
+    # logger.info(f"更新 episode_situation.json: 统计信息已更新，总计 {len(existing_data['episodes'])} 个 episodes")
 
 def process_qualification_file(qualification_file: Path,
                                episode_version: str = "v1",
                                eligibility_version: str = "v1",
                                force_update: bool = False,
                                episodes_root: Path = None) -> bool:
-    """澶勭悊鍗曚釜 qualification 鏂囦欢锛岀敓鎴?eligibility 骞朵繚瀛?situation"""
+    """处理单个 qualification 文件，生成 eligibility 并保存 situation。"""
     try:
-        # 鍔犺浇 qualifications
+        # 加载 qualifications
         qualification_data = load_qualifications(qualification_file)
         
-        # 鑾峰彇 dialogue_id
+        # 获取 dialogue_id
         if qualification_data.get("qualifications"):
             dialogue_id = qualification_data["qualifications"][0].get("dialogue_id", "")
         else:
-            # 浠庣洰褰曞悕鎺ㄦ柇
+            # 从目录名推断
             dialogue_id = qualification_file.parent.name
         
-        # 鍔犺浇瀵瑰簲鐨?episodes
+        # 加载对应 episodes
         dialogue_dir = qualification_file.parent
         episode_data = load_episodes(dialogue_dir, episode_version)
         
-        # 楠岃瘉 dialogue_id 涓€鑷存€?
+        # 验证 dialogue_id 一致性
         if episode_data.get("dialogue_id") and episode_data["dialogue_id"] != dialogue_id:
             logger.warning(f"Dialogue ID mismatch: qualification={dialogue_id}, episode={episode_data['dialogue_id']}")
             dialogue_id = episode_data["dialogue_id"]
         
-        # 杩囨护 qualifications
+        # 过滤 qualifications
         results = filter_qualifications(qualification_data, episode_data)
         
-        # 淇濆瓨 eligibility 鏂囦欢锛堝彧鏈夊湪闇€瑕佹椂鎴栧己鍒舵洿鏂版椂锛?
+        # 保存 eligibility 文件（只有在需要时或强制更新时）
         eligibility_file = get_eligibility_path(qualification_file, eligibility_version)
         if force_update or needs_eligibility_filter(qualification_file, eligibility_version):
             save_eligibility(results, dialogue_id, eligibility_file, eligibility_version)
@@ -417,13 +417,13 @@ def process_qualification_file(qualification_file: Path,
         else:
             logger.info(f"Eligibility file already exists for {dialogue_id}, skipping generation")
         
-        # 鎬绘槸淇濆瓨 episode situation 鏁版嵁锛堝嵆浣?eligibility 鏂囦欢宸插瓨鍦級
+        # 总是保存 episode situation 数据（即使 eligibility 文件已存在）
         save_episode_situation(results, dialogue_id, episodes_root)
         
         return True
         
     except Exception as e:
-        logger.error(f"澶勭悊 qualification 鏂囦欢 {qualification_file} 澶辫触: {e}")
+        logger.error(f"处理 qualification 文件 {qualification_file} 失败: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return False
@@ -444,20 +444,20 @@ def scan_and_filter_episodes(episode_version: str = "v1",
             when an eligibility file already exists.
         episodes_root: Optional episodes root override.
     """
-    # 纭畾浣跨敤鐨勬牴鐩綍
+    # 确定使用的根目录
     if episodes_root is None:
         episodes_root = EPISODES_ROOT
     
-    # 纭繚 episodes 鏍圭洰褰曞瓨鍦?
+    # 确保 episodes 根目录存在
     ensure_directory(episodes_root)
     
-    # 鎵弿鎵€鏈?qualification 鏂囦欢
+    # 扫描所有 qualification 文件
     qualification_files = scan_qualification_files(episodes_root)
     
-    # 濡傛灉寮哄埗鏇存柊 situation锛屽垯澶勭悊鎵€鏈夋枃浠讹紱鍚﹀垯鍙鐞嗛渶瑕佺敓鎴?eligibility 鐨勬枃浠?
+    # 如果强制更新 situation，则处理所有文件；否则只处理需要生成 eligibility 的文件
     if force_update_situation:
         files_to_process = qualification_files
-        logger.info(f"寮哄埗鏇存柊妯″紡锛氬鐞嗘墍鏈?{len(files_to_process)} 涓?qualification 鏂囦欢")
+        logger.info(f"强制更新模式：处理所有 {len(files_to_process)} 个 qualification 文件")
     else:
         files_to_process = []
         for file in qualification_files:
@@ -465,13 +465,13 @@ def scan_and_filter_episodes(episode_version: str = "v1",
                 files_to_process.append(file)
     
     if not files_to_process:
-        # 娌℃湁闇€瑕佸鐞嗙殑鏂囦欢锛岄潤榛橀€€鍑?
-        logger.info("娌℃湁闇€瑕佸鐞嗙殑 qualification 鏂囦欢")
+        # 没有需要处理的文件，静默退出
+        logger.info("没有需要处理的 qualification 文件")
         return
     
-    # 澶勭悊鏂囦欢
+    # 处理文件
     if use_tqdm:
-        file_iter = tqdm(files_to_process, desc="杩囨护 episodes")
+        file_iter = tqdm(files_to_process, desc="过滤 episodes")
     else:
         file_iter = files_to_process
     
@@ -486,7 +486,7 @@ def scan_and_filter_episodes(episode_version: str = "v1",
         ):
             success_count += 1
     
-    logger.info(f"鎴愬姛澶勭悊 {success_count}/{len(files_to_process)} 涓?qualification 鏂囦欢")
+    logger.info(f"成功处理 {success_count}/{len(files_to_process)} 个 qualification 文件")
 
 def clear_all_eligibility(eligibility_version: str = "v1", confirm: bool = False):
     """
@@ -496,7 +496,7 @@ def clear_all_eligibility(eligibility_version: str = "v1", confirm: bool = False
         eligibility_version: Eligibility file version to target.
         confirm: When False, show a preview only.
     """
-    # 鎵弿鎵€鏈?qualification 鏂囦欢
+    # 扫描所有 qualification 文件
     qualification_files = scan_qualification_files()
     
     eligibility_files = []
@@ -506,26 +506,26 @@ def clear_all_eligibility(eligibility_version: str = "v1", confirm: bool = False
             eligibility_files.append(eligibility_file)
     
     if not eligibility_files:
-        print("娌℃湁鎵惧埌 eligibility 鏂囦欢")
+        print("没有找到 eligibility 文件")
         return
     
-    print(f"鎵惧埌 {len(eligibility_files)} 涓?eligibility 鏂囦欢:")
+    print(f"找到 {len(eligibility_files)} 个 eligibility 文件:")
     for eligibility_file in eligibility_files:
         print(f"  - {eligibility_file}")
     
     if not confirm:
-        print("\n杩欏彧鏄瑙堛€傝瀹為檯鍒犻櫎杩欎簺鏂囦欢锛岃杩愯: clear_all_eligibility(confirm=True)")
+        print("\n这只是预览要实际删除这些文件，请运行: clear_all_eligibility(confirm=True)")
         return
     
-    # 瀹為檯鍒犻櫎鏂囦欢
+    # 实际删除文件
     deleted_count = 0
     for eligibility_file in eligibility_files:
         try:
             eligibility_file.unlink()
-            print(f"宸插垹闄? {eligibility_file}")
+            print(f"已删除 {eligibility_file}")
             deleted_count += 1
         except Exception as e:
-            print(f"鍒犻櫎澶辫触 {eligibility_file}: {e}")
+            print(f"删除失败 {eligibility_file}: {e}")
     
     print(f"\nDeleted {deleted_count}/{len(eligibility_files)} files.")
 
@@ -552,7 +552,7 @@ if __name__ == "__main__":
             force_update_situation=args.force_update_situation
         )
     else:
-        # 榛樿琛屼负锛氭壂鎻忓苟杩囨护
+        # 默认行为：扫描并过滤
         scan_and_filter_episodes(
             episode_version=args.episode_version,
             eligibility_version=args.eligibility_version,

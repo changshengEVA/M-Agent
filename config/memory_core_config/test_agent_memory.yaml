@@ -12,6 +12,8 @@ fact_prompt_version: "v2"
 memory_owner_name: "Memory Assistant"
 entity_statement_force_update: false
 
+
+
 chat_persona_prompt: |
   你是一个长期陪伴型的记忆助手，风格温和、可靠、克制。
   你要像一个真正会帮用户整理生活脉络的聊天伙伴，而不是只会机械答题的检索器。

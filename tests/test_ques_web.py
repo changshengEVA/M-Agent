@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 from __future__ import annotations
@@ -800,16 +800,16 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div>
         <h1>Memory Agent Web Trace Viewer</h1>
         <p>
-          杩欎釜椤甸潰浼氭妸涓€娆￠棶绛旈噷鐨勫畬鏁存墽琛岃繃绋嬫媶寮€鏄剧ず锛氶棶棰樼瓥鐣ャ€佹槸鍚﹀厛鐩寸瓟銆?
-          鍘熷鍒嗚В璁″垝銆佸瓙闂鎵ц銆佹瘡涓€姝?API 璋冪敤銆佹瘡娆″伐鍏峰叆鍙傚拰杩斿洖鎽樿锛屼互鍙婃渶缁堢粨鏋?JSON銆?
+          这个页面会把一次问答里的完整执行过程拆开显示：问题策略、是否先直答、
+          原始分解计划、子问题执行、每一步 API 调用、每次工具入参和返回摘要，以及最终结果 JSON。
         </p>
       </div>
       <div class="hero-note">
-        <div><strong>閫傚悎鎺掓煡锛?/strong></div>
-        <div>1. 涓轰粈涔堜細鍒嗚В / 涓嶅垎瑙?/div>
-        <div>2. 鏌愪釜瀛愰棶棰樺崱鍦ㄥ摢涓€姝?/div>
-        <div>3. 鏌愪釜宸ュ叿鍒板簳鎷垮埌浜嗕粈涔堝弬鏁板拰杩斿洖</div>
-        <div>4. 鏈€缁堢瓟妗堟槸鐢卞摢鍑犳璇佹嵁鎷煎嚭鏉ョ殑</div>
+        <div><strong>适合排查：</strong></div>
+        <div>1. 为什么会分解 / 不分解</div>
+        <div>2. 某个子问题卡在哪一步</div>
+        <div>3. 某个工具到底拿到了什么参数和返回</div>
+        <div>4. 最终答案是由哪几步证据拼出来的</div>
       </div>
     </section>
 
@@ -871,18 +871,18 @@ HTML_PAGE = r"""<!DOCTYPE html>
         <div class="duo">
           <section class="panel">
             <h2>Question Strategy</h2>
-            <div class="section-block"><div id="strategyBox" class="readable-box"><div class="empty">Waiting鈥?/div></div></div>
+            <div class="section-block"><div id="strategyBox" class="readable-box"><div class="empty">Waiting...</div></div></div>
           </section>
           <section class="panel">
             <h2>Execution Outcome</h2>
-            <div class="section-block"><div id="summaryBox" class="readable-box"><div class="empty">Waiting鈥?/div></div></div>
+            <div class="section-block"><div id="summaryBox" class="readable-box"><div class="empty">Waiting...</div></div></div>
           </section>
         </div>
 
         <div class="duo">
           <section class="panel">
             <h2>Question Plan</h2>
-            <div class="section-block"><div id="planBox" class="readable-box"><div class="empty">Waiting for plan鈥?/div></div></div>
+            <div class="section-block"><div id="planBox" class="readable-box"><div class="empty">Waiting for plan...</div></div></div>
           </section>
           <section class="panel">
             <h2>Direct Answer Snapshot</h2>
@@ -897,7 +897,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
 
         <section class="panel result-panel">
           <h2>Final Result</h2>
-          <div class="section-block"><div id="resultBox" class="readable-box"><div class="empty">Waiting for result鈥?/div></div></div>
+          <div class="section-block"><div id="resultBox" class="readable-box"><div class="empty">Waiting for result...</div></div></div>
         </section>
       </section>
     </section>
@@ -2830,4 +2830,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

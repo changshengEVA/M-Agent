@@ -104,8 +104,8 @@ class MemoryAgent:
             "no relevant information",
             "not mentioned",
             "unknown",
-            "鏃犳硶纭畾",
-            "鏃犳硶鍥炵瓟",
+            "无法确定",
+            "无法回答",
             "淇℃伅涓嶈冻",
             "娌℃湁瓒冲淇℃伅",
             "未提及",
@@ -931,7 +931,7 @@ class MemoryAgent:
         lowered = normalized.lower()
 
         if any(token in lowered for token in ("compare", "difference", "different", "similar")) or any(
-            token in normalized for token in ("瀵规瘮", "姣旇緝", "鍖哄埆", "涓嶅悓", "鐩稿悓")
+            token in normalized for token in ("对比", "比较", "区别", "不同", "相同")
         ):
             question_type = "comparison"
             sub_questions = [
@@ -948,7 +948,7 @@ class MemoryAgent:
                 f"After deduplication, what is the correct count for: {normalized}",
             ]
         elif any(token in lowered for token in ("summary", "summarize")) or any(
-            token in normalized for token in ("鎬荤粨", "姒傛嫭", "姒傝堪")
+            token in normalized for token in ("总结", "概括", "概述")
         ):
             question_type = "summary"
             sub_questions = [
