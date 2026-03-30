@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 from typing import Dict, Any, Optional, Callable, List
 
+from m_agent.config_paths import MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH
 from m_agent.memory.memory_core.core.kg_base import KGBase
 from m_agent.memory.memory_core.services_bank.entity_resolution.service import (
     EntityResolutionService,
@@ -23,6 +24,7 @@ from m_agent.memory.memory_core.services_bank.entity_profile_sys.service import 
 from m_agent.memory.memory_core.system.event_bus import EventBus
 from m_agent.memory.memory_core.system.event_types import EventType
 from m_agent.paths import memory_workflow_dir
+from m_agent.prompt_utils import normalize_prompt_language
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +52,8 @@ class MemoryCore:
         scene_prompt_version: str = "v2",
         fact_prompt_version: str = "v2",
         memory_owner_name: str = "changshengEVA",
+        prompt_language: str = "zh",
+        runtime_prompt_config_path: Optional[str | Path] = None,
     ):
         """
         初始化 MemoryCore
@@ -74,6 +78,10 @@ class MemoryCore:
         self.scene_prompt_version = str(scene_prompt_version or "v2")
         self.fact_prompt_version = str(fact_prompt_version or "v2")
         self.memory_owner_name = str(memory_owner_name or "changshengEVA")
+        self.prompt_language = normalize_prompt_language(prompt_language)
+        self.runtime_prompt_config_path = Path(
+            runtime_prompt_config_path or MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH
+        ).resolve()
         
         # 1. 构建数据路径（极简化：不再使用 kg_data/entity/relation 文件结构）
         self.memory_root = memory_workflow_dir(workflow_id)
@@ -113,6 +121,8 @@ class MemoryCore:
         logger.info(f"Scene prompt版本: {self.scene_prompt_version}")
         logger.info(f"Fact prompt版本: {self.fact_prompt_version}")
         logger.info(f"Memory owner: {self.memory_owner_name}")
+        logger.info(f"Prompt language: {self.prompt_language}")
+        logger.info(f"Runtime prompt config: {self.runtime_prompt_config_path}")
         
         # 2. 初始化 EventBus
         self.event_bus = EventBus()
@@ -182,7 +192,9 @@ class MemoryCore:
             similarity_threshold=self.similarity_threshold,
             top_k=self.top_k,
             use_threshold=self.use_threshold,
-            data_path=str(self.entity_library_path)
+            data_path=str(self.entity_library_path),
+            prompt_language=self.prompt_language,
+            runtime_prompt_config_path=str(self.runtime_prompt_config_path),
         )
         
         # 对齐实体库与 KG 中的实体
@@ -201,6 +213,8 @@ class MemoryCore:
             facts_situation_path=str(self.entity_profile_facts_situation_file),
             similarity_threshold=self.similarity_threshold,
             top_k=self.top_k,
+            prompt_language=self.prompt_language,
+            runtime_prompt_config_path=str(self.runtime_prompt_config_path),
             auto_align_on_init=False,
             align_on_system_initialized=False,
         )
@@ -565,6 +579,8 @@ class MemoryCore:
             max_candidates=max(3, int(self.top_k)),
             string_similarity_threshold=0.72,
             embedding_similarity_threshold=max(0.45, float(self.similarity_threshold) - 0.25),
+            prompt_language=self.prompt_language,
+            runtime_prompt_config_path=self.runtime_prompt_config_path,
         )
 
     def search_entity_feature(self, entity_id: str, feature_query: str, topk: int = 5) -> Dict[str, Any]:

@@ -27,6 +27,7 @@ from m_agent.config_paths import (
     ENTITY_STATEMENT_PROMPT_CONFIG_PATH,
     KG_FILTER_PROMPT_CONFIG_PATH,
 )
+from m_agent.prompt_utils import load_resolved_prompt_config, normalize_prompt_language
 
 logger = logging.getLogger(__name__)
 KG_PROMPT_PATH = KG_FILTER_PROMPT_CONFIG_PATH
@@ -262,7 +263,20 @@ def _extract_multiline_block(raw_text: str, key: str, parent_key: Optional[str] 
     return ""
 
 
-def _load_entity_extraction_prompt() -> str:
+def _load_entity_extraction_prompt(prompt_language: str = "zh") -> str:
+    try:
+        config = load_resolved_prompt_config(
+            KG_PROMPT_PATH,
+            language=normalize_prompt_language(prompt_language),
+        )
+        node = config.get("kg_strong_filter_v3")
+        if isinstance(node, dict):
+            prompt = node.get("entity_extraction")
+            if isinstance(prompt, str) and prompt.strip():
+                return prompt.strip()
+    except Exception:
+        pass
+
     raw = KG_PROMPT_PATH.read_text(encoding="utf-8")
 
     if yaml is not None:
@@ -280,7 +294,18 @@ def _load_entity_extraction_prompt() -> str:
     raise ValueError("entity extraction prompt not found: kg_strong_filter_v3.entity_extraction")
 
 
-def _load_entity_statement_prompt() -> str:
+def _load_entity_statement_prompt(prompt_language: str = "zh") -> str:
+    try:
+        config = load_resolved_prompt_config(
+            ENTITY_STATEMENT_PROMPT_PATH,
+            language=normalize_prompt_language(prompt_language),
+        )
+        prompt = config.get("make_entity_statement")
+        if isinstance(prompt, str) and prompt.strip():
+            return prompt.strip()
+    except Exception:
+        pass
+
     raw = ENTITY_STATEMENT_PROMPT_PATH.read_text(encoding="utf-8")
 
     if yaml is not None:
@@ -552,8 +577,9 @@ def make_entity_statement(
         return {"success": False, "error": f"init episode status manager failed: {exc}"}
 
     try:
-        entity_extraction_prompt = _load_entity_extraction_prompt()
-        entity_statement_prompt = _load_entity_statement_prompt()
+        prompt_language = str(getattr(memory_core, "prompt_language", "zh"))
+        entity_extraction_prompt = _load_entity_extraction_prompt(prompt_language=prompt_language)
+        entity_statement_prompt = _load_entity_statement_prompt(prompt_language=prompt_language)
     except Exception as exc:
         return {"success": False, "error": f"load prompt failed: {exc}"}
 

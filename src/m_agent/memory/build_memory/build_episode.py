@@ -23,6 +23,7 @@ from tqdm import tqdm
 
 from m_agent.config_paths import EPISODE_PROMPT_CONFIG_PATH
 from m_agent.paths import memory_stage_dir
+from m_agent.prompt_utils import load_resolved_prompt_config, normalize_prompt_language
 
 
 logging.basicConfig(
@@ -49,10 +50,12 @@ def _replace_prompt_placeholders(value: Any, memory_owner_name: str) -> Any:
     return value
 
 
-def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict[str, Any]:
+def load_prompts(memory_owner_name: str = "changshengEVA", prompt_language: str = "zh") -> Dict[str, Any]:
     """Load dialogue segmentation prompts from the episode prompt config."""
-    with open(CONFIG_PATH, "r", encoding="utf-8") as file:
-        config = yaml.safe_load(file) or {}
+    config = load_resolved_prompt_config(
+        CONFIG_PATH,
+        language=normalize_prompt_language(prompt_language),
+    )
 
     prompts = config.get("dialogue_segmentation", {})
     if not isinstance(prompts, dict):
@@ -427,6 +430,7 @@ def scan_and_build_episodes(
     dialogues_root: Optional[Path] = None,
     episodes_root: Optional[Path] = None,
     memory_owner_name: str = "changshengEVA",
+    prompt_language: str = "zh",
     llm_model: Optional[Callable[[str], str]] = None,
 ) -> None:
     """
@@ -439,7 +443,7 @@ def scan_and_build_episodes(
 
     ensure_directory(episodes_root)
 
-    prompts = load_prompts(memory_owner_name)
+    prompts = load_prompts(memory_owner_name, prompt_language=prompt_language)
     if not prompts:
         logger.error("dialogue_segmentation prompts not found")
         return

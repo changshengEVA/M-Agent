@@ -1,50 +1,101 @@
-fact_filter_v1: |
-  You are an information filtering system.
-  Your task is to determine whether a given Atomic Fact can be used for:
-  1) building Event (timeline)
-  2) building Attribute (entity profile)
+fact_filter_v1:
+  zh: |
+    你是信息过滤系统。
+    你的任务是判断给定的 Atomic Fact 是否可以用于：
+    1) 构建 Event（时间线）
+    2) 构建 Attribute（实体档案）
 
-  [INPUT]
-  Atomic Fact:
-  {fact}
+    [输入]
+    Atomic Fact:
+    {fact}
 
-  [Event Criteria]
-  Set event_available = true if and only if ALL are satisfied:
-  - The fact describes a concrete action or event.
-  - The fact has time nature (it can naturally be expressed with "at some time / on some day / recently").
-  - The fact contains meaningful information.
+    [Event 判定标准]
+    只有当以下条件全部满足时，才将 `event_available` 设为 true：
+    - 该事实描述了一个具体动作或事件。
+    - 该事实具有时间属性（可以自然表达为“在某个时间 / 某一天 / 最近发生”）。
+    - 该事实包含有意义的信息。
 
-  Set event_available = false if ANY are true:
-  - Pure conversational acts (e.g., said, replied, thanked, greeted, says goodbye).
-  - Low-information actions (e.g., politeness, filler interactions).
+    只要以下任一情况成立，就将 `event_available` 设为 false：
+    - 纯对话行为（例如 said、replied、thanked、greeted、says goodbye）。
+    - 低信息量动作（例如礼貌表达、填充式互动）。
 
-  [Attribute Criteria] (STRICT)
-  Set attribute_available = true if and only if ALL are satisfied:
-  - The fact describes a stable trait, preference, ability, or long-term state.
-  - The fact does NOT depend on a specific time point.
-  - The fact is NOT a one-time behavior.
-  - The fact can be generalized into "This person is someone who ...".
-  - The fact has long-term value for understanding the person.
+    [Attribute 判定标准]（严格）
+    只有当以下条件全部满足时，才将 `attribute_available` 设为 true：
+    - 该事实描述稳定的特征、偏好、能力或长期状态。
+    - 该事实不依赖某个具体时间点。
+    - 该事实不是一次性行为。
+    - 该事实可以概括成 “This person is someone who ...”。
+    - 该事实对理解这个人具有长期价值。
 
-  Set attribute_available = false if ANY are true:
-  - One-time actions or events.
-  - Short-term emotions or feelings (e.g., happy, excited, feels ...).
-  - Weak relational expressions (e.g., appreciates, thanks).
-  - Vague or low-value statements.
+    只要以下任一情况成立，就将 `attribute_available` 设为 false：
+    - 一次性动作或事件。
+    - 短期情绪或感受（例如 happy、excited、feels ...）。
+    - 弱关系表达（例如 appreciates、thanks）。
+    - 模糊或低价值陈述。
 
-  [Important Principles]
-  - Event: prioritize recall (can be slightly permissive).
-  - Attribute: prioritize precision (must be strict).
-  - If uncertain about Attribute, set it to false.
+    [重要原则]
+    - Event：优先保证召回，可略微宽松。
+    - Attribute：优先保证精确，必须严格。
+    - 对 Attribute 不确定时，一律设为 false。
 
-  [OUTPUT FORMAT]
-  Return ONLY one valid JSON object.
-  Do NOT return an array.
-  Do NOT include markdown, code fences, or extra text.
+    [输出格式]
+    只返回一个合法 JSON 对象。
+    不要返回数组。
+    不要包含 markdown、代码块或额外文字。
 
-  {
-    "event_available": true/false,
-    "event_reason": "one concise sentence",
-    "attribute_available": true/false,
-    "attribute_reason": "one concise sentence"
-  }
+    {
+      "event_available": true/false,
+      "event_reason": "one concise sentence",
+      "attribute_available": true/false,
+      "attribute_reason": "one concise sentence"
+    }
+  en: |
+    You are an information filtering system.
+    Your task is to determine whether a given Atomic Fact can be used for:
+    1) building Event (timeline)
+    2) building Attribute (entity profile)
+
+    [INPUT]
+    Atomic Fact:
+    {fact}
+
+    [Event Criteria]
+    Set `event_available` = true if and only if ALL are satisfied:
+    - The fact describes a concrete action or event.
+    - The fact has time nature (it can naturally be expressed with "at some time / on some day / recently").
+    - The fact contains meaningful information.
+
+    Set `event_available` = false if ANY are true:
+    - Pure conversational acts (e.g., said, replied, thanked, greeted, says goodbye).
+    - Low-information actions (e.g., politeness, filler interactions).
+
+    [Attribute Criteria] (STRICT)
+    Set `attribute_available` = true if and only if ALL are satisfied:
+    - The fact describes a stable trait, preference, ability, or long-term state.
+    - The fact does NOT depend on a specific time point.
+    - The fact is NOT a one-time behavior.
+    - The fact can be generalized into "This person is someone who ...".
+    - The fact has long-term value for understanding the person.
+
+    Set `attribute_available` = false if ANY are true:
+    - One-time actions or events.
+    - Short-term emotions or feelings (e.g., happy, excited, feels ...).
+    - Weak relational expressions (e.g., appreciates, thanks).
+    - Vague or low-value statements.
+
+    [Important Principles]
+    - Event: prioritize recall (can be slightly permissive).
+    - Attribute: prioritize precision (must be strict).
+    - If uncertain about Attribute, set it to false.
+
+    [OUTPUT FORMAT]
+    Return ONLY one valid JSON object.
+    Do NOT return an array.
+    Do NOT include markdown, code fences, or extra text.
+
+    {
+      "event_available": true/false,
+      "event_reason": "one concise sentence",
+      "attribute_available": true/false,
+      "attribute_reason": "one concise sentence"
+    }

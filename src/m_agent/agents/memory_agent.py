@@ -23,8 +23,10 @@ from langchain.tools import tool
 from langgraph.errors import GraphRecursionError
 
 from m_agent.config_paths import (
+    AGENT_RUNTIME_PROMPT_CONFIG_PATH,
     DEFAULT_MEMORY_AGENT_CONFIG_PATH,
     DEFAULT_MEMORY_CORE_CONFIG_PATH,
+    MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH,
     resolve_config_path,
     resolve_related_config_path,
 )
@@ -33,6 +35,12 @@ from m_agent.load_model.BGEcall import get_embed_model as get_local_embed_model
 from m_agent.load_model.OpenAIcall import get_llm
 from m_agent.memory.memory_core.memory_system import MemoryCore
 from m_agent.paths import ENV_PATH
+from m_agent.prompt_utils import (
+    load_resolved_prompt_config,
+    normalize_prompt_language,
+    render_prompt_template,
+    resolve_prompt_value,
+)
 from m_agent.utils.api_error_utils import is_network_api_error
 
 
@@ -263,6 +271,13 @@ class MemoryAgent:
         self.config = self._load_config(self.config_path)
         self.memory_core_config_path = self._resolve_related_path(self.config.get("memory_core_config_path"))
         self.memory_core_config = self._load_memory_core_config(self.memory_core_config_path)
+        self.prompt_language = normalize_prompt_language(
+            self.config.get("prompt_language", self.memory_core_config.get("prompt_language", "zh"))
+        )
+        self.runtime_prompt_config_path = self._resolve_runtime_prompt_config_path(
+            self.config.get("runtime_prompt_config_path")
+        )
+        self.runtime_prompts = self._load_runtime_prompts(self.runtime_prompt_config_path)
         self._current_tool_calls: List[Dict[str, Any]] = []
         self._last_tool_calls: List[Dict[str, Any]] = []
         self._last_question_plan: Optional[Dict[str, Any]] = None
@@ -279,7 +294,7 @@ class MemoryAgent:
         if isinstance(action_cfg, dict):
             self.detail_search_defaults.update(action_cfg)
 
-        self.memory_sys = self._init_memory_sys(self.memory_core_config)
+        self.memory_sys = self._init_memory_sys(self.memory_core_config, self.memory_core_config_path)
         if bool(self.config.get("auto_bootstrap_kg_data", True)):
             self._ensure_kg_data_initialized(self.memory_sys)
 
@@ -307,31 +322,15 @@ class MemoryAgent:
             self.network_retry_backoff_seconds,
             float(self.config.get("network_retry_max_backoff_seconds", 20.0)),
         )
-        self.system_prompt = str(self.config["system_prompt"])
-        self.planner_prompt = str(
-            self.config.get(
-                "planner_prompt",
-                (
-                    "You are a question decomposition planner for a memory QA agent.\n"
-                    "Break the question into a small number of evidence-seeking sub-questions.\n"
-                    "Return JSON only with keys: goal, question_type, decomposition_reason, "
-                    "sub_questions, suggested_tool_order, completion_criteria.\n"
-                    "question_type must be one of: direct_lookup, comparison, summary, counting, "
-                    "temporal, causal, multi_hop.\n"
-                    "sub_questions must be an ordered list of concrete, answerable questions.\n"
-                    "suggested_tool_order must be an ordered list chosen from: "
-                    "resolve_entity_id, get_entity_profile, search_entity_feature, "
-                    "search_entity_event, search_entity_events_by_time, "
-                    "search_events_by_time_range, search_details, search_content.\n"
-                    "The entity-profile tools are macro/coarse retrieval tools, not the default for ordinary detail lookup.\n"
-                    "Use resolve_entity_id early only when you truly plan to use an entity-profile tool.\n"
-                    "If the question exposes a concrete semantic anchor besides the entity, prefer search_details.\n"
-                    "For overview/profile-summary questions, prefer resolve_entity_id -> get_entity_profile.\n"
-                    "For macro entity comparison, use resolve_entity_id plus macro entity tools as needed.\n"
-                    "For entity-centered time-bounded macro questions, prefer resolve_entity_id -> search_entity_events_by_time.\n"
-                    "Keep the plan minimal and goal-directed."
-                ),
-            )
+        self.system_prompt = resolve_prompt_value(
+            self.config.get("system_prompt"),
+            language=self.prompt_language,
+            path_desc=f"{self.config_path}.system_prompt",
+        )
+        self.planner_prompt = resolve_prompt_value(
+            self.config.get("planner_prompt"),
+            language=self.prompt_language,
+            path_desc=f"{self.config_path}.planner_prompt",
         )
         self.model_name = str(self.config.get("model_name", "deepseek-chat"))
         self.agent_temperature = float(self.config.get("agent_temperature", 0.0))
@@ -362,12 +361,14 @@ class MemoryAgent:
         if not isinstance(config, dict):
             raise ValueError(f"Agent config must be a dict: {path}")
 
-        if not isinstance(config.get("system_prompt"), str) or not config["system_prompt"].strip():
-            raise ValueError(f"`system_prompt` is required in agent config: {path}")
         if not isinstance(config.get("memory_core_config_path"), str) or not str(
             config.get("memory_core_config_path")
         ).strip():
             raise ValueError("`memory_core_config_path` is required in agent config")
+        if "system_prompt" not in config:
+            raise ValueError(f"`system_prompt` is required in agent config: {path}")
+        if "planner_prompt" not in config:
+            raise ValueError(f"`planner_prompt` is required in agent config: {path}")
         return config
 
     def _resolve_related_path(self, raw_path: Any) -> Path:
@@ -376,6 +377,39 @@ class MemoryAgent:
             raw_path,
             default_path=DEFAULT_MEMORY_CORE_CONFIG_PATH,
         )
+
+    def _resolve_runtime_prompt_config_path(self, raw_path: Any) -> Path:
+        return resolve_related_config_path(
+            self.config_path,
+            raw_path,
+            default_path=AGENT_RUNTIME_PROMPT_CONFIG_PATH,
+        )
+
+    def _load_runtime_prompts(self, path: Path) -> Dict[str, Any]:
+        config = load_resolved_prompt_config(path, language=self.prompt_language)
+        prompts = config.get("memory_agent")
+        if not isinstance(prompts, dict):
+            raise ValueError(f"`memory_agent` prompt namespace is required in runtime prompt config: {path}")
+        return prompts
+
+    def _get_runtime_prompt_text(self, *keys: str) -> str:
+        node: Any = self.runtime_prompts
+        full_key = ".".join(keys)
+        for key in keys:
+            if not isinstance(node, dict) or key not in node:
+                raise ValueError(
+                    f"Runtime prompt '{full_key}' is missing in config: {self.runtime_prompt_config_path}"
+                )
+            node = node[key]
+        if not isinstance(node, str) or not node.strip():
+            raise ValueError(
+                f"Runtime prompt '{full_key}' is empty in config: {self.runtime_prompt_config_path}"
+            )
+        return node.strip()
+
+    def _render_runtime_prompt(self, *keys: str, replacements: Dict[str, Any]) -> str:
+        template = self._get_runtime_prompt_text(*keys)
+        return render_prompt_template(template, replacements).strip()
 
     @staticmethod
     def _load_memory_core_config(path: Path) -> Dict[str, Any]:
@@ -390,8 +424,7 @@ class MemoryAgent:
 
         return config
 
-    @staticmethod
-    def _init_memory_sys(memory_core_config: Dict[str, Any]) -> MemoryCore:
+    def _init_memory_sys(self, memory_core_config: Dict[str, Any], config_path: Path) -> MemoryCore:
         config = memory_core_config
         workflow_id = str(config.get("workflow_id", "testrt"))
         llm_temperature = float(config.get("memory_llm_temperature", 0.0))
@@ -401,6 +434,12 @@ class MemoryAgent:
         scene_prompt_version = str(config.get("scene_prompt_version", "v2"))
         fact_prompt_version = str(config.get("fact_prompt_version", "v2"))
         memory_owner_name = str(config.get("memory_owner_name", "changshengEVA"))
+        prompt_language = normalize_prompt_language(config.get("prompt_language", "zh"))
+        runtime_prompt_config_path = resolve_related_config_path(
+            config_path,
+            config.get("runtime_prompt_config_path"),
+            default_path=MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH,
+        )
 
         embed_provider = str(
             config.get("embed_provider", os.getenv("EMBED_PROVIDER", "local"))
@@ -428,6 +467,8 @@ class MemoryAgent:
             scene_prompt_version=scene_prompt_version,
             fact_prompt_version=fact_prompt_version,
             memory_owner_name=memory_owner_name,
+            prompt_language=prompt_language,
+            runtime_prompt_config_path=runtime_prompt_config_path,
         )
 
     @staticmethod
@@ -900,8 +941,7 @@ class MemoryAgent:
             "completion_criteria": completion_criteria,
         }
 
-    @staticmethod
-    def _fallback_question_plan(question_text: str) -> Dict[str, Any]:
+    def _fallback_question_plan(self, question_text: str) -> Dict[str, Any]:
         normalized = question_text.strip()
         lowered = normalized.lower()
 
@@ -910,41 +950,96 @@ class MemoryAgent:
         ):
             question_type = "comparison"
             sub_questions = [
-                f"What is the evidence for the first side of: {normalized}",
-                f"What is the evidence for the second side of: {normalized}",
-                f"Based on both sides, what is the supported comparison result for: {normalized}",
+                self._render_runtime_prompt(
+                    "fallback_sub_questions",
+                    "comparison",
+                    "first_side",
+                    replacements={"<question_text>": normalized},
+                ),
+                self._render_runtime_prompt(
+                    "fallback_sub_questions",
+                    "comparison",
+                    "second_side",
+                    replacements={"<question_text>": normalized},
+                ),
+                self._render_runtime_prompt(
+                    "fallback_sub_questions",
+                    "comparison",
+                    "final_compare",
+                    replacements={"<question_text>": normalized},
+                ),
             ]
         elif any(token in lowered for token in ("how many", "count", "number of")) or any(
             token in normalized for token in ("多少", "几次", "几个人", "数量", "总共")
         ):
             question_type = "counting"
             sub_questions = [
-                f"What candidate evidence items are relevant to: {normalized}",
-                f"After deduplication, what is the correct count for: {normalized}",
+                self._render_runtime_prompt(
+                    "fallback_sub_questions",
+                    "counting",
+                    "gather",
+                    replacements={"<question_text>": normalized},
+                ),
+                self._render_runtime_prompt(
+                    "fallback_sub_questions",
+                    "counting",
+                    "count",
+                    replacements={"<question_text>": normalized},
+                ),
             ]
         elif any(token in lowered for token in ("summary", "summarize")) or any(
             token in normalized for token in ("总结", "概括", "概述")
         ):
             question_type = "summary"
             sub_questions = [
-                f"What are the key evidence points needed to summarize: {normalized}",
-                f"What concise summary is supported by those evidence points for: {normalized}",
+                self._render_runtime_prompt(
+                    "fallback_sub_questions",
+                    "summary",
+                    "gather",
+                    replacements={"<question_text>": normalized},
+                ),
+                self._render_runtime_prompt(
+                    "fallback_sub_questions",
+                    "summary",
+                    "summarize",
+                    replacements={"<question_text>": normalized},
+                ),
             ]
         elif any(token in lowered for token in ("when", "before", "after", "during", "date", "time")) or any(
             token in normalized for token in ("什么时候", "之前", "之后", "期间", "日期", "时间")
         ):
             question_type = "temporal"
             sub_questions = [
-                f"What events or details establish the time anchors for: {normalized}",
-                f"What exact time answer is supported for: {normalized}",
+                self._render_runtime_prompt(
+                    "fallback_sub_questions",
+                    "temporal",
+                    "anchors",
+                    replacements={"<question_text>": normalized},
+                ),
+                self._render_runtime_prompt(
+                    "fallback_sub_questions",
+                    "temporal",
+                    "answer",
+                    replacements={"<question_text>": normalized},
+                ),
             ]
         elif any(token in lowered for token in ("why", "reason", "because", "cause")) or any(
             token in normalized for token in ("为什么", "原因", "因为", "导致")
         ):
             question_type = "causal"
             sub_questions = [
-                f"What happened before or around the target event in: {normalized}",
-                f"What evidence-supported cause or reason answers: {normalized}",
+                self._render_runtime_prompt(
+                    "fallback_sub_questions",
+                    "causal",
+                    "context",
+                    replacements={"<question_text>": normalized},
+                ),
+                self._render_runtime_prompt(
+                    "fallback_sub_questions",
+                    "causal",
+                    "cause",
+                    replacements={"<question_text>": normalized},
+                ),
             ]
         else:
             question_type = "direct_lookup"
@@ -953,24 +1048,27 @@ class MemoryAgent:
         return {
             "goal": normalized,
             "question_type": question_type,
-            "decomposition_reason": "Fallback heuristic decomposition.",
+            "decomposition_reason": self._get_runtime_prompt_text("heuristic_decomposition_reason"),
             "sub_questions": sub_questions,
             "suggested_tool_order": [
                 "search_events_by_time_range" if question_type == "temporal" else "search_details",
                 "search_content",
             ],
-            "completion_criteria": "Each core sub-question is answered with tool-grounded evidence.",
+            "completion_criteria": self._get_runtime_prompt_text("heuristic_completion_criteria"),
         }
 
-    @classmethod
-    def _detect_direct_answer_strategy(cls, question_text: str) -> Tuple[bool, str]:
+    def _detect_direct_answer_strategy(self, question_text: str) -> Tuple[bool, str]:
         normalized = str(question_text or "").strip()
         lowered = normalized.lower()
-        heuristic_plan = cls._fallback_question_plan(normalized)
+        heuristic_plan = self._fallback_question_plan(normalized)
         question_type = str(heuristic_plan.get("question_type", "direct_lookup") or "direct_lookup")
 
         if question_type in {"comparison", "counting", "summary", "causal"}:
-            return True, f"Obvious {question_type} question; decompose first."
+            return True, self._render_runtime_prompt(
+                "strategy_reasons",
+                "obvious_decompose",
+                replacements={"<question_type>": question_type},
+            )
 
         wh_hits = 0
         for pattern in (r"\bwho\b", r"\bwhat\b", r"\bwhen\b", r"\bwhere\b", r"\bwhich\b", r"\bhow\b"):
@@ -978,28 +1076,27 @@ class MemoryAgent:
                 wh_hits += 1
 
         marker_hits = 0
-        for token in cls._MULTI_HOP_MARKERS:
+        for token in self._MULTI_HOP_MARKERS:
             if token in lowered:
                 marker_hits += 1
 
         temporal_chain_hits = 0
-        for token in cls._TEMPORAL_CHAIN_MARKERS:
+        for token in self._TEMPORAL_CHAIN_MARKERS:
             if token in lowered:
                 temporal_chain_hits += 1
 
         if wh_hits >= 2 and (" and " in lowered or marker_hits > 0):
-            return True, "Question contains multiple explicit query targets; decompose first."
+            return True, self._get_runtime_prompt_text("strategy_reasons", "multi_target")
 
         if temporal_chain_hits >= 2 and (" and " in lowered or " then " in lowered):
-            return True, "Question chains multiple temporal constraints; decompose first."
+            return True, self._get_runtime_prompt_text("strategy_reasons", "temporal_chain")
 
         if marker_hits >= 2 and len(normalized) >= 80:
-            return True, "Question has clear multi-hop coordination markers; decompose first."
+            return True, self._get_runtime_prompt_text("strategy_reasons", "multi_hop_markers")
 
-        return False, "Question appears to be a single-goal lookup; answer directly first."
+        return False, self._get_runtime_prompt_text("strategy_reasons", "direct_lookup")
 
-    @staticmethod
-    def _build_direct_question_plan(question_text: str, reason: str) -> Dict[str, Any]:
+    def _build_direct_question_plan(self, question_text: str, reason: str) -> Dict[str, Any]:
         normalized = str(question_text or "").strip()
         return {
             "goal": normalized,
@@ -1007,7 +1104,7 @@ class MemoryAgent:
             "decomposition_reason": reason,
             "sub_questions": [],
             "suggested_tool_order": ["search_details", "search_content"],
-            "completion_criteria": "Answer the original question directly with tool-grounded evidence.",
+            "completion_criteria": self._get_runtime_prompt_text("direct_lookup_completion_criteria"),
         }
 
     @staticmethod
@@ -1024,7 +1121,13 @@ class MemoryAgent:
     def _decompose_question(self, question_text: str) -> Dict[str, Any]:
         try:
             response = self._invoke_model_with_network_retry(
-                prompt_text=f"{self.planner_prompt}\n\n[User Question]\n{question_text}",
+                prompt_text=self._render_runtime_prompt(
+                    "decompose_question_prompt",
+                    replacements={
+                        "<planner_prompt>": self.planner_prompt,
+                        "<question_text>": question_text,
+                    },
+                ),
                 call_name="decompose_question",
             )
             plan_text = self._extract_message_text(response)
@@ -1059,71 +1162,55 @@ class MemoryAgent:
         )
         return fallback
 
-    @staticmethod
     def _build_sub_question_prompt(
+        self,
         question_text: str,
         question_plan: Dict[str, Any],
         sub_question: str,
         sub_index: int,
         total_sub_questions: int,
     ) -> str:
-        return (
-            "[Original Question]\n"
-            f"{question_text}\n\n"
-            "[Question Plan]\n"
-            f"{json.dumps(question_plan, ensure_ascii=False, indent=2)}\n\n"
-            "[Current Sub-question]\n"
-            f"#{sub_index}/{total_sub_questions}: {sub_question}\n\n"
-            "[Task]\n"
-            "- Answer only the current sub-question.\n"
-            "- Use tools if needed.\n"
-            "- search_details is the default tool for ordinary detail questions.\n"
-            "- Use the entity-profile tools only for macro/coarse retrieval questions.\n"
-            "- If the sub-question is a macro entity question, resolve_entity_id before using entity-specific tools.\n"
-            "- Never pass a raw name directly into get_entity_profile, search_entity_feature, "
-            "search_entity_event, or search_entity_events_by_time.\n"
-            "- If the question includes a concrete semantic anchor besides the entity, prefer search_details.\n"
-            "- Use get_entity_profile for overview, entity_feature for macro profile recall, entity_event for coarse actions, "
-            "and entity_events_by_time for entity + time-window macro questions.\n"
-            "- Use search_content when you need raw dialogue details, exact timing, or final verification.\n"
-            "- Keep the answer concrete and grounded in evidence.\n"
-            "- gold_answer should be the concise value for this sub-question when possible."
+        return self._render_runtime_prompt(
+            "sub_question_prompt",
+            replacements={
+                "<question_text>": question_text,
+                "<question_plan_json>": json.dumps(question_plan, ensure_ascii=False, indent=2),
+                "<sub_question>": sub_question,
+                "<sub_index>": sub_index,
+                "<total_sub_questions>": total_sub_questions,
+            },
         )
 
-    @staticmethod
     def _build_final_synthesis_prompt(
+        self,
         question_text: str,
         question_plan: Dict[str, Any],
         sub_question_results: List[Dict[str, Any]],
     ) -> str:
-        return (
-            "You are the final synthesis stage of a memory QA pipeline.\n"
-            "Use only the provided solved sub-questions and their evidence.\n"
-            "Return JSON only with keys: answer, gold_answer, evidence.\n"
-            "gold_answer must be concise. If the final answer is unknown, set gold_answer to null.\n\n"
-            "[Original Question]\n"
-            f"{question_text}\n\n"
-            "[Question Plan]\n"
-            f"{json.dumps(question_plan, ensure_ascii=False, indent=2)}\n\n"
-            "[Solved Sub-questions]\n"
-            f"{json.dumps(sub_question_results, ensure_ascii=False, indent=2)}"
+        return self._render_runtime_prompt(
+            "final_synthesis_prompt",
+            replacements={
+                "<question_text>": question_text,
+                "<question_plan_json>": json.dumps(question_plan, ensure_ascii=False, indent=2),
+                "<sub_question_results_json>": json.dumps(
+                    sub_question_results,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            },
         )
 
-    @staticmethod
     def _build_shallow_recall_prompt(
+        self,
         question_text: str,
         search_result: Dict[str, Any],
     ) -> str:
-        return (
-            "You are the lightweight summary stage of a memory recall pipeline.\n"
-            "Use only the provided search_details results.\n"
-            "Return JSON only with keys: answer, gold_answer, evidence.\n"
-            "If the recalled details do not actually answer the question, say that the current memory is insufficient and set gold_answer to null.\n"
-            "Do not invent facts, names, links, or times that are not grounded in the recalled data.\n\n"
-            "[User Question]\n"
-            f"{question_text}\n\n"
-            "[search_details Result]\n"
-            f"{json.dumps(search_result, ensure_ascii=False, indent=2)}"
+        return self._render_runtime_prompt(
+            "shallow_recall_prompt",
+            replacements={
+                "<question_text>": question_text,
+                "<search_result_json>": json.dumps(search_result, ensure_ascii=False, indent=2),
+            },
         )
 
     def _compute_network_retry_delay(self, attempt: int) -> float:
@@ -1372,36 +1459,19 @@ class MemoryAgent:
         )
         return payload
 
-    @staticmethod
-    def _build_execution_prompt(question_text: str, question_plan: Dict[str, Any]) -> str:
-        return (
-            "[Original Question]\n"
-            f"{question_text}\n\n"
-            "[Question Plan]\n"
-            f"{json.dumps(question_plan, ensure_ascii=False, indent=2)}\n\n"
-            "[Execution Rules]\n"
-            "- Answer the original question, not the plan itself.\n"
-            "- Use the plan as the default execution order.\n"
-            "- If tool evidence invalidates the plan, refine it mentally and continue.\n"
-            "- Do not skip the sub-questions for comparison, summary, counting, or multi-hop questions."
+    def _build_execution_prompt(self, question_text: str, question_plan: Dict[str, Any]) -> str:
+        return self._render_runtime_prompt(
+            "execution_prompt",
+            replacements={
+                "<question_text>": question_text,
+                "<question_plan_json>": json.dumps(question_plan, ensure_ascii=False, indent=2),
+            },
         )
 
-    @staticmethod
-    def _build_direct_execution_prompt(question_text: str) -> str:
-        return (
-            "[Original Question]\n"
-            f"{question_text}\n\n"
-            "[Execution Mode]\n"
-            "Answer directly first.\n\n"
-            "[Task]\n"
-            "- Answer the original question directly with the minimum necessary tool calls.\n"
-            "- Do not explicitly decompose into sub-questions unless the question clearly requires comparison, counting, summary, causal explanation, or another obvious multi-hop structure.\n"
-            "- search_details is the default tool for ordinary detail questions.\n"
-            "- Use the entity-profile tools only for macro/coarse retrieval questions.\n"
-            "- If the question is an ordinary single-goal lookup, keep sub_questions as an empty list.\n"
-            "- If direct retrieval is insufficient, state what remains unknown instead of inventing facts.\n"
-            "- gold_answer must be the concise final value only.\n"
-            "- evidence should briefly cite the supporting tool results."
+    def _build_direct_execution_prompt(self, question_text: str) -> str:
+        return self._render_runtime_prompt(
+            "direct_execution_prompt",
+            replacements={"<question_text>": question_text},
         )
 
     @classmethod
@@ -1466,7 +1536,7 @@ class MemoryAgent:
         if not isinstance(payload.get("sub_questions"), list):
             payload["sub_questions"] = []
         if not payload.get("plan_summary"):
-            payload["plan_summary"] = "Answered directly without explicit decomposition."
+            payload["plan_summary"] = self._get_runtime_prompt_text("direct_answer_plan_summary")
         self._log_structured_trace(
             self._TRACE_PREFIX_DIRECT_ANSWER,
             payload,

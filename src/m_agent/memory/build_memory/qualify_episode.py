@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from m_agent.config_paths import EPISODE_PROMPT_CONFIG_PATH
 from m_agent.paths import memory_stage_dir
+from m_agent.prompt_utils import load_resolved_prompt_config, normalize_prompt_language
 # 添加项目根目录到 Python 路径，确保可以导入 load_model
 
 # 配置日志：只显示 WARNING 及以上级别，减少输出噪音
@@ -29,10 +30,12 @@ DIALOGUES_ROOT = memory_stage_dir("default", "dialogues")
 EPISODES_ROOT = memory_stage_dir("default", "episodes")
 CONFIG_PATH = EPISODE_PROMPT_CONFIG_PATH
 
-def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict:
+def load_prompts(memory_owner_name: str = "changshengEVA", prompt_language: str = "zh") -> Dict:
     """Load scoring prompts and replace the memory owner placeholder."""
-    with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
+    config = load_resolved_prompt_config(
+        CONFIG_PATH,
+        language=normalize_prompt_language(prompt_language),
+    )
     prompts = config.get('scoring_sys', {})
     # 替换 prompts 中的 <memory_owner_name> 占位符
     if isinstance(prompts, dict):
@@ -379,6 +382,7 @@ def scan_and_qualify_episodes(
     dialogues_root: Path = None,
     episodes_root: Path = None,
     memory_owner_name: str = "changshengEVA",
+    prompt_language: str = "zh",
     llm_model: Optional[Callable[[str], str]] = None
 ):
     """
@@ -400,7 +404,7 @@ def scan_and_qualify_episodes(
     ensure_directory(episodes_root)
     
     # 加载 prompts，并替换占位符
-    prompts = load_prompts(memory_owner_name)
+    prompts = load_prompts(memory_owner_name, prompt_language=prompt_language)
     if not prompts:
         logger.error("未找到 episode_information_scoring prompts")
         return

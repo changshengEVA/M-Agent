@@ -193,6 +193,7 @@ def load_from_episode_path(
         scene_prompt_version = str(getattr(memory_core, "scene_prompt_version", "v2"))
         fact_prompt_version = str(getattr(memory_core, "fact_prompt_version", "v2"))
         memory_owner_name = str(getattr(memory_core, "memory_owner_name", "changshengEVA"))
+        prompt_language = str(getattr(memory_core, "prompt_language", "zh"))
 
         # system-owned behavior: import flow controls force_update internally
         force_update = False
@@ -235,6 +236,7 @@ def load_from_episode_path(
                 episodes_root=episodes_root_for_build,
                 scene_root=scene_root,
                 memory_owner_name=memory_owner_name,
+                prompt_language=prompt_language,
                 embed_model=memory_core.embed_func,
                 llm_model=memory_core.llm_func,
             )
@@ -264,6 +266,7 @@ def load_from_episode_path(
                 prompt_version=fact_prompt_version,
                 force_update=force_update,
                 use_tqdm=True,
+                prompt_language=prompt_language,
                 embed_model=memory_core.embed_func,
                 llm_model=memory_core.llm_func,
             )
@@ -364,6 +367,7 @@ def load_from_episode_path(
                 "scene_prompt_version": scene_prompt_version,
                 "fact_prompt_version": fact_prompt_version,
                 "memory_owner_name": memory_owner_name,
+                "prompt_language": prompt_language,
                 "force_update": force_update,
             }
             if not build_result["success"]:

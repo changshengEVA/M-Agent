@@ -1,70 +1,99 @@
-make_entity_statement: |
-  """
-  You are an information extraction system.
+make_entity_statement:
+  zh: |
+    你是信息抽取系统。
+    你的任务是基于给定 Episode，为指定实体生成多条 Entity Statement。
 
-  Your task is to generate multiple Entity Statements for a given entity based on an Episode.
+    Entity Statement 的定义：
+    - 围绕单个实体展开
+    - 脱离上下文也能独立理解
+    - 表达一个完整信息点
+    - 严格基于给定 Episode，不做推断
 
-  Definition of Entity Statement:
-  An Entity Statement is a natural language sentence that:
-  - centers on a single entity
-  - is self-contained and understandable without context
-  - expresses one complete piece of information
-  - is directly grounded in the given Episode (no inference)
+    输入：
+    - Episode：一段对话或叙述文本
+    - Entity：Episode 中提到的一个具体实体
 
-  ---
+    指令：
+    1. 只抽取 Episode 中与该实体直接相关的信息。
+    2. 把每个信息点改写为以该实体为显式主语的独立句子。
+    3. 每条 statement 必须满足：
+      - 单一实体主语（必须以实体名开头）
+      - 单一信息点（不要合并多个事实）
+      - 语法完整
+      - 主语不缺失
+      - 不用代词指代该实体（始终使用实体名）
+      - 完全避免代词和指示词（如 he / she / they / it / this / that / here / there）
+      - 不要使用相对时间表达（如 yesterday / today / tomorrow / recently / last week / next month）
+      - 如果时间必要且文本里明确给出，只能使用绝对日历时间表达
+      - 不做超出 Episode 的推断
+    4. 如果有多个信息点，输出多条 statement。
+    5. 如果没有关于该实体的有效信息，输出空列表。
 
-  Input:
-  - Episode: a piece of dialogue or narrative text
-  - Entity: a specific entity mentioned in the Episode
+    约束（非常重要）：
+    - 不要生成总结
+    - 不要把多个动作合并成一句
+    - 不要添加文本中未明确出现的信息
+    - 不要输出重复 statement
+    - 不要输出关于其他实体的 statement
+    - 不要输出依赖上下文的表达（例如 “this conversation”, “that photo”, “above”）
 
-  ---
+    输出格式（JSON 字符串数组）：
+    [
+      "Statement 1",
+      "Statement 2"
+    ]
 
-  Instructions:
+    Episode:
+    """{episode_text}"""
 
-  1. Extract ONLY the information in the Episode that is directly related to the given Entity.
+    Entity:
+    """{entity_name}"""
+  en: |
+    You are an information extraction system.
+    Your task is to generate multiple Entity Statements for a given entity based on an Episode.
 
-  2. Rewrite each piece of information as a standalone sentence with the Entity as the explicit subject.
+    Definition of Entity Statement:
+    - centered on a single entity
+    - self-contained and understandable without context
+    - expresses one complete piece of information
+    - directly grounded in the given Episode (no inference)
 
-  3. Each statement MUST satisfy:
-    - Single entity subject (must start with the Entity name)
-    - Single piece of information (DO NOT combine multiple facts)
-    - Grammatically complete sentence
-    - No missing subject
-    - No pronouns referring to the entity (always use the entity name)
-    - No pronouns/deictic words at all (no he/she/they/it/this/that/here/there)
-    - No relative time expressions (no yesterday/today/tomorrow/recently/last week/next month)
-    - If time is necessary and explicitly provided, use absolute calendar time text only
-    - No inference beyond the Episode
+    Input:
+    - Episode: a piece of dialogue or narrative text
+    - Entity: a specific entity mentioned in the Episode
 
-  4. If multiple pieces of information exist, output multiple statements.
+    Instructions:
+    1. Extract ONLY the information in the Episode that is directly related to the given Entity.
+    2. Rewrite each piece of information as a standalone sentence with the Entity as the explicit subject.
+    3. Each statement MUST satisfy:
+      - Single entity subject (must start with the Entity name)
+      - Single piece of information (DO NOT combine multiple facts)
+      - Grammatically complete sentence
+      - No missing subject
+      - No pronouns referring to the entity (always use the entity name)
+      - No pronouns / deictic words at all (no he / she / they / it / this / that / here / there)
+      - No relative time expressions (no yesterday / today / tomorrow / recently / last week / next month)
+      - If time is necessary and explicitly provided, use absolute calendar time text only
+      - No inference beyond the Episode
+    4. If multiple pieces of information exist, output multiple statements.
+    5. If no valid information about the entity exists, output an empty list.
 
-  5. If no valid information about the entity exists, output an empty list.
+    Constraints (VERY IMPORTANT):
+    - DO NOT generate summaries
+    - DO NOT combine multiple actions into one sentence
+    - DO NOT add information not explicitly stated
+    - DO NOT output duplicate statements
+    - DO NOT output statements about other entities
+    - DO NOT output context-dependent references (e.g., "this conversation", "that photo", "above")
 
-  ---
+    Output format (JSON list of strings):
+    [
+      "Statement 1",
+      "Statement 2"
+    ]
 
-  Constraints (VERY IMPORTANT):
+    Episode:
+    """{episode_text}"""
 
-  - DO NOT generate summaries
-  - DO NOT combine multiple actions into one sentence
-  - DO NOT add information not explicitly stated
-  - DO NOT output duplicate statements
-  - DO NOT output statements about other entities
-  - DO NOT output context-dependent references (e.g., "this conversation", "that photo", "above")
-
-  ---
-
-  Output format (JSON list of strings):
-
-  [
-    "Statement 1",
-    "Statement 2"
-  ]
-
-  ---
-
-  Episode:
-  \"\"\"{episode_text}\"\"\"
-
-  Entity:
-  \"\"\"{entity_name}\"\"\"
-  """
+    Entity:
+    """{entity_name}"""

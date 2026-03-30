@@ -18,6 +18,7 @@ from tqdm import tqdm
 
 from m_agent.config_paths import SCENE_PROMPT_CONFIG_PATH
 from m_agent.paths import memory_stage_dir
+from m_agent.prompt_utils import load_resolved_prompt_config, normalize_prompt_language
 # 添加项目根目录到 Python 路径，确保可以导入 load_model
 
 # 导入 episode 状管理器
@@ -31,10 +32,12 @@ DIALOGUES_ROOT = memory_stage_dir("default", "dialogues")
 EPISODES_ROOT = memory_stage_dir("default", "episodes")
 CONFIG_PATH = SCENE_PROMPT_CONFIG_PATH
 
-def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict:
+def load_prompts(memory_owner_name: str = "changshengEVA", prompt_language: str = "zh") -> Dict:
     """Load scene prompts and replace the memory owner placeholder."""
-    with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-        config = yaml.safe_load(f)
+    config = load_resolved_prompt_config(
+        CONFIG_PATH,
+        language=normalize_prompt_language(prompt_language),
+    )
     
     # 替换 prompts 中的 <memory_owner_name> 占位符
     if isinstance(config, dict):
@@ -596,6 +599,7 @@ def scan_and_form_scenes(use_tqdm: bool = True,
                         episodes_root: Path = None,
                         scene_root: Path = None,
                         memory_owner_name: str = "changshengEVA",
+                        prompt_language: str = "zh",
                         embed_model: Optional[Callable[[Any], Any]] = None,
                         llm_model: Optional[Callable[[str], str]] = None):
     """
@@ -622,7 +626,7 @@ def scan_and_form_scenes(use_tqdm: bool = True,
     ensure_directory(scene_root)
     
     # 加载 prompts
-    prompts = load_prompts(memory_owner_name)
+    prompts = load_prompts(memory_owner_name, prompt_language=prompt_language)
     if not prompts:
         logger.error("未找到 scene prompts")
         return

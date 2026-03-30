@@ -7,13 +7,25 @@ from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import yaml
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import tool
 from langgraph.errors import GraphRecursionError
 
-from m_agent.config_paths import DEFAULT_CHAT_AGENT_CONFIG_PATH
+from m_agent.config_paths import (
+    AGENT_RUNTIME_PROMPT_CONFIG_PATH,
+    DEFAULT_CHAT_AGENT_CONFIG_PATH,
+    resolve_config_path,
+    resolve_related_config_path,
+)
 from m_agent.agents.memory_agent import MemoryAgent
+from m_agent.prompt_utils import (
+    load_resolved_prompt_config,
+    normalize_prompt_language,
+    render_prompt_template,
+    resolve_prompt_value,
+)
 from m_agent.utils.api_error_utils import is_network_api_error
 
 
@@ -31,53 +43,131 @@ class ChatControllerAgent:
     """Top-level chat controller with persona, using neutral recall tools underneath."""
 
     def __init__(self, config_path: str | Path = DEFAULT_CHAT_CONFIG_PATH) -> None:
-        self.memory_agent = MemoryAgent(config_path=config_path)
-        self.config_path = self.memory_agent.config_path
-        self.default_thread_id = str(
-            self.memory_agent.config.get("thread_id", "test-agent-1")
-        ).strip() or "test-agent-1"
+        self.config_path = resolve_config_path(config_path)
+        self.config = self._load_config(self.config_path)
+        self.prompt_language = normalize_prompt_language(self.config.get("prompt_language", "zh"))
+        self.runtime_prompt_config_path = self._resolve_runtime_prompt_config_path(
+            self.config.get("runtime_prompt_config_path")
+        )
+        self.runtime_prompts = self._load_runtime_prompts(self.runtime_prompt_config_path)
+        self.memory_agent_config_path = self._resolve_memory_agent_config_path(
+            self.config.get("memory_agent_config_path")
+        )
+        self.memory_agent = MemoryAgent(config_path=self.memory_agent_config_path)
+        self.default_thread_id = str(self.config.get("thread_id", "test-agent-1")).strip() or "test-agent-1"
         self.chat_persona_prompt = self._load_chat_persona_prompt()
         self.chat_system_prompt = self._build_chat_system_prompt()
 
+    @staticmethod
+    def _load_config(path: Path) -> Dict[str, Any]:
+        if not path.exists():
+            raise FileNotFoundError(f"Chat controller config not found: {path}")
+
+        with open(path, "r", encoding="utf-8") as f:
+            config = yaml.safe_load(f) or {}
+
+        if not isinstance(config, dict):
+            raise ValueError(f"Chat controller config must be a dict: {path}")
+
+        if not isinstance(config.get("memory_agent_config_path"), str) or not str(
+            config.get("memory_agent_config_path")
+        ).strip():
+            raise ValueError("`memory_agent_config_path` is required in chat controller config")
+
+        return config
+
+    def _resolve_memory_agent_config_path(self, raw_path: Any) -> Path:
+        return resolve_related_config_path(self.config_path, raw_path)
+
+    def _resolve_runtime_prompt_config_path(self, raw_path: Any) -> Path:
+        return resolve_related_config_path(
+            self.config_path,
+            raw_path,
+            default_path=AGENT_RUNTIME_PROMPT_CONFIG_PATH,
+        )
+
+    def _load_runtime_prompts(self, path: Path) -> Dict[str, Any]:
+        config = load_resolved_prompt_config(path, language=self.prompt_language)
+        prompts = config.get("chat_controller")
+        if not isinstance(prompts, dict):
+            raise ValueError(f"`chat_controller` prompt namespace is required in runtime prompt config: {path}")
+        return prompts
+
     def _load_chat_persona_prompt(self) -> str:
-        prompt = self.memory_agent.memory_core_config.get("chat_persona_prompt")
-        if not isinstance(prompt, str):
+        prompt = self.config.get("chat_persona_prompt")
+        if prompt is None:
             return ""
-        return prompt.strip()
+        if isinstance(prompt, str) and not prompt.strip():
+            return ""
+        return resolve_prompt_value(
+            prompt,
+            language=self.prompt_language,
+            path_desc=f"{self.config_path}.chat_persona_prompt",
+        )
 
     def _build_chat_system_prompt(self) -> str:
-        base_prompt = str(self.memory_agent.config.get("chat_system_prompt", "") or "").strip()
-        if not base_prompt:
-            base_prompt = (
-                "You are the top-level chat controller for a memory-enabled assistant.\n"
-                "Chat naturally and helpfully.\n"
-                "Use memory recall tools only when the user asks about prior conversations, remembered facts, people, actions, plans, timelines, or other stored details.\n"
-                "Use `shallow_recall` first for ordinary single-goal memory lookups.\n"
-                "Use `deep_recall` for comparison, counting, multi-hop, broad summary, temporal chaining, causal reasoning, or when shallow recall is insufficient.\n"
-                "Do not claim remembered facts unless they are supported by a recall tool.\n"
-                "If memory evidence is insufficient, say so plainly.\n"
-                "Prefer concise Chinese answers when the user writes Chinese."
+        base_prompt = resolve_prompt_value(
+            self.config.get("chat_system_prompt"),
+            language=self.prompt_language,
+            path_desc=f"{self.config_path}.chat_system_prompt",
+        )
+        return self._merge_chat_system_prompt(
+            base_prompt,
+            self.chat_persona_prompt,
+            prompt_language=self.prompt_language,
+            runtime_prompt_config_path=self.runtime_prompt_config_path,
+        )
+
+    @staticmethod
+    def _merge_chat_system_prompt(
+        base_prompt: str,
+        persona_prompt: str,
+        *,
+        prompt_language: str = "en",
+        runtime_prompt_config_path: str | Path = AGENT_RUNTIME_PROMPT_CONFIG_PATH,
+    ) -> str:
+        normalized_base_prompt = str(base_prompt or "").strip()
+        normalized_persona_prompt = str(persona_prompt or "").strip()
+        if not normalized_persona_prompt:
+            return normalized_base_prompt
+
+        resolved_path = Path(runtime_prompt_config_path).resolve()
+        runtime_prompts = load_resolved_prompt_config(
+            resolved_path,
+            language=normalize_prompt_language(prompt_language),
+        )
+        controller_prompts = runtime_prompts.get("chat_controller")
+        if not isinstance(controller_prompts, dict):
+            raise ValueError(f"`chat_controller` prompt namespace is required in runtime prompt config: {resolved_path}")
+
+        template = str(controller_prompts.get("merge_system_with_persona", "") or "").strip()
+        if not template:
+            raise ValueError(
+                f"`chat_controller.merge_system_with_persona` is required in runtime prompt config: "
+                f"{resolved_path}"
             )
 
-        if not self.chat_persona_prompt:
-            return base_prompt
-
-        return (
-            f"{base_prompt}\n\n"
-            "[Chat Persona]\n"
-            f"{self.chat_persona_prompt}\n\n"
-            "[Important]\n"
-            "- Persona only affects conversational tone and final phrasing.\n"
-            "- Recall tools are neutral and evidence-grounded; do not override their factual boundaries.\n"
+        return render_prompt_template(
+            template,
+            {
+                "<base_prompt>": normalized_base_prompt,
+                "<persona_prompt>": normalized_persona_prompt,
+            },
         ).strip()
 
     def _build_no_recall_result(self, question: str, answer_text: str) -> Dict[str, Any]:
+        plan_summary = str(self.runtime_prompts.get("no_recall_plan_summary", "") or "").strip()
+        if not plan_summary:
+            raise ValueError(
+                f"`chat_controller.no_recall_plan_summary` is required in runtime prompt config: "
+                f"{self.runtime_prompt_config_path}"
+            )
         return {
             "answer": answer_text,
             "gold_answer": None,
             "evidence": None,
             "sub_questions": [],
-            "plan_summary": "No memory recall tool was used for this chat turn.",
+            "plan_summary": plan_summary,
             "tool_call_count": 0,
             "question_plan": {
                 "goal": "",

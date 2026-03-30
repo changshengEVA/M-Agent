@@ -1,0 +1,20 @@
+# Used by: `config/agents/memory/chat_memory_agent.yaml`
+# Purpose: MemoryCore config backing the chat demo / chat API workflow.
+workflow_id: "test_agent"
+runtime_prompt_config_path: "../../prompts/runtime/memory_core_runtime.yaml"
+prompt_language: "zh"
+
+# MemoryCore init settings
+memory_llm_temperature: 0.0
+memory_similarity_threshold: 0.88
+memory_top_k: 3
+memory_use_threshold: true
+
+# Build/import settings
+scene_prompt_version: "v2"
+fact_prompt_version: "v2"
+memory_owner_name: "Memory Assistant"
+entity_statement_force_update: false
+
+# Embedding provider: local/bge/alibaba/aliyun/dashscope
+embed_provider: "aliyun"

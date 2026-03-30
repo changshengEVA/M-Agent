@@ -22,36 +22,21 @@ from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 from tqdm import tqdm
 
-from m_agent.paths import memory_workflow_dir
+from m_agent.config_paths import MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH
+from m_agent.paths import PROJECT_ROOT as DEFAULT_PROJECT_ROOT
+from m_agent.prompt_utils import (
+    load_resolved_prompt_config,
+    normalize_prompt_language,
+    render_prompt_template,
+)
 
 logger = logging.getLogger(__name__)
 
-FACT_ENTITY_PROMPT = """You are an information extraction system.
-
-Given a sentence, extract:
-1. The main entity (the subject whose state/action is described)
-2. Other mentioned entities (if any)
-
-Rules:
-- The main entity is the grammatical subject
-- Return a canonical name (no pronouns)
-- If possessive (e.g., "Audrey's dogs"), main entity is Audrey
-
-Output JSON:
-{
-  "main_entity": "...",
-  "other_entities": ["...", "..."]
-}
-
-Return JSON only.
-
-Sentence:
-{sentence}
-"""
+PROJECT_ROOT = DEFAULT_PROJECT_ROOT
 
 
 def get_memory_root(workflow_id: str) -> Path:
-    return memory_workflow_dir(workflow_id)
+    return Path(PROJECT_ROOT) / "data" / "memory" / str(workflow_id)
 
 
 def get_scene_root(memory_root: Path) -> Path:
@@ -264,8 +249,9 @@ def parse_entity_payload(parsed_payload: Any) -> Tuple[str, List[str]]:
 def call_fact_entity_extraction(
     atomic_fact: str,
     llm_model: Callable[[str], str],
+    prompt_template: str,
 ) -> Tuple[str, List[str]]:
-    full_prompt = FACT_ENTITY_PROMPT.replace("{sentence}", atomic_fact)
+    full_prompt = render_prompt_template(prompt_template, {"<sentence>": atomic_fact})
     response = llm_model(full_prompt)
     parsed = extract_json_from_text(response)
     return parse_entity_payload(parsed)
@@ -327,6 +313,8 @@ def scan_and_extract_fact_entities(
     force_update: bool = False,
     use_tqdm: bool = True,
     llm_model: Optional[Callable[[str], str]] = None,
+    prompt_language: str = "zh",
+    runtime_prompt_config_path: str | Path | None = None,
 ) -> Dict[str, Any]:
     memory_root = get_memory_root(workflow_id)
     scene_root = get_scene_root(memory_root)
@@ -361,6 +349,11 @@ def scan_and_extract_fact_entities(
         from m_agent.load_model.OpenAIcall import get_llm
 
         llm_model = get_llm(model_temperature=0.0)
+
+    prompt_template = _load_fact_entity_prompt(
+        prompt_language=prompt_language,
+        runtime_prompt_config_path=runtime_prompt_config_path,
+    )
 
     scene_files = scan_scene_files(scene_root)
     stats["scanned_scenes"] = len(scene_files)
@@ -416,7 +409,11 @@ def scan_and_extract_fact_entities(
                     if cache_key in entity_cache:
                         main_entity, other_entities = entity_cache[cache_key]
                     else:
-                        main_entity, other_entities = call_fact_entity_extraction(atomic_fact, llm_model=llm_model)
+                        main_entity, other_entities = call_fact_entity_extraction(
+                            atomic_fact,
+                            llm_model=llm_model,
+                            prompt_template=prompt_template,
+                        )
                         entity_cache[cache_key] = (main_entity, other_entities)
                         stats["llm_calls"] += 1
                     stats["facts_extracted"] += 1
@@ -545,7 +542,32 @@ def extract_fact_entities(
         force_update=force_update,
         use_tqdm=use_tqdm,
         llm_model=llm_func,
+        prompt_language=getattr(memory_core, "prompt_language", "zh"),
+        runtime_prompt_config_path=getattr(memory_core, "runtime_prompt_config_path", None),
     )
     stats["success"] = True
     return stats
+
+
+def _load_fact_entity_prompt(
+    *,
+    prompt_language: str,
+    runtime_prompt_config_path: str | Path | None,
+) -> str:
+    config_path = Path(runtime_prompt_config_path or MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH).resolve()
+    config = load_resolved_prompt_config(
+        config_path,
+        language=normalize_prompt_language(prompt_language),
+    )
+    prompts = config.get("extract_fact_entities")
+    if not isinstance(prompts, dict):
+        raise ValueError(
+            f"`extract_fact_entities` prompt namespace is required in runtime prompt config: {config_path}"
+        )
+    template = prompts.get("fact_entity_prompt")
+    if not isinstance(template, str) or not template.strip():
+        raise ValueError(
+            f"`extract_fact_entities.fact_entity_prompt` is required in runtime prompt config: {config_path}"
+        )
+    return template.strip()
 

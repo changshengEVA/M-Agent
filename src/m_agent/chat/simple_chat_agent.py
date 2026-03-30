@@ -157,10 +157,18 @@ class ChatMemoryPersistence:
                     dialogue_id,
                     episodes_root=self.episodes_dir,
                 )
-                import_result = self.memory_core.load_from_episode_path(
-                    episode_file,
-                    progress_callback=progress_callback,
-                )
+                if progress_callback is None:
+                    import_result = self.memory_core.load_from_episode_path(episode_file)
+                else:
+                    try:
+                        import_result = self.memory_core.load_from_episode_path(
+                            episode_file,
+                            progress_callback=progress_callback,
+                        )
+                    except TypeError as exc:
+                        if "progress_callback" not in str(exc):
+                            raise
+                        import_result = self.memory_core.load_from_episode_path(episode_file)
                 import_success = bool(import_result.get("success", False))
                 return {
                     "success": import_success,
@@ -377,16 +385,24 @@ class SimpleMemoryChatAgent:
         self.default_thread_id = self.chat_controller.default_thread_id
         self.chat_persona_prompt = self.chat_controller.chat_persona_prompt
         self.chat_system_prompt = self.chat_controller.chat_system_prompt
-        self.user_name = str(self.memory_agent.config.get("chat_user_name", "User") or "User")
+        self.user_name = str(self.chat_controller.config.get("chat_user_name", "User") or "User")
         self.assistant_name = str(
-            self.memory_agent.config.get("chat_assistant_name", "Memory Assistant")
+            self.chat_controller.config.get("chat_assistant_name", "Memory Assistant")
             or "Memory Assistant"
         )
-        self.persist_memory = bool(self.memory_agent.config.get("persist_memory", True))
+        self.persist_memory = bool(self.chat_controller.config.get("persist_memory", True))
         self.memory_persistence = ChatMemoryPersistence(
             self.memory_agent.memory_sys,
             user_name=self.user_name,
             assistant_name=self.assistant_name,
+        )
+
+    @staticmethod
+    def _merge_chat_system_prompt(base_prompt: str, persona_prompt: str) -> str:
+        return ChatControllerAgent._merge_chat_system_prompt(
+            base_prompt,
+            persona_prompt,
+            prompt_language="en",
         )
 
     def chat(

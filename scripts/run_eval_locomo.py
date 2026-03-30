@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=str,
-        default="config/agents/memory/agent_sys.yaml",
+        default="config/agents/memory/locomo_eval_memory_agent.yaml",
         help="MemoryAgent config yaml path.",
     )
     parser.add_argument(

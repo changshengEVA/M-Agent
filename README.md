@@ -59,7 +59,7 @@ API_SECRET_KEY=YOUR_OPENAI_COMPATIBLE_KEY
 OPENAI_API_KEY=
 BASE_URL=https://api.openai.com/v1
 
-# Agent model key: model_name=deepseek-chat (config/agents/memory/agent_sys.yaml)
+# Agent model key: model_name=deepseek-chat (config/agents/memory/locomo_eval_memory_agent.yaml)
 DEEPSEEK_API_KEY=YOUR_DEEPSEEK_KEY
 
 # Embedding key: embed_provider (config/memory/core/*.yaml)
@@ -75,8 +75,8 @@ LLM_PROVIDER=deepseek
 
 4. Run LoCoMo preprocessing first (`memory_pre`, now only builds dialogues + episodes)
 
-> `run_eval_locomo.py` uses `config/agents/memory/agent_sys.yaml` by default.
-> In that file, `memory_core_config_path` points to `config/memory/core/agent_sys_memory.yaml`,
+> `run_eval_locomo.py` uses `config/agents/memory/locomo_eval_memory_agent.yaml` by default.
+> In that file, `memory_core_config_path` points to `config/memory/core/locomo_eval_memory_core.yaml`,
 > where `workflow_id` is configured. Keep preprocessing `--id` consistent with that `workflow_id`.
 
 ```bash

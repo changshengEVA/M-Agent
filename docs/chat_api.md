@@ -43,7 +43,7 @@ $env:PYTHONPATH='src'
 python -m m_agent.api.chat_api `
   --host 127.0.0.1 `
   --port 8777 `
-  --config config/agents/chat/test_agent_chat.yaml `
+  --config config/agents/chat/chat_controller.yaml `
   --idle-flush-seconds 600 `
   --history-max-rounds 12
 ```
@@ -90,7 +90,7 @@ python -m m_agent.api.chat_api `
   "ok": true,
   "service": "m-agent-chat-api",
   "runtime": {
-    "config_path": "F:\\AI\\M-Agent\\config\\prompt\\test_agent_chat.yaml",
+    "config_path": "F:\\AI\\M-Agent\\config\\agents\\chat\\chat_controller.yaml",
     "default_thread_id": "test-agent-1",
     "persist_memory": true,
     "idle_flush_seconds": 600,

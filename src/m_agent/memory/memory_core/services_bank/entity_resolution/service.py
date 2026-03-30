@@ -84,7 +84,9 @@ class EntityResolutionService(BaseService):
         similarity_threshold: float = 0.7,
         top_k: int = 3,
         use_threshold: bool = True,
-        data_path: Optional[str] = None
+        data_path: Optional[str] = None,
+        prompt_language: str = "zh",
+        runtime_prompt_config_path: Optional[str] = None,
     ):
         """
         Initialize the entity resolution service.
@@ -103,12 +105,14 @@ class EntityResolutionService(BaseService):
         self.llm_func = llm_func
         self.embed_func = embed_func
         self.data_path = data_path
+        self.prompt_language = prompt_language
+        self.runtime_prompt_config_path = runtime_prompt_config_path
         
         # 初始化默认策略（单一策略）
         self._init_default_strategy(
             similarity_threshold=similarity_threshold,
             top_k=top_k,
-            use_threshold=use_threshold
+            use_threshold=use_threshold,
         )
         
         logger.info("初始化 EntityResolutionService")
@@ -392,7 +396,9 @@ class EntityResolutionService(BaseService):
             embed_func=self.embed_func,
             similarity_threshold=similarity_threshold,
             top_k=top_k,
-            use_threshold=use_threshold
+            use_threshold=use_threshold,
+            prompt_language=self.prompt_language,
+            runtime_prompt_config_path=self.runtime_prompt_config_path,
         )
         
         self.strategies = [strategy]
@@ -625,7 +631,9 @@ def create_default_resolution_service(
     similarity_threshold: float = 0.7,
     top_k: int = 3,
     use_threshold: bool = True,
-    data_path: Optional[str] = None
+    data_path: Optional[str] = None,
+    prompt_language: str = "zh",
+    runtime_prompt_config_path: Optional[str] = None,
 ) -> EntityResolutionService:
     """
     创建默认配置的实体解析服务。
@@ -647,7 +655,9 @@ def create_default_resolution_service(
         similarity_threshold=similarity_threshold,
         top_k=top_k,
         use_threshold=use_threshold,
-        data_path=data_path
+        data_path=data_path,
+        prompt_language=prompt_language,
+        runtime_prompt_config_path=runtime_prompt_config_path,
     )
     
     return service

@@ -52,7 +52,7 @@ class MemoryAgentTraceUI:
         self.live_plan: dict[str, object] = {}
         self.live_sub_questions: list[dict[str, object]] = []
 
-        self.config_var = tk.StringVar(value=r"config\agents\memory\agent_sys.yaml")
+        self.config_var = tk.StringVar(value=r"config\agents\memory\locomo_eval_memory_agent.yaml")
         self.thread_var = tk.StringVar(value="memory-agent-1")
         self.question_var = tk.StringVar(
             value="When is Jon's group performing at a festival?"

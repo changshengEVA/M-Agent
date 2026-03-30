@@ -17,7 +17,15 @@ import logging
 import math
 import re
 from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+from m_agent.config_paths import MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH
+from m_agent.prompt_utils import (
+    load_resolved_prompt_config,
+    normalize_prompt_language,
+    render_prompt_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +38,8 @@ def resolve_entity_id(
     max_candidates: int = 3,
     string_similarity_threshold: float = 0.72,
     embedding_similarity_threshold: float = 0.55,
+    prompt_language: str = "zh",
+    runtime_prompt_config_path: str | Path | None = None,
 ) -> Dict[str, Any]:
     """
     Resolve entity query into canonical entity id.
@@ -57,6 +67,11 @@ def resolve_entity_id(
     """
     query = str(entity_name_or_id or "").strip()
     safe_max_candidates = _safe_int(max_candidates, default=3, minimum=1, maximum=20)
+    resolved_prompt_language = normalize_prompt_language(prompt_language)
+    runtime_prompts = _load_entity_search_runtime_prompts(
+        prompt_language=resolved_prompt_language,
+        runtime_prompt_config_path=runtime_prompt_config_path,
+    )
     result: Dict[str, Any] = {
         "hit": False,
         "query": query,
@@ -110,7 +125,12 @@ def resolve_entity_id(
 
     # 4) LLM final judgment
     if ranked_candidates and callable(llm_func):
-        judge = _llm_judge_candidates(query=query, candidates=ranked_candidates, llm_func=llm_func)
+        judge = _llm_judge_candidates(
+            query=query,
+            candidates=ranked_candidates,
+            llm_func=llm_func,
+            prompt_template=runtime_prompts["llm_candidate_judge_prompt"],
+        )
         result["judge"] = judge
 
         if str(judge.get("decision", "")).upper() == "HIT":
@@ -131,6 +151,24 @@ def resolve_entity_id(
         }
 
     return result
+
+
+def _load_entity_search_runtime_prompts(
+    *,
+    prompt_language: str,
+    runtime_prompt_config_path: str | Path | None,
+) -> Dict[str, str]:
+    config_path = Path(runtime_prompt_config_path or MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH).resolve()
+    config = load_resolved_prompt_config(config_path, language=prompt_language)
+    prompts = config.get("entity_search")
+    if not isinstance(prompts, dict):
+        raise ValueError(f"`entity_search` prompt namespace is required in runtime prompt config: {config_path}")
+    template = prompts.get("llm_candidate_judge_prompt")
+    if not isinstance(template, str) or not template.strip():
+        raise ValueError(
+            f"`entity_search.llm_candidate_judge_prompt` is required in runtime prompt config: {config_path}"
+        )
+    return {"llm_candidate_judge_prompt": template.strip()}
 
 
 def _recall_candidates(
@@ -247,6 +285,7 @@ def _llm_judge_candidates(
     query: str,
     candidates: Sequence[Dict[str, Any]],
     llm_func: Callable[[str], str],
+    prompt_template: str,
 ) -> Dict[str, Any]:
     candidate_lines: List[str] = []
     valid_ids: List[str] = []
@@ -265,19 +304,12 @@ def _llm_judge_candidates(
             f"{rank}. entity_id={entity_id}, matched_name={matched_name}, score={score:.4f}, source={source}"
         )
 
-    prompt = (
-        "You are an entity-grounding judge.\n"
-        "Given a user query and recalled entity candidates, decide whether query truly hits an existing entity.\n"
-        "Be strict and avoid over-matching.\n\n"
-        f"QUERY:\n{query}\n\n"
-        "CANDIDATES:\n"
-        + ("\n".join(candidate_lines) if candidate_lines else "- none")
-        + "\n\nOutput JSON only:\n"
-        '{"decision":"HIT"|"MISS","entity_id":"<candidate id or empty>","match_rank":<int or null>,"confidence":<0~1>,"reason":"..."}\n'
-        "Rules:\n"
-        "- HIT only when query clearly refers to one candidate.\n"
-        "- entity_id must come from candidate list.\n"
-        "- If uncertain, return MISS."
+    prompt = render_prompt_template(
+        prompt_template,
+        {
+            "<query>": query,
+            "<candidate_lines>": "\n".join(candidate_lines) if candidate_lines else "- none",
+        },
     )
 
     raw_response = ""

@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 from m_agent.config_paths import FACT_EXTRACTION_PROMPT_CONFIG_PATH
 from m_agent.paths import memory_workflow_dir
+from m_agent.prompt_utils import load_resolved_prompt_config, normalize_prompt_language
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
@@ -56,9 +57,15 @@ def save_json(path: Path, data: Dict[str, Any]) -> None:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
 
-def load_prompts() -> Dict[str, Any]:
-    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-        raw = f.read()
+def load_prompts(prompt_language: str = "zh") -> Dict[str, Any]:
+    try:
+        return load_resolved_prompt_config(
+            CONFIG_PATH,
+            language=normalize_prompt_language(prompt_language),
+        )
+    except Exception:
+        with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+            raw = f.read()
 
     if yaml is not None:
         config = yaml.safe_load(raw) or {}
@@ -533,6 +540,7 @@ def scan_and_form_scene_facts(
     prompt_version: str = "v2",
     force_update: bool = False,
     use_tqdm: bool = True,
+    prompt_language: str = "zh",
     embed_model: Optional[Callable[[Any], Any]] = None,
     llm_model: Optional[Callable[[str], str]] = None,
 ) -> Dict[str, int]:
@@ -550,7 +558,7 @@ def scan_and_form_scene_facts(
         logger.error("Dialogues directory does not exist: %s", dialogues_root)
         return {"scanned": 0, "updated": 0, "skipped": 0, "failed": 0, "with_facts": 0, "empty_facts": 0}
 
-    prompts = load_prompts()
+    prompts = load_prompts(prompt_language=prompt_language)
     prompt_keys = [f"fact_extraction_{prompt_version}"]
     prompt_template = ""
     for prompt_key in prompt_keys:

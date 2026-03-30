@@ -1,16 +1,42 @@
 # Config Layout
 
-`config/` now uses a role-based structure:
+`config/` is organized by ownership:
 
-- `agents/`: top-level agent runtime configs
+- `agents/`: top-level runnable agent configs
 - `memory/core/`: MemoryCore parameter configs
-- `prompts/`: prompt templates used by build and retrieval workflows
+- `prompts/`: reusable prompt templates
 - `integrations/`: external service configs such as Neo4j
 
-Canonical defaults:
+Recommended hierarchy:
 
-- `config/agents/memory/agent_sys.yaml`
-- `config/agents/chat/test_agent_chat.yaml`
-- `config/memory/core/agent_sys_memory.yaml`
+- `ChatController config -> MemoryAgent config -> MemoryCore config`
+- `MemoryAgent config -> MemoryCore config`
 
-Only the new paths above are supported.
+Config map:
+
+- `config/agents/chat/chat_controller.yaml`
+  Used by: `python -m m_agent.api.chat_api`
+  Role: top-level chat controller config
+- `config/agents/memory/chat_memory_agent.yaml`
+  Used by: `chat_controller.yaml`
+  Role: recall-layer MemoryAgent under chat
+- `config/memory/core/chat_memory_core.yaml`
+  Used by: `chat_memory_agent.yaml`
+  Role: MemoryCore backend for chat memory
+- `config/agents/memory/locomo_eval_memory_agent.yaml`
+  Used by: `python scripts/run_eval_locomo.py`
+  Role: default MemoryAgent config for LoCoMo evaluation
+- `config/memory/core/locomo_eval_memory_core.yaml`
+  Used by: `locomo_eval_memory_agent.yaml`
+  Role: MemoryCore backend for LoCoMo evaluation
+- `config/agents/eval/realtalk_eval_memory_agent.yaml`
+  Used by: ReaLTalk evaluation/manual QA
+  Role: MemoryAgent config for ReaLTalk
+- `config/memory/core/realtalk_eval_memory_core.yaml`
+  Used by: `realtalk_eval_memory_agent.yaml`
+  Role: MemoryCore backend for ReaLTalk
+- `config/memory/core/dev_openai_memory_core.yaml`
+  Used by: `tests/test_core_sys.py` and local smoke tests
+  Role: developer-only MemoryCore config with explicit model choices
+
+Prompt and integration files are shared building blocks rather than entry configs.

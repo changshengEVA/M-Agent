@@ -30,7 +30,9 @@ from _bootstrap import bootstrap_project
 
 bootstrap_project()
 
+from m_agent.config_paths import QA_LLM_JUDGE_PROMPT_CONFIG_PATH
 from m_agent.paths import ENV_PATH, resolve_project_path
+from m_agent.prompt_utils import load_resolved_prompt_config, normalize_prompt_language
 
 
 def _load_env_file(path: Path) -> None:
@@ -56,25 +58,26 @@ def _load_env_file(path: Path) -> None:
 _load_env_file(ENV_PATH)
 
 
-SYSTEM_PROMPT = (
-    "You are an expert grader that determines if answers to questions match "
-    "a gold standard answer."
-)
+def load_judge_prompts(
+    config_path: str | Path,
+    prompt_language: str,
+) -> tuple[str, str]:
+    resolved_path = resolve_project_path(config_path)
+    config = load_resolved_prompt_config(
+        resolved_path,
+        language=normalize_prompt_language(prompt_language),
+    )
+    prompt_node = config.get("qa_llm_judge")
+    if not isinstance(prompt_node, dict):
+        raise ValueError(f"`qa_llm_judge` is required in prompt config: {resolved_path}")
 
-USER_PROMPT_TEMPLATE = """Your task is to label an answer to a question as 'CORRECT' or 'WRONG'. You will be given:
-1. a question
-2. a gold (ground truth) answer
-3. a generated answer
-
-Be generous. If the generated answer clearly refers to the same fact, date, entity, or event as the gold answer, label it CORRECT.
-
-Question: {question}
-Gold answer: {gold_answer}
-Generated answer: {generated_answer}
-
-Return JSON only:
-{{"label": "CORRECT" or "WRONG"}}
-"""
+    system_prompt = prompt_node.get("system_prompt")
+    user_prompt_template = prompt_node.get("user_prompt_template")
+    if not isinstance(system_prompt, str) or not system_prompt.strip():
+        raise ValueError(f"`qa_llm_judge.system_prompt` is required in prompt config: {resolved_path}")
+    if not isinstance(user_prompt_template, str) or not user_prompt_template.strip():
+        raise ValueError(f"`qa_llm_judge.user_prompt_template` is required in prompt config: {resolved_path}")
+    return system_prompt.strip(), user_prompt_template.strip()
 
 
 def parse_args() -> argparse.Namespace:
@@ -174,6 +177,16 @@ def parse_args() -> argparse.Namespace:
         "--base-url",
         default=os.getenv("LLM_BASE_URL") or os.getenv("BASE_URL") or "https://api.openai.com/v1",
         help="OpenAI-compatible base URL. Default: env LLM_BASE_URL or OpenAI.",
+    )
+    parser.add_argument(
+        "--prompt-language",
+        default=os.getenv("PROMPT_LANGUAGE") or "en",
+        help="Prompt language for judge instructions. Default: env PROMPT_LANGUAGE or en.",
+    )
+    parser.add_argument(
+        "--prompt-config",
+        default=str(QA_LLM_JUDGE_PROMPT_CONFIG_PATH),
+        help="Prompt config path for judge instructions.",
     )
     return parser.parse_args()
 
@@ -506,8 +519,9 @@ async def judge_once(
     gold_answer: str,
     generated_answer: str,
     max_retries: int,
+    user_prompt_template: str,
 ) -> bool:
-    user_prompt = USER_PROMPT_TEMPLATE.format(
+    user_prompt = user_prompt_template.format(
         question=question,
         gold_answer=gold_answer,
         generated_answer=generated_answer,
@@ -535,6 +549,7 @@ async def evaluate_tasks(
     num_runs: int,
     concurrency: int,
     max_retries: int,
+    user_prompt_template: str,
 ) -> list[dict[str, Any]]:
     semaphore = asyncio.Semaphore(concurrency)
     completed = 0
@@ -551,6 +566,7 @@ async def evaluate_tasks(
                             gold_answer=item["gold_answer"],
                             generated_answer=item["generated_answer"],
                             max_retries=max_retries,
+                            user_prompt_template=user_prompt_template,
                         )
                         for _ in range(num_runs)
                     ]
@@ -759,6 +775,11 @@ def update_stats_file(
 
 async def main() -> None:
     args = parse_args()
+    prompt_language = normalize_prompt_language(args.prompt_language)
+    system_prompt, user_prompt_template = load_judge_prompts(
+        args.prompt_config,
+        prompt_language,
+    )
 
     input_path = resolve_project_path(args.input)
     if not input_path.exists():
@@ -799,6 +820,8 @@ async def main() -> None:
     print("Stats:", stats_output_path)
     print("Model:", args.model)
     print("Judge field prefix:", judge_prefix)
+    print("Prompt language:", prompt_language)
+    print("Prompt config:", resolve_project_path(args.prompt_config))
     print("Questions loaded:", prep_stats["total_qa"])
     print("Questions queued:", prep_stats["queued_qa"])
     print("Questions reused:", prep_stats["scored_existing"])
@@ -826,7 +849,7 @@ async def main() -> None:
             model_name=args.model,
             api_key_override=args.api_key,
             base_url_override=args.base_url,
-            system_prompt=SYSTEM_PROMPT,
+            system_prompt=system_prompt,
             max_tokens=512,
         )
         results = await evaluate_tasks(
@@ -835,6 +858,7 @@ async def main() -> None:
             num_runs=args.num_runs,
             concurrency=args.concurrency,
             max_retries=args.max_retries,
+            user_prompt_template=user_prompt_template,
         )
         for result in results:
             qa_item = result["task"]["qa_ref"]
@@ -880,6 +904,8 @@ async def main() -> None:
         "num_runs": args.num_runs,
         "judge_model": args.model,
         "judge_base_url": args.base_url,
+        "prompt_language": prompt_language,
+        "prompt_config": str(resolve_project_path(args.prompt_config)),
         "queued_qa": prep_stats["queued_qa"],
         "evaluated_new": evaluated_new,
         "failed_qa": failed_count,

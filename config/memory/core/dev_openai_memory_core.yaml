@@ -1,0 +1,28 @@
+# Used by: `tests/test_core_sys.py` and ad-hoc local MemoryCore smoke tests.
+# Purpose: developer-focused MemoryCore config with explicit OpenAI/alibaba model settings.
+workflow_id: "test7"
+runtime_prompt_config_path: "../../prompts/runtime/memory_core_runtime.yaml"
+prompt_language: "en"
+
+# model providers
+llm_provider: "openai"
+embed_provider: "aliyun"
+
+# optional model names (empty = loader defaults / env defaults)
+llm_model_name: "gpt-4o-mini"
+embed_model_name: "text-embedding-v4"
+
+# MemoryCore init settings
+memory_llm_temperature: 0.0
+memory_similarity_threshold: 0.88
+memory_top_k: 3
+memory_use_threshold: true
+
+# Build/import settings
+scene_prompt_version: "v2"
+fact_prompt_version: "v2"
+memory_owner_name: "changshengEVA"
+# Entity statement build control
+# true: force regenerate all episodes this run
+# false: incremental mode based on episodes/episode_situation.json
+entity_statement_force_update: true

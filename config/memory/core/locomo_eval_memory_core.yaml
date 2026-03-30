@@ -1,12 +1,8 @@
-﻿workflow_id: "test7"
-
-# model providers
-llm_provider: "openai"
-embed_provider: "aliyun"
-
-# optional model names (empty = loader defaults / env defaults)
-llm_model_name: "gpt-4o-mini"
-embed_model_name: "text-embedding-v4"
+# Used by: `config/agents/memory/locomo_eval_memory_agent.yaml`
+# Purpose: MemoryCore config for LoCoMo evaluation data/workflow.
+workflow_id: "test7"
+runtime_prompt_config_path: "../../prompts/runtime/memory_core_runtime.yaml"
+prompt_language: "en"
 
 # MemoryCore init settings
 memory_llm_temperature: 0.0
@@ -22,3 +18,6 @@ memory_owner_name: "changshengEVA"
 # true: force regenerate all episodes this run
 # false: incremental mode based on episodes/episode_situation.json
 entity_statement_force_update: true
+
+# Embedding provider: local/bge/alibaba/aliyun/dashscope
+embed_provider: "aliyun"

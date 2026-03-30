@@ -9,7 +9,15 @@ import logging
 import math
 import re
 from abc import ABC, abstractmethod
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+
+from m_agent.config_paths import MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH
+from m_agent.prompt_utils import (
+    load_resolved_prompt_config,
+    normalize_prompt_language,
+    render_prompt_template,
+)
 
 from .errors import EntityProfileNetworkError
 from .library import AttributeEntry, EventEntry
@@ -56,6 +64,8 @@ class EmbedThenLLMProfileMergeStrategy(ProfileMergeStrategy):
         similarity_threshold: float = 0.78,
         top_k: int = 3,
         auto_merge_threshold: float = 0.93,
+        prompt_language: str = "zh",
+        runtime_prompt_config_path: str | Path | None = None,
     ):
         super().__init__(name="EmbedThenLLMProfileMergeStrategy")
         self.llm_func = llm_func
@@ -63,6 +73,11 @@ class EmbedThenLLMProfileMergeStrategy(ProfileMergeStrategy):
         self.similarity_threshold = float(similarity_threshold)
         self.top_k = int(max(1, top_k))
         self.auto_merge_threshold = float(auto_merge_threshold)
+        self.prompt_language = normalize_prompt_language(prompt_language)
+        self.runtime_prompt_config_path = Path(
+            runtime_prompt_config_path or MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH
+        ).resolve()
+        self.runtime_prompts = self._load_runtime_prompts(self.runtime_prompt_config_path)
 
     @staticmethod
     def build_attribute_text(field: str, content: Sequence[str]) -> str:
@@ -236,18 +251,15 @@ class EmbedThenLLMProfileMergeStrategy(ProfileMergeStrategy):
                 f"{rank}. idx={idx}, score={score:.4f}, field={item.field}, match_field={entry_field}, content={item.content}, text={entry_text}"
             )
 
-        prompt = (
-            "You are a strict deduplication judge for entity attributes.\n"
-            "Decide if CANDIDATE expresses the same FIELD semantic as one of EXISTING entries.\n"
-            "Content can differ and should be merged when field semantic is same.\n\n"
-            f"CANDIDATE:\nfield={candidate.field}, match_field={candidate_field}, content={candidate.content}, text={candidate_text}\n\n"
-            "EXISTING:\n"
-            + "\n".join(candidate_lines)
-            + "\n\nOutput JSON only with this schema:\n"
-            '{"decision":"SAME"|"NEW","match_idx":<int or null>}\n'
-            "Rules:\n"
-            "- SAME when field semantics are the same (e.g. like/likes/preference), even if content differs.\n"
-            "- If uncertain, return NEW."
+        prompt = render_prompt_template(
+            self.runtime_prompts["attribute_dedup_prompt"],
+            {
+                "<candidate_field>": candidate.field,
+                "<candidate_match_field>": candidate_field,
+                "<candidate_content>": candidate.content,
+                "<candidate_text>": candidate_text,
+                "<candidate_lines>": "\n".join(candidate_lines),
+            },
         )
         response = self._safe_llm_call(prompt)
         return self._parse_llm_decision(response)
@@ -267,21 +279,31 @@ class EmbedThenLLMProfileMergeStrategy(ProfileMergeStrategy):
                 f"abstract_time={item.abstract_time}, text={entry_text}"
             )
 
-        prompt = (
-            "You are a strict deduplication judge for entity events.\n"
-            "Decide if CANDIDATE event is the same event type as one of EXISTING entries.\n"
-            "Time information should NOT force NEW when the event itself is same.\n\n"
-            f"CANDIDATE:\n{candidate_text}\n\n"
-            "EXISTING:\n"
-            + "\n".join(candidate_lines)
-            + "\n\nOutput JSON only with this schema:\n"
-            '{"decision":"SAME"|"NEW","match_idx":<int or null>}\n'
-            "Rules:\n"
-            "- SAME when core event semantics match.\n"
-            "- If uncertain, return NEW."
+        prompt = render_prompt_template(
+            self.runtime_prompts["event_dedup_prompt"],
+            {
+                "<candidate_text>": candidate_text,
+                "<candidate_lines>": "\n".join(candidate_lines),
+            },
         )
         response = self._safe_llm_call(prompt)
         return self._parse_llm_decision(response)
+
+    def _load_runtime_prompts(self, path: Path) -> Dict[str, str]:
+        config = load_resolved_prompt_config(path, language=self.prompt_language)
+        prompts = config.get("entity_profile_merge")
+        if not isinstance(prompts, dict):
+            raise ValueError(f"`entity_profile_merge` prompt namespace is required in runtime prompt config: {path}")
+
+        resolved: Dict[str, str] = {}
+        for key in ("attribute_dedup_prompt", "event_dedup_prompt"):
+            value = prompts.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"`entity_profile_merge.{key}` is required in runtime prompt config: {path}"
+                )
+            resolved[key] = value.strip()
+        return resolved
 
     def _safe_llm_call(self, prompt: str) -> str:
         try:

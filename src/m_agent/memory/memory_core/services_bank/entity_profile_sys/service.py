@@ -65,7 +65,15 @@ except ImportError:
     def is_network_api_error(exc: BaseException | None) -> bool:
         return False
 
-from m_agent.config_paths import FACTS_FILTER_PROMPT_CONFIG_PATH
+from m_agent.config_paths import (
+    FACTS_FILTER_PROMPT_CONFIG_PATH,
+    MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH,
+)
+from m_agent.prompt_utils import (
+    load_resolved_prompt_config,
+    normalize_prompt_language,
+    render_prompt_template,
+)
 
 logger = logging.getLogger(__name__)
 FACT_FINGERPRINT_VERSION = 2
@@ -94,6 +102,8 @@ class EntityProfileService(BaseService):
         facts_situation_path: Optional[str] = None,
         rebuild_checkpoint_path: Optional[str] = None,
         prompt_path: Optional[str] = None,
+        prompt_language: str = "zh",
+        runtime_prompt_config_path: Optional[str | Path] = None,
         similarity_threshold: float = 0.78,
         top_k: int = 3,
         auto_merge_threshold: float = 0.93,
@@ -113,6 +123,10 @@ class EntityProfileService(BaseService):
         self.top_k = int(top_k)
         self.auto_merge_threshold = float(auto_merge_threshold)
         self.align_on_system_initialized = bool(align_on_system_initialized)
+        self.prompt_language = normalize_prompt_language(prompt_language)
+        self.runtime_prompt_config_path = Path(
+            runtime_prompt_config_path or MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH
+        ).resolve()
 
         self.local_store_dir = Path(local_store_dir) if local_store_dir else self.memory_root / "local_store"
         self.local_store_dir.mkdir(parents=True, exist_ok=True)
@@ -137,6 +151,7 @@ class EntityProfileService(BaseService):
             if prompt_path
             else FACTS_FILTER_PROMPT_CONFIG_PATH
         )
+        self.runtime_prompts = self._load_runtime_prompts(self.runtime_prompt_config_path)
         self.facts_filter_prompt = self._load_fact_filter_prompt(self.prompt_path)
 
         self.entity_profile_library = EntityProfileLibrary(
@@ -149,6 +164,8 @@ class EntityProfileService(BaseService):
             similarity_threshold=self.similarity_threshold,
             top_k=self.top_k,
             auto_merge_threshold=self.auto_merge_threshold,
+            prompt_language=self.prompt_language,
+            runtime_prompt_config_path=self.runtime_prompt_config_path,
         )
         self._episode_time_cache: Optional[Dict[Tuple[str, str], Dict[str, str]]] = None
 
@@ -1059,20 +1076,13 @@ class EntityProfileService(BaseService):
         }
 
     def _extract_attribute_candidates(self, atomic_fact: str, entity_uid: str, main_entity: str) -> List[AttributeEntry]:
-        prompt = (
-            "You are an information extraction system.\n"
-            "Extract stable profile attributes from one atomic fact.\n"
-            "If there is no stable attribute, return an empty list.\n\n"
-            f"Entity UID: {entity_uid}\n"
-            f"Entity Name: {main_entity}\n"
-            f"Atomic Fact: {atomic_fact}\n\n"
-            "Output JSON only:\n"
-            '{"attributes":[{"field":"like","content":["apple","meat"]}]}\n'
-            "Rules:\n"
-            "- Return ONLY one JSON object. Do NOT return an array.\n"
-            "- field should be concise, lower-case, snake_case style when possible.\n"
-            "- content must be a list of strings.\n"
-            "- Keep only stable preferences/traits/abilities."
+        prompt = self._render_runtime_prompt(
+            "attribute_extract_prompt",
+            {
+                "<entity_uid>": entity_uid,
+                "<main_entity>": main_entity,
+                "<atomic_fact>": atomic_fact,
+            },
         )
         payload = self._call_llm_json(prompt, default={})
         raw_items = self._extract_list_payload(payload, key="attributes")
@@ -1112,21 +1122,15 @@ class EntityProfileService(BaseService):
     ) -> List[EventEntry]:
         known_start = str(evidence.start_time or "")
         known_end = str(evidence.end_time or "")
-        prompt = (
-            "You are an information extraction system.\n"
-            "Extract timeline events from one atomic fact.\n"
-            "If there is no valid event, return an empty list.\n\n"
-            f"Entity UID: {entity_uid}\n"
-            f"Entity Name: {main_entity}\n"
-            f"Atomic Fact: {atomic_fact}\n"
-            f"Known source time: start_time={known_start}, end_time={known_end}\n\n"
-            "Output JSON only:\n"
-            '{"events":[{"event":"walk in the park","actual_time":[{"start_time":"...","end_time":"..."}],"abstract_time":["everyday"]}]}\n'
-            "Rules:\n"
-            "- Return ONLY one JSON object. Do NOT return an array.\n"
-            "- event must be concise and concrete.\n"
-            "- actual_time can be [] when not available.\n"
-            "- abstract_time can be [] when not available."
+        prompt = self._render_runtime_prompt(
+            "event_extract_prompt",
+            {
+                "<entity_uid>": entity_uid,
+                "<main_entity>": main_entity,
+                "<atomic_fact>": atomic_fact,
+                "<known_start>": known_start,
+                "<known_end>": known_end,
+            },
         )
         payload = self._call_llm_json(prompt, default={})
         raw_items = self._extract_list_payload(payload, key="events")
@@ -1197,16 +1201,13 @@ class EntityProfileService(BaseService):
                 f"- {item.event} | actual_time={times} | abstract_time={item.abstract_time[:4]}"
             )
 
-        prompt = (
-            "You are an entity profile summarizer.\n"
-            "Write a concise profile summary in 2-4 sentences.\n"
-            "Focus on stable traits and key recurring events.\n\n"
-            f"Entity: {entity_id}\n"
-            "Attributes:\n"
-            + ("\n".join(attr_lines) if attr_lines else "- None")
-            + "\n\nEvents:\n"
-            + ("\n".join(event_lines) if event_lines else "- None")
-            + "\n\nReturn plain text only."
+        prompt = self._render_runtime_prompt(
+            "summary_prompt",
+            {
+                "<entity_id>": entity_id,
+                "<attr_lines>": "\n".join(attr_lines) if attr_lines else "- None",
+                "<event_lines>": "\n".join(event_lines) if event_lines else "- None",
+            },
         )
         try:
             summary = str(self.llm_func(prompt) or "").strip()
@@ -1975,10 +1976,48 @@ class EntityProfileService(BaseService):
     # ------------------------------------------------------------------
     # LLM helpers
     # ------------------------------------------------------------------
+    def _load_runtime_prompts(self, path: Path) -> Dict[str, str]:
+        config = load_resolved_prompt_config(path, language=self.prompt_language)
+        prompts = config.get("entity_profile_service")
+        if not isinstance(prompts, dict):
+            raise ValueError(
+                f"`entity_profile_service` prompt namespace is required in runtime prompt config: {path}"
+            )
+
+        resolved: Dict[str, str] = {}
+        for key in ("attribute_extract_prompt", "event_extract_prompt", "summary_prompt"):
+            value = prompts.get(key)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(
+                    f"`entity_profile_service.{key}` is required in runtime prompt config: {path}"
+                )
+            resolved[key] = value.strip()
+        return resolved
+
+    def _get_runtime_prompt_text(self, key: str) -> str:
+        value = self.runtime_prompts.get(key)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(
+                f"`entity_profile_service.{key}` is required in runtime prompt config: "
+                f"{self.runtime_prompt_config_path}"
+            )
+        return value.strip()
+
+    def _render_runtime_prompt(self, key: str, replacements: Dict[str, Any]) -> str:
+        return render_prompt_template(self._get_runtime_prompt_text(key), replacements).strip()
+
     def _load_fact_filter_prompt(self, prompt_path: Path) -> str:
         if not prompt_path.exists():
             logger.warning("facts_filter prompt not found: %s", prompt_path)
             return "{fact}"
+        try:
+            parsed = load_resolved_prompt_config(prompt_path, language=self.prompt_language)
+            template = parsed.get("fact_filter_v1")
+            if isinstance(template, str) and template.strip():
+                return template.strip()
+        except Exception:
+            pass
+
         raw = prompt_path.read_text(encoding="utf-8")
         if yaml is not None:
             try:
@@ -1986,7 +2025,7 @@ class EntityProfileService(BaseService):
                 if isinstance(parsed, dict):
                     template = parsed.get("fact_filter_v1")
                     if isinstance(template, str) and template.strip():
-                        return template
+                        return template.strip()
             except Exception:
                 pass
 
@@ -2277,6 +2316,8 @@ def create_default_entity_profile_service(
     facts_situation_path: Optional[str] = None,
     rebuild_checkpoint_path: Optional[str] = None,
     prompt_path: Optional[str] = None,
+    prompt_language: str = "zh",
+    runtime_prompt_config_path: Optional[str | Path] = None,
     similarity_threshold: float = 0.78,
     top_k: int = 3,
     auto_merge_threshold: float = 0.93,
@@ -2297,6 +2338,8 @@ def create_default_entity_profile_service(
         facts_situation_path=facts_situation_path,
         rebuild_checkpoint_path=rebuild_checkpoint_path,
         prompt_path=prompt_path,
+        prompt_language=prompt_language,
+        runtime_prompt_config_path=runtime_prompt_config_path,
         similarity_threshold=similarity_threshold,
         top_k=top_k,
         auto_merge_threshold=auto_merge_threshold,

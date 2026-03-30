@@ -1,0 +1,35 @@
+qa_llm_judge:
+  system_prompt:
+    zh: |
+      你是一名严谨的问答评审，负责判断一个回答是否与标准答案语义一致。
+    en: |
+      You are an expert grader that determines if answers to questions match a gold standard answer.
+  user_prompt_template:
+    zh: |
+      你的任务是把一个问题的回答标记为 `CORRECT` 或 `WRONG`。你会拿到：
+      1. 问题
+      2. 标准答案
+      3. 模型生成的答案
+
+      请适度宽松判断。如果生成答案明显指向与标准答案相同的事实、日期、实体或事件，就标记为 `CORRECT`。
+
+      问题：{question}
+      标准答案：{gold_answer}
+      生成答案：{generated_answer}
+
+      只返回 JSON：
+      {{"label": "CORRECT" or "WRONG"}}
+    en: |
+      Your task is to label an answer to a question as `CORRECT` or `WRONG`. You will be given:
+      1. a question
+      2. a gold (ground truth) answer
+      3. a generated answer
+
+      Be generous. If the generated answer clearly refers to the same fact, date, entity, or event as the gold answer, label it `CORRECT`.
+
+      Question: {question}
+      Gold answer: {gold_answer}
+      Generated answer: {generated_answer}
+
+      Return JSON only:
+      {{"label": "CORRECT" or "WRONG"}}
