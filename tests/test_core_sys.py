@@ -28,7 +28,7 @@ logging.getLogger("memory.build_memory.form_scene").setLevel(logging.WARNING)
 from m_agent.memory.memory_core.memory_system import MemoryCore
 
 
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "memory_core_config" / "test1.yaml"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config" / "memory" / "core" / "test1.yaml"
 
 
 def _load_simple_yaml(raw: str) -> Dict[str, Any]:

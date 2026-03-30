@@ -817,7 +817,7 @@ HTML_PAGE = r"""<!DOCTYPE html>
       <div class="toolbar-grid">
         <div>
           <label for="configInput">Config</label>
-          <input id="configInput" type="text" value="config\prompt\agent_sys.yaml" />
+          <input id="configInput" type="text" value="config\agents\memory\agent_sys.yaml" />
         </div>
         <div>
           <label for="threadInput">Thread ID</label>
@@ -2274,7 +2274,7 @@ class TraceRunState:
     def _reset_locked(self) -> None:
         self.running = False
         self.status = "Ready"
-        self.config = r"config\prompt\agent_sys.yaml"
+        self.config = r"config\agents\memory\agent_sys.yaml"
         self.thread_id = "memory-agent-1"
         self.question = ""
         self.events: list[dict[str, Any]] = []
@@ -2632,7 +2632,7 @@ def run_agent_once(state: TraceRunState, config_text: str, question: str, thread
 
 
 def _resolve_config_path(config_text: str) -> Path:
-    config_path = Path(config_text or r"config\prompt\agent_sys.yaml")
+    config_path = Path(config_text or r"config\agents\memory\agent_sys.yaml")
     if not config_path.is_absolute():
         config_path = PROJECT_ROOT / config_path
     return config_path
@@ -2744,7 +2744,7 @@ def create_handler(state: TraceRunState):
             path = urlparse(self.path).path
             if path == "/api/run":
                 payload = self._read_json_body()
-                config_text = str(payload.get("config", r"config\prompt\agent_sys.yaml") or "").strip()
+                config_text = str(payload.get("config", r"config\agents\memory\agent_sys.yaml") or "").strip()
                 question = str(payload.get("question", "") or "").strip()
                 thread_id = str(payload.get("thread_id", "memory-agent-1") or "").strip()
                 if not question:

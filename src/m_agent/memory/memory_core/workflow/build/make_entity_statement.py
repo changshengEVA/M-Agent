@@ -23,11 +23,14 @@ try:
 except Exception:  # pragma: no cover - optional dependency fallback
     yaml = None
 
-from m_agent.paths import CONFIG_DIR
+from m_agent.config_paths import (
+    ENTITY_STATEMENT_PROMPT_CONFIG_PATH,
+    KG_FILTER_PROMPT_CONFIG_PATH,
+)
 
 logger = logging.getLogger(__name__)
-KG_PROMPT_PATH = CONFIG_DIR / "prompt" / "kg_filter.yaml"
-ENTITY_STATEMENT_PROMPT_PATH = CONFIG_DIR / "memory_core_config" / "make_entity_statement.yaml"
+KG_PROMPT_PATH = KG_FILTER_PROMPT_CONFIG_PATH
+ENTITY_STATEMENT_PROMPT_PATH = ENTITY_STATEMENT_PROMPT_CONFIG_PATH
 
 
 def _load_json(path: Path) -> Optional[Dict[str, Any]]:

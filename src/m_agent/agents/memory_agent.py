@@ -22,11 +22,17 @@ from langchain.chat_models import init_chat_model
 from langchain.tools import tool
 from langgraph.errors import GraphRecursionError
 
+from m_agent.config_paths import (
+    DEFAULT_MEMORY_AGENT_CONFIG_PATH,
+    DEFAULT_MEMORY_CORE_CONFIG_PATH,
+    resolve_config_path,
+    resolve_related_config_path,
+)
 from m_agent.load_model.AlibabaEmbeddingCall import get_embed_model as get_alibaba_embed_model
 from m_agent.load_model.BGEcall import get_embed_model as get_local_embed_model
 from m_agent.load_model.OpenAIcall import get_llm
 from m_agent.memory.memory_core.memory_system import MemoryCore
-from m_agent.paths import CONFIG_DIR, ENV_PATH, resolve_project_path
+from m_agent.paths import ENV_PATH
 from m_agent.utils.api_error_utils import is_network_api_error
 
 
@@ -54,8 +60,7 @@ _load_env_file(ENV_PATH)
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CONFIG_PATH = CONFIG_DIR / "prompt" / "agent_sys.yaml"
-DEFAULT_MEMORY_CORE_CONFIG_PATH = CONFIG_DIR / "memory_core_config" / "agent_sys_memory.yaml"
+DEFAULT_CONFIG_PATH = DEFAULT_MEMORY_AGENT_CONFIG_PATH
 
 
 @dataclass
@@ -254,12 +259,9 @@ class MemoryAgent:
         self._last_question_plan = None
 
     def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH):
-        self.config_path = resolve_project_path(config_path).resolve()
+        self.config_path = resolve_config_path(config_path)
         self.config = self._load_config(self.config_path)
-        self.memory_core_config_path = self._resolve_related_path(
-            self.config_path,
-            self.config.get("memory_core_config_path"),
-        )
+        self.memory_core_config_path = self._resolve_related_path(self.config.get("memory_core_config_path"))
         self.memory_core_config = self._load_memory_core_config(self.memory_core_config_path)
         self._current_tool_calls: List[Dict[str, Any]] = []
         self._last_tool_calls: List[Dict[str, Any]] = []
@@ -361,21 +363,19 @@ class MemoryAgent:
             raise ValueError(f"Agent config must be a dict: {path}")
 
         if not isinstance(config.get("system_prompt"), str) or not config["system_prompt"].strip():
-            raise ValueError("`system_prompt` is required in config/prompt/agent_sys.yaml")
+            raise ValueError(f"`system_prompt` is required in agent config: {path}")
         if not isinstance(config.get("memory_core_config_path"), str) or not str(
             config.get("memory_core_config_path")
         ).strip():
             raise ValueError("`memory_core_config_path` is required in agent config")
         return config
 
-    @staticmethod
-    def _resolve_related_path(base_config_path: Path, raw_path: Any) -> Path:
-        if raw_path is None or not str(raw_path).strip():
-            return DEFAULT_MEMORY_CORE_CONFIG_PATH.resolve()
-        path = Path(str(raw_path).strip())
-        if path.is_absolute():
-            return path
-        return (base_config_path.parent / path).resolve()
+    def _resolve_related_path(self, raw_path: Any) -> Path:
+        return resolve_related_config_path(
+            self.config_path,
+            raw_path,
+            default_path=DEFAULT_MEMORY_CORE_CONFIG_PATH,
+        )
 
     @staticmethod
     def _load_memory_core_config(path: Path) -> Dict[str, Any]:

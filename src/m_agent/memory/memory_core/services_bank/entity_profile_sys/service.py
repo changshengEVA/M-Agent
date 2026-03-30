@@ -65,7 +65,7 @@ except ImportError:
     def is_network_api_error(exc: BaseException | None) -> bool:
         return False
 
-from m_agent.paths import CONFIG_DIR
+from m_agent.config_paths import FACTS_FILTER_PROMPT_CONFIG_PATH
 
 logger = logging.getLogger(__name__)
 FACT_FINGERPRINT_VERSION = 2
@@ -135,7 +135,7 @@ class EntityProfileService(BaseService):
         self.prompt_path = (
             Path(prompt_path)
             if prompt_path
-            else CONFIG_DIR / "prompt" / "facts_filter.yaml"
+            else FACTS_FILTER_PROMPT_CONFIG_PATH
         )
         self.facts_filter_prompt = self._load_fact_filter_prompt(self.prompt_path)
 

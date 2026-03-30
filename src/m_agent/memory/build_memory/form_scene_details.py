@@ -22,12 +22,13 @@ except Exception:
     yaml = None
 from tqdm import tqdm
 
-from m_agent.paths import CONFIG_DIR, memory_workflow_dir
+from m_agent.config_paths import FACT_EXTRACTION_PROMPT_CONFIG_PATH
+from m_agent.paths import memory_workflow_dir
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-CONFIG_PATH = CONFIG_DIR / "prompt" / "fact_extraction.yaml"
+CONFIG_PATH = FACT_EXTRACTION_PROMPT_CONFIG_PATH
 
 
 def get_memory_root(workflow_id: str) -> Path:

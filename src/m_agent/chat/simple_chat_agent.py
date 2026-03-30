@@ -6,7 +6,7 @@ import re
 import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from m_agent.agents.chat_controller_agent import (
     DEFAULT_CHAT_CONFIG_PATH,
@@ -98,6 +98,7 @@ class ChatMemoryPersistence:
         rounds: List[Dict[str, Any]],
         reason: str = "chat_thread_flush",
         source: str = "chat_api_thread_flush",
+        progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         normalized_rounds = self._normalize_rounds(rounds)
         if not normalized_rounds:
@@ -156,7 +157,10 @@ class ChatMemoryPersistence:
                     dialogue_id,
                     episodes_root=self.episodes_dir,
                 )
-                import_result = self.memory_core.load_from_episode_path(episode_file)
+                import_result = self.memory_core.load_from_episode_path(
+                    episode_file,
+                    progress_callback=progress_callback,
+                )
                 import_success = bool(import_result.get("success", False))
                 return {
                     "success": import_success,

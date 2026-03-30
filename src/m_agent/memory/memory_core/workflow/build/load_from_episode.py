@@ -9,11 +9,24 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
+
+
+def _emit_progress(
+    progress_callback: Optional[Callable[[str, Dict[str, Any]], None]],
+    event_type: str,
+    payload: Dict[str, Any],
+) -> None:
+    if progress_callback is None:
+        return
+    try:
+        progress_callback(event_type, payload)
+    except Exception:
+        logger.exception("Episode import progress callback failed for event_type=%s", event_type)
 
 
 def _is_episode_file_payload(data: Dict[str, Any]) -> bool:
@@ -78,6 +91,7 @@ def load_from_episode_path(
     path: Path,
     memory_core: Any,
     use_tqdm: bool = True,
+    progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
 ) -> Dict[str, Any]:
     """
     Import from episodes path and trigger Scene/Atomic-facts generation.
@@ -112,6 +126,16 @@ def load_from_episode_path(
         "resolution_applied": False,
     }
 
+    _emit_progress(
+        progress_callback,
+        "flush_stage",
+        {
+            "stage": "import_episodes",
+            "stage_label": "Import episodes",
+            "status": "started",
+            "total_files": len(episode_files),
+        },
+    )
     file_iter = tqdm(episode_files, desc="Import episodes") if use_tqdm else episode_files
     for episode_file in file_iter:
         payload = _load_json(episode_file)
@@ -148,6 +172,20 @@ def load_from_episode_path(
             }
         )
 
+    _emit_progress(
+        progress_callback,
+        "flush_stage",
+        {
+            "stage": "import_episodes",
+            "stage_label": "Import episodes",
+            "status": "completed",
+            "total_files": len(episode_files),
+            "files_processed": results["files_processed"],
+            "files_failed": results["files_failed"],
+            "episodes_processed": results["episodes_processed"],
+        },
+    )
+
     try:
         episodes_root_for_build = _infer_episodes_root(path, episode_files)
         dialogues_root = memory_core.dialogues_dir
@@ -169,7 +207,26 @@ def load_from_episode_path(
                 "scene_file_count": 0,
                 "fact_stats": {},
             }
+            _emit_progress(
+                progress_callback,
+                "flush_stage",
+                {
+                    "stage": "generate_scenes",
+                    "stage_label": "Generate scenes",
+                    "status": "failed",
+                    "error": build_result["error"],
+                },
+            )
         else:
+            _emit_progress(
+                progress_callback,
+                "flush_stage",
+                {
+                    "stage": "generate_scenes",
+                    "stage_label": "Generate scenes",
+                    "status": "started",
+                },
+            )
             scan_and_form_scenes(
                 use_tqdm=True,
                 force_update=force_update,
@@ -181,7 +238,27 @@ def load_from_episode_path(
                 embed_model=memory_core.embed_func,
                 llm_model=memory_core.llm_func,
             )
+            scene_file_count = len([p for p in scene_root.glob("*.json") if p.is_file()])
+            _emit_progress(
+                progress_callback,
+                "flush_stage",
+                {
+                    "stage": "generate_scenes",
+                    "stage_label": "Generate scenes",
+                    "status": "completed",
+                    "scene_file_count": scene_file_count,
+                },
+            )
 
+            _emit_progress(
+                progress_callback,
+                "flush_stage",
+                {
+                    "stage": "extract_scene_facts",
+                    "stage_label": "Extract scene facts",
+                    "status": "started",
+                },
+            )
             fact_stats = scan_and_form_scene_facts(
                 workflow_id=memory_core.workflow_id,
                 prompt_version=fact_prompt_version,
@@ -190,7 +267,26 @@ def load_from_episode_path(
                 embed_model=memory_core.embed_func,
                 llm_model=memory_core.llm_func,
             )
+            _emit_progress(
+                progress_callback,
+                "flush_stage",
+                {
+                    "stage": "extract_scene_facts",
+                    "stage_label": "Extract scene facts",
+                    "status": "completed",
+                    "result": fact_stats,
+                },
+            )
 
+            _emit_progress(
+                progress_callback,
+                "flush_stage",
+                {
+                    "stage": "extract_fact_entities",
+                    "stage_label": "Extract fact entities",
+                    "status": "started",
+                },
+            )
             if hasattr(memory_core, "extract_fact_entities"):
                 fact_entity_stats = memory_core.extract_fact_entities(
                     force_update=force_update,
@@ -206,11 +302,31 @@ def load_from_episode_path(
                     force_update=force_update,
                     use_tqdm=True,
                 )
+            _emit_progress(
+                progress_callback,
+                "flush_stage",
+                {
+                    "stage": "extract_fact_entities",
+                    "stage_label": "Extract fact entities",
+                    "status": "completed",
+                    "result": fact_entity_stats,
+                },
+            )
 
+            _emit_progress(
+                progress_callback,
+                "flush_stage",
+                {
+                    "stage": "import_fact_entities",
+                    "stage_label": "Import fact entities",
+                    "status": "started",
+                },
+            )
             if hasattr(memory_core, "import_fact_entities"):
                 fact_import_stats = memory_core.import_fact_entities(
                     force_update=force_update,
                     use_tqdm=True,
+                    progress_callback=progress_callback,
                 )
             else:
                 from m_agent.memory.memory_core.workflow.build.import_fact_entities import (
@@ -222,8 +338,17 @@ def load_from_episode_path(
                     force_update=force_update,
                     use_tqdm=True,
                 )
+            _emit_progress(
+                progress_callback,
+                "flush_stage",
+                {
+                    "stage": "import_fact_entities",
+                    "stage_label": "Import fact entities",
+                    "status": "completed",
+                    "result": fact_import_stats,
+                },
+            )
 
-            scene_file_count = len([p for p in scene_root.glob("*.json") if p.is_file()])
             build_result = {
                 "success": bool(fact_import_stats.get("success", True)),
                 "scene_file_count": scene_file_count,
@@ -250,6 +375,16 @@ def load_from_episode_path(
             results["error"] = f"scene/fact generation failed: {build_result}"
     except Exception as exc:
         logger.error("Scene/fact generation failed: %s", exc)
+        _emit_progress(
+            progress_callback,
+            "flush_stage",
+            {
+                "stage": "memory_pipeline",
+                "stage_label": "Memory pipeline",
+                "status": "failed",
+                "error": str(exc),
+            },
+        )
         results["success"] = False
         results["error"] = str(exc)
 

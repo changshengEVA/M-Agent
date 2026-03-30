@@ -21,7 +21,8 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 import yaml
 from tqdm import tqdm
 
-from m_agent.paths import CONFIG_DIR, memory_stage_dir
+from m_agent.config_paths import EPISODE_PROMPT_CONFIG_PATH
+from m_agent.paths import memory_stage_dir
 
 
 logging.basicConfig(
@@ -32,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 DIALOGUES_ROOT = memory_stage_dir("default", "dialogues")
 EPISODES_ROOT = memory_stage_dir("default", "episodes")
-CONFIG_PATH = CONFIG_DIR / "prompt" / "episode.yaml"
+CONFIG_PATH = EPISODE_PROMPT_CONFIG_PATH
 
 
 def _replace_prompt_placeholders(value: Any, memory_owner_name: str) -> Any:
@@ -49,7 +50,7 @@ def _replace_prompt_placeholders(value: Any, memory_owner_name: str) -> Any:
 
 
 def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict[str, Any]:
-    """Load dialogue segmentation prompts from config/prompt/episode.yaml."""
+    """Load dialogue segmentation prompts from the episode prompt config."""
     with open(CONFIG_PATH, "r", encoding="utf-8") as file:
         config = yaml.safe_load(file) or {}
 

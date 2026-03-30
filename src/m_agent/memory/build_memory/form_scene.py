@@ -16,7 +16,8 @@ from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Callable
 from tqdm import tqdm
 
-from m_agent.paths import CONFIG_DIR, memory_stage_dir
+from m_agent.config_paths import SCENE_PROMPT_CONFIG_PATH
+from m_agent.paths import memory_stage_dir
 # 添加项目根目录到 Python 路径，确保可以导入 load_model
 
 # 导入 episode 状管理器
@@ -28,7 +29,7 @@ logger = logging.getLogger(__name__)
 # 路径配置
 DIALOGUES_ROOT = memory_stage_dir("default", "dialogues")
 EPISODES_ROOT = memory_stage_dir("default", "episodes")
-CONFIG_PATH = CONFIG_DIR / "prompt" / "scene.yaml"
+CONFIG_PATH = SCENE_PROMPT_CONFIG_PATH
 
 def load_prompts(memory_owner_name: str = "changshengEVA") -> Dict:
     """Load scene prompts and replace the memory owner placeholder."""

@@ -12,14 +12,14 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import tool
 from langgraph.errors import GraphRecursionError
 
+from m_agent.config_paths import DEFAULT_CHAT_AGENT_CONFIG_PATH
 from m_agent.agents.memory_agent import MemoryAgent
-from m_agent.paths import CONFIG_DIR
 from m_agent.utils.api_error_utils import is_network_api_error
 
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_CHAT_CONFIG_PATH = CONFIG_DIR / "prompt" / "test_agent_chat.yaml"
+DEFAULT_CHAT_CONFIG_PATH = DEFAULT_CHAT_AGENT_CONFIG_PATH
 
 
 @dataclass

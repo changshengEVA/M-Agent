@@ -295,7 +295,11 @@ class MemoryCore:
     # ============================================================================
     # 数据导入
     # ============================================================================
-    def load_from_episode_path(self, path: Path) -> Dict[str, Any]:
+    def load_from_episode_path(
+        self,
+        path: Path,
+        progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
         """
         新的数据导入接口：从 episodes 路径导入并在系统内部构建 scene + atomic facts。
         """
@@ -304,7 +308,11 @@ class MemoryCore:
         )
 
         logger.info(f"调用 load_from_episode_path 接口，路径: {path}")
-        return workflow_load_from_episode_path(path=path, memory_core=self)
+        return workflow_load_from_episode_path(
+            path=path,
+            memory_core=self,
+            progress_callback=progress_callback,
+        )
 
     def make_entity_statement(self, path: Path, force_update: bool = False) -> Dict[str, Any]:
         """
@@ -337,7 +345,12 @@ class MemoryCore:
             use_tqdm=use_tqdm,
         )
 
-    def import_fact_entities(self, force_update: bool = False, use_tqdm: bool = True) -> Dict[str, Any]:
+    def import_fact_entities(
+        self,
+        force_update: bool = False,
+        use_tqdm: bool = True,
+        progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
         """
         导入 facts 的实体信息（UID + name）到 KG，并更新 facts_situation.json。
         """
@@ -363,10 +376,55 @@ class MemoryCore:
             logger.warning("import_fact_entities 后同步 EntityLibrary 失败: %s", exc)
 
         # 对齐实体档案系统与最新 facts 状态
+        align_result = None
         try:
-            self.entity_profile_service.align_with_master_facts(force_rebuild=False)
+            if progress_callback is not None:
+                try:
+                    progress_callback(
+                        "flush_stage",
+                        {
+                            "stage": "entity_profile_align",
+                            "stage_label": "EntityProfile align",
+                            "status": "started",
+                        },
+                    )
+                except Exception:
+                    logger.exception("EntityProfile align start callback failed")
+            align_result = self.entity_profile_service.align_with_master_facts(force_rebuild=False)
+            if progress_callback is not None:
+                try:
+                    progress_callback(
+                        "flush_stage",
+                        {
+                            "stage": "entity_profile_align",
+                            "stage_label": "EntityProfile align",
+                            "status": "completed",
+                            "result": align_result,
+                        },
+                    )
+                except Exception:
+                    logger.exception("EntityProfile align complete callback failed")
         except Exception as exc:
+            if progress_callback is not None:
+                try:
+                    progress_callback(
+                        "flush_stage",
+                        {
+                            "stage": "entity_profile_align",
+                            "stage_label": "EntityProfile align",
+                            "status": "failed",
+                            "error": str(exc),
+                        },
+                    )
+                except Exception:
+                    logger.exception("EntityProfile align failure callback failed")
             logger.warning("import_fact_entities 后同步 EntityProfileService 失败: %s", exc)
+            align_result = {
+                "success": False,
+                "error": str(exc),
+            }
+        if isinstance(result, dict):
+            result["entity_profile_align_result"] = align_result
         return result
 
     def sync_entity_profile(

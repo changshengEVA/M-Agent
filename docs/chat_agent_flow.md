@@ -14,8 +14,8 @@
 - `src/m_agent/chat/web_ui.py`
 - `src/m_agent/chat/simple_chat_agent.py`
 - `src/m_agent/agents/memory_agent.py`
-- `config/prompt/test_agent_chat.yaml`
-- `config/memory_core_config/test_agent_memory.yaml`
+- `config/agents/chat/test_agent_chat.yaml`
+- `config/memory/core/test_agent_memory.yaml`
 
 ## 1. 总体运行流程
 

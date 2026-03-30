@@ -56,10 +56,10 @@ API_SECRET_KEY=YOUR_OPENAI_COMPATIBLE_KEY
 OPENAI_API_KEY=
 BASE_URL=https://api.openai.com/v1
 
-# Agent model key: model_name=deepseek-chat (config/prompt/agent_sys.yaml)
+# Agent model key: model_name=deepseek-chat (config/agents/memory/agent_sys.yaml)
 DEEPSEEK_API_KEY=YOUR_DEEPSEEK_KEY
 
-# Embedding key: embed_provider（在 config/memory_core_config/*.yaml 中配置）
+# Embedding key: embed_provider（在 config/memory/core/*.yaml 中配置）
 ALIBABA_API_KEY=YOUR_ALIBABA_KEY
 ALIBABA_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ALIBABA_EMBED_MODEL=text-embedding-v4
@@ -72,8 +72,8 @@ LLM_PROVIDER=deepseek
 
 4. 先做 LoCoMo 预处理（`memory_pre`，现在仅生成 dialogues + episodes）
 
-> `run_eval_locomo.py` 默认读取 `config/prompt/agent_sys.yaml`。  
-> 该文件里的 `memory_core_config_path` 会指向 `config/memory_core_config/agent_sys_memory.yaml`，  
+> `run_eval_locomo.py` 默认读取 `config/agents/memory/agent_sys.yaml`。  
+> 该文件里的 `memory_core_config_path` 会指向 `config/memory/core/agent_sys_memory.yaml`，  
 > 其中配置了 `workflow_id`。请确保预处理 `--id` 与该 `workflow_id` 保持一致。
 
 ```bash

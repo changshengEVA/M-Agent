@@ -43,7 +43,7 @@ $env:PYTHONPATH='src'
 python -m m_agent.api.chat_api `
   --host 127.0.0.1 `
   --port 8777 `
-  --config config/prompt/test_agent_chat.yaml `
+  --config config/agents/chat/test_agent_chat.yaml `
   --idle-flush-seconds 600 `
   --history-max-rounds 12
 ```

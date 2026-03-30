@@ -22,7 +22,7 @@ configure_colored_logging(level=logging.INFO)
 logging.getLogger("memory.memory_core").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-memoryagent = create_memory_agent(r"config\prompt\agent_sys.yaml")
+memoryagent = create_memory_agent(r"config\agents\memory\agent_sys.yaml")
 print("Initialized agent successfully.")
 result = memoryagent.ask("When is Jon's group performing at a festival?")
 print(json.dumps(result, ensure_ascii=False, indent=2))

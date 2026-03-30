@@ -1,6 +1,6 @@
 model_name: "deepseek-chat"
 agent_temperature: 0.0
-memory_core_config_path: "../memory_core_config/agent_sys_memory.yaml"
+memory_core_config_path: "../../memory/core/agent_sys_memory.yaml"
 thread_id: "memory-agent-1"
 recursion_limit: 60
 retry_recursion_limit: 120

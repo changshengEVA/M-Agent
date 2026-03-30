@@ -27,6 +27,7 @@ from m_agent.utils.logging_trace import FunctionTraceHandler, TraceEvent
 
 
 logger = logging.getLogger(__name__)
+protocol_logger = logging.getLogger("m_agent.api.protocol")
 
 TRACE_LOGGER_NAMES = (
     "m_agent.agents.memory_agent",
@@ -37,6 +38,29 @@ TRACE_LOGGER_NAMES = (
 
 _THREAD_LOCKS: Dict[str, threading.Lock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
+_PROTOCOL_SSE_EVENTS = {
+    "run_started",
+    "question_strategy",
+    "plan_update",
+    "recall_started",
+    "tool_call",
+    "tool_result",
+    "sub_question_started",
+    "sub_question_completed",
+    "direct_answer_payload",
+    "direct_answer_fallback",
+    "final_answer_payload",
+    "recall_completed",
+    "assistant_message",
+    "memory_capture_updated",
+    "chat_result",
+    "run_completed",
+    "run_failed",
+    "flush_started",
+    "flush_stage",
+    "flush_completed",
+    "thread_state_updated",
+}
 
 
 def _now_utc() -> datetime:
@@ -76,6 +100,224 @@ def _get_thread_lock(thread_id: str) -> threading.Lock:
 def _normalize_memory_mode(raw_mode: Any, *, fallback: str = "manual") -> str:
     mode = str(raw_mode or fallback).strip().lower()
     return mode if mode in {"manual", "off"} else fallback
+
+
+def _short_text(value: Any, limit: int = 72) -> str:
+    text = " ".join(str(value or "").split()).strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _stringify_scalar(value: Any, limit: int = 40) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    return _short_text(value, limit=limit)
+
+
+def _summarize_mapping_fields(
+    payload: Dict[str, Any],
+    *,
+    skip_keys: set[str] | None = None,
+    max_items: int = 3,
+) -> str:
+    if not isinstance(payload, dict):
+        return ""
+    parts: List[str] = []
+    for key, value in payload.items():
+        if skip_keys and key in skip_keys:
+            continue
+        if len(parts) >= max_items:
+            break
+        if isinstance(value, dict):
+            parts.append(f"{key}_keys={','.join(list(value.keys())[:3])}")
+        elif isinstance(value, list):
+            parts.append(f"{key}_count={len(value)}")
+        else:
+            parts.append(f"{key}={_stringify_scalar(value)}")
+    return " ".join(parts)
+
+
+def _summarize_result_value(value: Any) -> str:
+    if value is None:
+        return "result=null"
+    if isinstance(value, str):
+        return f"result={_short_text(value)}"
+    if isinstance(value, list):
+        return f"result_count={len(value)}"
+    if isinstance(value, dict):
+        if value.get("answer"):
+            return f"answer={_short_text(value.get('answer'))}"
+        for list_key in ("results", "items", "matches", "records", "events", "chunks"):
+            if isinstance(value.get(list_key), list):
+                return f"{list_key}_count={len(value.get(list_key, []))}"
+        return f"result_keys={','.join(list(value.keys())[:4])}"
+    return f"result={_short_text(value)}"
+
+
+def _should_protocol_log_path(path: str) -> bool:
+    clean = str(path or "").strip()
+    if not clean:
+        return False
+    if clean in {"/", "/healthz", "/docs", "/openapi.json"}:
+        return False
+    return clean.startswith("/v1/chat/")
+
+
+def _summarize_event_payload(event_type: str, payload: Dict[str, Any]) -> str:
+    if event_type == "run_started":
+        return f"thread={payload.get('thread_id')} message={_short_text(payload.get('message'))}"
+    if event_type == "question_strategy":
+        return (
+            f"decompose_first={payload.get('decompose_first')} "
+            f"reason={_short_text(payload.get('reason'))} "
+            f"question={_short_text(payload.get('question'))}"
+        )
+    if event_type == "plan_update":
+        suggested_tools = payload.get("suggested_tool_order")
+        tool_text = ",".join(str(item) for item in suggested_tools[:3]) if isinstance(suggested_tools, list) else ""
+        return (
+            f"type={payload.get('question_type')} "
+            f"sub_questions={len(payload.get('sub_questions', [])) if isinstance(payload.get('sub_questions'), list) else 0} "
+            f"tools={tool_text or '-'}"
+        )
+    if event_type == "recall_started":
+        return (
+            f"mode={payload.get('mode')} "
+            f"question={_short_text(payload.get('question'))}"
+        )
+    if event_type == "tool_call":
+        params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+        params_text = _summarize_mapping_fields(params, max_items=3)
+        suffix = f" {params_text}" if params_text else ""
+        return (
+            f"call_id={payload.get('call_id')} tool={payload.get('tool_name')} "
+            f"status={payload.get('status')}{suffix}"
+        )
+    if event_type == "tool_result":
+        result_text = _summarize_result_value(payload.get("result"))
+        if payload.get("error"):
+            result_text = f"error={_short_text(payload.get('error'))}"
+        return (
+            f"call_id={payload.get('call_id')} tool={payload.get('tool_name')} "
+            f"status={payload.get('status')} {result_text}"
+        )
+    if event_type == "sub_question_started":
+        return (
+            f"index={payload.get('index')} status={payload.get('status')} "
+            f"question={_short_text(payload.get('question'))}"
+        )
+    if event_type == "sub_question_completed":
+        if payload.get("error"):
+            return (
+                f"index={payload.get('index')} status={payload.get('status')} "
+                f"error={_short_text(payload.get('error'))}"
+            )
+        return (
+            f"index={payload.get('index')} status={payload.get('status')} "
+            f"answer={_short_text(payload.get('answer'))}"
+        )
+    if event_type == "direct_answer_payload":
+        return (
+            f"answer={_short_text(payload.get('answer'))} "
+            f"gold_answer={_short_text(payload.get('gold_answer'))} "
+            f"evidence_present={bool(str(payload.get('evidence', '') or '').strip())}"
+        )
+    if event_type == "direct_answer_fallback":
+        return (
+            f"reason={_short_text(payload.get('reason'))} "
+            f"question={_short_text(payload.get('question'))}"
+        )
+    if event_type == "final_answer_payload":
+        return (
+            f"answer={_short_text(payload.get('answer'))} "
+            f"gold_answer={_short_text(payload.get('gold_answer'))} "
+            f"tool_calls={payload.get('tool_call_count')}"
+        )
+    if event_type == "recall_completed":
+        return (
+            f"mode={payload.get('mode')} "
+            f"answer={_short_text(payload.get('answer'))}"
+        )
+    if event_type == "assistant_message":
+        return f"thread={payload.get('thread_id')} answer={_short_text(payload.get('answer'))}"
+    if event_type == "memory_capture_updated":
+        return (
+            f"mode={payload.get('mode')} status={payload.get('status')} "
+            f"pending_rounds={payload.get('pending_rounds')}"
+        )
+    if event_type == "chat_result":
+        agent_result = payload.get("agent_result") if isinstance(payload.get("agent_result"), dict) else {}
+        return (
+            f"tool_calls={agent_result.get('tool_call_count')} "
+            f"plan_summary={_short_text(agent_result.get('plan_summary'))}"
+        )
+    if event_type == "run_completed":
+        return f"thread={payload.get('thread_id')}"
+    if event_type == "run_failed":
+        return f"thread={payload.get('thread_id')} error={_short_text(payload.get('error'))}"
+    if event_type == "flush_started":
+        return (
+            f"thread={payload.get('thread_id')} reason={payload.get('flush_reason')} "
+            f"pending_rounds={payload.get('pending_rounds')}"
+        )
+    if event_type == "flush_stage":
+        return (
+            f"thread={payload.get('thread_id')} stage={payload.get('stage')} "
+            f"status={payload.get('status')}"
+        )
+    if event_type == "flush_completed":
+        return (
+            f"thread={payload.get('thread_id')} status={payload.get('status')} "
+            f"success={payload.get('success')}"
+        )
+    if event_type == "thread_state_updated":
+        state = payload.get("thread_state") if isinstance(payload.get("thread_state"), dict) else payload
+        return (
+            f"thread={state.get('thread_id')} mode={state.get('mode')} "
+            f"pending_rounds={state.get('pending_rounds')}"
+        )
+    return ""
+
+
+def _log_protocol_event(channel: str, channel_id: str, event_type: str, payload: Dict[str, Any]) -> None:
+    if event_type not in _PROTOCOL_SSE_EVENTS:
+        return
+    summary = _summarize_event_payload(event_type, payload)
+    suffix = f" {summary}" if summary else ""
+    protocol_logger.info("SSE -> %s[%s] %s%s", channel, channel_id, event_type, suffix)
+
+
+def _summarize_memory_write_result(result: Any) -> Dict[str, Any]:
+    payload = result if isinstance(result, dict) else {}
+    import_result = payload.get("import_result") if isinstance(payload.get("import_result"), dict) else {}
+    scene_build_result = (
+        import_result.get("scene_build_result")
+        if isinstance(import_result.get("scene_build_result"), dict)
+        else {}
+    )
+    fact_import_stats = (
+        scene_build_result.get("fact_import_stats")
+        if isinstance(scene_build_result.get("fact_import_stats"), dict)
+        else {}
+    )
+    align_result = (
+        fact_import_stats.get("entity_profile_align_result")
+        if isinstance(fact_import_stats.get("entity_profile_align_result"), dict)
+        else {}
+    )
+    return {
+        "success": bool(payload.get("success", False)),
+        "dialogue_id": str(payload.get("dialogue_id", "") or "") or None,
+        "episode_id": str(payload.get("episode_id", "") or "") or None,
+        "round_count": int(payload.get("round_count", 0) or 0),
+        "turn_count": int(payload.get("turn_count", 0) or 0),
+        "import_success": bool(import_result.get("success")) if import_result else None,
+        "scene_build_success": bool(scene_build_result.get("success")) if scene_build_result else None,
+        "entity_profile_align_success": bool(align_result.get("success")) if align_result else None,
+    }
 
 
 @dataclass
@@ -122,7 +364,7 @@ class ChatServiceRuntime:
         self,
         *,
         config_path: Path,
-        idle_flush_seconds: int = 600,
+        idle_flush_seconds: int = 1800,
         history_max_rounds: int = 12,
         idle_scan_interval_seconds: int = 5,
     ) -> None:
@@ -169,6 +411,12 @@ class ChatServiceRuntime:
     def default_thread_id(self) -> str:
         value = str(getattr(self.agent, "default_thread_id", "test-agent-1") or "").strip()
         return value or "test-agent-1"
+
+    def _emit_thread_event(self, thread_id: str, event_type: str, payload: Dict[str, Any]) -> None:
+        try:
+            _THREAD_EVENTS.append_event(thread_id, event_type, payload)
+        except Exception:
+            logger.exception("Failed to emit thread event type=%s thread_id=%s", event_type, thread_id)
 
     @property
     def persist_memory(self) -> bool:
@@ -303,6 +551,7 @@ class ChatServiceRuntime:
                         item.capture_state = "skipped"
                         item.flush_id = None
             snapshot = self._thread_state_snapshot(session)
+        self._emit_thread_event(snapshot["thread_id"], "thread_state_updated", {"thread_state": snapshot})
         return {
             "success": True,
             "thread_id": snapshot["thread_id"],
@@ -360,13 +609,14 @@ class ChatServiceRuntime:
 
     def flush_thread(self, thread_id: str, *, reason: str = "manual_api") -> Dict[str, Any]:
         session = self._get_or_create_thread(thread_id)
+        operation_id = f"flush_{uuid.uuid4().hex}"
         with self._threads_lock:
             pending_rounds = list(self._pending_rounds(session))
             session.last_flush_attempt_at = _now_utc()
             session.updated_at = session.last_flush_attempt_at
             if not pending_rounds:
                 snapshot = self._thread_state_snapshot(session)
-                return {
+                result = {
                     "success": True,
                     "thread_id": snapshot["thread_id"],
                     "flush_reason": reason,
@@ -374,6 +624,35 @@ class ChatServiceRuntime:
                     "message": "no pending rounds to flush",
                     "thread_state": snapshot,
                 }
+                self._emit_thread_event(
+                    snapshot["thread_id"],
+                    "flush_completed",
+                    {
+                        "operation_id": operation_id,
+                        "thread_id": snapshot["thread_id"],
+                        "flush_reason": reason,
+                        "success": True,
+                        "status": "noop",
+                        "message": "no pending rounds to flush",
+                        "rounds_flushed": 0,
+                        "turns_flushed": 0,
+                        "thread_state": snapshot,
+                    },
+                )
+                self._emit_thread_event(snapshot["thread_id"], "thread_state_updated", {"thread_state": snapshot})
+                return result
+
+        self._emit_thread_event(
+            session.thread_id,
+            "flush_started",
+            {
+                "operation_id": operation_id,
+                "thread_id": session.thread_id,
+                "flush_reason": reason,
+                "pending_rounds": len(pending_rounds),
+                "pending_turns": len(pending_rounds) * 2,
+            },
+        )
 
         with self._stats_lock:
             self._flushes_started += 1
@@ -389,12 +668,23 @@ class ChatServiceRuntime:
             for item in pending_rounds
         ]
 
+        def progress_callback(event_type: str, payload: Dict[str, Any]) -> None:
+            event_payload = {
+                "operation_id": operation_id,
+                "thread_id": session.thread_id,
+                "flush_reason": reason,
+            }
+            if isinstance(payload, dict):
+                event_payload.update(payload)
+            self._emit_thread_event(session.thread_id, event_type, event_payload)
+
         with self._operation_lock:
             flush_result = self.agent.memory_persistence.persist_dialogue(
                 thread_id=session.thread_id,
                 rounds=round_payloads,
                 reason=f"chat_thread_{reason}",
                 source="chat_api_thread_flush",
+                progress_callback=progress_callback,
             )
 
         flush_success = bool(flush_result.get("success", False))
@@ -419,7 +709,7 @@ class ChatServiceRuntime:
             else:
                 self._flushes_failed += 1
 
-        return {
+        result = {
             "success": flush_success,
             "thread_id": session.thread_id,
             "flush_reason": reason,
@@ -430,6 +720,24 @@ class ChatServiceRuntime:
             "thread_state": snapshot,
             "error": None if flush_success else str(flush_result.get("error", "memory flush failed")),
         }
+        self._emit_thread_event(
+            session.thread_id,
+            "flush_completed",
+            {
+                "operation_id": operation_id,
+                "thread_id": session.thread_id,
+                "flush_reason": reason,
+                "success": flush_success,
+                "status": result["status"],
+                "rounds_flushed": result["rounds_flushed"],
+                "turns_flushed": result["turns_flushed"],
+                "memory_write": _summarize_memory_write_result(flush_result),
+                "thread_state": snapshot,
+                "error": result["error"],
+            },
+        )
+        self._emit_thread_event(session.thread_id, "thread_state_updated", {"thread_state": snapshot})
+        return result
 
     def flush_idle_threads(self) -> None:
         if self.idle_flush_seconds <= 0:
@@ -596,6 +904,7 @@ class ChatRunRecord:
             }
             self._events.append(event)
             self._cond.notify_all()
+            _log_protocol_event("run", self.run_id, event_type, payload)
             return deepcopy(event)
 
     def start(self) -> None:
@@ -696,19 +1005,95 @@ class ChatRunRegistry:
             return self._runs.get(run_id)
 
 
+class ThreadEventRecord:
+    def __init__(self, *, thread_id: str) -> None:
+        self.thread_id = thread_id
+        self.created_at = _now_iso()
+        self._seq = 0
+        self._events: List[Dict[str, Any]] = []
+        self._cond = threading.Condition()
+
+    def append_event(self, event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        with self._cond:
+            self._seq += 1
+            event = {
+                "thread_id": self.thread_id,
+                "seq": self._seq,
+                "timestamp": _now_iso(),
+                "type": event_type,
+                "payload": deepcopy(payload),
+            }
+            self._events.append(event)
+            self._cond.notify_all()
+            _log_protocol_event("thread", self.thread_id, event_type, payload)
+            return deepcopy(event)
+
+    def current_seq(self) -> int:
+        with self._cond:
+            return self._seq
+
+    def wait_for_events(self, after_seq: int, timeout: float = 15.0) -> List[Dict[str, Any]]:
+        with self._cond:
+            if self._seq <= after_seq:
+                self._cond.wait(timeout=timeout)
+            return [deepcopy(item) for item in self._events if int(item.get("seq", 0)) > after_seq]
+
+
+class ThreadEventRegistry:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._records: Dict[str, ThreadEventRecord] = {}
+
+    def _normalize_key(self, thread_id: str) -> str:
+        return str(thread_id or "").strip()
+
+    def get_or_create(self, thread_id: str) -> ThreadEventRecord:
+        key = self._normalize_key(thread_id)
+        with self._lock:
+            record = self._records.get(key)
+            if record is None:
+                record = ThreadEventRecord(thread_id=key)
+                self._records[key] = record
+            return record
+
+    def append_event(self, thread_id: str, event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return self.get_or_create(thread_id).append_event(event_type, payload)
+
+
 _RUNS = ChatRunRegistry()
+_THREAD_EVENTS = ThreadEventRegistry()
+
+
+def _attach_trace_handler(handler: logging.Handler) -> list[tuple[logging.Logger, int, bool]]:
+    root_allows_info = logging.getLogger().isEnabledFor(logging.INFO)
+    attached: list[tuple[logging.Logger, int, bool]] = []
+    for logger_name in TRACE_LOGGER_NAMES:
+        trace_logger = logging.getLogger(logger_name)
+        attached.append((trace_logger, trace_logger.level, trace_logger.propagate))
+        trace_logger.addHandler(handler)
+        if trace_logger.level == logging.NOTSET or trace_logger.level > logging.INFO:
+            trace_logger.setLevel(logging.INFO)
+        if not root_allows_info:
+            # In concise mode we still need INFO traces for SSE, but they should not leak to stdout/stderr.
+            trace_logger.propagate = False
+    return attached
+
+
+def _detach_trace_handler(
+    handler: logging.Handler,
+    attached: list[tuple[logging.Logger, int, bool]],
+) -> None:
+    for trace_logger, previous_level, previous_propagate in attached:
+        trace_logger.removeHandler(handler)
+        trace_logger.setLevel(previous_level)
+        trace_logger.propagate = previous_propagate
 
 
 def _run_chat_worker(record: ChatRunRecord, service_runtime: ChatServiceRuntime) -> None:
     # Do not filter trace logs by thread id here. The underlying agent/tool stack may hop
     # across worker threads, and chat execution is already serialized by _operation_lock.
     handler = FunctionTraceHandler(callback=record.append_trace_event, include_non_api=True)
-    trace_loggers = []
-    for logger_name in TRACE_LOGGER_NAMES:
-        trace_logger = logging.getLogger(logger_name)
-        trace_logger.addHandler(handler)
-        trace_logger.setLevel(logging.INFO)
-        trace_loggers.append(trace_logger)
+    trace_loggers = _attach_trace_handler(handler)
 
     thread_lock = _get_thread_lock(record.thread_id)
     try:
@@ -747,8 +1132,7 @@ def _run_chat_worker(record: ChatRunRecord, service_runtime: ChatServiceRuntime)
             service_runtime._last_run_finished_at = _now_iso()
         record.fail(traceback.format_exc())
     finally:
-        for trace_logger in trace_loggers:
-            trace_logger.removeHandler(handler)
+        _detach_trace_handler(handler, trace_loggers)
 
 
 def _start_chat_run(*, service_runtime: ChatServiceRuntime, thread_id: str, message: str) -> ChatRunRecord:
@@ -858,6 +1242,23 @@ def create_app(*, service_runtime: ChatServiceRuntime) -> FastAPI:
     )
     app.add_middleware(PrivateNetworkAccessMiddleware)
 
+    @app.middleware("http")
+    async def protocol_logging_middleware(request: Request, call_next: Any):
+        path = str(request.url.path or "")
+        query = f"?{request.url.query}" if request.url.query else ""
+        should_log = _should_protocol_log_path(path)
+        if should_log:
+            protocol_logger.info("HTTP <- %s %s%s", request.method, path, query)
+        try:
+            response = await call_next(request)
+        except Exception:
+            if should_log:
+                protocol_logger.info("HTTP -> 500 %s %s%s", request.method, path, query)
+            raise
+        if should_log:
+            protocol_logger.info("HTTP -> %s %s %s%s", response.status_code, request.method, path, query)
+        return response
+
     @app.get("/")
     @app.get("/healthz")
     def healthz() -> Dict[str, Any]:
@@ -870,6 +1271,7 @@ def create_app(*, service_runtime: ChatServiceRuntime) -> FastAPI:
                 "create_run": "/v1/chat/runs",
                 "get_run": "/v1/chat/runs/{run_id}",
                 "stream_events": "/v1/chat/runs/{run_id}/events",
+                "thread_events": "/v1/chat/threads/{thread_id}/events",
                 "thread_state": "/v1/chat/threads/{thread_id}/memory/state",
                 "thread_mode": "/v1/chat/threads/{thread_id}/memory/mode",
                 "thread_flush": "/v1/chat/threads/{thread_id}/memory/flush",
@@ -949,6 +1351,38 @@ def create_app(*, service_runtime: ChatServiceRuntime) -> FastAPI:
             },
         )
 
+    @app.get("/v1/chat/threads/{thread_id}/events", response_class=StreamingResponse, response_model=None)
+    async def stream_thread_events(thread_id: str, request: Request, after_seq: int = -1):
+        record = _THREAD_EVENTS.get_or_create(thread_id)
+
+        async def event_stream():
+            current_seq = record.current_seq() if int(after_seq) < 0 else max(0, int(after_seq))
+            try:
+                while True:
+                    if await request.is_disconnected():
+                        break
+                    events = await asyncio.to_thread(record.wait_for_events, current_seq, 10.0)
+                    if events:
+                        for event in events:
+                            if await request.is_disconnected():
+                                return
+                            current_seq = max(current_seq, int(event.get("seq", 0) or 0))
+                            yield _encode_sse(event)
+                    else:
+                        yield b": keep-alive\n\n"
+            except asyncio.CancelledError:
+                return
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
     @app.get("/v1/chat/threads/{thread_id}/memory/state")
     def get_thread_state(thread_id: str) -> JSONResponse:
         return JSONResponse(content=service_runtime.get_thread_state(thread_id))
@@ -981,6 +1415,26 @@ def create_handler(*, service_runtime: ChatServiceRuntime) -> FastAPI:
     return create_app(service_runtime=service_runtime)
 
 
+def _configure_logging(debug: bool = False) -> None:
+    root_level = logging.INFO if debug else logging.WARNING
+    logging.basicConfig(
+        level=root_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        force=True,
+    )
+
+    protocol_handler = logging.StreamHandler()
+    protocol_handler.setLevel(logging.INFO)
+    protocol_handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s", datefmt="%H:%M:%S"))
+    protocol_logger.handlers = [protocol_handler]
+    protocol_logger.setLevel(logging.INFO)
+    protocol_logger.propagate = False
+
+    if not debug:
+        for noisy_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+            logging.getLogger(noisy_name).setLevel(logging.WARNING)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run the M-Agent chat API server with SSE events.")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host. Default: 127.0.0.1")
@@ -993,8 +1447,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--idle-flush-seconds",
         type=int,
-        default=600,
-        help="Idle timeout in seconds before pending manual memory is auto-flushed. Default: 600",
+        default=1800,
+        help="Idle timeout in seconds before pending manual memory is auto-flushed. Default: 1800",
     )
     parser.add_argument(
         "--history-max-rounds",
@@ -1002,15 +1456,17 @@ def parse_args() -> argparse.Namespace:
         default=12,
         help="Max in-memory rounds retained per thread for chat history. Default: 12",
     )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable verbose backend/module logs. Default mode keeps only concise HTTP/SSE protocol logs.",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    )
     args = parse_args()
+    _configure_logging(debug=bool(args.debug))
     config_path = _resolve_config_path(str(args.config or "").strip() or str(DEFAULT_CHAT_CONFIG_PATH))
     service_runtime = ChatServiceRuntime(
         config_path=config_path,
@@ -1027,7 +1483,13 @@ def main() -> None:
         service_runtime.history_max_rounds,
     )
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.port,
+            log_level="info" if args.debug else "warning",
+            access_log=bool(args.debug),
+        )
     except KeyboardInterrupt:
         logger.info("Shutting down chat API...")
 

@@ -15,7 +15,7 @@ try:
 except Exception:
     yaml = None
 
-from m_agent.paths import CONFIG_DIR
+from m_agent.config_paths import NEO4J_CONFIG_PATH
 
 logger = logging.getLogger(__name__)
 
@@ -149,7 +149,7 @@ class Neo4jStore:
                 "password": env_pass or "",
             }
 
-        cfg_path = CONFIG_DIR / "neo4j.yaml"
+        cfg_path = NEO4J_CONFIG_PATH
         if not cfg_path.exists():
             return {}
 
