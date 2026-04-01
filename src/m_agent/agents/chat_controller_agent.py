@@ -27,6 +27,7 @@ from m_agent.prompt_utils import (
     resolve_prompt_value,
 )
 from m_agent.utils.api_error_utils import is_network_api_error
+from m_agent.utils.time_utils import get_current_time_context
 
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,7 @@ class ChatControllerAgent:
         )
         self.memory_agent = MemoryAgent(config_path=self.memory_agent_config_path)
         self.default_thread_id = str(self.config.get("thread_id", "test-agent-1")).strip() or "test-agent-1"
+        self.current_time_tool_timezone = str(self.config.get("current_time_tool_timezone", "") or "").strip() or None
         self.chat_persona_prompt = self._load_chat_persona_prompt()
         self.chat_system_prompt = self._build_chat_system_prompt()
 
@@ -111,11 +113,30 @@ class ChatControllerAgent:
             language=self.prompt_language,
             path_desc=f"{self.config_path}.chat_system_prompt",
         )
-        return self._merge_chat_system_prompt(
+        merged_prompt = self._merge_chat_system_prompt(
             base_prompt,
             self.chat_persona_prompt,
             prompt_language=self.prompt_language,
             runtime_prompt_config_path=self.runtime_prompt_config_path,
+        )
+        tool_guidance = self._build_controller_tool_guidance()
+        if tool_guidance:
+            return f"{merged_prompt}\n\n{tool_guidance}".strip()
+        return merged_prompt
+
+    def _build_controller_tool_guidance(self) -> str:
+        if self.prompt_language == "zh":
+            return (
+                "[时间工具]\n"
+                "- 当用户询问现在时间、今天/昨天/明天、星期几、日期，或其他依赖当前时间的相对时间表达时，"
+                "调用 `get_current_time`，不要猜测。\n"
+                "- 回答这类问题时，优先给出明确日期或时间。"
+            )
+        return (
+            "[Current Time Tool]\n"
+            "- Use `get_current_time` for questions about the current date/time, today/yesterday/tomorrow, "
+            "weekday, or other relative-time references that depend on now.\n"
+            "- Prefer explicit dates or times instead of guessing."
         )
 
     @staticmethod
@@ -155,20 +176,27 @@ class ChatControllerAgent:
             },
         ).strip()
 
-    def _build_no_recall_result(self, question: str, answer_text: str) -> Dict[str, Any]:
-        plan_summary = str(self.runtime_prompts.get("no_recall_plan_summary", "") or "").strip()
-        if not plan_summary:
-            raise ValueError(
-                f"`chat_controller.no_recall_plan_summary` is required in runtime prompt config: "
-                f"{self.runtime_prompt_config_path}"
-            )
+    def _build_no_recall_result(
+        self,
+        question: str,
+        answer_text: str,
+        *,
+        controller_tools: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        controller_tool_history = list(controller_tools or [])
+        controller_tool_names = self._collect_controller_tool_names(controller_tool_history)
+        tool_call_count = len(controller_tool_history)
+        plan_summary = self._build_no_recall_plan_summary(controller_tool_names)
         return {
             "answer": answer_text,
             "gold_answer": None,
             "evidence": None,
             "sub_questions": [],
             "plan_summary": plan_summary,
-            "tool_call_count": 0,
+            "tool_call_count": tool_call_count,
+            "controller_tool_count": tool_call_count,
+            "controller_tool_names": controller_tool_names,
+            "controller_tool_history": controller_tool_history,
             "question_plan": {
                 "goal": "",
                 "question_type": "",
@@ -179,6 +207,25 @@ class ChatControllerAgent:
             },
             "sub_question_results": [],
         }
+
+    def _build_no_recall_plan_summary(self, controller_tool_names: List[str]) -> str:
+        if controller_tool_names:
+            if controller_tool_names == ["get_current_time"]:
+                if self.prompt_language == "zh":
+                    return "本轮对话使用了当前时间工具。"
+                return "This chat turn used the current-time tool."
+            names_text = ", ".join(controller_tool_names)
+            if self.prompt_language == "zh":
+                return f"本轮对话使用了顶层工具：{names_text}。"
+            return f"This chat turn used top-level controller tools: {names_text}."
+
+        plan_summary = str(self.runtime_prompts.get("no_recall_plan_summary", "") or "").strip()
+        if not plan_summary:
+            raise ValueError(
+                f"`chat_controller.no_recall_plan_summary` is required in runtime prompt config: "
+                f"{self.runtime_prompt_config_path}"
+            )
+        return plan_summary
 
     @staticmethod
     def _normalize_chat_response(response: Dict[str, Any]) -> Dict[str, Any]:
@@ -209,7 +256,86 @@ class ChatControllerAgent:
             normalized.append({"role": role, "content": content})
         return normalized
 
-    def _build_chat_controller(self, *, active_thread_id: str, recall_state: Dict[str, Any]):
+    @staticmethod
+    def _next_controller_tool_call_id(controller_state: Dict[str, Any]) -> int:
+        next_call_id = int(controller_state.get("call_seq", 0) or 0) + 1
+        controller_state["call_seq"] = next_call_id
+        return next_call_id
+
+    @staticmethod
+    def _log_controller_tool_call(call_id: int, tool_name: str, params: Dict[str, Any]) -> None:
+        logger.info(
+            "TOOL CALL DETAIL: %s",
+            json.dumps(
+                {
+                    "call_id": call_id,
+                    "tool_name": tool_name,
+                    "status": "started",
+                    "params": params,
+                },
+                ensure_ascii=False,
+            ),
+        )
+
+    @staticmethod
+    def _log_controller_tool_result(
+        call_id: int,
+        tool_name: str,
+        *,
+        result: Any = None,
+        error: Optional[str] = None,
+    ) -> None:
+        payload = {
+            "call_id": call_id,
+            "tool_name": tool_name,
+            "status": "completed" if not error else "failed",
+            "result": result,
+        }
+        if error:
+            payload["error"] = error
+        logger.info(
+            "TOOL RESULT DETAIL: %s",
+            json.dumps(payload, ensure_ascii=False),
+        )
+
+    @staticmethod
+    def _record_controller_tool_use(
+        controller_state: Dict[str, Any],
+        *,
+        tool_name: str,
+        params: Dict[str, Any],
+        result: Any,
+    ) -> None:
+        history = controller_state.setdefault("history", [])
+        if not isinstance(history, list):
+            history = []
+            controller_state["history"] = history
+        history.append(
+            {
+                "tool_name": tool_name,
+                "params": params,
+                "result": result,
+            }
+        )
+
+    @staticmethod
+    def _collect_controller_tool_names(controller_tools: List[Dict[str, Any]]) -> List[str]:
+        tool_names: List[str] = []
+        for item in controller_tools:
+            if not isinstance(item, dict):
+                continue
+            tool_name = str(item.get("tool_name", "") or "").strip()
+            if tool_name and tool_name not in tool_names:
+                tool_names.append(tool_name)
+        return tool_names
+
+    def _build_chat_controller(
+        self,
+        *,
+        active_thread_id: str,
+        recall_state: Dict[str, Any],
+        controller_state: Dict[str, Any],
+    ):
         @tool
         def shallow_recall(question: str) -> Dict[str, Any]:
             """Use for ordinary single-goal memory lookup from stored chat details."""
@@ -278,10 +404,33 @@ class ChatControllerAgent:
             recall_state["history"].append({"mode": "deep_recall", "result": result})
             return result
 
+        @tool
+        def get_current_time(timezone_name: Optional[str] = None) -> Dict[str, Any]:
+            """Use for current date/time, today/yesterday/tomorrow, weekday, or relative-time questions. Optional timezone_name should be an IANA timezone like Asia/Shanghai or America/New_York."""
+
+            effective_timezone_name = str(timezone_name or self.current_time_tool_timezone or "").strip() or None
+            params = {"timezone_name": effective_timezone_name}
+            call_id = self._next_controller_tool_call_id(controller_state)
+            self._log_controller_tool_call(call_id, "get_current_time", params)
+            try:
+                result = get_current_time_context(effective_timezone_name)
+            except Exception as exc:
+                self._log_controller_tool_result(call_id, "get_current_time", error=str(exc))
+                raise
+
+            self._record_controller_tool_use(
+                controller_state,
+                tool_name="get_current_time",
+                params=params,
+                result=result,
+            )
+            self._log_controller_tool_result(call_id, "get_current_time", result=result)
+            return result
+
         return create_agent(
             model=self.memory_agent.model,
             system_prompt=self.chat_system_prompt,
-            tools=[shallow_recall, deep_recall],
+            tools=[shallow_recall, deep_recall, get_current_time],
             response_format=ToolStrategy(ChatAgentResponse),
         )
 
@@ -361,9 +510,11 @@ class ChatControllerAgent:
         active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
         normalized_history = self._normalize_history_messages(history_messages)
         recall_state: Dict[str, Any] = {"mode": None, "result": None, "history": []}
+        controller_state: Dict[str, Any] = {"history": [], "call_seq": 0}
         controller = self._build_chat_controller(
             active_thread_id=active_thread_id,
             recall_state=recall_state,
+            controller_state=controller_state,
         )
         controller_response = self._invoke_chat_controller(
             controller,
@@ -376,13 +527,22 @@ class ChatControllerAgent:
         agent_result = recall_state["result"]
         if not answer_text and isinstance(agent_result, dict):
             answer_text = str(agent_result.get("answer", "") or "").strip()
+        controller_tool_history = list(controller_state.get("history", []) or [])
         if isinstance(agent_result, dict):
             agent_result = dict(agent_result)
             if recall_state["history"]:
                 agent_result["recall_history"] = list(recall_state["history"])
                 agent_result["recall_mode"] = recall_state["mode"]
+            if controller_tool_history:
+                agent_result["controller_tool_count"] = len(controller_tool_history)
+                agent_result["controller_tool_names"] = self._collect_controller_tool_names(controller_tool_history)
+                agent_result["controller_tool_history"] = controller_tool_history
         else:
-            agent_result = self._build_no_recall_result(safe_message, answer_text)
+            agent_result = self._build_no_recall_result(
+                safe_message,
+                answer_text,
+                controller_tools=controller_tool_history,
+            )
 
         return {
             "success": True,
