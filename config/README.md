@@ -16,7 +16,10 @@ Config map:
 
 - `config/agents/chat/chat_controller.yaml`
   Used by: `python -m m_agent.api.chat_api`
-  Role: top-level chat controller config
+  Role: top-level chat controller config and tool wiring
+- `config/prompts/runtime/chat_controller_runtime.yaml`
+  Used by: `chat_controller.yaml`
+  Role: top-level chat controller prompt source, including tool policy and tool descriptions
 - `config/agents/memory/chat_memory_agent.yaml`
   Used by: `chat_controller.yaml`
   Role: recall-layer MemoryAgent under chat

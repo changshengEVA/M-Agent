@@ -17,15 +17,17 @@ def _build_test_agent() -> ChatControllerAgent:
     chat_config = {
         "thread_id": "chat-thread",
         "prompt_language": "en",
-        "runtime_prompt_config_path": "../../prompts/runtime/agent_runtime.yaml",
+        "runtime_prompt_config_path": "../../prompts/runtime/chat_controller_runtime.yaml",
         "memory_agent_config_path": "../memory/chat_memory_agent.yaml",
-        "chat_persona_prompt": {
-            "zh": "persona zh",
-            "en": "persona en",
-        },
-        "chat_system_prompt": {
-            "zh": "system zh",
-            "en": "system en",
+        "enabled_tools": [
+            "shallow_recall",
+            "deep_recall",
+            "get_current_time",
+        ],
+        "tool_defaults": {
+            "get_current_time": {
+                "timezone_name": "UTC",
+            }
         },
     }
 
@@ -58,6 +60,7 @@ def test_build_chat_controller_registers_current_time_tool() -> None:
     result = time_tool.invoke({})
 
     assert result["ok"] is True
+    assert result["timezone_name"] == "UTC"
     assert "local_datetime" in result
 
 

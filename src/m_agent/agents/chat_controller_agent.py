@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import threading
 from dataclasses import asdict, dataclass, is_dataclass
@@ -10,16 +9,20 @@ from typing import Any, Dict, List, Optional
 import yaml
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
-from langchain.tools import tool
 from langgraph.errors import GraphRecursionError
 
+from m_agent.agents.memory_agent import MemoryAgent
+from m_agent.chat.capabilities import (
+    ControllerCapabilityContext,
+    build_controller_tools,
+    resolve_enabled_controller_capability_names,
+)
 from m_agent.config_paths import (
-    AGENT_RUNTIME_PROMPT_CONFIG_PATH,
+    CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH,
     DEFAULT_CHAT_AGENT_CONFIG_PATH,
     resolve_config_path,
     resolve_related_config_path,
 )
-from m_agent.agents.memory_agent import MemoryAgent
 from m_agent.prompt_utils import (
     load_resolved_prompt_config,
     normalize_prompt_language,
@@ -27,7 +30,6 @@ from m_agent.prompt_utils import (
     resolve_prompt_value,
 )
 from m_agent.utils.api_error_utils import is_network_api_error
-from m_agent.utils.time_utils import get_current_time_context
 
 
 logger = logging.getLogger(__name__)
@@ -41,7 +43,7 @@ class ChatAgentResponse:
 
 
 class ChatControllerAgent:
-    """Top-level chat controller with persona, using neutral recall tools underneath."""
+    """Top-level chat controller with persona, using tools via a capability registry."""
 
     def __init__(self, config_path: str | Path = DEFAULT_CHAT_CONFIG_PATH) -> None:
         self.config_path = resolve_config_path(config_path)
@@ -56,7 +58,8 @@ class ChatControllerAgent:
         )
         self.memory_agent = MemoryAgent(config_path=self.memory_agent_config_path)
         self.default_thread_id = str(self.config.get("thread_id", "test-agent-1")).strip() or "test-agent-1"
-        self.current_time_tool_timezone = str(self.config.get("current_time_tool_timezone", "") or "").strip() or None
+        self.enabled_tool_names = self._load_enabled_tool_names()
+        self.tool_defaults = self._load_tool_defaults()
         self.chat_persona_prompt = self._load_chat_persona_prompt()
         self.chat_system_prompt = self._build_chat_system_prompt()
 
@@ -85,7 +88,7 @@ class ChatControllerAgent:
         return resolve_related_config_path(
             self.config_path,
             raw_path,
-            default_path=AGENT_RUNTIME_PROMPT_CONFIG_PATH,
+            default_path=CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH,
         )
 
     def _load_runtime_prompts(self, path: Path) -> Dict[str, Any]:
@@ -95,23 +98,74 @@ class ChatControllerAgent:
             raise ValueError(f"`chat_controller` prompt namespace is required in runtime prompt config: {path}")
         return prompts
 
+    def _load_enabled_tool_names(self) -> List[str]:
+        return resolve_enabled_controller_capability_names(self.config.get("enabled_tools"))
+
+    def _load_tool_defaults(self) -> Dict[str, Dict[str, Any]]:
+        raw_defaults = self.config.get("tool_defaults")
+        normalized: Dict[str, Dict[str, Any]] = {}
+        if isinstance(raw_defaults, dict):
+            for tool_name, value in raw_defaults.items():
+                if not isinstance(value, dict):
+                    continue
+                normalized[str(tool_name)] = dict(value)
+
+        legacy_timezone_name = str(self.config.get("current_time_tool_timezone", "") or "").strip()
+        if legacy_timezone_name:
+            normalized.setdefault("get_current_time", {})
+            normalized["get_current_time"].setdefault("timezone_name", legacy_timezone_name)
+        return normalized
+
     def _load_chat_persona_prompt(self) -> str:
-        prompt = self.config.get("chat_persona_prompt")
-        if prompt is None:
-            return ""
-        if isinstance(prompt, str) and not prompt.strip():
-            return ""
-        return resolve_prompt_value(
-            prompt,
-            language=self.prompt_language,
-            path_desc=f"{self.config_path}.chat_persona_prompt",
+        return self._resolve_prompt_from_config_or_runtime(
+            config_key="chat_persona_prompt",
+            runtime_key="persona_prompt",
+            allow_empty=True,
         )
 
+    def _resolve_prompt_from_config_or_runtime(
+        self,
+        *,
+        config_key: str,
+        runtime_key: str,
+        allow_empty: bool = False,
+    ) -> str:
+        config_value = self.config.get(config_key)
+        if config_value is not None:
+            return self._resolve_prompt_node(
+                config_value,
+                path_desc=f"{self.config_path}.{config_key}",
+                allow_empty=allow_empty,
+            )
+        return self._get_runtime_prompt_text(runtime_key, allow_empty=allow_empty)
+
+    def _resolve_prompt_node(self, node: Any, *, path_desc: str, allow_empty: bool = False) -> str:
+        if isinstance(node, str):
+            text = node.strip()
+        else:
+            text = resolve_prompt_value(
+                node,
+                language=self.prompt_language,
+                path_desc=path_desc,
+            )
+        if not text and not allow_empty:
+            raise ValueError(f"Prompt text is empty: {path_desc}")
+        return text
+
+    def _get_runtime_prompt_text(self, key: str, *, allow_empty: bool = False) -> str:
+        text = str(self.runtime_prompts.get(key, "") or "").strip()
+        if not text and not allow_empty:
+            raise ValueError(
+                f"`chat_controller.{key}` is required in runtime prompt config: "
+                f"{self.runtime_prompt_config_path}"
+            )
+        return text
+
     def _build_chat_system_prompt(self) -> str:
-        base_prompt = resolve_prompt_value(
-            self.config.get("chat_system_prompt"),
-            language=self.prompt_language,
-            path_desc=f"{self.config_path}.chat_system_prompt",
+        base_prompt = self._resolve_prompt_from_config_or_runtime(
+            config_key="chat_system_prompt",
+            runtime_key="system_prompt",
+            allow_empty=False,
         )
         merged_prompt = self._merge_chat_system_prompt(
             base_prompt,
@@ -119,25 +173,38 @@ class ChatControllerAgent:
             prompt_language=self.prompt_language,
             runtime_prompt_config_path=self.runtime_prompt_config_path,
         )
-        tool_guidance = self._build_controller_tool_guidance()
-        if tool_guidance:
-            return f"{merged_prompt}\n\n{tool_guidance}".strip()
-        return merged_prompt
 
-    def _build_controller_tool_guidance(self) -> str:
-        if self.prompt_language == "zh":
-            return (
-                "[时间工具]\n"
-                "- 当用户询问现在时间、今天/昨天/明天、星期几、日期，或其他依赖当前时间的相对时间表达时，"
-                "调用 `get_current_time`，不要猜测。\n"
-                "- 回答这类问题时，优先给出明确日期或时间。"
-            )
-        return (
-            "[Current Time Tool]\n"
-            "- Use `get_current_time` for questions about the current date/time, today/yesterday/tomorrow, "
-            "weekday, or other relative-time references that depend on now.\n"
-            "- Prefer explicit dates or times instead of guessing."
-        )
+        sections = [merged_prompt]
+        global_tool_policy = self._get_runtime_prompt_text("global_tool_policy", allow_empty=True)
+        if global_tool_policy:
+            sections.append(global_tool_policy)
+
+        tool_block = self._build_enabled_tool_description_block()
+        if tool_block:
+            sections.append(tool_block)
+
+        return "\n\n".join(section for section in sections if section).strip()
+
+    def _build_enabled_tool_description_block(self) -> str:
+        if not self.enabled_tool_names:
+            return ""
+
+        header = "[可用顶层工具]" if self.prompt_language == "zh" else "[Available Top-Level Tools]"
+        lines = [header]
+        for tool_name in self.enabled_tool_names:
+            description = self._get_controller_tool_description(tool_name)
+            lines.append(f"- `{tool_name}`: {description}")
+        return "\n".join(lines)
+
+    def _get_controller_tool_description(self, tool_name: str) -> str:
+        tools_config = self.runtime_prompts.get("tools")
+        if isinstance(tools_config, dict):
+            tool_config = tools_config.get(tool_name)
+            if isinstance(tool_config, dict):
+                description = str(tool_config.get("description", "") or "").strip()
+                if description:
+                    return description
+        return f"Top-level tool: {tool_name}"
 
     @staticmethod
     def _merge_chat_system_prompt(
@@ -145,7 +212,7 @@ class ChatControllerAgent:
         persona_prompt: str,
         *,
         prompt_language: str = "en",
-        runtime_prompt_config_path: str | Path = AGENT_RUNTIME_PROMPT_CONFIG_PATH,
+        runtime_prompt_config_path: str | Path = CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH,
     ) -> str:
         normalized_base_prompt = str(base_prompt or "").strip()
         normalized_persona_prompt = str(persona_prompt or "").strip()
@@ -186,7 +253,7 @@ class ChatControllerAgent:
         controller_tool_history = list(controller_tools or [])
         controller_tool_names = self._collect_controller_tool_names(controller_tool_history)
         tool_call_count = len(controller_tool_history)
-        plan_summary = self._build_no_recall_plan_summary(controller_tool_names)
+        plan_summary = self._build_no_tool_plan_summary(controller_tool_names)
         return {
             "answer": answer_text,
             "gold_answer": None,
@@ -208,7 +275,7 @@ class ChatControllerAgent:
             "sub_question_results": [],
         }
 
-    def _build_no_recall_plan_summary(self, controller_tool_names: List[str]) -> str:
+    def _build_no_tool_plan_summary(self, controller_tool_names: List[str]) -> str:
         if controller_tool_names:
             if controller_tool_names == ["get_current_time"]:
                 if self.prompt_language == "zh":
@@ -219,10 +286,12 @@ class ChatControllerAgent:
                 return f"本轮对话使用了顶层工具：{names_text}。"
             return f"This chat turn used top-level controller tools: {names_text}."
 
-        plan_summary = str(self.runtime_prompts.get("no_recall_plan_summary", "") or "").strip()
+        plan_summary = str(self.runtime_prompts.get("no_tool_plan_summary", "") or "").strip()
+        if not plan_summary:
+            plan_summary = str(self.runtime_prompts.get("no_recall_plan_summary", "") or "").strip()
         if not plan_summary:
             raise ValueError(
-                f"`chat_controller.no_recall_plan_summary` is required in runtime prompt config: "
+                "`chat_controller.no_tool_plan_summary` is required in runtime prompt config: "
                 f"{self.runtime_prompt_config_path}"
             )
         return plan_summary
@@ -257,68 +326,6 @@ class ChatControllerAgent:
         return normalized
 
     @staticmethod
-    def _next_controller_tool_call_id(controller_state: Dict[str, Any]) -> int:
-        next_call_id = int(controller_state.get("call_seq", 0) or 0) + 1
-        controller_state["call_seq"] = next_call_id
-        return next_call_id
-
-    @staticmethod
-    def _log_controller_tool_call(call_id: int, tool_name: str, params: Dict[str, Any]) -> None:
-        logger.info(
-            "TOOL CALL DETAIL: %s",
-            json.dumps(
-                {
-                    "call_id": call_id,
-                    "tool_name": tool_name,
-                    "status": "started",
-                    "params": params,
-                },
-                ensure_ascii=False,
-            ),
-        )
-
-    @staticmethod
-    def _log_controller_tool_result(
-        call_id: int,
-        tool_name: str,
-        *,
-        result: Any = None,
-        error: Optional[str] = None,
-    ) -> None:
-        payload = {
-            "call_id": call_id,
-            "tool_name": tool_name,
-            "status": "completed" if not error else "failed",
-            "result": result,
-        }
-        if error:
-            payload["error"] = error
-        logger.info(
-            "TOOL RESULT DETAIL: %s",
-            json.dumps(payload, ensure_ascii=False),
-        )
-
-    @staticmethod
-    def _record_controller_tool_use(
-        controller_state: Dict[str, Any],
-        *,
-        tool_name: str,
-        params: Dict[str, Any],
-        result: Any,
-    ) -> None:
-        history = controller_state.setdefault("history", [])
-        if not isinstance(history, list):
-            history = []
-            controller_state["history"] = history
-        history.append(
-            {
-                "tool_name": tool_name,
-                "params": params,
-                "result": result,
-            }
-        )
-
-    @staticmethod
     def _collect_controller_tool_names(controller_tools: List[Dict[str, Any]]) -> List[str]:
         tool_names: List[str] = []
         for item in controller_tools:
@@ -336,101 +343,27 @@ class ChatControllerAgent:
         recall_state: Dict[str, Any],
         controller_state: Dict[str, Any],
     ):
-        @tool
-        def shallow_recall(question: str) -> Dict[str, Any]:
-            """Use for ordinary single-goal memory lookup from stored chat details."""
-
-            logger.info(
-                "RECALL START: %s",
-                json.dumps(
-                    {
-                        "mode": "shallow_recall",
-                        "question": str(question or "").strip(),
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-            result = self.memory_agent.shallow_recall(
-                question=question,
-                thread_id=f"{active_thread_id}:shallow",
-            )
-            logger.info(
-                "RECALL DONE: %s",
-                json.dumps(
-                    {
-                        "mode": "shallow_recall",
-                        "question": str(question or "").strip(),
-                        "answer": str(result.get("answer", "") or "").strip(),
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-            recall_state["mode"] = "shallow_recall"
-            recall_state["result"] = result
-            recall_state["history"].append({"mode": "shallow_recall", "result": result})
-            return result
-
-        @tool
-        def deep_recall(question: str) -> Dict[str, Any]:
-            """Use for complex memory questions such as comparison, counting, multi-hop, or time chaining."""
-
-            logger.info(
-                "RECALL START: %s",
-                json.dumps(
-                    {
-                        "mode": "deep_recall",
-                        "question": str(question or "").strip(),
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-            result = self.memory_agent.deep_recall(
-                question=question,
-                thread_id=f"{active_thread_id}:deep",
-            )
-            logger.info(
-                "RECALL DONE: %s",
-                json.dumps(
-                    {
-                        "mode": "deep_recall",
-                        "question": str(question or "").strip(),
-                        "answer": str(result.get("answer", "") or "").strip(),
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-            recall_state["mode"] = "deep_recall"
-            recall_state["result"] = result
-            recall_state["history"].append({"mode": "deep_recall", "result": result})
-            return result
-
-        @tool
-        def get_current_time(timezone_name: Optional[str] = None) -> Dict[str, Any]:
-            """Use for current date/time, today/yesterday/tomorrow, weekday, or relative-time questions. Optional timezone_name should be an IANA timezone like Asia/Shanghai or America/New_York."""
-
-            effective_timezone_name = str(timezone_name or self.current_time_tool_timezone or "").strip() or None
-            params = {"timezone_name": effective_timezone_name}
-            call_id = self._next_controller_tool_call_id(controller_state)
-            self._log_controller_tool_call(call_id, "get_current_time", params)
-            try:
-                result = get_current_time_context(effective_timezone_name)
-            except Exception as exc:
-                self._log_controller_tool_result(call_id, "get_current_time", error=str(exc))
-                raise
-
-            self._record_controller_tool_use(
-                controller_state,
-                tool_name="get_current_time",
-                params=params,
-                result=result,
-            )
-            self._log_controller_tool_result(call_id, "get_current_time", result=result)
-            return result
-
+        capability_context = ControllerCapabilityContext(
+            active_thread_id=active_thread_id,
+            memory_agent=self.memory_agent,
+            recall_state=recall_state,
+            controller_state=controller_state,
+            tool_defaults=self.tool_defaults,
+            logger=logger,
+        )
+        tool_descriptions = {
+            tool_name: self._get_controller_tool_description(tool_name)
+            for tool_name in self.enabled_tool_names
+        }
+        tools = build_controller_tools(
+            context=capability_context,
+            enabled_tool_names=self.enabled_tool_names,
+            tool_descriptions=tool_descriptions,
+        )
         return create_agent(
             model=self.memory_agent.model,
             system_prompt=self.chat_system_prompt,
-            tools=[shallow_recall, deep_recall, get_current_time],
+            tools=tools,
             response_format=ToolStrategy(ChatAgentResponse),
         )
 
