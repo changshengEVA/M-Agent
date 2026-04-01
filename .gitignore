@@ -15,3 +15,5 @@ data/memory/*
 data/graph_data/*
 model/*
 log/*
+config/users/users.json
+config/users/*/

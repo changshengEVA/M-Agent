@@ -6,6 +6,7 @@
 - `memory/core/`: MemoryCore parameter configs
 - `prompts/`: reusable prompt templates
 - `integrations/`: external service configs such as Neo4j
+- `users/`: per-user generated chat/memory config bundles for auth mode
 
 Recommended hierarchy:
 

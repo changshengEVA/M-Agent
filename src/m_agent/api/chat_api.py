@@ -12,7 +12,7 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
+from m_agent.api.user_access import AuthenticatedUser, UserAccessError, UserAccessService
 from m_agent.agents.chat_controller_agent import DEFAULT_CHAT_CONFIG_PATH
 from m_agent.chat.simple_chat_agent import SimpleMemoryChatAgent, create_simple_memory_chat_agent
 from m_agent.paths import PROJECT_ROOT, resolve_project_path
@@ -81,6 +82,57 @@ def _resolve_config_path(config_text: str) -> Path:
     if path.is_absolute():
         return path.resolve()
     return resolve_project_path(path).resolve()
+
+
+def _resolve_optional_path(path_text: str) -> Path:
+    candidate = Path(str(path_text or "").strip())
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return resolve_project_path(candidate).resolve()
+
+
+def _extract_access_token(request: Request) -> str:
+    auth_header = str(request.headers.get("authorization", "") or "").strip()
+    if auth_header and auth_header.lower().startswith("bearer "):
+        return auth_header[7:].strip()
+    return str(request.headers.get("x-session-token", "") or "").strip()
+
+
+def _scoped_thread_id(user: AuthenticatedUser, thread_id: str) -> str:
+    public_thread_id = str(thread_id or "").strip() or "thread-default"
+    return f"{user.username}::{public_thread_id}"
+
+
+def _with_public_thread_state(state: Any, *, public_thread_id: str) -> Any:
+    if not isinstance(state, dict):
+        return state
+    payload = deepcopy(state)
+    payload["thread_id"] = public_thread_id
+    return payload
+
+
+def _with_public_result_thread_id(result: Dict[str, Any], *, public_thread_id: str) -> Dict[str, Any]:
+    payload = deepcopy(result)
+    payload["thread_id"] = public_thread_id
+    if isinstance(payload.get("thread_state"), dict):
+        payload["thread_state"] = _with_public_thread_state(payload.get("thread_state"), public_thread_id=public_thread_id)
+    return payload
+
+
+def _with_public_thread_event(event: Dict[str, Any], *, public_thread_id: str) -> Dict[str, Any]:
+    payload = deepcopy(event)
+    payload["thread_id"] = public_thread_id
+    event_payload = payload.get("payload")
+    if isinstance(event_payload, dict):
+        if "thread_id" in event_payload:
+            event_payload["thread_id"] = public_thread_id
+        if isinstance(event_payload.get("thread_state"), dict):
+            event_payload["thread_state"] = _with_public_thread_state(
+                event_payload.get("thread_state"),
+                public_thread_id=public_thread_id,
+            )
+        payload["payload"] = event_payload
+    return payload
 
 
 def _thread_lock_key(thread_id: str) -> str:
@@ -877,10 +929,21 @@ class TraceEventProjector:
 
 
 class ChatRunRecord:
-    def __init__(self, *, run_id: str, config_path: str, thread_id: str, message: str) -> None:
+    def __init__(
+        self,
+        *,
+        run_id: str,
+        config_path: str,
+        thread_id: str,
+        internal_thread_id: Optional[str] = None,
+        message: str,
+        user_id: Optional[str] = None,
+    ) -> None:
         self.run_id = run_id
         self.config_path = config_path
         self.thread_id = thread_id
+        self.internal_thread_id = str(internal_thread_id or thread_id or "").strip() or self.thread_id
+        self.user_id = str(user_id or "").strip() or None
         self.message = message
         self.created_at = _now_iso()
         self.finished_at: Optional[str] = None
@@ -915,6 +978,7 @@ class ChatRunRecord:
                 "thread_id": self.thread_id,
                 "message": self.message,
                 "config_path": self.config_path,
+                "user_id": self.user_id,
             },
         )
 
@@ -967,6 +1031,7 @@ class ChatRunRecord:
                 "status": self.status,
                 "config_path": self.config_path,
                 "thread_id": self.thread_id,
+                "user_id": self.user_id,
                 "message": self.message,
                 "created_at": self.created_at,
                 "finished_at": self.finished_at,
@@ -988,13 +1053,23 @@ class ChatRunRegistry:
         self._lock = threading.Lock()
         self._runs: Dict[str, ChatRunRecord] = {}
 
-    def create(self, *, config_path: str, thread_id: str, message: str) -> ChatRunRecord:
+    def create(
+        self,
+        *,
+        config_path: str,
+        thread_id: str,
+        internal_thread_id: Optional[str] = None,
+        message: str,
+        user_id: Optional[str] = None,
+    ) -> ChatRunRecord:
         run_id = f"run_{uuid.uuid4().hex}"
         record = ChatRunRecord(
             run_id=run_id,
             config_path=config_path,
             thread_id=thread_id,
+            internal_thread_id=internal_thread_id,
             message=message,
+            user_id=user_id,
         )
         with self._lock:
             self._runs[run_id] = record
@@ -1095,37 +1170,41 @@ def _run_chat_worker(record: ChatRunRecord, service_runtime: ChatServiceRuntime)
     handler = FunctionTraceHandler(callback=record.append_trace_event, include_non_api=True)
     trace_loggers = _attach_trace_handler(handler)
 
-    thread_lock = _get_thread_lock(record.thread_id)
+    thread_lock = _get_thread_lock(record.internal_thread_id)
     try:
         record.start()
         with thread_lock:
             result = service_runtime.run_chat(
                 message=record.message,
-                thread_id=record.thread_id or service_runtime.default_thread_id,
+                thread_id=record.internal_thread_id or service_runtime.default_thread_id,
             )
 
-        answer_text = str(result.get("answer", "") or "").strip()
+        public_result = _with_public_result_thread_id(
+            result,
+            public_thread_id=record.thread_id,
+        )
+        answer_text = str(public_result.get("answer", "") or "").strip()
         record.append_event(
             "assistant_message",
             {
                 "answer": answer_text,
-                "thread_id": str(result.get("thread_id", record.thread_id) or record.thread_id),
+                "thread_id": record.thread_id,
             },
         )
 
-        memory_capture = result.get("memory_capture")
+        memory_capture = public_result.get("memory_capture")
         if isinstance(memory_capture, dict):
             record.append_event("memory_capture_updated", memory_capture)
 
-        thread_state = result.get("thread_state")
+        thread_state = public_result.get("thread_state")
         if isinstance(thread_state, dict):
             record.append_event("thread_state_updated", {"thread_state": thread_state})
 
-        agent_result = result.get("agent_result")
+        agent_result = public_result.get("agent_result")
         if isinstance(agent_result, dict):
             record.append_event("chat_result", {"agent_result": agent_result})
 
-        record.complete(result)
+        record.complete(public_result)
     except Exception:
         with service_runtime._stats_lock:
             service_runtime._runs_failed += 1
@@ -1135,11 +1214,20 @@ def _run_chat_worker(record: ChatRunRecord, service_runtime: ChatServiceRuntime)
         _detach_trace_handler(handler, trace_loggers)
 
 
-def _start_chat_run(*, service_runtime: ChatServiceRuntime, thread_id: str, message: str) -> ChatRunRecord:
+def _start_chat_run(
+    *,
+    service_runtime: ChatServiceRuntime,
+    thread_id: str,
+    internal_thread_id: Optional[str] = None,
+    message: str,
+    user_id: Optional[str] = None,
+) -> ChatRunRecord:
     record = _RUNS.create(
         config_path=str(service_runtime.config_path),
         thread_id=thread_id,
+        internal_thread_id=internal_thread_id,
         message=message,
+        user_id=user_id,
     )
     worker = threading.Thread(target=_run_chat_worker, args=(record, service_runtime), daemon=True)
     worker.start()
@@ -1151,6 +1239,7 @@ def _json_response_payload(record: ChatRunRecord) -> Dict[str, Any]:
         "run_id": record.run_id,
         "status": record.status,
         "thread_id": record.thread_id,
+        "user_id": record.user_id,
         "events_url": f"/v1/chat/runs/{record.run_id}/events",
         "result_url": f"/v1/chat/runs/{record.run_id}",
     }
@@ -1160,6 +1249,27 @@ class ChatRunCreateRequest(BaseModel):
     thread_id: Optional[str] = None
     message: Optional[str] = None
     config: Optional[str] = None
+
+
+class UserRegisterRequest(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+    role: Optional[str] = "basic"
+    display_name: Optional[str] = None
+    assistant_name: Optional[str] = None
+    persona_prompt: Optional[str] = None
+    workflow_id: Optional[str] = None
+
+
+class UserLoginRequest(BaseModel):
+    username: Optional[str] = None
+    password: Optional[str] = None
+
+
+class UserConfigPatchRequest(BaseModel):
+    chat: Optional[Dict[str, Any]] = None
+    memory_agent: Optional[Dict[str, Any]] = None
+    memory_core: Optional[Dict[str, Any]] = None
 
 
 class ThreadMemoryModeRequest(BaseModel):
@@ -1221,16 +1331,23 @@ def _encode_sse(event: Dict[str, Any]) -> bytes:
     ).encode("utf-8")
 
 
-def create_app(*, service_runtime: ChatServiceRuntime) -> FastAPI:
+def create_app(
+    *,
+    service_runtime: ChatServiceRuntime,
+    user_access: Optional[UserAccessService] = None,
+) -> FastAPI:
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         try:
             yield
         finally:
             service_runtime.shutdown()
+            if user_access is not None:
+                user_access.shutdown()
 
     app = FastAPI(title="M-Agent Chat API", version="2.0", lifespan=lifespan)
     app.state.service_runtime = service_runtime
+    app.state.user_access = user_access
 
     app.add_middleware(
         CORSMiddleware,
@@ -1241,6 +1358,52 @@ def create_app(*, service_runtime: ChatServiceRuntime) -> FastAPI:
         max_age=600,
     )
     app.add_middleware(PrivateNetworkAccessMiddleware)
+
+    def _error_response(*, status_code: int, message: str, extra: Optional[Dict[str, Any]] = None) -> JSONResponse:
+        payload = {"error": message}
+        if isinstance(extra, dict):
+            payload.update(extra)
+        return JSONResponse(status_code=int(status_code), content=payload)
+
+    def _resolve_user_only(request: Request) -> Tuple[Optional[AuthenticatedUser], Optional[JSONResponse]]:
+        if user_access is None:
+            return None, None
+        token = _extract_access_token(request)
+        if not token:
+            return None, _error_response(
+                status_code=401,
+                message="missing bearer token; call /v1/auth/login first",
+            )
+        try:
+            user = user_access.authenticate(token)
+        except UserAccessError as exc:
+            return None, _error_response(status_code=exc.status_code, message=str(exc))
+        return user, None
+
+    def _resolve_user_and_runtime(
+        request: Request,
+    ) -> Tuple[Optional[AuthenticatedUser], ChatServiceRuntime, Optional[JSONResponse]]:
+        user, auth_error = _resolve_user_only(request)
+        if auth_error is not None:
+            return None, service_runtime, auth_error
+        if user is None:
+            return None, service_runtime, None
+        if user_access is None:
+            return user, service_runtime, None
+        runtime = user_access.get_runtime(user=user)
+        return user, runtime, None
+
+    def _record_is_visible(record: ChatRunRecord, user: Optional[AuthenticatedUser]) -> bool:
+        if user_access is None:
+            return True
+        if user is None:
+            return False
+        return str(record.user_id or "").strip() == user.username
+
+    def _runtime_thread_id(user: Optional[AuthenticatedUser], public_thread_id: str) -> str:
+        if user is None:
+            return public_thread_id
+        return _scoped_thread_id(user, public_thread_id)
 
     @app.middleware("http")
     async def protocol_logging_middleware(request: Request, call_next: Any):
@@ -1267,7 +1430,13 @@ def create_app(*, service_runtime: ChatServiceRuntime) -> FastAPI:
             "service": "m-agent-chat-api",
             "root": str(PROJECT_ROOT),
             "runtime": service_runtime.health_payload(),
+            "auth": user_access.health_payload() if user_access is not None else None,
             "endpoints": {
+                "auth_register": "/v1/auth/register",
+                "auth_login": "/v1/auth/login",
+                "auth_me": "/v1/auth/me",
+                "auth_logout": "/v1/auth/logout",
+                "user_config_patch": "/v1/users/me/config",
                 "create_run": "/v1/chat/runs",
                 "get_run": "/v1/chat/runs/{run_id}",
                 "stream_events": "/v1/chat/runs/{run_id}/events",
@@ -1278,43 +1447,131 @@ def create_app(*, service_runtime: ChatServiceRuntime) -> FastAPI:
                 "openapi": "/openapi.json",
                 "docs": "/docs",
             },
+            "auth_required_for_chat": bool(user_access is not None),
         }
 
+    @app.post("/v1/auth/register")
+    def register_user(body: UserRegisterRequest) -> JSONResponse:
+        if user_access is None:
+            return _error_response(status_code=503, message="user auth service is disabled")
+        username = str(body.username or "").strip()
+        password = str(body.password or "")
+        if not username or not password:
+            return _error_response(status_code=400, message="username and password are required")
+        try:
+            payload = user_access.register_user(
+                username=username,
+                password=password,
+                role=str(body.role or "basic"),
+                display_name=body.display_name,
+                assistant_name=body.assistant_name,
+                persona_prompt=body.persona_prompt,
+                workflow_id=body.workflow_id,
+            )
+        except UserAccessError as exc:
+            return _error_response(status_code=exc.status_code, message=str(exc))
+        return JSONResponse(status_code=201, content=payload)
+
+    @app.post("/v1/auth/login")
+    def login_user(body: UserLoginRequest) -> JSONResponse:
+        if user_access is None:
+            return _error_response(status_code=503, message="user auth service is disabled")
+        username = str(body.username or "").strip()
+        password = str(body.password or "")
+        if not username or not password:
+            return _error_response(status_code=400, message="username and password are required")
+        try:
+            payload = user_access.login(username=username, password=password)
+        except UserAccessError as exc:
+            return _error_response(status_code=exc.status_code, message=str(exc))
+        return JSONResponse(content=payload)
+
+    @app.get("/v1/auth/me")
+    def who_am_i(request: Request) -> JSONResponse:
+        if user_access is None:
+            return _error_response(status_code=503, message="user auth service is disabled")
+        user, auth_error = _resolve_user_only(request)
+        if auth_error is not None:
+            return auth_error
+        return JSONResponse(content={"user": user.to_payload() if user is not None else None})
+
+    @app.post("/v1/auth/logout")
+    def logout_user(request: Request) -> JSONResponse:
+        if user_access is None:
+            return _error_response(status_code=503, message="user auth service is disabled")
+        token = _extract_access_token(request)
+        if not token:
+            return _error_response(status_code=401, message="missing bearer token")
+        user_access.logout(token)
+        return JSONResponse(content={"success": True})
+
+    @app.patch("/v1/users/me/config")
+    def patch_my_config(request: Request, body: UserConfigPatchRequest) -> JSONResponse:
+        if user_access is None:
+            return _error_response(status_code=503, message="user auth service is disabled")
+        user, auth_error = _resolve_user_only(request)
+        if auth_error is not None:
+            return auth_error
+        try:
+            payload = user_access.update_user_config(
+                user=user,
+                updates={
+                    "chat": dict(body.chat or {}),
+                    "memory_agent": dict(body.memory_agent or {}),
+                    "memory_core": dict(body.memory_core or {}),
+                },
+            )
+        except UserAccessError as exc:
+            return _error_response(status_code=exc.status_code, message=str(exc))
+        return JSONResponse(content=payload)
+
     @app.post("/v1/chat/runs")
-    def create_run(body: ChatRunCreateRequest) -> JSONResponse:
+    def create_run(body: ChatRunCreateRequest, request: Request) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
         requested_config = str(body.config or "").strip()
         if requested_config:
             return JSONResponse(
                 status_code=400,
                 content={
                     "error": "service config is fixed at startup; restart the API with --config to change it",
-                    "config_path": str(service_runtime.config_path),
+                    "config_path": str(active_runtime.config_path),
                 },
             )
 
-        thread_id = str(body.thread_id or service_runtime.default_thread_id).strip() or service_runtime.default_thread_id
+        thread_id = str(body.thread_id or active_runtime.default_thread_id).strip() or active_runtime.default_thread_id
+        runtime_thread_id = _runtime_thread_id(user, thread_id)
         message = str(body.message or "").strip()
         if not message:
             return JSONResponse(status_code=400, content={"error": "message is empty"})
 
         record = _start_chat_run(
-            service_runtime=service_runtime,
+            service_runtime=active_runtime,
             thread_id=thread_id,
+            internal_thread_id=runtime_thread_id,
             message=message,
+            user_id=user.username if user is not None else None,
         )
         return JSONResponse(status_code=201, content=_json_response_payload(record))
 
     @app.get("/v1/chat/runs/{run_id}")
-    def get_run(run_id: str) -> JSONResponse:
+    def get_run(run_id: str, request: Request) -> JSONResponse:
+        user, auth_error = _resolve_user_only(request)
+        if auth_error is not None:
+            return auth_error
         record = _RUNS.get(run_id)
-        if record is None:
+        if record is None or not _record_is_visible(record, user):
             return JSONResponse(status_code=404, content={"error": f"run not found: {run_id}"})
         return JSONResponse(content=record.snapshot())
 
     @app.get("/v1/chat/runs/{run_id}/events", response_class=StreamingResponse, response_model=None)
     async def stream_events(run_id: str, request: Request, after_seq: int = 0):
+        user, auth_error = _resolve_user_only(request)
+        if auth_error is not None:
+            return auth_error
         record = _RUNS.get(run_id)
-        if record is None:
+        if record is None or not _record_is_visible(record, user):
             return JSONResponse(status_code=404, content={"error": f"run not found: {run_id}"})
 
         async def event_stream():
@@ -1353,7 +1610,11 @@ def create_app(*, service_runtime: ChatServiceRuntime) -> FastAPI:
 
     @app.get("/v1/chat/threads/{thread_id}/events", response_class=StreamingResponse, response_model=None)
     async def stream_thread_events(thread_id: str, request: Request, after_seq: int = -1):
-        record = _THREAD_EVENTS.get_or_create(thread_id)
+        user, _, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        record = _THREAD_EVENTS.get_or_create(runtime_thread_id)
 
         async def event_stream():
             current_seq = record.current_seq() if int(after_seq) < 0 else max(0, int(after_seq))
@@ -1367,7 +1628,8 @@ def create_app(*, service_runtime: ChatServiceRuntime) -> FastAPI:
                             if await request.is_disconnected():
                                 return
                             current_seq = max(current_seq, int(event.get("seq", 0) or 0))
-                            yield _encode_sse(event)
+                            public_event = _with_public_thread_event(event, public_thread_id=thread_id)
+                            yield _encode_sse(public_event)
                     else:
                         yield b": keep-alive\n\n"
             except asyncio.CancelledError:
@@ -1384,35 +1646,60 @@ def create_app(*, service_runtime: ChatServiceRuntime) -> FastAPI:
         )
 
     @app.get("/v1/chat/threads/{thread_id}/memory/state")
-    def get_thread_state(thread_id: str) -> JSONResponse:
-        return JSONResponse(content=service_runtime.get_thread_state(thread_id))
+    def get_thread_state(thread_id: str, request: Request) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        state = active_runtime.get_thread_state(runtime_thread_id)
+        return JSONResponse(content=_with_public_thread_state(state, public_thread_id=thread_id))
 
     @app.post("/v1/chat/threads/{thread_id}/memory/mode")
-    def set_thread_mode(thread_id: str, body: ThreadMemoryModeRequest) -> JSONResponse:
+    def set_thread_mode(thread_id: str, body: ThreadMemoryModeRequest, request: Request) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        runtime_thread_id = _runtime_thread_id(user, thread_id)
         mode = _normalize_memory_mode(body.mode, fallback="manual")
-        thread_lock = _get_thread_lock(thread_id)
+        thread_lock = _get_thread_lock(runtime_thread_id)
         with thread_lock:
-            result = service_runtime.set_thread_mode(
-                thread_id,
+            result = active_runtime.set_thread_mode(
+                runtime_thread_id,
                 mode=mode,
                 discard_pending=bool(body.discard_pending),
             )
+        result = deepcopy(result)
+        result["thread_id"] = thread_id
+        if isinstance(result.get("thread_state"), dict):
+            result["thread_state"] = _with_public_thread_state(result.get("thread_state"), public_thread_id=thread_id)
         return JSONResponse(content=result)
 
     @app.post("/v1/chat/threads/{thread_id}/memory/flush")
-    def flush_thread(thread_id: str, body: ThreadMemoryFlushRequest) -> JSONResponse:
+    def flush_thread(thread_id: str, body: ThreadMemoryFlushRequest, request: Request) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        runtime_thread_id = _runtime_thread_id(user, thread_id)
         reason = str(body.reason or "manual_api").strip() or "manual_api"
-        thread_lock = _get_thread_lock(thread_id)
+        thread_lock = _get_thread_lock(runtime_thread_id)
         with thread_lock:
-            result = service_runtime.flush_thread(thread_id, reason=reason)
+            result = active_runtime.flush_thread(runtime_thread_id, reason=reason)
+        result = deepcopy(result)
+        result["thread_id"] = thread_id
+        if isinstance(result.get("thread_state"), dict):
+            result["thread_state"] = _with_public_thread_state(result.get("thread_state"), public_thread_id=thread_id)
         return JSONResponse(content=result)
 
     return app
 
 
-def create_handler(*, service_runtime: ChatServiceRuntime) -> FastAPI:
+def create_handler(
+    *,
+    service_runtime: ChatServiceRuntime,
+    user_access: Optional[UserAccessService] = None,
+) -> FastAPI:
     """Backward-compatible alias for the old stdlib server entrypoint."""
-    return create_app(service_runtime=service_runtime)
+    return create_app(service_runtime=service_runtime, user_access=user_access)
 
 
 def _configure_logging(debug: bool = False) -> None:
@@ -1457,6 +1744,22 @@ def parse_args() -> argparse.Namespace:
         help="Max in-memory rounds retained per thread for chat history. Default: 12",
     )
     parser.add_argument(
+        "--users-db",
+        default="config/users/users.json",
+        help="User auth database path. Default: config/users/users.json",
+    )
+    parser.add_argument(
+        "--session-ttl-seconds",
+        type=int,
+        default=12 * 60 * 60,
+        help="Auth session TTL in seconds. Default: 43200",
+    )
+    parser.add_argument(
+        "--disable-auth",
+        action="store_true",
+        help="Disable register/login and run with startup-fixed anonymous runtime only.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable verbose backend/module logs. Default mode keeps only concise HTTP/SSE protocol logs.",
@@ -1473,7 +1776,25 @@ def main() -> None:
         idle_flush_seconds=int(args.idle_flush_seconds),
         history_max_rounds=int(args.history_max_rounds),
     )
-    app = create_app(service_runtime=service_runtime)
+    user_access: Optional[UserAccessService] = None
+    if not bool(args.disable_auth):
+        users_db_path = _resolve_optional_path(str(args.users_db or "").strip() or "config/users/users.json")
+
+        def _runtime_factory(user: AuthenticatedUser) -> ChatServiceRuntime:
+            return ChatServiceRuntime(
+                config_path=user.config_path,
+                idle_flush_seconds=int(args.idle_flush_seconds),
+                history_max_rounds=int(args.history_max_rounds),
+            )
+
+        user_access = UserAccessService(
+            base_chat_config_path=config_path,
+            runtime_factory=_runtime_factory,
+            users_db_path=users_db_path,
+            session_ttl_seconds=int(args.session_ttl_seconds),
+        )
+
+    app = create_app(service_runtime=service_runtime, user_access=user_access)
     url = f"http://{args.host}:{args.port}"
     logger.info("M-Agent chat API listening on %s", url)
     logger.info("Startup config locked to %s", config_path)
@@ -1482,6 +1803,14 @@ def main() -> None:
         service_runtime.idle_flush_seconds,
         service_runtime.history_max_rounds,
     )
+    if user_access is None:
+        logger.info("Auth mode: disabled")
+    else:
+        logger.info(
+            "Auth mode: enabled users_db=%s session_ttl_seconds=%s",
+            args.users_db,
+            int(args.session_ttl_seconds),
+        )
     try:
         uvicorn.run(
             app,
