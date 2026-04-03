@@ -17,3 +17,4 @@ model/*
 log/*
 config/users/users.json
 config/users/*/
+.secrets/

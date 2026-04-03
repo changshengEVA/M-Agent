@@ -1,7 +1,7 @@
 # Used by: `config/agents/eval/realtalk_eval_memory_agent.yaml`
 # Purpose: MemoryCore config for the ReaLTalk dataset.
 workflow_id: "testrt"
-runtime_prompt_config_path: "../../prompts/runtime/memory_core_runtime.yaml"
+runtime_prompt_config_path: "./runtime/memory_core_runtime.yaml"
 prompt_language: "en"
 
 # MemoryCore init settings

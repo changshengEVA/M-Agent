@@ -4,8 +4,10 @@ import base64
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
+import shutil
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -14,12 +16,17 @@ from typing import Any, Callable, Dict, Optional
 
 import yaml
 
-from m_agent.config_paths import resolve_related_config_path
+from m_agent.config_paths import CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH, resolve_related_config_path
 from m_agent.paths import PROJECT_ROOT
 
 
 DEFAULT_USERS_ROOT_DIR = PROJECT_ROOT / "config" / "users"
 DEFAULT_USERS_DB_PATH = DEFAULT_USERS_ROOT_DIR / "users.json"
+
+_USER_CHAT_CONFIG_NAME = "chat.yaml"
+_USER_MEMORY_AGENT_CONFIG_NAME = "memory_agent.params.yaml"
+_USER_MEMORY_CORE_CONFIG_NAME = "memory_core.params.yaml"
+_USER_CHAT_RUNTIME_NAME = "chat_runtime.yaml"
 
 _PASSWORD_PBKDF2_ITERATIONS = 150_000
 _USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$")
@@ -140,6 +147,13 @@ def _write_yaml(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
+
+
+def _copy_file(src: Path, dst: Path) -> None:
+    if not src.exists():
+        raise UserAccessError(f"runtime prompt config not found: {src}", status_code=500)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dst)
 
 
 def _empty_users_payload() -> Dict[str, Any]:
@@ -267,6 +281,19 @@ class UserAccountStore:
         )
         return chat_config_path, memory_agent_path, memory_core_path
 
+    @staticmethod
+    def _resolve_runtime_prompt_path(
+        config_path: Path,
+        config_payload: Dict[str, Any],
+        *,
+        default_path: Path,
+    ) -> Path:
+        return resolve_related_config_path(
+            config_path,
+            config_payload.get("runtime_prompt_config_path"),
+            default_path=default_path,
+        )
+
     def _scaffold_user_configs(
         self,
         *,
@@ -282,34 +309,57 @@ class UserAccountStore:
         chat_config = _load_yaml(chat_template_path)
         memory_agent_config = _load_yaml(memory_agent_template_path)
         memory_core_config = _load_yaml(memory_core_template_path)
+        chat_runtime_template_path = self._resolve_runtime_prompt_path(
+            chat_template_path,
+            chat_config,
+            default_path=CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH,
+        )
 
         user_dir = self.users_root_dir / _safe_slug(username)
         if user_dir.exists():
             raise UserAccessError(f"user config directory already exists: {user_dir}", status_code=409)
         user_dir.mkdir(parents=True, exist_ok=False)
 
-        chat_config["memory_agent_config_path"] = "./memory_agent.yaml"
+        try:
+            memory_agent_base_config_path = Path(
+                os.path.relpath(memory_agent_template_path, start=user_dir)
+            ).as_posix()
+        except ValueError:
+            # Different Windows drive letters (e.g. temp dir on C:, repo on F:).
+            memory_agent_base_config_path = str(memory_agent_template_path.resolve())
+
+        chat_config["memory_agent_config_path"] = f"./{_USER_MEMORY_AGENT_CONFIG_NAME}"
+        chat_config["runtime_prompt_config_path"] = f"./runtime/{_USER_CHAT_RUNTIME_NAME}"
         chat_config["thread_id"] = f"{_safe_slug(username, fallback='user')}-thread"
         chat_config["chat_user_name"] = display_name
         chat_config["chat_assistant_name"] = assistant_name
         if isinstance(persona_prompt, str) and persona_prompt.strip():
             chat_config["chat_persona_prompt"] = persona_prompt.strip()
 
-        memory_agent_config["memory_core_config_path"] = "./memory_core.yaml"
+        memory_agent_config["base_config_path"] = memory_agent_base_config_path
+        memory_agent_config["memory_core_config_path"] = f"./{_USER_MEMORY_CORE_CONFIG_NAME}"
         memory_agent_config["thread_id"] = f"{_safe_slug(username, fallback='user')}-memory-agent"
+        memory_agent_config.pop("planner_prompt", None)
+        memory_agent_config.pop("system_prompt", None)
+        memory_agent_config.pop("runtime_prompt_config_path", None)
 
         default_workflow_id = f"user_{_safe_slug(username, fallback='user')}"
         memory_core_config["workflow_id"] = str(workflow_id or default_workflow_id)
+        memory_core_config.pop("runtime_prompt_config_path", None)
         if assistant_name.strip():
             memory_core_config["memory_owner_name"] = assistant_name.strip()
 
-        chat_user_config_path = user_dir / "chat_controller.yaml"
-        memory_agent_user_config_path = user_dir / "memory_agent.yaml"
-        memory_core_user_config_path = user_dir / "memory_core.yaml"
+        chat_user_config_path = user_dir / _USER_CHAT_CONFIG_NAME
+        memory_agent_user_config_path = user_dir / _USER_MEMORY_AGENT_CONFIG_NAME
+        memory_core_user_config_path = user_dir / _USER_MEMORY_CORE_CONFIG_NAME
 
         _write_yaml(chat_user_config_path, chat_config)
         _write_yaml(memory_agent_user_config_path, memory_agent_config)
         _write_yaml(memory_core_user_config_path, memory_core_config)
+        _copy_file(
+            chat_runtime_template_path,
+            user_dir / "runtime" / _USER_CHAT_RUNTIME_NAME,
+        )
         return chat_user_config_path
 
     def register_user(

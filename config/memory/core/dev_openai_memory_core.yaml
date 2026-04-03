@@ -1,7 +1,7 @@
 # Used by: `tests/test_core_sys.py` and ad-hoc local MemoryCore smoke tests.
 # Purpose: developer-focused MemoryCore config with explicit OpenAI/alibaba model settings.
 workflow_id: "test7"
-runtime_prompt_config_path: "../../prompts/runtime/memory_core_runtime.yaml"
+runtime_prompt_config_path: "./runtime/memory_core_runtime.yaml"
 prompt_language: "en"
 
 # model providers

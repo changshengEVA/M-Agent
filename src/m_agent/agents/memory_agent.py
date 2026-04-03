@@ -119,8 +119,8 @@ class MemoryAgent:
             "unknown",
             "无法确定",
             "无法回答",
-            "淇℃伅涓嶈冻",
-            "娌℃湁瓒冲淇℃伅",
+            "信息不足",
+            "没有足够信息",
             "未提及",
         )
         return any(marker in normalized for marker in markers)
@@ -352,14 +352,54 @@ class MemoryAgent:
 
     @staticmethod
     def _load_config(path: Path) -> Dict[str, Any]:
-        if not path.exists():
-            raise FileNotFoundError(f"Agent config not found: {path}")
+        def _load_raw_config(config_path: Path) -> Dict[str, Any]:
+            if not config_path.exists():
+                raise FileNotFoundError(f"Agent config not found: {config_path}")
+            with open(config_path, "r", encoding="utf-8") as f:
+                payload = yaml.safe_load(f) or {}
+            if not isinstance(payload, dict):
+                raise ValueError(f"Agent config must be a dict: {config_path}")
+            return payload
 
-        with open(path, "r", encoding="utf-8") as f:
-            config = yaml.safe_load(f) or {}
+        def _normalize_path_fields(config_path: Path, payload: Dict[str, Any]) -> Dict[str, Any]:
+            normalized = dict(payload)
+            for key in ("memory_core_config_path", "runtime_prompt_config_path"):
+                raw_value = normalized.get(key)
+                if not isinstance(raw_value, str) or not raw_value.strip():
+                    continue
+                raw_path = Path(raw_value.strip())
+                if raw_path.is_absolute():
+                    normalized[key] = str(raw_path)
+                    continue
+                normalized[key] = str((config_path.parent / raw_path).resolve())
+            return normalized
 
-        if not isinstance(config, dict):
-            raise ValueError(f"Agent config must be a dict: {path}")
+        def _merge_with_base(config_path: Path, visited: set[Path]) -> Dict[str, Any]:
+            config = _normalize_path_fields(config_path, _load_raw_config(config_path))
+            raw_base_path = config.get("base_config_path")
+            if not isinstance(raw_base_path, str) or not raw_base_path.strip():
+                return config
+
+            base_path = resolve_related_config_path(config_path, raw_base_path).resolve()
+            if base_path in visited:
+                chain = " -> ".join(str(item) for item in list(visited) + [base_path])
+                raise ValueError(f"Detected cyclic base_config_path chain: {chain}")
+
+            base_config = _merge_with_base(base_path, visited | {base_path})
+            merged = dict(base_config)
+            for key, value in config.items():
+                if key == "base_config_path":
+                    continue
+                if isinstance(value, dict) and isinstance(merged.get(key), dict):
+                    merged_value = dict(merged.get(key) or {})
+                    merged_value.update(value)
+                    merged[key] = merged_value
+                    continue
+                merged[key] = value
+            return merged
+
+        resolved_path = path.resolve()
+        config = _merge_with_base(resolved_path, {resolved_path})
 
         if not isinstance(config.get("memory_core_config_path"), str) or not str(
             config.get("memory_core_config_path")

@@ -23,7 +23,7 @@
 2. 在这个目录下新增一个 capability 适配文件，或者放进合适的现有文件。
 3. 在适配层里只做“参数整理 + 调已有实现 + trace/hisory 记录”。
 4. 在 `registry.py` 里注册新的 `ControllerCapabilitySpec`。
-5. 在 `config/prompts/runtime/chat_controller_runtime.yaml` 里补这个工具的中英文描述。
+5. 在 `config/agents/chat/runtime/chat_controller_runtime.yaml` 里补这个工具的中英文描述。
 6. 如果需要默认参数，在 `config/agents/chat/chat_controller.yaml` 的 `tool_defaults` 里配置。
 7. 把工具名加入 `enabled_tools`，或者让它通过配置按需启用。
 
@@ -65,7 +65,7 @@ Real capabilities should remain in their original modules, for example:
 2. Add a new capability adapter file in this directory, or place it in an appropriate existing file.
 3. Keep the adapter thin: normalize params, call the existing implementation, and record trace/history.
 4. Register the new `ControllerCapabilitySpec` in `registry.py`.
-5. Add bilingual tool descriptions in `config/prompts/runtime/chat_controller_runtime.yaml`.
+5. Add bilingual tool descriptions in `config/agents/chat/runtime/chat_controller_runtime.yaml`.
 6. If default parameters are needed, configure them in `tool_defaults` inside `config/agents/chat/chat_controller.yaml`.
 7. Add the tool name to `enabled_tools`, or let it be enabled through config when needed.
 

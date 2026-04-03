@@ -1,7 +1,7 @@
 # Used by: `config/agents/memory/chat_memory_agent.yaml`
 # Purpose: MemoryCore config backing the chat demo / chat API workflow.
 workflow_id: "middle_test"
-runtime_prompt_config_path: "../../prompts/runtime/memory_core_runtime.yaml"
+runtime_prompt_config_path: "./runtime/memory_core_runtime.yaml"
 prompt_language: "zh"
 
 # MemoryCore init settings

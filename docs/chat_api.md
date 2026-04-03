@@ -44,7 +44,7 @@ python -m m_agent.api.chat_api `
   --host 127.0.0.1 `
   --port 8777 `
   --config config/agents/chat/chat_controller.yaml `
-  --idle-flush-seconds 600 `
+  --idle-flush-seconds 6000 `
   --history-max-rounds 12
 ```
 

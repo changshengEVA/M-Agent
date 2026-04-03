@@ -4,9 +4,16 @@
 
 Generated layout per user:
 
-- `config/users/<username>/chat_controller.yaml`
-- `config/users/<username>/memory_agent.yaml`
-- `config/users/<username>/memory_core.yaml`
+- `config/users/<username>/chat.yaml`
+- `config/users/<username>/memory_agent.params.yaml`
+- `config/users/<username>/memory_core.params.yaml`
+- `config/users/<username>/runtime/chat_runtime.yaml`
+
+Notes:
+
+- Only the chat controller uses per-user runtime prompts.
+- `memory_agent.params.yaml` and `memory_core.params.yaml` are parameter-only user overrides.
+- MemoryAgent prompt content is inherited from the shared base config referenced by `base_config_path`.
 
 User account metadata is stored in:
 
