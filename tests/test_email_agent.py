@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from typing import Any, Dict
 
@@ -30,22 +31,48 @@ class _FakeGmailClient:
         return {"messages": [{"id": "msg-1", "threadId": "th-1"}, {"id": "msg-2", "threadId": "th-2"}][:max_results]}
 
     def get_thread(self, *, thread_id: str, **_: Any) -> Dict[str, Any]:
+        payload_text = base64.urlsafe_b64encode(
+            b"Internship details: please complete the online assessment this week."
+        ).decode("ascii")
         return {
             "id": thread_id,
             "messages": [
                 {
                     "id": f"{thread_id}-m1",
                     "threadId": thread_id,
+                    "snippet": "Internship details and next steps.",
                     "payload": {
                         "headers": [
                             {"name": "Subject", "value": "Intern Recruitment"},
                             {"name": "From", "value": "HR <hr@example.com>"},
                             {"name": "To", "value": "user@example.com"},
                             {"name": "Date", "value": "Mon, 01 Apr 2024 10:00:00 +0000"},
-                        ]
+                        ],
+                        "mimeType": "text/plain",
+                        "body": {"data": payload_text},
                     },
                 }
             ],
+        }
+
+    def get_message(self, *, message_id: str, **_: Any) -> Dict[str, Any]:
+        payload_text = base64.urlsafe_b64encode(
+            b"Full message body for internship update."
+        ).decode("ascii")
+        return {
+            "id": message_id,
+            "threadId": "th-1",
+            "snippet": "Internship update",
+            "payload": {
+                "headers": [
+                    {"name": "Subject", "value": "Internship Update"},
+                    {"name": "From", "value": "HR <hr@example.com>"},
+                    {"name": "To", "value": "user@example.com"},
+                    {"name": "Date", "value": "Tue, 02 Apr 2024 11:00:00 +0000"},
+                ],
+                "mimeType": "text/plain",
+                "body": {"data": payload_text},
+            },
         }
 
     def send_raw_message(self, *, raw_message: str) -> Dict[str, Any]:
@@ -76,6 +103,9 @@ def _write_email_config(tmp_path: Path) -> Path:
             "allow_external_recipient": True,
             "allowed_recipient_domains": [],
             "block_on_risk_flags": False,
+            "max_ask_calls_per_turn": 5,
+            "read_max_chars": 6000,
+            "read_thread_message_limit": 6,
         },
     }
     config_path = tmp_path / "email_agent.yaml"
@@ -84,13 +114,13 @@ def _write_email_config(tmp_path: Path) -> Path:
     return config_path
 
 
-def test_tools_expose_ask_and_send_only(tmp_path: Path) -> None:
+def test_tools_expose_ask_read_and_send(tmp_path: Path) -> None:
     config_path = _write_email_config(tmp_path)
     fake_client = _FakeGmailClient()
     agent = EmailAgent(config_path=config_path, gmail_client=fake_client)
 
     tool_names = [tool.name for tool in agent.tools]
-    assert tool_names == ["ask", "send"]
+    assert tool_names == ["ask", "read", "send"]
 
     result = agent.ask(_CN_QUERY, mail_scope="unread")
     assert isinstance(result["answer"], str) and result["answer"]
@@ -99,6 +129,21 @@ def test_tools_expose_ask_and_send_only(tmp_path: Path) -> None:
     assert "trace" not in result
     assert "search_query" in result
     assert "insufficient" in result
+
+
+def test_read_message_returns_full_body(tmp_path: Path) -> None:
+    config_path = _write_email_config(tmp_path)
+    fake_client = _FakeGmailClient()
+    agent = EmailAgent(config_path=config_path, gmail_client=fake_client)
+
+    result = agent.read(message_id="msg-1")
+
+    assert result["insufficient"] is False
+    assert result["message_count"] == 1
+    assert result["messages"]
+    first = result["messages"][0]
+    assert first["message_id"] == "msg-1"
+    assert "Full message body for internship update." in first["body_text"]
 
 
 def test_ask_debug_includes_trace(tmp_path: Path) -> None:

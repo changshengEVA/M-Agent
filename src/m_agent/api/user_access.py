@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from copy import deepcopy
 import hashlib
 import hmac
 import json
@@ -16,7 +17,11 @@ from typing import Any, Callable, Dict, Optional
 
 import yaml
 
-from m_agent.config_paths import CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH, resolve_related_config_path
+from m_agent.config_paths import (
+    CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH,
+    DEFAULT_EMAIL_AGENT_CONFIG_PATH,
+    resolve_related_config_path,
+)
 from m_agent.paths import PROJECT_ROOT
 
 
@@ -294,6 +299,135 @@ class UserAccountStore:
             default_path=default_path,
         )
 
+    @staticmethod
+    def _relative_or_absolute_path(target_path: Path, *, start_dir: Path) -> str:
+        try:
+            return Path(os.path.relpath(target_path, start=start_dir)).as_posix()
+        except ValueError:
+            # Different Windows drive letters (e.g. temp dir on C:, repo on F:).
+            return str(target_path.resolve())
+
+    @staticmethod
+    def _merge_missing_mappings(target: Dict[str, Any], defaults: Dict[str, Any]) -> bool:
+        changed = False
+        for key, default_value in defaults.items():
+            if key not in target:
+                target[key] = deepcopy(default_value)
+                changed = True
+                continue
+            existing_value = target.get(key)
+            if isinstance(existing_value, dict) and isinstance(default_value, dict):
+                if UserAccountStore._merge_missing_mappings(existing_value, default_value):
+                    changed = True
+        return changed
+
+    def _sync_chat_tool_settings(
+        self,
+        *,
+        chat_config_path: Path,
+        user_chat_config: Dict[str, Any],
+        base_chat_config: Dict[str, Any],
+    ) -> bool:
+        changed = False
+
+        if self._merge_missing_mappings(user_chat_config, base_chat_config):
+            changed = True
+
+        user_email_raw = str(user_chat_config.get("email_agent_config_path", "") or "").strip()
+        user_email_path = resolve_related_config_path(
+            chat_config_path,
+            user_email_raw,
+            default_path=DEFAULT_EMAIL_AGENT_CONFIG_PATH,
+        )
+        if (not user_email_raw) or (not user_email_path.exists()):
+            base_email_path = resolve_related_config_path(
+                self.base_chat_config_path,
+                base_chat_config.get("email_agent_config_path"),
+                default_path=DEFAULT_EMAIL_AGENT_CONFIG_PATH,
+            )
+            normalized_email_path = self._relative_or_absolute_path(
+                base_email_path,
+                start_dir=chat_config_path.parent,
+            )
+            if user_chat_config.get("email_agent_config_path") != normalized_email_path:
+                user_chat_config["email_agent_config_path"] = normalized_email_path
+                changed = True
+
+        return changed
+
+    def _sync_runtime_tool_settings(
+        self,
+        *,
+        user_runtime_config: Dict[str, Any],
+        base_runtime_config: Dict[str, Any],
+    ) -> bool:
+        changed = False
+
+        base_controller = base_runtime_config.get("chat_controller")
+        if not isinstance(base_controller, dict):
+            return changed
+
+        user_controller = user_runtime_config.get("chat_controller")
+        if not isinstance(user_controller, dict):
+            user_controller = {}
+            user_runtime_config["chat_controller"] = user_controller
+            changed = True
+
+        base_tools = base_controller.get("tools")
+        if not isinstance(base_tools, dict):
+            return changed
+
+        user_tools = user_controller.get("tools")
+        if not isinstance(user_tools, dict):
+            user_tools = {}
+            user_controller["tools"] = user_tools
+            changed = True
+
+        if self._merge_missing_mappings(user_tools, base_tools):
+            changed = True
+        return changed
+
+    def _sync_user_tool_related_configs(self, *, record: Dict[str, Any]) -> bool:
+        chat_config_path = self._resolve_user_config_path(record)
+        user_chat_config = _load_yaml(chat_config_path)
+        base_chat_config = _load_yaml(self.base_chat_config_path)
+
+        changed = False
+        if self._sync_chat_tool_settings(
+            chat_config_path=chat_config_path,
+            user_chat_config=user_chat_config,
+            base_chat_config=base_chat_config,
+        ):
+            _write_yaml(chat_config_path, user_chat_config)
+            changed = True
+
+        base_runtime_path = self._resolve_runtime_prompt_path(
+            self.base_chat_config_path,
+            base_chat_config,
+            default_path=CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH,
+        )
+        user_runtime_path = self._resolve_runtime_prompt_path(
+            chat_config_path,
+            user_chat_config,
+            default_path=CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH,
+        )
+        if not user_runtime_path.exists():
+            _copy_file(base_runtime_path, user_runtime_path)
+            changed = True
+        else:
+            base_runtime_config = _load_yaml(base_runtime_path)
+            user_runtime_config = _load_yaml(user_runtime_path)
+            if self._sync_runtime_tool_settings(
+                user_runtime_config=user_runtime_config,
+                base_runtime_config=base_runtime_config,
+            ):
+                _write_yaml(user_runtime_path, user_runtime_config)
+                changed = True
+
+        if changed:
+            record["updated_at"] = _now_iso()
+        return changed
+
     def _scaffold_user_configs(
         self,
         *,
@@ -320,16 +454,22 @@ class UserAccountStore:
             raise UserAccessError(f"user config directory already exists: {user_dir}", status_code=409)
         user_dir.mkdir(parents=True, exist_ok=False)
 
-        try:
-            memory_agent_base_config_path = Path(
-                os.path.relpath(memory_agent_template_path, start=user_dir)
-            ).as_posix()
-        except ValueError:
-            # Different Windows drive letters (e.g. temp dir on C:, repo on F:).
-            memory_agent_base_config_path = str(memory_agent_template_path.resolve())
+        memory_agent_base_config_path = self._relative_or_absolute_path(
+            memory_agent_template_path,
+            start_dir=user_dir,
+        )
+        email_agent_template_path = resolve_related_config_path(
+            chat_template_path,
+            chat_config.get("email_agent_config_path"),
+            default_path=DEFAULT_EMAIL_AGENT_CONFIG_PATH,
+        )
 
         chat_config["memory_agent_config_path"] = f"./{_USER_MEMORY_AGENT_CONFIG_NAME}"
         chat_config["runtime_prompt_config_path"] = f"./runtime/{_USER_CHAT_RUNTIME_NAME}"
+        chat_config["email_agent_config_path"] = self._relative_or_absolute_path(
+            email_agent_template_path,
+            start_dir=user_dir,
+        )
         chat_config["thread_id"] = f"{_safe_slug(username, fallback='user')}-thread"
         chat_config["chat_user_name"] = display_name
         chat_config["chat_assistant_name"] = assistant_name
@@ -432,6 +572,8 @@ class UserAccountStore:
                 digest_b64=str(record.get("password_hash", "")),
             ):
                 raise UserAccessError("invalid username or password", status_code=401)
+            if self._sync_user_tool_related_configs(record=record):
+                self._save_users_payload(users_payload)
             return self._to_authenticated_user(username=normalized_username, record=record)
 
     def get_user(self, *, username: str) -> Optional[AuthenticatedUser]:

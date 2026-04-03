@@ -23,6 +23,7 @@ class ControllerCapabilityContext:
     controller_state: Dict[str, Any]
     tool_defaults: Dict[str, Dict[str, Any]]
     logger: logging.Logger
+    email_agent_provider: Optional[Callable[[], Any]] = None
 
     def tool_default(self, tool_name: str, key: str, default: Any = None) -> Any:
         tool_config = self.tool_defaults.get(tool_name)
@@ -90,3 +91,9 @@ class ControllerCapabilityContext:
             history = []
             self.recall_state["history"] = history
         history.append({"mode": mode, "result": result})
+
+    def get_email_agent(self) -> Any:
+        provider = self.email_agent_provider
+        if provider is None:
+            raise RuntimeError("Email tool is unavailable because email_agent_provider is not configured.")
+        return provider()

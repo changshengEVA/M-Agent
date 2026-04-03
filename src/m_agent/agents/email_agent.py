@@ -1,5 +1,6 @@
 ﻿from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -66,7 +67,7 @@ _QUERY_HINT_TERMS: tuple[str, ...] = (
 
 
 class EmailAgent:
-    """Standalone Gmail EmailAgent with two public interfaces: ask and send."""
+    """Standalone Gmail EmailAgent with ask/read/send interfaces."""
 
     def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH, *, gmail_client: Optional[GmailApiClient] = None) -> None:
         self.config_path = resolve_config_path(config_path)
@@ -140,6 +141,9 @@ class EmailAgent:
             "allow_external_recipient": True,
             "allowed_recipient_domains": [],
             "block_on_risk_flags": False,
+            "max_ask_calls_per_turn": 5,
+            "read_max_chars": 6000,
+            "read_thread_message_limit": 6,
         }
         if isinstance(raw, dict):
             defaults.update(raw)
@@ -149,12 +153,46 @@ class EmailAgent:
         if not isinstance(allowed, list):
             allowed = []
         defaults["allowed_recipient_domains"] = sorted({str(x).strip().lower() for x in allowed if str(x).strip()})
+        try:
+            defaults["max_ask_calls_per_turn"] = max(1, int(defaults.get("max_ask_calls_per_turn", 5)))
+        except Exception:
+            defaults["max_ask_calls_per_turn"] = 5
+        try:
+            defaults["read_max_chars"] = max(200, int(defaults.get("read_max_chars", 6000)))
+        except Exception:
+            defaults["read_max_chars"] = 6000
+        try:
+            defaults["read_thread_message_limit"] = max(1, int(defaults.get("read_thread_message_limit", 6)))
+        except Exception:
+            defaults["read_thread_message_limit"] = 6
         return defaults
 
     def _build_tools(self) -> List[Any]:
         @tool("ask", description="Search Gmail by instruction. mail_scope supports: unread or all.")
         def ask_tool(instruction: str, mail_scope: str = "unread", debug: bool = False) -> Dict[str, Any]:
             return self.ask(instruction=instruction, mail_scope=mail_scope, debug=debug)
+
+        @tool(
+            "read",
+            description=(
+                "Read one specific email by message_id or thread_id. "
+                "Returns full body text plus key metadata."
+            ),
+        )
+        def read_tool(
+            message_id: str = "",
+            thread_id: str = "",
+            include_html: bool = False,
+            max_chars: Optional[int] = None,
+            debug: bool = False,
+        ) -> Dict[str, Any]:
+            return self.read(
+                message_id=message_id,
+                thread_id=thread_id,
+                include_html=include_html,
+                max_chars=max_chars,
+                debug=debug,
+            )
 
         @tool("send", description="Send email directly. content is body text, to is recipient email or comma-separated emails.")
         def send_tool(
@@ -176,7 +214,7 @@ class EmailAgent:
                 reply_to=reply_to,
             )
 
-        return [ask_tool, send_tool]
+        return [ask_tool, read_tool, send_tool]
 
     def _start_tool_call(self, tool_name: str, params: Dict[str, Any]) -> Dict[str, Any]:
         self._tool_call_seq += 1
@@ -358,6 +396,68 @@ class EmailAgent:
             self._end_round()
             raise
 
+    def read(
+        self,
+        *,
+        message_id: str = "",
+        thread_id: str = "",
+        include_html: bool = False,
+        max_chars: Optional[int] = None,
+        debug: bool = False,
+    ) -> Dict[str, Any]:
+        safe_message_id = str(message_id or "").strip()
+        safe_thread_id = str(thread_id or "").strip()
+        if not safe_message_id and not safe_thread_id:
+            raise ValueError("message_id or thread_id must be provided")
+
+        chars_limit = self._resolve_read_max_chars(max_chars)
+        self._begin_round()
+        try:
+            messages: List[Dict[str, Any]] = []
+            source = "message"
+
+            if safe_message_id:
+                raw_message = self._tool_get_message_full(message_id=safe_message_id)
+                messages.append(
+                    self._normalize_full_message(
+                        raw_message,
+                        include_html=bool(include_html),
+                        max_chars=chars_limit,
+                    )
+                )
+            else:
+                source = "thread"
+                raw_thread = self._tool_get_thread_full(
+                    thread_id=safe_thread_id,
+                    message_limit=self.execution_config["read_thread_message_limit"],
+                )
+                raw_messages = raw_thread.get("messages") if isinstance(raw_thread.get("messages"), list) else []
+                for raw_message in raw_messages[: self.execution_config["read_thread_message_limit"]]:
+                    if not isinstance(raw_message, dict):
+                        continue
+                    messages.append(
+                        self._normalize_full_message(
+                            raw_message,
+                            include_html=bool(include_html),
+                            max_chars=chars_limit,
+                        )
+                    )
+
+            result = {
+                "answer": self._build_read_answer(source=source, message_count=len(messages), messages=messages),
+                "insufficient": len(messages) == 0,
+                "source": source,
+                "message_count": len(messages),
+                "messages": messages,
+            }
+            trace = self._end_round()
+            if bool(debug):
+                result["trace"] = trace
+            return result
+        except Exception:
+            self._end_round()
+            raise
+
     def send(
         self,
         *,
@@ -435,6 +535,48 @@ class EmailAgent:
             raw = self.gmail_client.get_thread(thread_id=thread_id, fmt="metadata", metadata_headers=_HEADER_KEYS)
             normalized = self._normalize_thread(raw, message_limit=message_limit)
             self._finish_tool_call(entry, result={"thread_id": normalized.get("thread_id"), "message_count": len(normalized.get("messages", []))})
+            return normalized
+        except Exception as exc:
+            self._finish_tool_call(entry, error=exc)
+            raise
+
+    def _tool_get_message_full(self, *, message_id: str) -> Dict[str, Any]:
+        entry = self._start_tool_call("email_get_message_full", {"message_id": message_id})
+        try:
+            raw = self.gmail_client.get_message(message_id=message_id, fmt="full")
+            self._finish_tool_call(
+                entry,
+                result={
+                    "message_id": str(raw.get("id", "") or "").strip(),
+                    "thread_id": str(raw.get("threadId", "") or "").strip(),
+                },
+            )
+            return raw
+        except Exception as exc:
+            self._finish_tool_call(entry, error=exc)
+            raise
+
+    def _tool_get_thread_full(self, *, thread_id: str, message_limit: int) -> Dict[str, Any]:
+        entry = self._start_tool_call(
+            "email_get_thread_full",
+            {"thread_id": thread_id, "message_limit": message_limit},
+        )
+        try:
+            raw = self.gmail_client.get_thread(thread_id=thread_id, fmt="full")
+            raw_messages = raw.get("messages")
+            message_count = len(raw_messages) if isinstance(raw_messages, list) else 0
+            trimmed_messages = raw_messages[: max(1, int(message_limit))] if isinstance(raw_messages, list) else []
+            normalized = {
+                "id": str(raw.get("id", "") or "").strip(),
+                "messages": trimmed_messages,
+            }
+            self._finish_tool_call(
+                entry,
+                result={
+                    "thread_id": normalized.get("id"),
+                    "message_count": min(message_count, len(trimmed_messages)),
+                },
+            )
             return normalized
         except Exception as exc:
             self._finish_tool_call(entry, error=exc)
@@ -588,6 +730,125 @@ class EmailAgent:
             "date": header_map.get("Date", ""),
             "snippet": str(raw_message.get("snippet", "") or "").strip(),
         }
+
+    def _normalize_full_message(
+        self,
+        raw_message: Dict[str, Any],
+        *,
+        include_html: bool,
+        max_chars: int,
+    ) -> Dict[str, Any]:
+        base = self._normalize_message(raw_message)
+        payload = raw_message.get("payload") if isinstance(raw_message.get("payload"), dict) else {}
+        text_parts, html_parts, attachments = self._extract_payload_parts(payload)
+
+        body_text = "\n\n".join(part for part in text_parts if part).strip()
+        body_html = "\n\n".join(part for part in html_parts if part).strip()
+        if not body_text and body_html:
+            body_text = self._html_to_text(body_html)
+        if not body_text:
+            body_text = str(base.get("snippet", "") or "").strip()
+
+        normalized = dict(base)
+        normalized["body_text"] = self._truncate_by_chars(body_text, max_chars=max_chars)
+        normalized["attachments"] = attachments
+        if include_html:
+            normalized["body_html"] = self._truncate_by_chars(body_html, max_chars=max_chars)
+        return normalized
+
+    def _extract_payload_parts(self, payload: Dict[str, Any]) -> tuple[List[str], List[str], List[Dict[str, Any]]]:
+        text_parts: List[str] = []
+        html_parts: List[str] = []
+        attachments: List[Dict[str, Any]] = []
+
+        def visit(node: Any) -> None:
+            if not isinstance(node, dict):
+                return
+            mime_type = str(node.get("mimeType", "") or "").strip().lower()
+            filename = str(node.get("filename", "") or "").strip()
+            body = node.get("body") if isinstance(node.get("body"), dict) else {}
+            data = str(body.get("data", "") or "").strip()
+            attachment_id = str(body.get("attachmentId", "") or "").strip()
+            if filename:
+                size_value = body.get("size", 0)
+                try:
+                    size_bytes = max(0, int(size_value))
+                except Exception:
+                    size_bytes = 0
+                attachments.append(
+                    {
+                        "filename": filename,
+                        "mime_type": mime_type or "application/octet-stream",
+                        "size": size_bytes,
+                        "attachment_id": attachment_id,
+                    }
+                )
+
+            decoded = self._decode_base64_urlsafe(data) if data else ""
+            if decoded:
+                if mime_type == "text/plain":
+                    text_parts.append(decoded)
+                elif mime_type == "text/html":
+                    html_parts.append(decoded)
+
+            parts = node.get("parts")
+            if isinstance(parts, list):
+                for part in parts:
+                    visit(part)
+
+        visit(payload)
+        return text_parts, html_parts, attachments
+
+    @staticmethod
+    def _decode_base64_urlsafe(raw: str) -> str:
+        safe = str(raw or "").strip()
+        if not safe:
+            return ""
+        pad_len = (-len(safe)) % 4
+        if pad_len:
+            safe += "=" * pad_len
+        try:
+            decoded = base64.urlsafe_b64decode(safe.encode("ascii"))
+        except Exception:
+            return ""
+        return decoded.decode("utf-8", errors="replace").strip()
+
+    @staticmethod
+    def _html_to_text(raw_html: str) -> str:
+        safe = str(raw_html or "")
+        safe = re.sub(r"(?i)<br\s*/?>", "\n", safe)
+        safe = re.sub(r"(?i)</p\s*>", "\n", safe)
+        safe = re.sub(r"<[^>]+>", " ", safe)
+        safe = re.sub(r"\s+", " ", safe)
+        return safe.strip()
+
+    @staticmethod
+    def _truncate_by_chars(text: str, *, max_chars: int) -> str:
+        safe = str(text or "")
+        limit = max(1, int(max_chars))
+        if len(safe) <= limit:
+            return safe
+        return safe[: max(1, limit - 3)].rstrip() + "..."
+
+    def _resolve_read_max_chars(self, max_chars: Optional[int]) -> int:
+        if max_chars is not None:
+            try:
+                return max(200, int(max_chars))
+            except Exception:
+                return int(self.execution_config.get("read_max_chars", 6000))
+        return int(self.execution_config.get("read_max_chars", 6000))
+
+    @staticmethod
+    def _build_read_answer(*, source: str, message_count: int, messages: Sequence[Dict[str, Any]]) -> str:
+        if message_count <= 0:
+            return "未读取到邮件内容。"
+
+        first = messages[0] if messages else {}
+        subject = str(first.get("subject", "") or "").strip() or "(无主题)"
+        sender = str(first.get("from", "") or "").strip() or "未知发件人"
+        if source == "message":
+            return f"已读取 1 封邮件：{subject} | {sender}"
+        return f"已读取该会话下 {message_count} 封邮件；最新示例：{subject} | {sender}"
 
     @staticmethod
     def _normalize_recipients(value: Any) -> List[str]:

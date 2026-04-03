@@ -11,6 +11,7 @@ from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langgraph.errors import GraphRecursionError
 
+from m_agent.agents.email_agent import EmailAgent
 from m_agent.agents.memory_agent import MemoryAgent
 from m_agent.chat.capabilities import (
     ControllerCapabilityContext,
@@ -20,6 +21,7 @@ from m_agent.chat.capabilities import (
 from m_agent.config_paths import (
     CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH,
     DEFAULT_CHAT_AGENT_CONFIG_PATH,
+    DEFAULT_EMAIL_AGENT_CONFIG_PATH,
     resolve_config_path,
     resolve_related_config_path,
 )
@@ -57,6 +59,11 @@ class ChatControllerAgent:
             self.config.get("memory_agent_config_path")
         )
         self.memory_agent = MemoryAgent(config_path=self.memory_agent_config_path)
+        self.email_agent_config_path = self._resolve_email_agent_config_path(
+            self.config.get("email_agent_config_path")
+        )
+        self._email_agent: Optional[EmailAgent] = None
+        self._email_agent_lock = threading.Lock()
         self.default_thread_id = str(self.config.get("thread_id", "test-agent-1")).strip() or "test-agent-1"
         self.enabled_tool_names = self._load_enabled_tool_names()
         self.tool_defaults = self._load_tool_defaults()
@@ -83,6 +90,13 @@ class ChatControllerAgent:
 
     def _resolve_memory_agent_config_path(self, raw_path: Any) -> Path:
         return resolve_related_config_path(self.config_path, raw_path)
+
+    def _resolve_email_agent_config_path(self, raw_path: Any) -> Path:
+        return resolve_related_config_path(
+            self.config_path,
+            raw_path,
+            default_path=DEFAULT_EMAIL_AGENT_CONFIG_PATH,
+        )
 
     def _resolve_runtime_prompt_config_path(self, raw_path: Any) -> Path:
         return resolve_related_config_path(
@@ -336,6 +350,21 @@ class ChatControllerAgent:
                 tool_names.append(tool_name)
         return tool_names
 
+    def _build_email_agent(self) -> EmailAgent:
+        return EmailAgent(config_path=self.email_agent_config_path)
+
+    def _get_email_agent(self) -> EmailAgent:
+        cached = self._email_agent
+        if cached is not None:
+            return cached
+
+        with self._email_agent_lock:
+            cached = self._email_agent
+            if cached is None:
+                cached = self._build_email_agent()
+                self._email_agent = cached
+        return cached
+
     def _build_chat_controller(
         self,
         *,
@@ -350,6 +379,7 @@ class ChatControllerAgent:
             controller_state=controller_state,
             tool_defaults=self.tool_defaults,
             logger=logger,
+            email_agent_provider=self._get_email_agent,
         )
         tool_descriptions = {
             tool_name: self._get_controller_tool_description(tool_name)

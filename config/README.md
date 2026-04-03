@@ -43,8 +43,8 @@ Config map:
   Used by: ReaLTalk evaluation/manual QA
   Role: MemoryAgent config for ReaLTalk
 - `config/agents/email/gmail_email_agent.yaml`
-  Used by: `m_agent.agents.email_agent.EmailAgent`
-  Role: standalone Gmail EmailAgent config (not wired into ChatController yet)
+  Used by: `m_agent.agents.email_agent.EmailAgent` and `m_agent.agents.chat_controller_agent.ChatControllerAgent`
+  Role: Gmail EmailAgent config used by standalone email flows and top-level chat email tools
 - `config/memory/core/realtalk_eval_memory_core.yaml`
   Used by: `realtalk_eval_memory_agent.yaml`
   Role: MemoryCore backend for ReaLTalk

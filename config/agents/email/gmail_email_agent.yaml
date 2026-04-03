@@ -24,3 +24,6 @@ execution:
   allow_external_recipient: true
   allowed_recipient_domains: []
   block_on_risk_flags: false
+  max_ask_calls_per_turn: 5
+  read_max_chars: 6000
+  read_thread_message_limit: 6

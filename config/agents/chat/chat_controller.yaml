@@ -1,6 +1,7 @@
 # Used by: `python -m m_agent.api.chat_api`
 # Purpose: top-level ChatController config; points to the recall-layer MemoryAgent config below.
 memory_agent_config_path: "../memory/chat_memory_agent.yaml"
+email_agent_config_path: "../email/gmail_email_agent.yaml"
 runtime_prompt_config_path: "./runtime/chat_controller_runtime.yaml"
 prompt_language: "zh"
 thread_id: "test-agent-1"
@@ -13,7 +14,12 @@ enabled_tools:
   - "shallow_recall"
   - "deep_recall"
   - "get_current_time"
+  - "email_ask"
+  - "email_read"
+  - "email_send"
 
 tool_defaults:
   get_current_time:
     timezone_name: "Asia/Shanghai"
+  email_ask:
+    mail_scope: "unread"

@@ -37,7 +37,7 @@ def main() -> None:
     )
     parser.add_argument("--mail-scope", default="all", choices=["unread", "all"], help="Search scope for ask().")
     parser.add_argument("--debug", action="store_true", help="Include trace in ask() response.")
-    parser.add_argument("--send-to", default="", help="Recipient for send() test.")
+    parser.add_argument("--send-to", default="2539906978@qq.com", help="Recipient for send() test.")
     parser.add_argument("--send-subject", default="EmailAgent send test", help="Subject for send().")
     parser.add_argument("--send-content", default="This is a direct send test from EmailAgent.", help="Body text for send().")
     args = parser.parse_args()
@@ -51,10 +51,10 @@ def main() -> None:
     if missing:
         raise RuntimeError(f"Missing expected tools: {missing}")
 
-    ask_result = tool_map["ask"].invoke(
-        {"instruction": args.instruction, "mail_scope": args.mail_scope, "debug": bool(args.debug)}
-    )
-    _pretty("ask", ask_result)
+    # ask_result = tool_map["ask"].invoke(
+    #     {"instruction": args.instruction, "mail_scope": args.mail_scope, "debug": bool(args.debug)}
+    # )
+    # _pretty("ask", ask_result)
 
     if not args.send_to.strip():
         print("\nSkip send: provide --send-to to test sending.")

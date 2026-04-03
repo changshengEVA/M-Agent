@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 from .base import ControllerCapabilityContext, ControllerCapabilitySpec
+from .email_ops import EMAIL_ASK_CAPABILITY, EMAIL_READ_CAPABILITY, EMAIL_SEND_CAPABILITY
 from .recall import DEEP_RECALL_CAPABILITY, SHALLOW_RECALL_CAPABILITY
 from .time_context import GET_CURRENT_TIME_CAPABILITY
 
@@ -11,6 +12,9 @@ DEFAULT_CONTROLLER_CAPABILITY_ORDER = (
     SHALLOW_RECALL_CAPABILITY.name,
     DEEP_RECALL_CAPABILITY.name,
     GET_CURRENT_TIME_CAPABILITY.name,
+    EMAIL_ASK_CAPABILITY.name,
+    EMAIL_READ_CAPABILITY.name,
+    EMAIL_SEND_CAPABILITY.name,
 )
 
 _BUILTIN_CONTROLLER_CAPABILITIES: Dict[str, ControllerCapabilitySpec] = {
@@ -19,6 +23,9 @@ _BUILTIN_CONTROLLER_CAPABILITIES: Dict[str, ControllerCapabilitySpec] = {
         SHALLOW_RECALL_CAPABILITY,
         DEEP_RECALL_CAPABILITY,
         GET_CURRENT_TIME_CAPABILITY,
+        EMAIL_ASK_CAPABILITY,
+        EMAIL_READ_CAPABILITY,
+        EMAIL_SEND_CAPABILITY,
     )
 }
 

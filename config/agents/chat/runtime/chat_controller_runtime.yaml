@@ -75,3 +75,15 @@ chat_controller:
       description:
         zh: "用于当前时间、日期、星期几，以及今天、昨天、明天这类依赖当前时间的问题。"
         en: "Use for current date/time, weekday, and relative-day questions such as today, yesterday, and tomorrow."
+    email_ask:
+      description:
+        zh: "用于按指令和范围（unread/all）检索邮箱内容。"
+        en: "Use for searching email inbox content by instruction and scope (unread/all)."
+    email_read:
+      description:
+        zh: "用于读取指定邮件（message_id 或 thread_id）的完整正文内容。"
+        en: "Use for reading full content of a specific email by message_id or thread_id."
+    email_send:
+      description:
+        zh: "用于发送邮件，支持收件人、主题和正文。"
+        en: "Use for sending an email with recipients, subject, and body."
