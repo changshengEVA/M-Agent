@@ -12,6 +12,7 @@ venv/
 
 checkpoints/*
 data/memory/*
+data/schedules/
 data/graph_data/*
 model/*
 log/*
