@@ -149,3 +149,36 @@ def test_register_user_rewrites_email_agent_config_path_for_user_dir(tmp_path: P
         user_chat.get("email_agent_config_path"),
     )
     assert resolved_email_path.exists()
+
+
+def test_get_user_config_schema_exposes_field_metadata(tmp_path: Path) -> None:
+    base_chat_config_path = _build_base_configs(tmp_path)
+    users_root = tmp_path / "users"
+    users_db = users_root / "users.json"
+    store = UserAccountStore(
+        base_chat_config_path=base_chat_config_path,
+        users_root_dir=users_root,
+        users_db_path=users_db,
+    )
+
+    store.register_user(
+        username="carol",
+        password="password123",
+        role="basic",
+    )
+    schema = store.get_user_config_schema(username="carol")
+
+    assert schema["user"]["username"] == "carol"
+    assert schema["user"]["role"] == "basic"
+
+    chat_section = schema["sections"]["chat"]
+    assert set(chat_section["editable_fields"]) == {"chat_assistant_name", "chat_persona_prompt"}
+    assert "chat_assistant_name" in chat_section["fields"]
+    assert chat_section["fields"]["chat_assistant_name"]["type"] == "string"
+    assert chat_section["fields"]["chat_assistant_name"]["editable"] is True
+    assert chat_section["fields"]["persist_memory"]["editable"] is False
+    assert chat_section["fields"]["persist_memory"]["type"] == "boolean"
+
+    memory_agent_section = schema["sections"]["memory_agent"]
+    assert memory_agent_section["fields"]["model_name"]["editable"] is False
+    assert memory_agent_section["fields"]["model_name"]["present"] is False

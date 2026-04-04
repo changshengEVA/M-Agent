@@ -67,6 +67,102 @@ _ADVANCED_EDITABLE_FIELDS: Dict[str, set[str]] = {
     section: set(_BASIC_EDITABLE_FIELDS.get(section, set())) | set(_ADVANCED_EXTRA_FIELDS.get(section, set()))
     for section in ("chat", "memory_agent", "memory_core")
 }
+_CONFIG_FIELD_SCHEMAS: Dict[str, Dict[str, Dict[str, str]]] = {
+    "chat": {
+        "chat_assistant_name": {
+            "type": "string",
+            "description": "Assistant display name used in chat responses.",
+        },
+        "chat_persona_prompt": {
+            "type": "string",
+            "description": "System persona prompt for the chat assistant.",
+        },
+        "chat_user_name": {
+            "type": "string",
+            "description": "Display name of the current user in chat context.",
+        },
+        "persist_memory": {
+            "type": "boolean",
+            "description": "Whether captured memory can be persisted.",
+        },
+        "enabled_tools": {
+            "type": "array[string]",
+            "description": "Tool IDs enabled for the chat controller.",
+        },
+        "tool_defaults": {
+            "type": "object",
+            "description": "Default arguments keyed by tool ID.",
+        },
+        "thread_id": {
+            "type": "string",
+            "description": "Default thread id for chat runs.",
+        },
+    },
+    "memory_agent": {
+        "model_name": {
+            "type": "string",
+            "description": "Primary model name used by memory agent.",
+        },
+        "agent_temperature": {
+            "type": "number",
+            "description": "Sampling temperature for memory-agent generation.",
+        },
+        "recursion_limit": {
+            "type": "integer",
+            "description": "Maximum recursion depth for tool/agent planning.",
+        },
+        "retry_recursion_limit": {
+            "type": "integer",
+            "description": "Retry recursion limit when network-bound tool calls fail.",
+        },
+        "detail_search_defaults": {
+            "type": "object",
+            "description": "Default detail-search parameters used by memory tools.",
+        },
+        "network_retry_attempts": {
+            "type": "integer",
+            "description": "Retry attempts for network/API operations.",
+        },
+        "network_retry_backoff_seconds": {
+            "type": "number",
+            "description": "Initial backoff seconds for network retries.",
+        },
+        "network_retry_backoff_multiplier": {
+            "type": "number",
+            "description": "Exponential multiplier for retry backoff.",
+        },
+        "network_retry_max_backoff_seconds": {
+            "type": "number",
+            "description": "Maximum backoff cap for network retries.",
+        },
+    },
+    "memory_core": {
+        "workflow_id": {
+            "type": "string",
+            "description": "Workflow namespace used to isolate memory data.",
+        },
+        "memory_owner_name": {
+            "type": "string",
+            "description": "Owner name shown in memory summaries.",
+        },
+        "memory_similarity_threshold": {
+            "type": "number",
+            "description": "Similarity threshold for recall matching.",
+        },
+        "memory_top_k": {
+            "type": "integer",
+            "description": "Top-k candidate count for memory recall.",
+        },
+        "memory_use_threshold": {
+            "type": "boolean",
+            "description": "Whether similarity threshold filtering is enabled.",
+        },
+        "embed_provider": {
+            "type": "string",
+            "description": "Embedding provider used by memory core.",
+        },
+    },
+}
 
 
 def _now_utc() -> datetime:
@@ -585,6 +681,61 @@ class UserAccountStore:
                 return None
             return self._to_authenticated_user(username=normalized_username, record=record)
 
+    def get_user_config_schema(self, *, username: str) -> Dict[str, Any]:
+        normalized_username = _normalize_username(username)
+        with self._lock:
+            users_payload = self._load_users_payload()
+            record = self._user_record(users_payload, normalized_username)
+            if record is None:
+                raise UserAccessError("user not found", status_code=404)
+
+            user_role = _normalize_role(record.get("role", "basic"))
+            allowed_fields = _BASIC_EDITABLE_FIELDS if user_role == "basic" else _ADVANCED_EDITABLE_FIELDS
+            known_fields = _ADVANCED_EDITABLE_FIELDS
+
+            chat_path = self._resolve_user_config_path(record)
+            _, memory_agent_path, memory_core_path = self._resolve_config_chain(chat_path)
+            section_targets: Dict[str, Dict[str, Any]] = {
+                "chat": _load_yaml(chat_path),
+                "memory_agent": _load_yaml(memory_agent_path),
+                "memory_core": _load_yaml(memory_core_path),
+            }
+
+            sections_payload: Dict[str, Dict[str, Any]] = {}
+            for section in ("chat", "memory_agent", "memory_core"):
+                target = section_targets[section]
+                editable_keys = sorted(list(allowed_fields[section]))
+                section_fields: Dict[str, Dict[str, Any]] = {}
+                for key in sorted(list(known_fields[section])):
+                    schema_meta = _CONFIG_FIELD_SCHEMAS.get(section, {}).get(key, {})
+                    section_fields[key] = {
+                        "type": str(schema_meta.get("type", "any")),
+                        "description": str(schema_meta.get("description", "")).strip(),
+                        "editable": key in allowed_fields[section],
+                        "present": key in target,
+                        "current_value": deepcopy(target.get(key)),
+                    }
+
+                patch_example: Dict[str, Any] = {}
+                for key in editable_keys:
+                    if key in target:
+                        patch_example[key] = deepcopy(target.get(key))
+
+                sections_payload[section] = {
+                    "editable_fields": editable_keys,
+                    "fields": section_fields,
+                    "patch_example": patch_example,
+                }
+
+            return {
+                "user": {
+                    "username": normalized_username,
+                    "role": user_role,
+                    "config_path": str(chat_path),
+                },
+                "sections": sections_payload,
+            }
+
     def user_count(self) -> int:
         with self._lock:
             users_payload = self._load_users_payload()
@@ -839,6 +990,9 @@ class UserAccessService:
         )
         self.runtime_pool.invalidate(updated_user.username)
         return {"user": updated_user.to_payload()}
+
+    def get_user_config_schema(self, *, user: AuthenticatedUser) -> Dict[str, Any]:
+        return self.account_store.get_user_config_schema(username=user.username)
 
     def get_runtime(self, *, user: AuthenticatedUser) -> Any:
         return self.runtime_pool.get_runtime(user)

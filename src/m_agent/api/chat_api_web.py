@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 from copy import deepcopy
+from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 from fastapi import FastAPI, Request
@@ -21,6 +22,7 @@ from .chat_api_models import (
     UserLoginRequest,
     UserRegisterRequest,
 )
+from .chat_dialogue_store import get_dialogue_detail, list_dialogues
 from .chat_api_protocol import _should_protocol_log_path, protocol_logger
 from .chat_api_records import (
     ChatRunRecord,
@@ -200,6 +202,7 @@ def create_app(
                 "auth_me": "/v1/auth/me",
                 "auth_logout": "/v1/auth/logout",
                 "user_config_patch": "/v1/users/me/config",
+                "user_config_schema": "/v1/users/me/config/schema",
                 "create_run": "/v1/chat/runs",
                 "get_run": "/v1/chat/runs/{run_id}",
                 "stream_events": "/v1/chat/runs/{run_id}/events",
@@ -207,6 +210,8 @@ def create_app(
                 "thread_state": "/v1/chat/threads/{thread_id}/memory/state",
                 "thread_mode": "/v1/chat/threads/{thread_id}/memory/mode",
                 "thread_flush": "/v1/chat/threads/{thread_id}/memory/flush",
+                "list_dialogues": "/v1/chat/dialogues",
+                "get_dialogue": "/v1/chat/dialogues/{dialogue_id}",
                 "openapi": "/openapi.json",
                 "docs": "/docs",
             },
@@ -268,6 +273,19 @@ def create_app(
         user_access.logout(token)
         return JSONResponse(content={"success": True})
 
+    @app.get("/v1/users/me/config/schema")
+    def get_my_config_schema(request: Request) -> JSONResponse:
+        if user_access is None:
+            return _error_response(status_code=503, message="user auth service is disabled")
+        user, auth_error = _resolve_user_only(request)
+        if auth_error is not None:
+            return auth_error
+        try:
+            payload = user_access.get_user_config_schema(user=user)
+        except UserAccessError as exc:
+            return _error_response(status_code=exc.status_code, message=str(exc))
+        return JSONResponse(content=payload)
+
     @app.patch("/v1/users/me/config")
     def patch_my_config(request: Request, body: UserConfigPatchRequest) -> JSONResponse:
         if user_access is None:
@@ -317,6 +335,56 @@ def create_app(
             user_id=user.username if user is not None else None,
         )
         return JSONResponse(status_code=201, content=_json_response_payload(record))
+
+    @app.get("/v1/chat/dialogues")
+    def list_chat_dialogues(
+        request: Request,
+        thread_id: Optional[str] = None,
+        limit: int = 30,
+        offset: int = 0,
+    ) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        username = user.username if user is not None else None
+        try:
+            memory_persistence = getattr(active_runtime.agent, "memory_persistence", None)
+            dialogues_dir = Path(getattr(memory_persistence, "dialogues_dir"))
+        except Exception as exc:
+            return _error_response(status_code=500, message=f"failed to resolve dialogues directory: {exc}")
+
+        normalized_thread_id = str(thread_id or "").strip()
+        internal_thread_id = _runtime_thread_id(user, normalized_thread_id) if normalized_thread_id else None
+        payload = list_dialogues(
+            dialogues_dir=dialogues_dir,
+            username=username,
+            internal_thread_id=internal_thread_id,
+            limit=limit,
+            offset=offset,
+        )
+        return JSONResponse(content=payload)
+
+    @app.get("/v1/chat/dialogues/{dialogue_id}")
+    def get_chat_dialogue(dialogue_id: str, request: Request) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        username = user.username if user is not None else None
+        try:
+            memory_persistence = getattr(active_runtime.agent, "memory_persistence", None)
+            dialogues_dir = Path(getattr(memory_persistence, "dialogues_dir"))
+        except Exception as exc:
+            return _error_response(status_code=500, message=f"failed to resolve dialogues directory: {exc}")
+
+        try:
+            payload = get_dialogue_detail(
+                dialogues_dir=dialogues_dir,
+                dialogue_id=dialogue_id,
+                username=username,
+            )
+        except FileNotFoundError:
+            return _error_response(status_code=404, message=f"dialogue not found: {dialogue_id}")
+        return JSONResponse(content=payload)
 
     @app.get("/v1/chat/runs/{run_id}")
     def get_run(run_id: str, request: Request) -> JSONResponse:
