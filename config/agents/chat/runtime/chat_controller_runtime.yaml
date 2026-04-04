@@ -52,11 +52,15 @@ chat_controller:
       - 当前时间、日期、星期几、今天/昨天/明天等依赖“现在”的问题，优先使用 `get_current_time`。
       - 普通单目标记忆查询优先使用 `shallow_recall`。
       - 比较、计数、多跳、广义总结、时间链推理或 `shallow_recall` 不足时，使用 `deep_recall`。
+      - 当用户想要创建、修改或取消提醒/日程时，使用 `schedule_manage`。
+      - 当用户想查看已有日程、排期或提醒时，使用 `schedule_query`。
     en: |
       [Tool Policy]
       - Use `get_current_time` for questions about the current date/time, weekday, or relative day references such as today, yesterday, and tomorrow.
       - Use `shallow_recall` first for ordinary single-goal memory lookups.
       - Use `deep_recall` for comparison, counting, multi-hop, broad summary, temporal chaining, or when `shallow_recall` is insufficient.
+      - Use `schedule_manage` for creating, updating, or canceling reminders and schedules.
+      - Use `schedule_query` for checking existing schedules, reminders, and upcoming plans.
 
   no_tool_plan_summary:
     zh: "本轮对话未使用工具。"
@@ -75,6 +79,14 @@ chat_controller:
       description:
         zh: "用于当前时间、日期、星期几，以及今天、昨天、明天这类依赖当前时间的问题。"
         en: "Use for current date/time, weekday, and relative-day questions such as today, yesterday, and tomorrow."
+    schedule_manage:
+      description:
+        zh: "用于创建、修改或取消日程/提醒，由日程领域代理内部路由到对应动作。"
+        en: "Use for creating, updating, or canceling schedules and reminders through the schedule domain agent."
+    schedule_query:
+      description:
+        zh: "用于查看已有日程、即将到时的提醒，或按时间、关键词查询排期。"
+        en: "Use for listing and searching existing schedules, reminders, and upcoming plans."
     email_ask:
       description:
         zh: "用于按指令和范围（unread/all）检索邮箱内容。"

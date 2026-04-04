@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import json
 from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -16,6 +17,8 @@ from m_agent.paths import PROJECT_ROOT
 
 from .chat_api_models import (
     ChatRunCreateRequest,
+    ScheduleCreateRequest,
+    ScheduleUpdateRequest,
     ThreadMemoryFlushRequest,
     ThreadMemoryModeRequest,
     UserConfigPatchRequest,
@@ -41,6 +44,8 @@ from .chat_api_shared import (
     _with_public_thread_event,
     _with_public_thread_state,
 )
+from m_agent.schedule.store import ANONYMOUS_OWNER_ID
+from m_agent.utils.time_utils import resolve_timezone
 
 
 class PrivateNetworkAccessMiddleware:
@@ -91,6 +96,76 @@ def _encode_sse(event: Dict[str, Any]) -> bytes:
         f"event: {event_type}\n"
         f"data: {payload}\n\n"
     ).encode("utf-8")
+
+
+def _iso_utc(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _resolve_schedule_agent(active_runtime: ChatServiceRuntime) -> Any:
+    agent = getattr(active_runtime, "agent", None)
+    getter = getattr(agent, "get_schedule_agent", None)
+    if callable(getter):
+        return getter()
+    chat_controller = getattr(agent, "chat_controller", None)
+    getter = getattr(chat_controller, "get_schedule_agent", None)
+    if callable(getter):
+        return getter()
+    raise RuntimeError("schedule agent is unavailable for this runtime")
+
+
+def _normalize_schedule_due_at(raw_due_at: Any, timezone_name: Optional[str]) -> Dict[str, str]:
+    safe_due_at = str(raw_due_at or "").strip()
+    if not safe_due_at:
+        raise ValueError("due_at is required")
+    try:
+        parsed = datetime.fromisoformat(safe_due_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("due_at must be an ISO datetime string") from exc
+
+    tz, resolved_timezone_name, _ = resolve_timezone(timezone_name)
+    if parsed.tzinfo is None:
+        local_dt = parsed.replace(tzinfo=tz)
+    else:
+        local_dt = parsed.astimezone(tz)
+    return {
+        "timezone_name": resolved_timezone_name,
+        "due_at_utc": _iso_utc(local_dt),
+        "due_at_local": local_dt.isoformat(),
+        "due_display": local_dt.strftime("%Y-%m-%d %H:%M"),
+        "original_time_text": local_dt.strftime("%Y-%m-%d %H:%M"),
+    }
+
+
+def _parse_schedule_statuses(raw_statuses: Optional[str]) -> Optional[list[str]]:
+    safe = str(raw_statuses or "").strip()
+    if not safe:
+        return None
+    parsed = [part.strip() for part in safe.split(",") if part.strip()]
+    return parsed or None
+
+
+def _publicize_schedule_thread_id(*, owner_id: str, internal_thread_id: str) -> str:
+    safe_owner_id = str(owner_id or "").strip()
+    safe_internal_thread_id = str(internal_thread_id or "").strip()
+    if safe_owner_id and safe_internal_thread_id.startswith(f"{safe_owner_id}::"):
+        public_thread_id = safe_internal_thread_id[len(safe_owner_id) + 2 :].strip()
+        if public_thread_id:
+            return public_thread_id
+    if "::" in safe_internal_thread_id:
+        _, _, public_thread_id = safe_internal_thread_id.partition("::")
+        if public_thread_id.strip():
+            return public_thread_id.strip()
+    return safe_internal_thread_id
+
+
+def _public_schedule_item(payload: Dict[str, Any], *, owner_id: str) -> Dict[str, Any]:
+    result = deepcopy(payload)
+    result["thread_id"] = _publicize_schedule_thread_id(
+        owner_id=owner_id,
+        internal_thread_id=str(result.get("thread_id", "") or ""),
+    )
+    return result
 
 
 def create_app(
@@ -170,6 +245,28 @@ def create_app(
             return public_thread_id
         return _scoped_thread_id(user, public_thread_id)
 
+    def _schedule_owner_id(user: Optional[AuthenticatedUser]) -> str:
+        if user is None:
+            return ANONYMOUS_OWNER_ID
+        return str(user.username or "").strip() or ANONYMOUS_OWNER_ID
+
+    def _serialize_schedule_item(schedule_agent: Any, item: Any, *, owner_id: str) -> Dict[str, Any]:
+        return _public_schedule_item(
+            schedule_agent.service.serialize_item(item),
+            owner_id=owner_id,
+        )
+
+    def _load_thread_schedule_item(
+        *,
+        schedule_agent: Any,
+        owner_id: str,
+        schedule_id: str,
+    ) -> Any:
+        item = schedule_agent.store.find_by_id(schedule_id, owner_id=owner_id)
+        if item is None:
+            raise FileNotFoundError(f"schedule not found: {schedule_id}")
+        return item
+
     @app.middleware("http")
     async def protocol_logging_middleware(request: Request, call_next: Any):
         path = str(request.url.path or "")
@@ -210,6 +307,11 @@ def create_app(
                 "thread_state": "/v1/chat/threads/{thread_id}/memory/state",
                 "thread_mode": "/v1/chat/threads/{thread_id}/memory/mode",
                 "thread_flush": "/v1/chat/threads/{thread_id}/memory/flush",
+                "list_schedules": "/v1/chat/threads/{thread_id}/schedules",
+                "create_schedule": "/v1/chat/threads/{thread_id}/schedules",
+                "get_schedule": "/v1/chat/threads/{thread_id}/schedules/{schedule_id}",
+                "update_schedule": "/v1/chat/threads/{thread_id}/schedules/{schedule_id}",
+                "cancel_schedule": "/v1/chat/threads/{thread_id}/schedules/{schedule_id}",
                 "list_dialogues": "/v1/chat/dialogues",
                 "get_dialogue": "/v1/chat/dialogues/{dialogue_id}",
                 "openapi": "/openapi.json",
@@ -520,6 +622,254 @@ def create_app(
         if isinstance(result.get("thread_state"), dict):
             result["thread_state"] = _with_public_thread_state(result.get("thread_state"), public_thread_id=thread_id)
         return JSONResponse(content=result)
+
+    @app.get("/v1/chat/threads/{thread_id}/schedules")
+    def list_thread_schedules(
+        thread_id: str,
+        request: Request,
+        include_completed: bool = False,
+        limit: int = 20,
+        keyword: str = "",
+        statuses: Optional[str] = None,
+    ) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        owner_id = _schedule_owner_id(user)
+        try:
+            schedule_agent = _resolve_schedule_agent(active_runtime)
+            parsed_statuses = _parse_schedule_statuses(statuses)
+            items = schedule_agent.service.list_schedules(
+                owner_id=owner_id,
+                thread_id=None,
+                statuses=parsed_statuses,
+                keyword=str(keyword or "").strip(),
+                include_completed=bool(include_completed),
+                limit=max(1, min(100, int(limit or 20))),
+            )
+            serialized = [
+                _serialize_schedule_item(schedule_agent, item, owner_id=owner_id)
+                for item in items
+            ]
+        except ValueError as exc:
+            return _error_response(status_code=400, message=str(exc))
+        except Exception as exc:
+            return _error_response(status_code=500, message=f"failed to list schedules: {exc}")
+        return JSONResponse(
+            content={
+                "thread_id": thread_id,
+                "scope": "owner",
+                "owner_id": owner_id,
+                "count": len(serialized),
+                "include_completed": bool(include_completed),
+                "keyword": str(keyword or "").strip(),
+                "statuses": parsed_statuses or [],
+                "items": serialized,
+            }
+        )
+
+    @app.get("/v1/chat/threads/{thread_id}/schedules/{schedule_id}")
+    def get_thread_schedule(schedule_id: str, thread_id: str, request: Request) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        owner_id = _schedule_owner_id(user)
+        try:
+            schedule_agent = _resolve_schedule_agent(active_runtime)
+            item = _load_thread_schedule_item(
+                schedule_agent=schedule_agent,
+                owner_id=owner_id,
+                schedule_id=schedule_id,
+            )
+        except FileNotFoundError:
+            return _error_response(status_code=404, message=f"schedule not found: {schedule_id}")
+        except Exception as exc:
+            return _error_response(status_code=500, message=f"failed to get schedule: {exc}")
+        return JSONResponse(
+            content={
+                "thread_id": thread_id,
+                "item": _serialize_schedule_item(schedule_agent, item, owner_id=owner_id),
+            }
+        )
+
+    @app.post("/v1/chat/threads/{thread_id}/schedules")
+    def create_thread_schedule(thread_id: str, body: ScheduleCreateRequest, request: Request) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        owner_id = _schedule_owner_id(user)
+        title = str(body.title or "").strip()
+        prompt = str(body.prompt or "").strip()
+        source_text = str(body.source_text or "").strip()
+        effective_title = title or prompt or source_text
+        if not effective_title:
+            return _error_response(status_code=400, message="title or prompt is required")
+        try:
+            schedule_agent = _resolve_schedule_agent(active_runtime)
+            normalized_due = _normalize_schedule_due_at(body.due_at, body.timezone_name)
+            original_time_text = str(body.original_time_text or "").strip() or normalized_due["original_time_text"]
+            item = schedule_agent.service.create_schedule(
+                owner_id=owner_id,
+                thread_id=runtime_thread_id,
+                title=effective_title,
+                due_at_utc=normalized_due["due_at_utc"],
+                timezone_name=normalized_due["timezone_name"],
+                original_time_text=original_time_text,
+                action_type="chat_prompt",
+                action_payload={
+                    "prompt": prompt or effective_title,
+                    "source": "schedule_api",
+                    "hidden_context": {
+                        "trigger_kind": "time_due",
+                        "created_via": "chat_api_web",
+                    },
+                },
+                source_text=source_text or effective_title,
+                metadata=dict(body.metadata or {}),
+            )
+            serialized = _serialize_schedule_item(schedule_agent, item, owner_id=owner_id)
+            _THREAD_EVENTS.append_event(
+                runtime_thread_id,
+                "schedule_created",
+                {
+                    "thread_id": thread_id,
+                    "schedule": serialized,
+                },
+            )
+        except ValueError as exc:
+            return _error_response(status_code=400, message=str(exc))
+        except Exception as exc:
+            return _error_response(status_code=500, message=f"failed to create schedule: {exc}")
+        return JSONResponse(
+            status_code=201,
+            content={
+                "success": True,
+                "thread_id": thread_id,
+                "item": serialized,
+            },
+        )
+
+    @app.patch("/v1/chat/threads/{thread_id}/schedules/{schedule_id}")
+    def update_thread_schedule(
+        schedule_id: str,
+        thread_id: str,
+        body: ScheduleUpdateRequest,
+        request: Request,
+    ) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        owner_id = _schedule_owner_id(user)
+        try:
+            schedule_agent = _resolve_schedule_agent(active_runtime)
+            existing = _load_thread_schedule_item(
+                schedule_agent=schedule_agent,
+                owner_id=owner_id,
+                schedule_id=schedule_id,
+            )
+            due_at_utc = None
+            timezone_name = None
+            original_time_text = None
+            if body.due_at is not None:
+                effective_timezone_name = str(body.timezone_name or existing.timezone_name or "").strip() or None
+                normalized_due = _normalize_schedule_due_at(body.due_at, effective_timezone_name)
+                due_at_utc = normalized_due["due_at_utc"]
+                timezone_name = normalized_due["timezone_name"]
+                original_time_text = (
+                    str(body.original_time_text or "").strip() or normalized_due["original_time_text"]
+                )
+            elif body.timezone_name is not None:
+                _, timezone_name, _ = resolve_timezone(body.timezone_name)
+                if body.original_time_text is not None:
+                    original_time_text = str(body.original_time_text or "").strip()
+            elif body.original_time_text is not None:
+                original_time_text = str(body.original_time_text or "").strip()
+
+            action_payload_patch: Dict[str, Any] = {}
+            if body.prompt is not None:
+                safe_prompt = str(body.prompt or "").strip()
+                if not safe_prompt:
+                    return _error_response(status_code=400, message="prompt cannot be empty")
+                action_payload_patch["prompt"] = safe_prompt
+
+            metadata_patch = dict(body.metadata or {}) if body.metadata is not None else None
+            updated = schedule_agent.service.update_schedule(
+                owner_id=owner_id,
+                thread_id=None,
+                schedule_id=schedule_id,
+                title=str(body.title or "").strip() if body.title is not None else None,
+                due_at_utc=due_at_utc,
+                timezone_name=timezone_name,
+                original_time_text=original_time_text,
+                action_payload_patch=action_payload_patch or None,
+                metadata_patch=metadata_patch,
+                source_text=str(body.source_text or "").strip() if body.source_text is not None else None,
+            )
+            serialized = _serialize_schedule_item(schedule_agent, updated, owner_id=owner_id)
+            event_thread_id = str(getattr(updated, "thread_id", "") or "").strip() or _runtime_thread_id(user, thread_id)
+            _THREAD_EVENTS.append_event(
+                event_thread_id,
+                "schedule_updated",
+                {
+                    "thread_id": thread_id,
+                    "schedule": serialized,
+                },
+            )
+        except FileNotFoundError:
+            return _error_response(status_code=404, message=f"schedule not found: {schedule_id}")
+        except ValueError as exc:
+            return _error_response(status_code=400, message=str(exc))
+        except Exception as exc:
+            return _error_response(status_code=500, message=f"failed to update schedule: {exc}")
+        return JSONResponse(
+            content={
+                "success": True,
+                "thread_id": thread_id,
+                "item": serialized,
+            }
+        )
+
+    @app.delete("/v1/chat/threads/{thread_id}/schedules/{schedule_id}")
+    def cancel_thread_schedule(schedule_id: str, thread_id: str, request: Request) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        owner_id = _schedule_owner_id(user)
+        try:
+            schedule_agent = _resolve_schedule_agent(active_runtime)
+            _load_thread_schedule_item(
+                schedule_agent=schedule_agent,
+                owner_id=owner_id,
+                schedule_id=schedule_id,
+            )
+            canceled = schedule_agent.service.cancel_schedule(
+                owner_id=owner_id,
+                thread_id=None,
+                schedule_id=schedule_id,
+                source_text="schedule_api_cancel",
+            )
+            serialized = _serialize_schedule_item(schedule_agent, canceled, owner_id=owner_id)
+            event_thread_id = str(getattr(canceled, "thread_id", "") or "").strip() or _runtime_thread_id(user, thread_id)
+            _THREAD_EVENTS.append_event(
+                event_thread_id,
+                "schedule_canceled",
+                {
+                    "thread_id": thread_id,
+                    "schedule": serialized,
+                },
+            )
+        except FileNotFoundError:
+            return _error_response(status_code=404, message=f"schedule not found: {schedule_id}")
+        except Exception as exc:
+            return _error_response(status_code=500, message=f"failed to cancel schedule: {exc}")
+        return JSONResponse(
+            content={
+                "success": True,
+                "thread_id": thread_id,
+                "item": serialized,
+            }
+        )
 
     return app
 

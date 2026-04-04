@@ -405,6 +405,9 @@ class SimpleMemoryChatAgent:
             prompt_language="en",
         )
 
+    def get_schedule_agent(self):
+        return self.chat_controller.get_schedule_agent()
+
     def chat(
         self,
         message: str,

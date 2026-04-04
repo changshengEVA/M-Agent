@@ -1,0 +1,10 @@
+# Used by: `m_agent.agents.schedule_agent.ScheduleAgent`
+# Purpose: local schedule manager backed by JSON files.
+provider: "local_schedule"
+default_timezone_name: "Asia/Shanghai"
+storage_dir: "../../../data/schedules"
+
+execution:
+  query_limit_default: 10
+  query_limit_max: 50
+  target_candidate_limit: 5

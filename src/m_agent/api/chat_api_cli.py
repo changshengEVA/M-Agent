@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import logging
+import sys
 from typing import Optional
 
 import uvicorn
@@ -15,6 +17,18 @@ from .chat_api_shared import _resolve_config_path, _resolve_optional_path
 from .chat_api_web import create_app
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_windows_event_loop_policy() -> None:
+    if sys.platform != "win32":
+        return
+    policy_factory = getattr(asyncio, "WindowsSelectorEventLoopPolicy", None)
+    if policy_factory is None:
+        return
+    try:
+        asyncio.set_event_loop_policy(policy_factory())
+    except Exception:
+        logger.exception("Failed to set WindowsSelectorEventLoopPolicy")
 
 
 def _configure_logging(debug: bool = False) -> None:
@@ -84,6 +98,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    _configure_windows_event_loop_policy()
     _configure_logging(debug=bool(args.debug))
     config_path = _resolve_config_path(str(args.config or "").strip() or str(DEFAULT_CHAT_CONFIG_PATH))
     service_runtime = ChatServiceRuntime(

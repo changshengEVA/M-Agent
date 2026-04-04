@@ -1,0 +1,35 @@
+{
+  "owner_id": "changshengeva",
+  "thread_id": "changshengeva::thread-eczsqq",
+  "item_count": 1,
+  "items": [
+    {
+      "schedule_id": "sch_a87b2470a049",
+      "owner_id": "changshengeva",
+      "thread_id": "changshengeva::thread-eczsqq",
+      "title": "添加一条日程： 有一个会议",
+      "status": "canceled",
+      "due_at_utc": "2026-04-06T06:00:00Z",
+      "timezone_name": "Asia/Shanghai",
+      "original_time_text": "4月6日 下午2点",
+      "action_type": "chat_prompt",
+      "action_payload": {
+        "prompt": "添加一条日程： 有一个会议",
+        "source": "schedule",
+        "hidden_context": {
+          "created_from_user_text": "添加一条日程：4月7日下午2点有一个会议",
+          "updated_from_user_text": "将后天（4月7日）下午2点的会议改到明天（4月6日）下午2点",
+          "trigger_kind": "time_due"
+        }
+      },
+      "created_at": "2026-04-04T20:31:29.934026Z",
+      "updated_at": "2026-04-04T20:45:01.816819Z",
+      "source_text": "删除明天下午2点的会议",
+      "metadata": {
+        "assumptions": {},
+        "updated_from": "将后天（4月7日）下午2点的会议改到明天（4月6日）下午2点",
+        "canceled_at": "2026-04-04T20:45:01.816819Z"
+      }
+    }
+  ]
+}

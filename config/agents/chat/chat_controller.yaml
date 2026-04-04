@@ -2,6 +2,7 @@
 # Purpose: top-level ChatController config; points to the recall-layer MemoryAgent config below.
 memory_agent_config_path: "../memory/chat_memory_agent.yaml"
 email_agent_config_path: "../email/gmail_email_agent.yaml"
+schedule_agent_config_path: "../schedule/schedule_agent.yaml"
 runtime_prompt_config_path: "./runtime/chat_controller_runtime.yaml"
 prompt_language: "zh"
 thread_id: "test-agent-1"
@@ -14,6 +15,8 @@ enabled_tools:
   - "shallow_recall"
   - "deep_recall"
   - "get_current_time"
+  - "schedule_manage"
+  - "schedule_query"
   - "email_ask"
   - "email_read"
   - "email_send"
@@ -21,5 +24,10 @@ enabled_tools:
 tool_defaults:
   get_current_time:
     timezone_name: "Asia/Shanghai"
+  schedule_manage:
+    timezone_name: "Asia/Shanghai"
+  schedule_query:
+    timezone_name: "Asia/Shanghai"
+    limit: 10
   email_ask:
     mail_scope: "unread"

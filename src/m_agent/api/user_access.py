@@ -20,6 +20,7 @@ import yaml
 from m_agent.config_paths import (
     CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH,
     DEFAULT_EMAIL_AGENT_CONFIG_PATH,
+    DEFAULT_SCHEDULE_AGENT_CONFIG_PATH,
     resolve_related_config_path,
 )
 from m_agent.paths import PROJECT_ROOT
@@ -449,6 +450,26 @@ class UserAccountStore:
                 user_chat_config["email_agent_config_path"] = normalized_email_path
                 changed = True
 
+        user_schedule_raw = str(user_chat_config.get("schedule_agent_config_path", "") or "").strip()
+        user_schedule_path = resolve_related_config_path(
+            chat_config_path,
+            user_schedule_raw,
+            default_path=DEFAULT_SCHEDULE_AGENT_CONFIG_PATH,
+        )
+        if (not user_schedule_raw) or (not user_schedule_path.exists()):
+            base_schedule_path = resolve_related_config_path(
+                self.base_chat_config_path,
+                base_chat_config.get("schedule_agent_config_path"),
+                default_path=DEFAULT_SCHEDULE_AGENT_CONFIG_PATH,
+            )
+            normalized_schedule_path = self._relative_or_absolute_path(
+                base_schedule_path,
+                start_dir=chat_config_path.parent,
+            )
+            if user_chat_config.get("schedule_agent_config_path") != normalized_schedule_path:
+                user_chat_config["schedule_agent_config_path"] = normalized_schedule_path
+                changed = True
+
         return changed
 
     def _sync_runtime_tool_settings(
@@ -559,11 +580,20 @@ class UserAccountStore:
             chat_config.get("email_agent_config_path"),
             default_path=DEFAULT_EMAIL_AGENT_CONFIG_PATH,
         )
+        schedule_agent_template_path = resolve_related_config_path(
+            chat_template_path,
+            chat_config.get("schedule_agent_config_path"),
+            default_path=DEFAULT_SCHEDULE_AGENT_CONFIG_PATH,
+        )
 
         chat_config["memory_agent_config_path"] = f"./{_USER_MEMORY_AGENT_CONFIG_NAME}"
         chat_config["runtime_prompt_config_path"] = f"./runtime/{_USER_CHAT_RUNTIME_NAME}"
         chat_config["email_agent_config_path"] = self._relative_or_absolute_path(
             email_agent_template_path,
+            start_dir=user_dir,
+        )
+        chat_config["schedule_agent_config_path"] = self._relative_or_absolute_path(
+            schedule_agent_template_path,
             start_dir=user_dir,
         )
         chat_config["thread_id"] = f"{_safe_slug(username, fallback='user')}-thread"
