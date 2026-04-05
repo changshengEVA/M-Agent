@@ -23,7 +23,9 @@ M-Agent 通过引入 **Retrieval Target Decomposition** 和 **Multi-Dimensional 
 当前结构中，正式源码统一放在 `src/m_agent/`，CLI 入口集中在 `scripts/`，测试集中在 `tests/`，示例放在 `examples/`，实验性目录放在 `experiments/`。
 
 如果要看完整目录设计说明，可以直接打开 `docs/project-structure.md`。
----
+
+部署相关可参考：`docs/deployment-server-zh.md`
+--- 
 ### **Quick_start**
 
 以下步骤只覆盖从 0 到运行 `run_eval_locomo.py`。
