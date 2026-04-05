@@ -18,6 +18,12 @@ M-Agent 通过引入 **Retrieval Target Decomposition** 和 **Multi-Dimensional 
 
 
 ---
+### **Project Layout**
+
+当前结构中，正式源码统一放在 `src/m_agent/`，CLI 入口集中在 `scripts/`，测试集中在 `tests/`，示例放在 `examples/`，实验性目录放在 `experiments/`。
+
+如果要看完整目录设计说明，可以直接打开 `docs/project-structure.md`。
+---
 ### **Quick_start**
 
 以下步骤只覆盖从 0 到运行 `run_eval_locomo.py`。
@@ -44,16 +50,16 @@ pip install -r requirements.txt
 3. 在项目根目录创建 `.env`，并填写下面字段
 
 ```dotenv
-# MemoryCore LLM: load_model/OpenAIcall.py
+# MemoryCore LLM: src/m_agent/load_model/OpenAIcall.py
 # Fill one of API_SECRET_KEY or OPENAI_API_KEY
 API_SECRET_KEY=YOUR_OPENAI_COMPATIBLE_KEY
 OPENAI_API_KEY=
 BASE_URL=https://api.openai.com/v1
 
-# Agent model key: model_name=deepseek-chat (config/prompt/agent_sys.yaml)
+# Agent model key: model_name=deepseek-chat (config/agents/memory/locomo_eval_memory_agent.yaml)
 DEEPSEEK_API_KEY=YOUR_DEEPSEEK_KEY
 
-# Embedding key: embed_provider（在 config/memory_core_config/*.yaml 中配置）
+# Embedding key: embed_provider（在 config/memory/core/*.yaml 中配置）
 ALIBABA_API_KEY=YOUR_ALIBABA_KEY
 ALIBABA_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ALIBABA_EMBED_MODEL=text-embedding-v4
@@ -66,12 +72,12 @@ LLM_PROVIDER=deepseek
 
 4. 先做 LoCoMo 预处理（`memory_pre`，现在仅生成 dialogues + episodes）
 
-> `run_eval_locomo.py` 默认读取 `config/prompt/agent_sys.yaml`。  
-> 该文件里的 `memory_core_config_path` 会指向 `config/memory_core_config/agent_sys_memory.yaml`，  
+> `run_eval_locomo.py` 默认读取 `config/agents/memory/locomo_eval_memory_agent.yaml`。  
+> 该文件里的 `memory_core_config_path` 会指向 `config/memory/core/locomo_eval_memory_core.yaml`，  
 > 其中配置了 `workflow_id`。请确保预处理 `--id` 与该 `workflow_id` 保持一致。
 
 ```bash
-python pipeline/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo
+python scripts/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo
 ```
 
 预处理完成后会在 `data/memory/testlocomo/` 生成（或更新）：
@@ -84,10 +90,10 @@ python pipeline/memory_pre.py --id testlocomo --data-source data/locomo/data/loc
 
 ```bash
 # Quick check: sampled run
-python run_eval_locomo.py --test-id quickstart --sample-fraction 0.1
+python scripts/run_eval_locomo.py --test-id quickstart --sample-fraction 0.1
 
 # Full run: 10/10 samples
-# python run_eval_locomo.py --test-id quickstart-full --sample-fraction 1.0
+# python scripts/run_eval_locomo.py --test-id quickstart-full --sample-fraction 1.0
 ```
 
 6. 查看输出结果

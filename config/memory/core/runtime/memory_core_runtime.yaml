@@ -1,0 +1,289 @@
+extract_fact_entities:
+  fact_entity_prompt:
+    zh: |
+      你是信息抽取系统。
+
+      给定一句话，请抽取：
+      1. 主实体（被描述其状态/动作的主语）
+      2. 其他被提到的实体（如果有）
+
+      规则：
+      - 主实体应是语法主语。
+      - 返回规范名称，不要用代词。
+      - 如果是所属结构（例如 “Audrey's dogs”），主实体应为 Audrey。
+
+      输出 JSON：
+      {
+        "main_entity": "...",
+        "other_entities": ["...", "..."]
+      }
+
+      只返回 JSON。
+
+      句子：
+      <sentence>
+    en: |
+      You are an information extraction system.
+
+      Given a sentence, extract:
+      1. The main entity (the subject whose state/action is described)
+      2. Other mentioned entities (if any)
+
+      Rules:
+      - The main entity is the grammatical subject.
+      - Return a canonical name (no pronouns).
+      - If possessive (e.g., "Audrey's dogs"), main entity is Audrey.
+
+      Output JSON:
+      {
+        "main_entity": "...",
+        "other_entities": ["...", "..."]
+      }
+
+      Return JSON only.
+
+      Sentence:
+      <sentence>
+
+entity_search:
+  llm_candidate_judge_prompt:
+    zh: |
+      你是实体指代判定器。
+      给定用户查询和召回出的实体候选，请判断该查询是否真正命中某个已有实体。
+      要严格，避免过度匹配。
+
+      QUERY:
+      <query>
+
+      CANDIDATES:
+      <candidate_lines>
+
+      只输出 JSON：
+      {"decision":"HIT"|"MISS","entity_id":"<candidate id or empty>","match_rank":<int or null>,"confidence":<0~1>,"reason":"..."}
+
+      规则：
+      - 只有当查询明确指向一个候选时才返回 HIT。
+      - `entity_id` 必须来自候选列表。
+      - 如果不确定，返回 MISS。
+    en: |
+      You are an entity-grounding judge.
+      Given a user query and recalled entity candidates, decide whether the query truly hits an existing entity.
+      Be strict and avoid over-matching.
+
+      QUERY:
+      <query>
+
+      CANDIDATES:
+      <candidate_lines>
+
+      Output JSON only:
+      {"decision":"HIT"|"MISS","entity_id":"<candidate id or empty>","match_rank":<int or null>,"confidence":<0~1>,"reason":"..."}
+
+      Rules:
+      - HIT only when the query clearly refers to one candidate.
+      - `entity_id` must come from the candidate list.
+      - If uncertain, return MISS.
+
+entity_profile_merge:
+  attribute_dedup_prompt:
+    zh: |
+      你是实体属性去重的严格判定器。
+      判断 CANDIDATE 是否与 EXISTING 中某一项表达了相同的 FIELD 语义。
+      即使内容不同，只要字段语义相同，也应该合并。
+
+      CANDIDATE:
+      field=<candidate_field>, match_field=<candidate_match_field>, content=<candidate_content>, text=<candidate_text>
+
+      EXISTING:
+      <candidate_lines>
+
+      只输出 JSON，结构如下：
+      {"decision":"SAME"|"NEW","match_idx":<int or null>}
+
+      规则：
+      - 只要字段语义相同（例如 like / likes / preference），即使内容不同也应判为 SAME。
+      - 如果不确定，返回 NEW。
+    en: |
+      You are a strict deduplication judge for entity attributes.
+      Decide if CANDIDATE expresses the same FIELD semantic as one of EXISTING entries.
+      Content can differ and should be merged when the field semantic is the same.
+
+      CANDIDATE:
+      field=<candidate_field>, match_field=<candidate_match_field>, content=<candidate_content>, text=<candidate_text>
+
+      EXISTING:
+      <candidate_lines>
+
+      Output JSON only with this schema:
+      {"decision":"SAME"|"NEW","match_idx":<int or null>}
+
+      Rules:
+      - SAME when field semantics are the same (e.g. like / likes / preference), even if content differs.
+      - If uncertain, return NEW.
+  event_dedup_prompt:
+    zh: |
+      你是实体事件去重的严格判定器。
+      判断 CANDIDATE 事件是否与 EXISTING 中某一项属于同一个事件语义。
+      时间信息本身不应该强行导致 NEW，只要事件本体相同即可视为 SAME。
+
+      CANDIDATE:
+      <candidate_text>
+
+      EXISTING:
+      <candidate_lines>
+
+      只输出 JSON，结构如下：
+      {"decision":"SAME"|"NEW","match_idx":<int or null>}
+
+      规则：
+      - 只要核心事件语义匹配，就返回 SAME。
+      - 如果不确定，返回 NEW。
+    en: |
+      You are a strict deduplication judge for entity events.
+      Decide if the CANDIDATE event is the same event type as one of EXISTING entries.
+      Time information should NOT force NEW when the event itself is the same.
+
+      CANDIDATE:
+      <candidate_text>
+
+      EXISTING:
+      <candidate_lines>
+
+      Output JSON only with this schema:
+      {"decision":"SAME"|"NEW","match_idx":<int or null>}
+
+      Rules:
+      - SAME when core event semantics match.
+      - If uncertain, return NEW.
+
+entity_profile_service:
+  attribute_extract_prompt:
+    zh: |
+      你是信息抽取系统。
+      请从一个 atomic fact 中抽取稳定的实体属性。
+      如果没有稳定属性，返回空列表。
+
+      Entity UID: <entity_uid>
+      Entity Name: <main_entity>
+      Atomic Fact: <atomic_fact>
+
+      只输出 JSON：
+      {"attributes":[{"field":"like","content":["apple","meat"]}]}
+
+      规则：
+      - 只返回一个 JSON 对象，不要返回数组。
+      - `field` 尽量简洁，尽可能使用 lower-case snake_case 风格。
+      - `content` 必须是字符串列表。
+      - 只保留稳定的偏好、特征或能力。
+    en: |
+      You are an information extraction system.
+      Extract stable profile attributes from one atomic fact.
+      If there is no stable attribute, return an empty list.
+
+      Entity UID: <entity_uid>
+      Entity Name: <main_entity>
+      Atomic Fact: <atomic_fact>
+
+      Output JSON only:
+      {"attributes":[{"field":"like","content":["apple","meat"]}]}
+
+      Rules:
+      - Return ONLY one JSON object. Do NOT return an array.
+      - `field` should be concise, lower-case, snake_case style when possible.
+      - `content` must be a list of strings.
+      - Keep only stable preferences / traits / abilities.
+  event_extract_prompt:
+    zh: |
+      你是信息抽取系统。
+      请从一个 atomic fact 中抽取时间线事件。
+      如果没有有效事件，返回空列表。
+
+      Entity UID: <entity_uid>
+      Entity Name: <main_entity>
+      Atomic Fact: <atomic_fact>
+      Known source time: start_time=<known_start>, end_time=<known_end>
+
+      只输出 JSON：
+      {"events":[{"event":"walk in the park","actual_time":[{"start_time":"...","end_time":"..."}],"abstract_time":["everyday"]}]}
+
+      规则：
+      - 只返回一个 JSON 对象，不要返回数组。
+      - `event` 必须简洁而具体。
+      - `actual_time` 在没有信息时可以是 []。
+      - `abstract_time` 在没有信息时可以是 []。
+    en: |
+      You are an information extraction system.
+      Extract timeline events from one atomic fact.
+      If there is no valid event, return an empty list.
+
+      Entity UID: <entity_uid>
+      Entity Name: <main_entity>
+      Atomic Fact: <atomic_fact>
+      Known source time: start_time=<known_start>, end_time=<known_end>
+
+      Output JSON only:
+      {"events":[{"event":"walk in the park","actual_time":[{"start_time":"...","end_time":"..."}],"abstract_time":["everyday"]}]}
+
+      Rules:
+      - Return ONLY one JSON object. Do NOT return an array.
+      - `event` must be concise and concrete.
+      - `actual_time` can be [] when not available.
+      - `abstract_time` can be [] when not available.
+  summary_prompt:
+    zh: |
+      你是实体档案总结器。
+      请用 2 到 4 句话写出简洁的档案摘要。
+      重点关注稳定特征和关键的重复性事件。
+
+      Entity: <entity_id>
+      Attributes:
+      <attr_lines>
+
+      Events:
+      <event_lines>
+
+      只返回纯文本。
+    en: |
+      You are an entity profile summarizer.
+      Write a concise profile summary in 2-4 sentences.
+      Focus on stable traits and key recurring events.
+
+      Entity: <entity_id>
+      Attributes:
+      <attr_lines>
+
+      Events:
+      <event_lines>
+
+      Return plain text only.
+
+entity_resolution:
+  alias_then_embedding_llm_judge_prompt:
+    zh: |
+      请判断以下实体是否指向同一个现实对象。
+
+      待判定实体：
+      <source_entity_id>
+
+      候选实体列表（已按相似度排序）：
+      <candidate_text>
+
+      请根据实体名称语义判断，待判定实体是否与某个候选实体指向同一个现实对象。
+      如果是，请只返回对应的实体 ID。
+      如果都不是，请只返回 `NEW_ENTITY`。
+
+      除实体 ID 或 `NEW_ENTITY` 外，不要输出任何其他内容。
+    en: |
+      Decide whether the following source entity refers to the same real-world object as one of the candidate entities.
+
+      Source entity:
+      <source_entity_id>
+
+      Candidate entity list (already sorted by similarity):
+      <candidate_text>
+
+      Judge by semantic meaning of the entity names.
+      If the source matches one candidate, return only the matched entity ID.
+      If none match, return only `NEW_ENTITY`.
+
+      Do not output anything except a candidate entity ID or `NEW_ENTITY`.

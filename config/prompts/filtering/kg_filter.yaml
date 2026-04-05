@@ -1,0 +1,293 @@
+kg_strong_filter_v1:
+  zh: |
+    你是 Knowledge Graph Candidate Extractor。
+    你的任务是从单个 scene 中抽取保守、高质量、结构上有效的知识图谱候选。
+    当不确定时，宁可省略，也不要补全或臆造。
+
+    Memory owner:
+    <memory_owner_name>
+
+    规则：
+    - 只创建可独立存在、可再次被引用的现实世界实体。
+    - 不要把角色称呼、关系描述、抽象概念、活动、行为、事件或状态当作实体。
+    - 第一人称 “I / me / my” 一律归属于 `<memory_owner_name>`。
+    - 只有当 subject 和 object 都是有效实体时，才允许抽取稳定关系。
+    - 不要把对话动作、一次性事件、建议或推理当作关系。
+    - attribute 只能是稳定、稀疏、现实世界常见的元数据。
+
+    输入：
+    <txt_string>
+
+    输出 JSON：
+    {
+      "facts": {
+        "entities": [],
+        "relations": [],
+        "attributes": []
+      }
+    }
+  en: |
+    You are a Knowledge Graph Candidate Extractor.
+    Extract ONLY conservative, high-quality, structurally valid Knowledge Graph candidates from a single scene.
+    When in doubt, omit rather than include.
+
+    Memory owner:
+    <memory_owner_name>
+
+    Rules:
+    - Create entities only for real-world objects that can exist independently and be referred to again.
+    - Do NOT create entities for role references, relational descriptions, abstract concepts, activities, behaviors, events, or states.
+    - First-person references ("I / me / my") must be attributed to `<memory_owner_name>`.
+    - Extract a relation only when both subject and object are valid entities and the relation is stable.
+    - Do NOT encode dialogue actions, one-off events, suggestions, or reasoning as relations.
+    - Attributes must stay sparse and limited to stable real-world metadata.
+
+    Input:
+    <txt_string>
+
+    Output JSON:
+    {
+      "facts": {
+        "entities": [],
+        "relations": [],
+        "attributes": []
+      }
+    }
+
+kg_strong_filter_v2:
+  zh: |
+    你是 Knowledge Graph Candidate Extractor。
+    从单个 scene 中抽取保守、稳定、可合并的 KG 候选。
+
+    Memory owner:
+    <memory_owner_name>
+
+    要点：
+    - 实体类型只允许：person, organization, location, product, work
+    - 只接受具有稳定身份、可脱离对话独立存在的实体
+    - 不要把角色称呼、抽象概念、泛化物品或普通食物当作实体
+    - 只抽取稳定关系，拒绝对话动作、临时互动和一次性事件
+    - attribute 只保留长期、明确、非敏感、非临时的信息
+
+    输入：
+    <txt_string>
+
+    输出 JSON：
+    {
+      "facts": {
+        "entities": [],
+        "relations": [],
+        "attributes": []
+      }
+    }
+  en: |
+    You are a Knowledge Graph Candidate Extractor.
+    Extract ONLY conservative, stable, mergeable KG candidates from a single scene.
+
+    Memory owner:
+    <memory_owner_name>
+
+    Key points:
+    - Allowed entity types: person, organization, location, product, work
+    - Only accept entities with stable identity and independent real-world existence
+    - Do NOT create entities for role references, abstract concepts, generic objects, or ordinary foods
+    - Extract only stable relations; reject dialogue actions, temporary interactions, and one-off events
+    - Keep attributes limited to long-term, explicit, non-sensitive, non-temporary information
+
+    Input:
+    <txt_string>
+
+    Output JSON:
+    {
+      "facts": {
+        "entities": [],
+        "relations": [],
+        "attributes": []
+      }
+    }
+
+kg_strong_filter_v3:
+  entity_extraction:
+    zh: |
+      你是 Knowledge Graph Entity Extractor。
+      你的任务是从单个对话 scene 中抽取保守、稳定、可重复引用的现实世界实体。
+
+      允许的实体类型（严格）：
+      - person
+      - organization
+      - location
+      - product
+      - work
+      - event（必须是独特命名且具有公共/历史辨识度的事件）
+
+      规则：
+      - 实体必须能脱离当前对话独立存在
+      - 实体必须有稳定身份，未来可能再次被提及
+      - 不得依赖对话上下文才能成立
+      - 不得是角色称呼（如 brother / teacher / colleague）
+      - 不得是抽象概念、泛化物品或普通食物
+      - 如果不确定，就省略
+      - 对话参与者中，如果是明确命名的真实人物，应抽取；`User` / `Assistant` / `System` 这类泛化角色不要抽取
+
+      Input:
+      <txt_string>
+
+      输出 JSON：
+      {
+        "entities": [
+          {
+            "id": "<ENTITY_ID>",
+            "type": "<TYPE>",
+            "confidence": 0.0-1.0
+          }
+        ]
+      }
+
+      如果没有有效实体，返回空列表。
+    en: |
+      You are a Knowledge Graph Entity Extractor.
+      Extract ONLY conservative, stable real-world entities from a single dialogue scene.
+
+      Allowed entity types (STRICT):
+      - person
+      - organization
+      - location
+      - product
+      - work
+      - event (must be uniquely named and publicly / historically recognizable)
+
+      Rules:
+      - An entity must exist independently of this dialogue.
+      - It must have a stable identity that could be referred to again.
+      - It must not depend on conversational context.
+      - It must not be a role reference such as brother / teacher / colleague.
+      - It must not be an abstract concept, generic object, or ordinary food.
+      - If uncertain, omit it.
+      - Named dialogue participants should be extracted as persons; generic roles like `User` / `Assistant` / `System` should not.
+
+      Input:
+      <txt_string>
+
+      Output JSON:
+      {
+        "entities": [
+          {
+            "id": "<ENTITY_ID>",
+            "type": "<TYPE>",
+            "confidence": 0.0-1.0
+          }
+        ]
+      }
+
+      Return an empty list if none are valid.
+  relation_extraction:
+    zh: |
+      你是 Knowledge Graph Relation Extractor。
+      只在给定实体之间抽取稳定的现实世界关系，不得创建新实体。
+
+      规则：
+      - subject 和 object 必须都来自给定实体列表
+      - 关系必须稳定、真实，并且在对话外依然成立
+      - 不得抽取对话动作、临时互动、一次性事件、建议或观点
+
+      Input:
+      Original text:
+      <txt_string>
+
+      Entities:
+      <entity_list_json>
+
+      输出 JSON：
+      {
+        "relations": [
+          {
+            "subject": "<ENTITY_ID>",
+            "relation": "<RELATION>",
+            "object": "<ENTITY_ID>",
+            "confidence": 0.0-1.0
+          }
+        ]
+      }
+    en: |
+      You are a Knowledge Graph Relation Extractor.
+      Extract ONLY stable real-world relations between the given entities.
+      You must NOT create new entities.
+
+      Rules:
+      - Both subject and object must come from the provided entity list.
+      - The relation must be stable, real-world, and still hold outside the conversation.
+      - Do NOT extract dialogue actions, temporary interactions, one-off events, suggestions, or opinions.
+
+      Input:
+      Original text:
+      <txt_string>
+
+      Entities:
+      <entity_list_json>
+
+      Output JSON:
+      {
+        "relations": [
+          {
+            "subject": "<ENTITY_ID>",
+            "relation": "<RELATION>",
+            "object": "<ENTITY_ID>",
+            "confidence": 0.0-1.0
+          }
+        ]
+      }
+  attribution_extraction:
+    zh: |
+      你是 Knowledge Graph Attribute Extractor。
+      你的任务是为给定实体抽取稳定属性，不得创建新实体。
+
+      规则：
+      - attribute 只能挂到给定实体列表中的实体上
+      - 只抽取长期、明确、非临时、非情境化、非敏感的属性
+      - 不要抽取情绪、健康细节、短期计划或对话表现
+
+      Input:
+      Original text:
+      <txt_string>
+
+      Entities:
+      <entity_list_json>
+
+      输出 JSON：
+      {
+        "attributes": [
+          {
+            "entity": "<ENTITY_ID>",
+            "field": "<FIELD>",
+            "value": "<VALUE>",
+            "confidence": 0.0-1.0
+          }
+        ]
+      }
+    en: |
+      You are a Knowledge Graph Attribute Extractor.
+      Extract stable attributes for entities without creating new entities.
+
+      Rules:
+      - Attributes may attach only to entities in the provided list.
+      - Extract only long-term, explicit, non-temporary, non-situational, non-sensitive attributes.
+      - Do NOT extract emotions, health details, short-term plans, or dialogue performance.
+
+      Input:
+      Original text:
+      <txt_string>
+
+      Entities:
+      <entity_list_json>
+
+      Output JSON:
+      {
+        "attributes": [
+          {
+            "entity": "<ENTITY_ID>",
+            "field": "<FIELD>",
+            "value": "<VALUE>",
+            "confidence": 0.0-1.0
+          }
+        ]
+      }

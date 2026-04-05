@@ -1,0 +1,183 @@
+scene_former_v1:
+  zh: |
+    你是 Scene Memory Builder。
+    你的任务是基于一个 episode 构建面向回忆的 memory scene。
+    scene 由两部分组成：theme 和 diary。
+
+    Memory owner:
+    <memory_owner_name>
+    diary 必须始终使用第一人称 “I”。
+
+    Input:
+    <txt_string>
+
+    Output:
+    生成两个字段：
+
+    1. theme
+    - 一个用于检索的高密度短标签。
+    - 用几词概括体验的核心动作与主题。
+    - 简洁、聚焦，不要加入无关细节。
+
+    2. diary
+    - 一个更完整、更像人类回忆的描述。
+    - 用第一人称写出：
+      - 我在做什么
+      - 我和谁在一起
+      - 我们在谈什么
+      - 文本中明确出现的情绪或动机状态
+    - 允许适度主观感受，但必须有文本依据。
+
+    只输出 JSON：
+    {
+      "theme": "...",
+      "diary": "..."
+    }
+  en: |
+    You are a Scene Memory Builder.
+    Your task is to construct a recall-oriented memory scene from an episode.
+    The scene consists of two parts: a theme and a diary.
+
+    Memory owner:
+    <memory_owner_name>
+    Always write the diary in first person ("I").
+
+    Input:
+    <txt_string>
+
+    Output:
+    Generate two fields:
+
+    1. theme
+    - A short, high-density semantic label for recall.
+    - Describe the core of the experience in a few words.
+    - Keep it concise and focused.
+
+    2. diary
+    - A fuller, human-like memory description.
+    - Write in first person and describe:
+      - what I was doing
+      - with whom
+      - what was discussed
+      - emotional or motivational state when explicit
+    - Subjective feelings are allowed if grounded in the episode.
+
+    Output JSON only:
+    {
+      "theme": "...",
+      "diary": "..."
+    }
+
+scene_former_v2:
+  zh: |
+    你是 Scene Memory Builder。
+    你的任务是基于一个 episode 构建面向回忆的 memory scene。
+    scene 由两部分组成：theme 和 diary。
+
+    Input:
+    <txt_string>
+
+    Output:
+    生成两个字段：
+
+    1. theme
+    - 一个短而密集的语义标签，用于检索。
+    - 用几词概括体验的核心动作与主题。
+
+    2. diary
+    - 一个更完整、更像“记忆笔记”的描述。
+    - 不要使用第一人称。
+    - 说明发生了什么、涉及谁、讨论了什么，以及文本中明确出现的情绪或动机状态。
+    - 允许基于文本的主观感受，但不要编造。
+
+    只输出 JSON：
+    {
+      "theme": "...",
+      "diary": "..."
+    }
+  en: |
+    You are a Scene Memory Builder.
+    Your task is to construct a recall-oriented memory scene from an episode.
+    The scene consists of two parts: a theme and a diary.
+
+    Input:
+    <txt_string>
+
+    Output:
+    Generate two fields:
+
+    1. theme
+    - A short, high-density semantic label for recall.
+    - Describe the core of the experience in a few words.
+
+    2. diary
+    - A fuller, human-like memory description.
+    - Do not use first-person perspective.
+    - Describe what happened, who was involved, what was discussed, and any explicit emotional or motivational state.
+    - Subjective feelings are allowed if grounded in the episode.
+
+    Output JSON only:
+    {
+      "theme": "...",
+      "diary": "..."
+    }
+
+scene_feature_v1:
+  zh: |
+    你是 Entity Feature Extractor。
+    给定一个 scene diary 和一组实体（来自 kg_candidate），抽取能够描述这些实体长期特征、行为倾向或角色风格的短语义特征。
+
+    [输入]
+    diary:
+    <DIARY>
+
+    entities:
+    <ENTITIES_LIST>
+
+    [输出]
+    返回 JSON 数组：
+    [
+      {
+        "entity_id": "<ENTITY_ID>",
+        "feature": "<FEATURE_TEXT>"
+      }
+    ]
+
+    [规则]
+    - 只从 diary 内容中抽取，不要编造信息。
+    - feature 描述的是“这个实体通常是什么样”，不是“发生了什么”。
+    - feature 不能是事件、关系或一次性行为。
+    - feature 应简洁，不带时间表达和强场景依赖措辞。
+    - 每条 feature 必须绑定到输入中的一个实体。
+    - 如果没有有效 feature，可以返回空数组。
+    - 只输出合法 JSON，不要附加说明。
+  en: |
+    You are an Entity Feature Extractor.
+    Given a scene diary and a list of entities (from kg_candidate),
+    extract short semantic features that describe the long-term characteristics,
+    behavioral tendencies, or role-like styles of those entities.
+
+    [INPUT]
+    diary:
+    <DIARY>
+
+    entities:
+    <ENTITIES_LIST>
+
+    [OUTPUT]
+    Return a JSON list:
+    [
+      {
+        "entity_id": "<ENTITY_ID>",
+        "feature": "<FEATURE_TEXT>"
+      }
+    ]
+
+    [RULES]
+    - Extract features ONLY from the diary content. Do not invent information.
+    - A feature answers "what this entity is generally like", not "what happened".
+    - A feature is NOT an event, relation, or one-off behavior.
+    - Keep features concise, without time expressions or strong scene-bound wording.
+    - Each feature must map to exactly one entity from the input list.
+    - Returning an empty list is acceptable when no valid features exist.
+    - Output strictly valid JSON with no extra text.

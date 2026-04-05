@@ -1,0 +1,260 @@
+chat_controller:
+  merge_system_with_persona:
+    zh: |
+      <base_prompt>
+
+      [聊天人格]
+      <persona_prompt>
+
+      [重要约束]
+      - 人格只影响对话语气和最终措辞。
+      - 召回工具保持中立并以证据为准，不要突破其事实边界。
+    en: |
+      <base_prompt>
+
+      [Chat Persona]
+      <persona_prompt>
+
+      [Important]
+      - Persona only affects conversational tone and final phrasing.
+      - Keep the original retrieval rules and factual boundaries from the recall pipeline.
+  no_recall_plan_summary:
+    zh: "本轮对话未使用记忆召回工具。"
+    en: "No memory recall tool was used for this chat turn."
+
+memory_agent:
+  decompose_question_prompt:
+    zh: |
+      <planner_prompt>
+
+      [用户问题]
+      <question_text>
+    en: |
+      <planner_prompt>
+
+      [User Question]
+      <question_text>
+  sub_question_prompt:
+    zh: |
+      [原始问题]
+      <question_text>
+
+      [问题计划]
+      <question_plan_json>
+
+      [当前子问题]
+      #<sub_index>/<total_sub_questions>: <sub_question>
+
+      [任务]
+      - 只回答当前子问题。
+      - 必要时调用工具。
+      - `search_details` 是普通细节问题的默认工具。
+      - 实体档案类工具只用于宏观/粗粒度检索问题。
+      - 如果子问题是宏观实体问题，在使用实体专属工具前先调用 `resolve_entity_id`。
+      - 绝不要把原始名字直接传给 `get_entity_profile`、`search_entity_feature`、`search_entity_event` 或 `search_entity_events_by_time`。
+      - 如果问题除了实体外还有明确语义锚点，优先使用 `search_details`。
+      - 宏观概览用 `get_entity_profile`，宏观特征回忆用 `search_entity_feature`，粗粒度行为用 `search_entity_event`，实体+时间窗问题用 `search_entity_events_by_time`。
+      - 需要原始对话细节、精确时间或最终核验时使用 `search_content`。
+      - 回答要具体，并且基于证据。
+      - 在可能的情况下，`gold_answer` 应该是这个子问题的简洁答案值。
+    en: |
+      [Original Question]
+      <question_text>
+
+      [Question Plan]
+      <question_plan_json>
+
+      [Current Sub-question]
+      #<sub_index>/<total_sub_questions>: <sub_question>
+
+      [Task]
+      - Answer only the current sub-question.
+      - Use tools if needed.
+      - `search_details` is the default tool for ordinary detail questions.
+      - Use the entity-profile tools only for macro/coarse retrieval questions.
+      - If the sub-question is a macro entity question, resolve_entity_id before using entity-specific tools.
+      - Never pass a raw name directly into `get_entity_profile`, `search_entity_feature`, `search_entity_event`, or `search_entity_events_by_time`.
+      - If the question includes a concrete semantic anchor besides the entity, prefer `search_details`.
+      - Use `get_entity_profile` for overview, `search_entity_feature` for macro profile recall, `search_entity_event` for coarse actions, and `search_entity_events_by_time` for entity + time-window macro questions.
+      - Use `search_content` when you need raw dialogue details, exact timing, or final verification.
+      - Keep the answer concrete and grounded in evidence.
+      - `gold_answer` should be the concise value for this sub-question when possible.
+  final_synthesis_prompt:
+    zh: |
+      你是记忆问答流水线的最终整合阶段。
+      只能使用已解决子问题及其证据。
+      只返回 JSON，字段必须是: answer, gold_answer, evidence。
+      `gold_answer` 必须简洁；如果最终答案未知，请把 `gold_answer` 设为 null。
+
+      [原始问题]
+      <question_text>
+
+      [问题计划]
+      <question_plan_json>
+
+      [已解决子问题]
+      <sub_question_results_json>
+    en: |
+      You are the final synthesis stage of a memory QA pipeline.
+      Use only the provided solved sub-questions and their evidence.
+      Return JSON only with keys: answer, gold_answer, evidence.
+      `gold_answer` must be concise. If the final answer is unknown, set `gold_answer` to null.
+
+      [Original Question]
+      <question_text>
+
+      [Question Plan]
+      <question_plan_json>
+
+      [Solved Sub-questions]
+      <sub_question_results_json>
+  shallow_recall_prompt:
+    zh: |
+      你是记忆召回流水线中的轻量总结阶段。
+      只能使用给定的 `search_details` 结果。
+      只返回 JSON，字段必须是: answer, gold_answer, evidence。
+      如果当前召回细节并不能真正回答问题，请明确说明当前记忆证据不足，并把 `gold_answer` 设为 null。
+      不要编造未在召回数据中出现的事实、名字、链接或时间。
+
+      [用户问题]
+      <question_text>
+
+      [search_details 结果]
+      <search_result_json>
+    en: |
+      You are the lightweight summary stage of a memory recall pipeline.
+      Use only the provided `search_details` results.
+      Return JSON only with keys: answer, gold_answer, evidence.
+      If the recalled details do not actually answer the question, say that the current memory is insufficient and set `gold_answer` to null.
+      Do not invent facts, names, links, or times that are not grounded in the recalled data.
+
+      [User Question]
+      <question_text>
+
+      [search_details Result]
+      <search_result_json>
+  execution_prompt:
+    zh: |
+      [原始问题]
+      <question_text>
+
+      [问题计划]
+      <question_plan_json>
+
+      [执行规则]
+      - 回答原始问题，不要回答计划本身。
+      - 默认按计划顺序执行。
+      - 如果工具证据否定了计划，可以在心里修正后继续。
+      - 对于比较、总结、计数或多跳问题，不要跳过子问题。
+    en: |
+      [Original Question]
+      <question_text>
+
+      [Question Plan]
+      <question_plan_json>
+
+      [Execution Rules]
+      - Answer the original question, not the plan itself.
+      - Use the plan as the default execution order.
+      - If tool evidence invalidates the plan, refine it mentally and continue.
+      - Do not skip the sub-questions for comparison, summary, counting, or multi-hop questions.
+  direct_execution_prompt:
+    zh: |
+      [原始问题]
+      <question_text>
+
+      [执行模式]
+      先直接作答。
+
+      [任务]
+      - 用尽量少的工具调用直接回答原始问题。
+      - 除非问题明显需要比较、计数、总结、因果解释或其他明显多跳结构，否则不要显式拆成子问题。
+      - `search_details` 是普通细节问题的默认工具。
+      - 实体档案类工具只用于宏观/粗粒度检索问题。
+      - 如果是普通单目标查询，`sub_questions` 保持为空列表。
+      - 如果直接检索仍然不足，请说明仍然未知的部分，不要编造事实。
+      - `gold_answer` 必须是简洁的最终值。
+      - `evidence` 需要简要引用支撑性的工具结果。
+    en: |
+      [Original Question]
+      <question_text>
+
+      [Execution Mode]
+      Answer directly first.
+
+      [Task]
+      - Answer the original question directly with the minimum necessary tool calls.
+      - Do not explicitly decompose into sub-questions unless the question clearly requires comparison, counting, summary, causal explanation, or another obvious multi-hop structure.
+      - `search_details` is the default tool for ordinary detail questions.
+      - Use the entity-profile tools only for macro/coarse retrieval questions.
+      - If the question is an ordinary single-goal lookup, keep `sub_questions` as an empty list.
+      - If direct retrieval is insufficient, state what remains unknown instead of inventing facts.
+      - `gold_answer` must be the concise final value only.
+      - `evidence` should briefly cite the supporting tool results.
+  direct_answer_plan_summary:
+    zh: "已直接作答，未显式拆解子问题。"
+    en: "Answered directly without explicit decomposition."
+  heuristic_decomposition_reason:
+    zh: "使用启发式回退拆解。"
+    en: "Fallback heuristic decomposition."
+  heuristic_completion_criteria:
+    zh: "每个核心子问题都需要有基于工具的证据支撑。"
+    en: "Each core sub-question is answered with tool-grounded evidence."
+  direct_lookup_completion_criteria:
+    zh: "基于工具证据直接回答原问题。"
+    en: "Answer the original question directly with tool-grounded evidence."
+  fallback_sub_questions:
+    comparison:
+      first_side:
+        zh: "关于这个问题第一侧的证据是什么：<question_text>"
+        en: "What is the evidence for the first side of: <question_text>"
+      second_side:
+        zh: "关于这个问题第二侧的证据是什么：<question_text>"
+        en: "What is the evidence for the second side of: <question_text>"
+      final_compare:
+        zh: "基于两侧证据，这个问题支持的比较结论是什么：<question_text>"
+        en: "Based on both sides, what is the supported comparison result for: <question_text>"
+    counting:
+      gather:
+        zh: "哪些候选证据与这个问题相关：<question_text>"
+        en: "What candidate evidence items are relevant to: <question_text>"
+      count:
+        zh: "去重之后，这个问题的正确数量是多少：<question_text>"
+        en: "After deduplication, what is the correct count for: <question_text>"
+    summary:
+      gather:
+        zh: "总结这个问题需要哪些关键证据点：<question_text>"
+        en: "What are the key evidence points needed to summarize: <question_text>"
+      summarize:
+        zh: "基于这些证据点，可以支持什么简洁总结：<question_text>"
+        en: "What concise summary is supported by those evidence points for: <question_text>"
+    temporal:
+      anchors:
+        zh: "哪些事件或细节能建立这个问题的时间锚点：<question_text>"
+        en: "What events or details establish the time anchors for: <question_text>"
+      answer:
+        zh: "这个问题能支持的准确时间答案是什么：<question_text>"
+        en: "What exact time answer is supported for: <question_text>"
+    causal:
+      context:
+        zh: "这个目标事件之前或周围发生了什么：<question_text>"
+        en: "What happened before or around the target event in: <question_text>"
+      cause:
+        zh: "有哪些有证据支撑的原因可以回答这个问题：<question_text>"
+        en: "What evidence-supported cause or reason answers: <question_text>"
+  strategy_reasons:
+    obvious_decompose:
+      zh: "这是明显的 <question_type> 类问题；先拆解。"
+      en: "Obvious <question_type> question; decompose first."
+    multi_target:
+      zh: "问题里包含多个明确查询目标；先拆解。"
+      en: "Question contains multiple explicit query targets; decompose first."
+    temporal_chain:
+      zh: "问题串联了多个时间约束；先拆解。"
+      en: "Question chains multiple temporal constraints; decompose first."
+    multi_hop_markers:
+      zh: "问题中有明显多跳协同标记；先拆解。"
+      en: "Question has clear multi-hop coordination markers; decompose first."
+    direct_lookup:
+      zh: "问题看起来是单目标查询；先直接作答。"
+      en: "Question appears to be a single-goal lookup; answer directly first."

@@ -19,3 +19,8 @@ py2neo
 ipywidgets
 openai
 sentence-transformers
+fastapi
+uvicorn
+google-api-python-client
+google-auth-httplib2
+google-auth-oauthlib

@@ -1,0 +1,312 @@
+dialogue_segmentation:
+  system_prompt:
+    zh: |
+      你是对话分段模块。
+      你的任务是支持基于 buffer 的 Dialogue -> Episode 切分。
+
+      脚本会按顺序扫描对话轮次，并维护一个 episode_buffer。
+      对每个新 turn，你只需要判断它应该：
+      - 继续追加到当前 episode_buffer
+      - 还是开启一个新的 Episode
+
+      一个 Episode 应该是：
+      - 语义上自洽
+      - 时间 / 场景上连续
+      - 围绕一个稳定交互目标展开
+
+      不要过度切分简短确认、澄清问题、局部展开或轻微跑题。
+      只输出 JSON，不要改变下游结构，也不要输出 JSON 之外的内容。
+    en: |
+      You are a dialogue segmentation module.
+
+      Your job is to support buffer-based Dialogue -> Episode segmentation.
+      The script scans dialogue turns in order and maintains an episode_buffer.
+      For each new turn, you only decide whether that turn should:
+      - continue the current episode_buffer
+      - start a new Episode
+
+      An Episode should be:
+      - semantically self-contained
+      - temporally / situationally continuous
+      - centered on one stable interaction goal
+
+      Do not over-segment brief acknowledgements, clarification questions,
+      local elaborations, or minor subtopic drift.
+      Output JSON only and do not change downstream structure.
+  decision_prompt:
+    zh: |
+      脚本正在逐轮扫描对话。
+
+      Dialogue context:
+      <DIALOGUE_CONTEXT_JSON>
+
+      Current episode_buffer:
+      <CURRENT_BUFFER_JSON>
+
+      Candidate next turn:
+      <CANDIDATE_TURN_JSON>
+
+      请判断这个候选 turn 是否仍然属于同一个 Episode。
+
+      判定标准：
+      1. 交互目标仍然相同或高度连续
+      2. 时间 / 生活场景 / 事件现场仍然连续
+      3. 讨论焦点整体上仍然稳定
+
+      当候选 turn 仍然属于同一完整交互片段时，选择 `append`。
+      只有在交互目标、场景语境或整体焦点出现明显断裂时，才选择 `split`。
+
+      输出 JSON：
+      {
+        "decision": "append" | "split",
+        "reason": "<short explanation>"
+      }
+    en: |
+      The script is currently scanning one dialogue turn at a time.
+
+      Dialogue context:
+      <DIALOGUE_CONTEXT_JSON>
+
+      Current episode_buffer:
+      <CURRENT_BUFFER_JSON>
+
+      Candidate next turn:
+      <CANDIDATE_TURN_JSON>
+
+      Decide whether the candidate turn still belongs to the SAME Episode
+      as the current episode_buffer.
+
+      Criteria:
+      1. The interaction goal is still the same or highly continuous.
+      2. The time / life situation / scene is still continuous.
+      3. The discussion focus is still globally stable.
+
+      Choose `append` when the candidate turn is still part of the same interaction fragment.
+      Choose `split` only when there is a meaningful break in goal, scene context, or overall focus.
+
+      Output JSON:
+      {
+        "decision": "append" | "split",
+        "reason": "<short explanation>"
+      }
+  topic_prompt:
+    zh: |
+      脚本刚刚完成了一个 episode_buffer。
+
+      Dialogue context:
+      <DIALOGUE_CONTEXT_JSON>
+
+      Completed episode_buffer:
+      <EPISODE_BUFFER_JSON>
+
+      请为整个 Episode 写一个简短 topic 标签。
+
+      要求：
+      1. 概括整个 Episode，而不是只看最后一轮
+      2. 优先使用简洁名词短语或短描述
+      3. 除非对整体至关重要，否则不要写得过细
+      4. 不要提到 “episode”“buffer” 或 turn id
+
+      输出 JSON：
+      {
+        "topic": "<short topic label>"
+      }
+    en: |
+      A complete episode_buffer has been finalized by the script.
+
+      Dialogue context:
+      <DIALOGUE_CONTEXT_JSON>
+
+      Completed episode_buffer:
+      <EPISODE_BUFFER_JSON>
+
+      Write one short topic label that summarizes the WHOLE interaction fragment.
+
+      Requirements:
+      1. Summarize the full Episode, not only the last turn.
+      2. Prefer a concise noun phrase or short descriptive phrase.
+      3. Avoid over-specific wording unless it is central to the whole Episode.
+      4. Do not mention "episode", "buffer", or turn ids.
+
+      Output JSON:
+      {
+        "topic": "<short topic label>"
+      }
+
+scoring_sys:
+  episode_factual_novelty_scoring:
+    score_name: factual
+    system_prompt:
+      zh: |
+        你是记忆系统中的 Factual Novelty 评分模块。
+        你的职责是判断这个 episode 是否为记忆主体 <memory_owner_name> 引入了新的事实信息。
+        只评估这一维度，只输出结构化 JSON，不要评估情绪、重要性或下游用途。
+      en: |
+        You are a Factual Novelty Scoring module in a memory system.
+        Evaluate whether the episode introduces NEW FACTUAL INFORMATION for the memory owner <memory_owner_name>.
+        Judge this dimension only and output structured JSON only.
+    user_prompt:
+      zh: |
+        给定以下 Episode Candidate（JSON）：
+
+        <EPISODE_JSON>
+
+        请评估其 factual novelty。
+
+        打分：
+        - 0：没有事实信息
+        - 1：有事实信息，但并未引入新事实
+        - 2：引入了记忆主体此前无法合理假定的新事实
+
+        输出 JSON：
+        {
+          "episode_id": "<string>",
+          "dialogue_id": "<string>",
+          "factual_novelty": <0|1|2>,
+          "rationale": "<short, concrete explanation>"
+        }
+      en: |
+        Given the following Episode Candidate in JSON format:
+
+        <EPISODE_JSON>
+
+        Evaluate its factual novelty.
+
+        Scoring:
+        - 0: no factual information is present
+        - 1: factual information exists but does not introduce new facts
+        - 2: new factual information is introduced for the memory owner
+
+        Output JSON:
+        {
+          "episode_id": "<string>",
+          "dialogue_id": "<string>",
+          "factual_novelty": <0|1|2>,
+          "rationale": "<short, concrete explanation>"
+        }
+  episode_emotional_novelty_scoring:
+    score_name: emotion
+    system_prompt:
+      zh: |
+        你是记忆系统中的 Emotional Novelty 评分模块。
+        你只判断 episode 是否为记忆主体 <memory_owner_name> 引入了新的情绪状态或明确的情绪变化。
+        只输出结构化 JSON，不评估事实正确性、重要性或情绪类型。
+      en: |
+        You are an Emotional Novelty Scoring module in a memory system.
+        Determine whether the episode introduces a NEW emotional state or an explicit emotional change for the memory owner <memory_owner_name>.
+        Output structured JSON only.
+    user_prompt:
+      zh: |
+        给定以下 Episode Candidate（JSON）：
+
+        <EPISODE_JSON>
+
+        请评估其 emotional novelty。
+
+        打分：
+        - 0：没有新的情绪更新
+        - 1：出现了新的情绪状态或明确的情绪变化
+
+        输出 JSON：
+        {
+          "episode_id": "<string>",
+          "dialogue_id": "<string>",
+          "emotional_novelty": <0|1>,
+          "rationale": "<short, concrete explanation>"
+        }
+      en: |
+        Given the following Episode Candidate in JSON format:
+
+        <EPISODE_JSON>
+
+        Evaluate its emotional novelty.
+
+        Scoring:
+        - 0: no emotional update occurs
+        - 1: a new emotional state or explicit emotional change is introduced
+
+        Output JSON:
+        {
+          "episode_id": "<string>",
+          "dialogue_id": "<string>",
+          "emotional_novelty": <0|1>,
+          "rationale": "<short, concrete explanation>"
+        }
+
+episode_information_scoring:
+  system_prompt:
+    zh: |
+      你是记忆系统中的 Episode Information Scoring 模块。
+      你只评估两个维度：
+      1. Information Density
+      2. Novelty
+
+      请严格基于 episode 内容本身进行保守、可解释、可复现的判断，只输出结构化 JSON。
+    en: |
+      You are an Episode Information Scoring module in a memory system.
+      Evaluate only two dimensions:
+      1. Information Density
+      2. Novelty
+
+      Base judgment strictly on the episode content itself and output structured JSON only.
+  user_prompt:
+    zh: |
+      给定以下 Episode Candidate（JSON）：
+
+      <EPISODE_JSON>
+
+      请评估其信息特征。
+
+      1. Information Density（0|1|2）
+      - 0：几乎全是闲聊、情绪表达或寒暄，几乎没有可结构化的信息
+      - 1：有一些可识别信息单元，但较少、较弱或混杂严重
+      - 2：包含多个清晰的信息单元，可独立表示为事实、决定、条件、承诺等
+
+      2. Novelty（0|1|2）
+      - 0：没有给 <memory_owner_name> 的主观世界模型带来更新
+      - 1：带来弱或隐性的更新
+      - 2：带来清晰的新事实、决定、承诺、条件或交互状态更新
+
+      输出 JSON：
+      {
+        "episode_id": "<string>",
+        "dialogue_id": "<string>",
+        "information_score": {
+          "density": <0|1|2>,
+          "novelty": <0|1|2>
+        },
+        "rationale": {
+          "density": "<short, concrete explanation>",
+          "novelty": "<short, concrete explanation>"
+        }
+      }
+    en: |
+      Given the following Episode Candidate in JSON format:
+
+      <EPISODE_JSON>
+
+      Evaluate its informational characteristics.
+
+      1. Information Density (0|1|2)
+      - 0: mostly chit-chat, emotional expression, or phatic interaction
+      - 1: contains some identifiable information units, but they are sparse or weak
+      - 2: contains multiple clear information units that can be represented independently
+
+      2. Novelty (0|1|2)
+      - 0: no subjective update occurs for <memory_owner_name>
+      - 1: a weak or implicit update occurs
+      - 2: a clear subjective update occurs
+
+      Output JSON:
+      {
+        "episode_id": "<string>",
+        "dialogue_id": "<string>",
+        "information_score": {
+          "density": <0|1|2>,
+          "novelty": <0|1|2>
+        },
+        "rationale": {
+          "density": "<short, concrete explanation>",
+          "novelty": "<short, concrete explanation>"
+        }
+      }

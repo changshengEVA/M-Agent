@@ -4,3 +4,7 @@
 [submodule "data/locomo"]
 	path = data/locomo
 	url = git@github.com:snap-research/locomo.git
+[submodule "tools/M-Agent-UI"]
+    path = tools/M-Agent-UI
+    url = git@github.com:changshengEVA/M-Agent-UI.git
+

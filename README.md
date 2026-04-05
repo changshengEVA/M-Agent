@@ -21,6 +21,12 @@ Current refactor direction:
 2. `Episode -> Scene -> Atomic facts` is generated inside `MemoryCore`.
 3. `persistence` layer is removed; `KGBase` now executes entity/relation operations directly on local Neo4j.
 ---
+### **Project Layout**
+
+Core source code now lives under `src/m_agent/`, runnable entry scripts live under `scripts/`, automated tests live under `tests/`, examples live under `examples/`, and experimental integrations live under `experiments/`.
+
+For a fuller tree and rationale, see `docs/project-structure.md`.
+---
 ### **Quick_start**
 
 The following steps only cover the path from zero to running `run_eval_locomo.py`.
@@ -47,16 +53,16 @@ pip install -r requirements.txt
 3. Create `.env` in the project root and fill the fields below
 
 ```dotenv
-# MemoryCore LLM: load_model/OpenAIcall.py
+# MemoryCore LLM: src/m_agent/load_model/OpenAIcall.py
 # Fill one of API_SECRET_KEY or OPENAI_API_KEY
 API_SECRET_KEY=YOUR_OPENAI_COMPATIBLE_KEY
 OPENAI_API_KEY=
 BASE_URL=https://api.openai.com/v1
 
-# Agent model key: model_name=deepseek-chat (config/prompt/agent_sys.yaml)
+# Agent model key: model_name=deepseek-chat (config/agents/memory/locomo_eval_memory_agent.yaml)
 DEEPSEEK_API_KEY=YOUR_DEEPSEEK_KEY
 
-# Embedding key: embed_provider (config/memory_core_config/*.yaml)
+# Embedding key: embed_provider (config/memory/core/*.yaml)
 ALIBABA_API_KEY=YOUR_ALIBABA_KEY
 ALIBABA_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ALIBABA_EMBED_MODEL=text-embedding-v4
@@ -69,12 +75,12 @@ LLM_PROVIDER=deepseek
 
 4. Run LoCoMo preprocessing first (`memory_pre`, now only builds dialogues + episodes)
 
-> `run_eval_locomo.py` uses `config/prompt/agent_sys.yaml` by default.
-> In that file, `memory_core_config_path` points to `config/memory_core_config/agent_sys_memory.yaml`,
+> `run_eval_locomo.py` uses `config/agents/memory/locomo_eval_memory_agent.yaml` by default.
+> In that file, `memory_core_config_path` points to `config/memory/core/locomo_eval_memory_core.yaml`,
 > where `workflow_id` is configured. Keep preprocessing `--id` consistent with that `workflow_id`.
 
 ```bash
-python pipeline/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo
+python scripts/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo
 ```
 
 After preprocessing, these folders will be generated/updated under `data/memory/testlocomo/`:
@@ -87,10 +93,10 @@ After preprocessing, these folders will be generated/updated under `data/memory/
 
 ```bash
 # Quick check: sampled run
-python run_eval_locomo.py --test-id quickstart --sample-fraction 0.1
+python scripts/run_eval_locomo.py --test-id quickstart --sample-fraction 0.1
 
 # Full run: 10/10 samples
-# python run_eval_locomo.py --test-id quickstart-full --sample-fraction 1.0
+# python scripts/run_eval_locomo.py --test-id quickstart-full --sample-fraction 1.0
 ```
 
 6. Check outputs
