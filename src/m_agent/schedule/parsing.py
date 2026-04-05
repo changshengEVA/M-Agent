@@ -28,6 +28,12 @@ TIME_RE = re.compile(
     r"\s*(?P<hour>\d{1,2})"
     r"(?:\s*(?:[:点时])\s*(?P<minute>\d{1,2}|半|一刻|三刻)?)?"
 )
+ADVANCE_REMINDER_INTENT_RE = re.compile(
+    r"(?:提前|会前).*?(?:提醒(?:我)?|通知(?:我)?|告诉(?:我)?|叫(?:我)?)"
+)
+ADVANCE_REMINDER_LEAD_RE = re.compile(
+    r"(?P<prefix>提前|会前)\s*(?P<duration>半小时|一刻钟|[零一二两俩三四五六七八九十百\d]+\s*(?:分钟|分|小时|个小时))"
+)
 
 
 @dataclass
@@ -40,6 +46,10 @@ class ParsedDateTime:
     assumed_date: bool = False
     assumptions: Dict[str, Any] = field(default_factory=dict)
     error: Optional[str] = None
+    trigger_kind: str = "time_due"
+    event_local: Optional[datetime] = None
+    reminder_offset_minutes: Optional[int] = None
+    reminder_offset_text: str = ""
 
     def to_payload(self) -> Dict[str, Any]:
         payload = {
@@ -50,12 +60,86 @@ class ParsedDateTime:
             "assumed_date": self.assumed_date,
             "assumptions": dict(self.assumptions or {}),
             "error": self.error,
+            "trigger_kind": self.trigger_kind,
+            "reminder_offset_minutes": self.reminder_offset_minutes,
+            "reminder_offset_text": self.reminder_offset_text,
         }
         if self.due_local is not None:
             payload["local_iso_datetime"] = self.due_local.isoformat()
             payload["local_display"] = self.due_local.strftime("%Y-%m-%d %H:%M")
             payload["due_at_utc"] = self.due_local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        if self.event_local is not None:
+            payload["event_local_iso_datetime"] = self.event_local.isoformat()
+            payload["event_local_display"] = self.event_local.strftime("%Y-%m-%d %H:%M")
+            payload["event_at_utc"] = self.event_local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
         return payload
+
+
+def _parse_compact_int(value: str) -> Optional[int]:
+    safe = re.sub(r"\s+", "", str(value or "").strip())
+    if not safe:
+        return None
+    if safe.isdigit():
+        return int(safe)
+
+    digits = {
+        "零": 0,
+        "一": 1,
+        "二": 2,
+        "两": 2,
+        "俩": 2,
+        "三": 3,
+        "四": 4,
+        "五": 5,
+        "六": 6,
+        "七": 7,
+        "八": 8,
+        "九": 9,
+    }
+    if safe == "十":
+        return 10
+    if len(safe) == 1 and safe in digits:
+        return digits[safe]
+    if safe.startswith("十") and len(safe) == 2 and safe[1] in digits:
+        return 10 + digits[safe[1]]
+    if safe.endswith("十") and len(safe) == 2 and safe[0] in digits:
+        return digits[safe[0]] * 10
+    if len(safe) == 3 and safe[1] == "十" and safe[0] in digits and safe[2] in digits:
+        return digits[safe[0]] * 10 + digits[safe[2]]
+    return None
+
+
+def _extract_advance_reminder_lead(text: str) -> tuple[Optional[int], str]:
+    safe = str(text or "").strip()
+    match = ADVANCE_REMINDER_LEAD_RE.search(safe)
+    if match is None:
+        return None, ""
+
+    duration_text = re.sub(r"\s+", "", str(match.group("duration") or "").strip())
+    if duration_text == "半小时":
+        return 30, match.group(0)
+    if duration_text == "一刻钟":
+        return 15, match.group(0)
+
+    if duration_text.endswith(("分钟", "分")):
+        number_text = duration_text[:-2] if duration_text.endswith("分钟") else duration_text[:-1]
+        value = _parse_compact_int(number_text)
+        if value is not None:
+            return value, match.group(0)
+
+    if duration_text.endswith("个小时"):
+        number_text = duration_text[:-3]
+        value = _parse_compact_int(number_text)
+        if value is not None:
+            return value * 60, match.group(0)
+
+    if duration_text.endswith("小时"):
+        number_text = duration_text[:-2]
+        value = _parse_compact_int(number_text)
+        if value is not None:
+            return value * 60, match.group(0)
+
+    return None, match.group(0)
 
 
 def _resolve_now(timezone_name: Optional[str], now_context: Optional[Dict[str, Any]]) -> tuple[datetime, str]:
@@ -193,6 +277,52 @@ def parse_due_datetime(
         assumed_date=assumed_date,
         assumptions=assumptions,
     )
+
+
+def parse_schedule_request(
+    text: str,
+    *,
+    timezone_name: Optional[str] = None,
+    now_context: Optional[Dict[str, Any]] = None,
+    default_date: Optional[date] = None,
+) -> ParsedDateTime:
+    safe = str(text or "").strip()
+    reminder_offset_minutes, reminder_offset_text = _extract_advance_reminder_lead(safe)
+    advance_intent = ADVANCE_REMINDER_INTENT_RE.search(safe) is not None or (
+        reminder_offset_minutes is not None and any(token in safe for token in ("提醒", "通知", "告诉", "叫"))
+    )
+
+    parse_source = safe
+    if reminder_offset_text:
+        parse_source = parse_source.replace(reminder_offset_text, " ", 1)
+
+    parsed = parse_due_datetime(
+        parse_source,
+        timezone_name=timezone_name,
+        now_context=now_context,
+        default_date=default_date,
+    )
+    if not advance_intent:
+        return parsed
+
+    parsed.trigger_kind = "before_event"
+    parsed.event_local = parsed.due_local
+    parsed.reminder_offset_minutes = reminder_offset_minutes
+    parsed.reminder_offset_text = reminder_offset_text
+    parsed.assumptions = dict(parsed.assumptions or {})
+    parsed.assumptions["trigger_before_event"] = True
+
+    if parsed.event_local is None:
+        parsed.error = parsed.error or "missing_event_time"
+        return parsed
+
+    if reminder_offset_minutes is None:
+        parsed.due_local = None
+        parsed.error = "missing_lead_time"
+        return parsed
+
+    parsed.due_local = parsed.event_local - timedelta(minutes=reminder_offset_minutes)
+    return parsed
 
 
 def parse_day_window(

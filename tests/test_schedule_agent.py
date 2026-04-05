@@ -108,6 +108,58 @@ def test_schedule_agent_returns_clarification_when_time_is_missing(tmp_path: Pat
     assert result["action"] == "create"
 
 
+def test_schedule_agent_returns_clarification_when_advance_offset_is_missing(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+
+    result = agent.handle_manage_command(
+        thread_id="demo-thread",
+        instruction="提前通知我下午2点的会议",
+        timezone_name="Asia/Shanghai",
+        now_context=_fixed_now_context(),
+    )
+    assert result["success"] is False
+    assert result["needs_clarification"] is True
+    assert result["action"] == "create"
+    assert result["machine"]["parse_error"] == "missing_lead_time"
+    assert "提前多久" in result["answer"]
+
+
+def test_schedule_agent_creates_advance_reminder_with_event_metadata(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+
+    result = agent.handle_manage_command(
+        thread_id="demo-thread",
+        instruction="提前30分钟提醒我明天下午2点开会",
+        timezone_name="Asia/Shanghai",
+        now_context=_fixed_now_context(),
+    )
+    assert result["success"] is True
+    assert result["action"] == "create"
+    assert result["item"]["title"] == "开会"
+    assert result["item"]["schedule_kind"] == "before_event"
+    assert result["item"]["due_display"].endswith("13:30")
+    assert result["item"]["event_display"].endswith("14:00")
+    assert result["item"]["reminder_offset_minutes"] == 30
+    assert result["item"]["metadata"]["event_display"].endswith("14:00")
+    assert result["machine"]["parse"]["trigger_kind"] == "before_event"
+
+
+def test_schedule_agent_parses_natural_rephrase_of_advance_reminder(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+
+    result = agent.handle_manage_command(
+        thread_id="demo-thread",
+        instruction="重新安排后天（4月7日）下午2点的会议提醒，提前30分钟提醒，也就是下午1:30提醒",
+        timezone_name="Asia/Shanghai",
+        now_context=_fixed_now_context(),
+    )
+    assert result["success"] is True
+    assert result["item"]["title"] == "会议"
+    assert result["item"]["schedule_kind"] == "before_event"
+    assert result["item"]["due_display"] == "2026-04-07 13:30"
+    assert result["item"]["event_display"] == "2026-04-07 14:00"
+
+
 def test_schedule_agent_explicit_owner_isolation_by_scoped_thread(tmp_path: Path) -> None:
     agent = _build_agent(tmp_path)
 
