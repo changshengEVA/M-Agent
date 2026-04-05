@@ -36,6 +36,7 @@ from .chat_api_records import (
     wire_runtime_event_sink,
 )
 from .chat_api_runtime import ChatServiceRuntime
+from .schedule_heartbeat import ScheduleHeartbeatCoordinator
 from .chat_api_shared import (
     _extract_access_token,
     _get_thread_lock,
@@ -172,14 +173,24 @@ def create_app(
     *,
     service_runtime: ChatServiceRuntime,
     user_access: Optional[UserAccessService] = None,
+    schedule_beat_seconds: int = 10,
+    schedule_busy_retry_seconds: int = 5,
 ) -> FastAPI:
     wire_runtime_event_sink(service_runtime)
+    schedule_heartbeat = ScheduleHeartbeatCoordinator(
+        service_runtime=service_runtime,
+        user_access=user_access,
+        beat_interval_seconds=max(1, int(schedule_beat_seconds or 10)),
+        busy_retry_seconds=max(1, int(schedule_busy_retry_seconds or 5)),
+        thread_event_sink=_THREAD_EVENTS.append_event,
+    )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         try:
             yield
         finally:
+            schedule_heartbeat.shutdown()
             service_runtime.shutdown()
             if user_access is not None:
                 user_access.shutdown()
@@ -187,6 +198,7 @@ def create_app(
     app = FastAPI(title="M-Agent Chat API", version="2.0", lifespan=lifespan)
     app.state.service_runtime = service_runtime
     app.state.user_access = user_access
+    app.state.schedule_heartbeat = schedule_heartbeat
 
     app.add_middleware(
         CORSMiddleware,
@@ -256,6 +268,14 @@ def create_app(
             owner_id=owner_id,
         )
 
+    def _serialize_schedule_heartbeat(thread_id: str) -> Dict[str, Any]:
+        payload = dict(schedule_heartbeat.health_payload())
+        return {
+            "thread_id": thread_id,
+            "scope": "owner",
+            "heartbeat": payload,
+        }
+
     def _load_thread_schedule_item(
         *,
         schedule_agent: Any,
@@ -292,6 +312,7 @@ def create_app(
             "service": "m-agent-chat-api",
             "root": str(PROJECT_ROOT),
             "runtime": service_runtime.health_payload(),
+            "schedule_heartbeat": schedule_heartbeat.health_payload(),
             "auth": user_access.health_payload() if user_access is not None else None,
             "endpoints": {
                 "auth_register": "/v1/auth/register",
@@ -665,8 +686,16 @@ def create_app(
                 "keyword": str(keyword or "").strip(),
                 "statuses": parsed_statuses or [],
                 "items": serialized,
+                "heartbeat": dict(schedule_heartbeat.health_payload()),
             }
         )
+
+    @app.get("/v1/chat/threads/{thread_id}/schedules/heartbeat")
+    def get_schedule_heartbeat(thread_id: str, request: Request) -> JSONResponse:
+        _, _, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        return JSONResponse(content=_serialize_schedule_heartbeat(thread_id))
 
     @app.get("/v1/chat/threads/{thread_id}/schedules/{schedule_id}")
     def get_thread_schedule(schedule_id: str, thread_id: str, request: Request) -> JSONResponse:
@@ -878,6 +907,13 @@ def create_handler(
     *,
     service_runtime: ChatServiceRuntime,
     user_access: Optional[UserAccessService] = None,
+    schedule_beat_seconds: int = 10,
+    schedule_busy_retry_seconds: int = 5,
 ) -> FastAPI:
     """Backward-compatible alias for the old stdlib server entrypoint."""
-    return create_app(service_runtime=service_runtime, user_access=user_access)
+    return create_app(
+        service_runtime=service_runtime,
+        user_access=user_access,
+        schedule_beat_seconds=schedule_beat_seconds,
+        schedule_busy_retry_seconds=schedule_busy_retry_seconds,
+    )

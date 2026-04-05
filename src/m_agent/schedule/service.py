@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 import uuid
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from m_agent.utils.time_utils import resolve_timezone
@@ -15,6 +15,7 @@ from .models import (
     SCHEDULE_STATUS_FAILED,
     SCHEDULE_STATUS_LEASED,
     SCHEDULE_STATUS_PENDING,
+    SCHEDULE_STATUS_RUNNING,
     ScheduleItem,
 )
 from .parsing import parse_day_window
@@ -288,12 +289,16 @@ class ScheduleService:
     def lease_due_schedules(
         self,
         *,
+        owner_id: Optional[str] = None,
         now_utc: Optional[str] = None,
         limit: int = 20,
     ) -> List[ScheduleItem]:
         cutoff = _parse_utc_iso(now_utc) if now_utc else datetime.now(timezone.utc)
         leased: List[ScheduleItem] = []
-        all_items = self.store.iter_all_items()
+        if owner_id is not None:
+            all_items = self.store.iter_owner_items(owner_id)
+        else:
+            all_items = self.store.iter_all_items()
         grouped: Dict[tuple[str, str], List[ScheduleItem]] = {}
         for item in all_items:
             grouped.setdefault((item.owner_id, item.thread_id), []).append(item)
@@ -306,8 +311,17 @@ class ScheduleService:
                     continue
                 if _parse_utc_iso(item.due_at_utc) > cutoff:
                     continue
+                retry_after_utc = str(item.metadata.get("retry_after_utc", "") or "").strip()
+                if retry_after_utc:
+                    try:
+                        if _parse_utc_iso(retry_after_utc) > cutoff:
+                            continue
+                    except Exception:
+                        pass
                 item.status = SCHEDULE_STATUS_LEASED
                 item.updated_at = _now_utc_iso()
+                item.metadata = dict(item.metadata or {})
+                item.metadata["leased_at"] = item.updated_at
                 leased.append(item)
                 changed = True
             if changed:
@@ -315,6 +329,54 @@ class ScheduleService:
             if len(leased) >= max(1, min(200, int(limit or 20))):
                 break
         return leased
+
+    def mark_running(
+        self,
+        *,
+        owner_id: str,
+        schedule_id: str,
+        thread_id: Optional[str] = None,
+    ) -> ScheduleItem:
+        return self._set_status(
+            owner_id=owner_id,
+            thread_id=thread_id,
+            schedule_id=schedule_id,
+            status=SCHEDULE_STATUS_RUNNING,
+            metadata_patch={"running_at": _now_utc_iso()},
+            clear_retry_after=True,
+        )
+
+    def release_lease(
+        self,
+        *,
+        owner_id: str,
+        schedule_id: str,
+        thread_id: Optional[str] = None,
+        reason: str = "",
+        retry_after_seconds: int = 0,
+    ) -> ScheduleItem:
+        retry_after_utc = None
+        safe_retry_after_seconds = max(0, int(retry_after_seconds or 0))
+        if safe_retry_after_seconds > 0:
+            retry_after_utc = (
+                datetime.now(timezone.utc) + timedelta(seconds=safe_retry_after_seconds)
+            ).isoformat().replace("+00:00", "Z")
+        metadata_patch: Dict[str, Any] = {
+            "lease_released_at": _now_utc_iso(),
+        }
+        safe_reason = str(reason or "").strip()
+        if safe_reason:
+            metadata_patch["last_release_reason"] = safe_reason
+        if retry_after_utc:
+            metadata_patch["retry_after_utc"] = retry_after_utc
+        return self._set_status(
+            owner_id=owner_id,
+            thread_id=thread_id,
+            schedule_id=schedule_id,
+            status=SCHEDULE_STATUS_PENDING,
+            metadata_patch=metadata_patch,
+            clear_retry_after=not bool(retry_after_utc),
+        )
 
     def mark_done(
         self,
@@ -360,6 +422,43 @@ class ScheduleService:
                 metadata_patch={"retry_at_utc": retry_at_utc},
             )
         return item
+
+    def _set_status(
+        self,
+        *,
+        owner_id: str,
+        thread_id: Optional[str],
+        schedule_id: str,
+        status: str,
+        metadata_patch: Optional[Dict[str, Any]] = None,
+        clear_retry_after: bool = False,
+    ) -> ScheduleItem:
+        normalized_owner_id = self.store._normalize_owner_id(owner_id)
+        target = self.store.find_by_id(schedule_id, owner_id=normalized_owner_id)
+        if target is None:
+            raise FileNotFoundError(f"schedule not found: {schedule_id}")
+        target_thread_id = str(getattr(target, "thread_id", "") or "").strip()
+        if not target_thread_id:
+            raise FileNotFoundError(f"schedule not found: {schedule_id}")
+        items = self.store.load_thread_items(normalized_owner_id, target_thread_id)
+        updated: Optional[ScheduleItem] = None
+        for index, item in enumerate(items):
+            if item.schedule_id != schedule_id:
+                continue
+            item.status = status
+            item.updated_at = _now_utc_iso()
+            item.metadata = dict(item.metadata or {})
+            if clear_retry_after:
+                item.metadata.pop("retry_after_utc", None)
+            if isinstance(metadata_patch, dict):
+                item.metadata.update(deepcopy(metadata_patch))
+            items[index] = item
+            updated = item
+            break
+        if updated is None:
+            raise FileNotFoundError(f"schedule not found: {schedule_id}")
+        self.store.save_thread_items(normalized_owner_id, target_thread_id, items)
+        return updated
 
     def serialize_item(self, item: ScheduleItem) -> Dict[str, Any]:
         tz, _, _ = resolve_timezone(item.timezone_name)

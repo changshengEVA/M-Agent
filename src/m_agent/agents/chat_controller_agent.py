@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from dataclasses import asdict, dataclass, is_dataclass
@@ -403,6 +404,7 @@ class ChatControllerAgent:
         active_thread_id: str,
         recall_state: Dict[str, Any],
         controller_state: Dict[str, Any],
+        extra_system_prompt: str = "",
     ):
         capability_context = ControllerCapabilityContext(
             active_thread_id=active_thread_id,
@@ -423,12 +425,59 @@ class ChatControllerAgent:
             enabled_tool_names=self.enabled_tool_names,
             tool_descriptions=tool_descriptions,
         )
+        system_prompt = self.chat_system_prompt
+        if str(extra_system_prompt or "").strip():
+            system_prompt = f"{system_prompt}\n\n{str(extra_system_prompt).strip()}".strip()
         return create_agent(
             model=self.memory_agent.model,
-            system_prompt=self.chat_system_prompt,
+            system_prompt=system_prompt,
             tools=tools,
             response_format=ToolStrategy(ChatAgentResponse),
         )
+
+    def _build_runtime_system_prompt(
+        self,
+        *,
+        source: str = "user",
+        system_context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        safe_source = str(source or "user").strip().lower() or "user"
+        safe_context = dict(system_context or {})
+        if safe_source == "user" and not safe_context:
+            return ""
+
+        context_json = json.dumps(safe_context, ensure_ascii=False, sort_keys=True) if safe_context else "{}"
+        if self.prompt_language == "zh":
+            header = "[隐藏运行时上下文]"
+            guidance = (
+                "当前这轮输入来自系统触发，而不是用户刚刚发送的新消息。"
+                if safe_source == "schedule"
+                else "当前这轮输入带有系统附加上下文。"
+            )
+            behavior = (
+                "请把可见消息当作当前需要执行的提醒/动作，并结合下面的上下文完成回复。"
+                "不要误称这是用户刚刚主动发来的新消息。"
+            )
+        else:
+            header = "[Hidden Runtime Context]"
+            guidance = (
+                "This turn was triggered by the scheduling system, not by a new live user message."
+                if safe_source == "schedule"
+                else "This turn includes hidden runtime context."
+            )
+            behavior = (
+                "Treat the visible message as the instruction to execute now, and use the context below."
+                " Do not imply the user just sent a fresh message unless that is explicitly true."
+            )
+        return "\n".join(
+            [
+                header,
+                f"source={safe_source}",
+                guidance,
+                behavior,
+                f"context_json={context_json}",
+            ]
+        ).strip()
 
     def _invoke_chat_controller_once(
         self,
@@ -498,6 +547,8 @@ class ChatControllerAgent:
         message: str,
         thread_id: Optional[str] = None,
         history_messages: Optional[List[Dict[str, Any]]] = None,
+        source: str = "user",
+        system_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if not isinstance(message, str) or not message.strip():
             raise ValueError("message must be a non-empty string")
@@ -507,10 +558,15 @@ class ChatControllerAgent:
         normalized_history = self._normalize_history_messages(history_messages)
         recall_state: Dict[str, Any] = {"mode": None, "result": None, "history": []}
         controller_state: Dict[str, Any] = {"history": [], "call_seq": 0}
+        extra_system_prompt = self._build_runtime_system_prompt(
+            source=source,
+            system_context=system_context,
+        )
         controller = self._build_chat_controller(
             active_thread_id=active_thread_id,
             recall_state=recall_state,
             controller_state=controller_state,
+            extra_system_prompt=extra_system_prompt,
         )
         controller_response = self._invoke_chat_controller(
             controller,

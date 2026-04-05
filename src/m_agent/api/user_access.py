@@ -772,6 +772,14 @@ class UserAccountStore:
             users = users_payload.get("users")
             return len(users) if isinstance(users, dict) else 0
 
+    def list_usernames(self) -> list[str]:
+        with self._lock:
+            users_payload = self._load_users_payload()
+            users = users_payload.get("users")
+            if not isinstance(users, dict):
+                return []
+            return sorted(str(key or "").strip() for key in users.keys() if str(key or "").strip())
+
     @staticmethod
     def _resolve_section_updates(raw_updates: Dict[str, Any], section: str) -> Dict[str, Any]:
         value = raw_updates.get(section)
@@ -1024,8 +1032,14 @@ class UserAccessService:
     def get_user_config_schema(self, *, user: AuthenticatedUser) -> Dict[str, Any]:
         return self.account_store.get_user_config_schema(username=user.username)
 
+    def get_user(self, *, username: str) -> Optional[AuthenticatedUser]:
+        return self.account_store.get_user(username=username)
+
     def get_runtime(self, *, user: AuthenticatedUser) -> Any:
         return self.runtime_pool.get_runtime(user)
+
+    def list_usernames(self) -> list[str]:
+        return self.account_store.list_usernames()
 
     def health_payload(self) -> Dict[str, Any]:
         self._cleanup_expired_sessions()

@@ -414,6 +414,8 @@ class SimpleMemoryChatAgent:
         thread_id: Optional[str] = None,
         history_messages: Optional[List[Dict[str, Any]]] = None,
         persist_memory: Optional[bool] = None,
+        source: str = "user",
+        system_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         if not isinstance(message, str) or not message.strip():
             raise ValueError("message must be a non-empty string")
@@ -423,6 +425,8 @@ class SimpleMemoryChatAgent:
             message=safe_message,
             thread_id=thread_id,
             history_messages=history_messages,
+            source=source,
+            system_context=system_context,
         )
         active_thread_id = str(
             controller_result.get("thread_id", thread_id or self.default_thread_id) or self.default_thread_id

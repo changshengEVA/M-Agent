@@ -73,6 +73,18 @@ def parse_args() -> argparse.Namespace:
         help="Max in-memory rounds retained per thread for chat history. Default: 12",
     )
     parser.add_argument(
+        "--schedule-beat-seconds",
+        type=int,
+        default=10,
+        help="Heartbeat scan interval in seconds for due schedules. Default: 10",
+    )
+    parser.add_argument(
+        "--schedule-busy-retry-seconds",
+        type=int,
+        default=5,
+        help="Retry delay in seconds when the target thread is busy. Default: 5",
+    )
+    parser.add_argument(
         "--users-db",
         default="config/users/users.json",
         help="User auth database path. Default: config/users/users.json",
@@ -124,7 +136,12 @@ def main() -> None:
             session_ttl_seconds=int(args.session_ttl_seconds),
         )
 
-    app = create_app(service_runtime=service_runtime, user_access=user_access)
+    app = create_app(
+        service_runtime=service_runtime,
+        user_access=user_access,
+        schedule_beat_seconds=int(args.schedule_beat_seconds),
+        schedule_busy_retry_seconds=int(args.schedule_busy_retry_seconds),
+    )
     url = f"http://{args.host}:{args.port}"
     logger.info("M-Agent chat API listening on %s", url)
     logger.info("Startup config locked to %s", config_path)
@@ -132,6 +149,11 @@ def main() -> None:
         "Thread memory runtime: idle_flush_seconds=%s history_max_rounds=%s",
         service_runtime.idle_flush_seconds,
         service_runtime.history_max_rounds,
+    )
+    logger.info(
+        "Schedule heartbeat: beat_interval_seconds=%s busy_retry_seconds=%s",
+        int(args.schedule_beat_seconds),
+        int(args.schedule_busy_retry_seconds),
     )
     if user_access is None:
         logger.info("Auth mode: disabled")

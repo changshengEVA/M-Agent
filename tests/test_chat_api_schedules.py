@@ -69,6 +69,12 @@ def test_schedule_crud_endpoints(tmp_path: Path) -> None:
         response = client.get("/v1/chat/threads/demo-thread/schedules")
         assert response.status_code == 200
         assert response.json()["count"] == 0
+        assert response.json()["heartbeat"]["beat_interval_seconds"] == 10
+
+        heartbeat = client.get("/v1/chat/threads/demo-thread/schedules/heartbeat")
+        assert heartbeat.status_code == 200
+        assert heartbeat.json()["heartbeat"]["beat_interval_seconds"] == 10
+        assert heartbeat.json()["heartbeat"]["worker_alive"] is True
 
         created = client.post(
             "/v1/chat/threads/demo-thread/schedules",

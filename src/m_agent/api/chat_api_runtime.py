@@ -34,9 +34,12 @@ class BufferedRound:
     assistant_at: datetime
     agent_result: Optional[Dict[str, Any]]
     capture_state: str
+    source: str = "user"
     flush_id: Optional[str] = None
 
     def to_history_messages(self) -> List[Dict[str, str]]:
+        if self.source == "schedule":
+            return [{"role": "assistant", "content": self.assistant_message}]
         return [
             {"role": "user", "content": self.user_message},
             {"role": "assistant", "content": self.assistant_message},
@@ -182,10 +185,15 @@ class ChatServiceRuntime:
         user_message: str,
         assistant_message: str,
         agent_result: Optional[Dict[str, Any]],
+        source: str = "user",
+        capture_state_override: Optional[str] = None,
     ) -> BufferedRound:
         user_at = _now_utc()
         assistant_at = user_at + timedelta(seconds=1)
-        capture_state = "pending" if session.mode == "manual" else "skipped"
+        capture_state = (
+            str(capture_state_override or "").strip()
+            or ("pending" if session.mode == "manual" else "skipped")
+        )
         round_item = BufferedRound(
             round_id=f"round_{uuid.uuid4().hex}",
             user_message=str(user_message or "").strip(),
@@ -194,6 +202,7 @@ class ChatServiceRuntime:
             assistant_at=assistant_at,
             agent_result=deepcopy(agent_result) if isinstance(agent_result, dict) else None,
             capture_state=capture_state,
+            source=str(source or "user").strip() or "user",
         )
         session.rounds.append(round_item)
         session.last_activity_at = assistant_at
@@ -209,6 +218,7 @@ class ChatServiceRuntime:
         return {
             "round_id": item.round_id,
             "capture_state": item.capture_state,
+            "source": item.source,
             "flush_id": item.flush_id,
             "user_message": item.user_message,
             "assistant_message": item.assistant_message,
@@ -299,6 +309,7 @@ class ChatServiceRuntime:
                 user_message=message,
                 assistant_message=answer_text,
                 agent_result=agent_result,
+                source="user",
             )
             thread_state = self._thread_state_snapshot(session)
 
@@ -318,6 +329,94 @@ class ChatServiceRuntime:
         output["memory_write"] = None
         output["memory_capture"] = memory_capture
         output["thread_state"] = thread_state
+        return output
+
+    @staticmethod
+    def _schedule_system_context(schedule_item: Any) -> Dict[str, Any]:
+        action_payload = getattr(schedule_item, "action_payload", None)
+        metadata = getattr(schedule_item, "metadata", None)
+        return {
+            "trigger_source": "schedule",
+            "schedule_id": str(getattr(schedule_item, "schedule_id", "") or "").strip(),
+            "due_at_utc": str(getattr(schedule_item, "due_at_utc", "") or "").strip(),
+            "timezone_name": str(getattr(schedule_item, "timezone_name", "") or "").strip(),
+            "original_time_text": str(getattr(schedule_item, "original_time_text", "") or "").strip(),
+            "action_type": str(getattr(schedule_item, "action_type", "") or "").strip(),
+            "thread_id": str(getattr(schedule_item, "thread_id", "") or "").strip(),
+            "source_text": str(getattr(schedule_item, "source_text", "") or "").strip(),
+            "action_payload": deepcopy(action_payload) if isinstance(action_payload, dict) else {},
+            "metadata": deepcopy(metadata) if isinstance(metadata, dict) else {},
+        }
+
+    @staticmethod
+    def _schedule_prompt(schedule_item: Any) -> str:
+        action_payload = getattr(schedule_item, "action_payload", None)
+        if isinstance(action_payload, dict):
+            prompt = str(action_payload.get("prompt", "") or "").strip()
+            if prompt:
+                return prompt
+        for candidate in (
+            getattr(schedule_item, "title", None),
+            getattr(schedule_item, "source_text", None),
+            getattr(schedule_item, "original_time_text", None),
+        ):
+            prompt = str(candidate or "").strip()
+            if prompt:
+                return prompt
+        return "Scheduled reminder"
+
+    def run_schedule_trigger(self, *, schedule_item: Any) -> Dict[str, Any]:
+        active_thread_id = str(getattr(schedule_item, "thread_id", "") or self.default_thread_id).strip() or self.default_thread_id
+        session = self._get_or_create_thread(active_thread_id)
+        with self._threads_lock:
+            history_messages = self._build_history_messages(session)
+
+        schedule_prompt = self._schedule_prompt(schedule_item)
+        system_context = self._schedule_system_context(schedule_item)
+        with self._operation_lock:
+            result = self.agent.chat(
+                message=schedule_prompt,
+                thread_id=active_thread_id,
+                history_messages=history_messages,
+                persist_memory=False,
+                source="schedule",
+                system_context=system_context,
+            )
+
+        answer_text = str(result.get("answer", "") or "").strip()
+        agent_result = result.get("agent_result") if isinstance(result.get("agent_result"), dict) else None
+        with self._threads_lock:
+            self._append_round(
+                session,
+                user_message=schedule_prompt,
+                assistant_message=answer_text,
+                agent_result=agent_result,
+                source="schedule",
+                capture_state_override="skipped",
+            )
+            thread_state = self._thread_state_snapshot(session)
+
+        self._emit_thread_event(
+            active_thread_id,
+            "assistant_message",
+            {
+                "thread_id": active_thread_id,
+                "answer": answer_text,
+                "source": "schedule",
+                "schedule_id": str(getattr(schedule_item, "schedule_id", "") or "").strip(),
+            },
+        )
+        self._emit_thread_event(active_thread_id, "thread_state_updated", {"thread_state": thread_state})
+
+        output = dict(result)
+        output["thread_state"] = thread_state
+        output["memory_capture"] = {
+            "mode": session.mode,
+            "status": "skipped",
+            "reason": "schedule trigger is not persisted to memory buffer",
+            "pending_rounds": thread_state["pending_rounds"],
+            "pending_turns": thread_state["pending_turns"],
+        }
         return output
 
     def flush_thread(self, thread_id: str, *, reason: str = "manual_api") -> Dict[str, Any]:
