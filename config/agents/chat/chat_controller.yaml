@@ -22,6 +22,12 @@ enabled_tools:
   - "email_send"
 
 tool_defaults:
+  # Reserved controller-level limit settings.
+  __controller__:
+    max_calls_per_turn: 12
+  # Shared cap for top-level memory recall tools: shallow_recall + deep_recall.
+  memory_recall:
+    max_calls_per_turn: 8
   get_current_time:
     timezone_name: "Asia/Shanghai"
   schedule_manage:

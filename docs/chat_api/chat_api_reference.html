@@ -1,0 +1,1139 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>M-Agent Chat API Reference</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 16mm 14mm 16mm 14mm;
+    }
+    :root {
+      --fg: #1f2328;
+      --muted: #57606a;
+      --line: #d0d7de;
+      --soft: #f6f8fa;
+      --soft-2: #ffffff;
+      --accent: #0b57d0;
+    }
+    html {
+      font-size: 12px;
+    }
+    body {
+      margin: 0 auto;
+      color: var(--fg);
+      font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+      line-height: 1.55;
+    }
+    main {
+      max-width: 100%;
+    }
+    .cover {
+      border-bottom: 2px solid var(--line);
+      padding-bottom: 10mm;
+      margin-bottom: 8mm;
+    }
+    .cover h1 {
+      font-size: 24px;
+      margin: 0 0 4mm 0;
+    }
+    .cover p {
+      margin: 2mm 0;
+      color: var(--muted);
+    }
+    .toc {
+      margin: 0 0 8mm 0;
+      padding: 5mm 6mm;
+      background: var(--soft);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+    }
+    .toc h2 {
+      margin-top: 0;
+    }
+    .toc ul {
+      margin: 0;
+      padding-left: 18px;
+    }
+    .toc li {
+      margin: 1.5mm 0;
+    }
+    .toc .toc-level-3 {
+      margin-left: 10px;
+    }
+    h1, h2, h3, h4 {
+      page-break-after: avoid;
+      margin-top: 7mm;
+      margin-bottom: 3mm;
+      line-height: 1.25;
+    }
+    h1 {
+      font-size: 20px;
+      border-bottom: 1px solid var(--line);
+      padding-bottom: 2mm;
+    }
+    h2 {
+      font-size: 16px;
+    }
+    h3 {
+      font-size: 13px;
+    }
+    p, ul, ol, blockquote, table, pre {
+      margin-top: 0;
+      margin-bottom: 4mm;
+    }
+    ul, ol {
+      padding-left: 18px;
+    }
+    li {
+      margin: 1mm 0;
+    }
+    blockquote {
+      margin-left: 0;
+      padding: 3mm 4mm;
+      border-left: 4px solid #9fbef5;
+      background: #f4f8ff;
+    }
+    code {
+      font-family: "Cascadia Mono", "Consolas", monospace;
+      background: var(--soft);
+      padding: 0.2em 0.45em;
+      border-radius: 4px;
+      font-size: 0.95em;
+    }
+    pre {
+      background: var(--soft);
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 4mm;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    pre code {
+      background: transparent;
+      padding: 0;
+      border-radius: 0;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 10.5px;
+      table-layout: fixed;
+    }
+    th, td {
+      border: 1px solid var(--line);
+      padding: 2.2mm 2.5mm;
+      vertical-align: top;
+      overflow-wrap: anywhere;
+    }
+    th {
+      background: #eef3f8;
+      text-align: left;
+    }
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+    .appendix {
+      page-break-before: always;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="cover">
+      <h1>M-Agent Chat API Reference</h1>
+      <p>Combined from <code>docs/chat_api/README.md</code> and <code>docs/chat_api/testing.http</code>.</p>
+      <p>This PDF is intended for software development, integration, and manual API testing.</p>
+    </section>
+    <section class="toc"><h2>Contents</h2><ul><li class="toc-level-1"><a href="#m-agent-chat-api-reference">M-Agent Chat API Reference</a></li><li class="toc-level-2"><a href="#1-overview-总览">1. Overview / 总览</a></li><li class="toc-level-3"><a href="#1-1-core-runtime-model-核心运行模型">1.1 Core runtime model / 核心运行模型</a></li><li class="toc-level-3"><a href="#1-2-important-separation-一个重要的接口边界">1.2 Important separation / 一个重要的接口边界</a></li><li class="toc-level-2"><a href="#2-quick-navigation-快速导航">2. Quick Navigation / 快速导航</a></li><li class="toc-level-2"><a href="#3-startup-启动方式">3. Startup / 启动方式</a></li><li class="toc-level-3"><a href="#3-1-example-示例">3.1 Example / 示例</a></li><li class="toc-level-3"><a href="#3-2-startup-arguments-启动参数">3.2 Startup arguments / 启动参数</a></li><li class="toc-level-3"><a href="#3-3-built-in-docs-内置文档">3.3 Built-in docs / 内置文档</a></li><li class="toc-level-2"><a href="#4-common-conventions-通用约定">4. Common Conventions / 通用约定</a></li><li class="toc-level-3"><a href="#4-1-auth-behavior-鉴权行为">4.1 Auth behavior / 鉴权行为</a></li><li class="toc-level-3"><a href="#4-2-error-shape-错误返回">4.2 Error shape / 错误返回</a></li><li class="toc-level-3"><a href="#4-3-public-vs-internal-thread-ids-公共线程-id-与内部线程-id">4.3 Public vs internal thread ids / 公共线程 ID 与内部线程 ID</a></li><li class="toc-level-2"><a href="#5-shared-schemas-公共对象模型">5. Shared Schemas / 公共对象模型</a></li><li class="toc-level-3"><a href="#5-1-errorresponse">5.1 `ErrorResponse`</a></li><li class="toc-level-3"><a href="#5-2-authenticateduser">5.2 `AuthenticatedUser`</a></li><li class="toc-level-3"><a href="#5-3-runacceptedresponse">5.3 `RunAcceptedResponse`</a></li><li class="toc-level-3"><a href="#5-4-runsnapshot">5.4 `RunSnapshot`</a></li><li class="toc-level-3"><a href="#5-5-chatresult">5.5 `ChatResult`</a></li><li class="toc-level-3"><a href="#5-6-memorycapture">5.6 `MemoryCapture`</a></li><li class="toc-level-3"><a href="#5-7-threadstate">5.7 `ThreadState`</a></li><li class="toc-level-3"><a href="#5-8-dialoguesummary">5.8 `DialogueSummary`</a></li><li class="toc-level-3"><a href="#5-9-dialoguedetail">5.9 `DialogueDetail`</a></li><li class="toc-level-3"><a href="#5-10-scheduleitem">5.10 `ScheduleItem`</a></li><li class="toc-level-3"><a href="#5-11-scheduleheartbeat">5.11 `ScheduleHeartbeat`</a></li><li class="toc-level-3"><a href="#5-12-sseenvelope">5.12 `SSEEnvelope`</a></li><li class="toc-level-2"><a href="#6-endpoint-reference-端点说明">6. Endpoint Reference / 端点说明</a></li><li class="toc-level-3"><a href="#6-1-get-and-get-healthz">6.1 `GET /` and `GET /healthz`</a></li><li class="toc-level-3"><a href="#6-2-post-v1-auth-register">6.2 `POST /v1/auth/register`</a></li><li class="toc-level-3"><a href="#6-3-post-v1-auth-login">6.3 `POST /v1/auth/login`</a></li><li class="toc-level-3"><a href="#6-4-get-v1-auth-me">6.4 `GET /v1/auth/me`</a></li><li class="toc-level-3"><a href="#6-5-post-v1-auth-logout">6.5 `POST /v1/auth/logout`</a></li><li class="toc-level-3"><a href="#6-6-get-v1-users-me-config-schema">6.6 `GET /v1/users/me/config/schema`</a></li><li class="toc-level-3"><a href="#6-7-patch-v1-users-me-config">6.7 `PATCH /v1/users/me/config`</a></li><li class="toc-level-3"><a href="#6-8-post-v1-chat-runs">6.8 `POST /v1/chat/runs`</a></li><li class="toc-level-3"><a href="#6-9-get-v1-chat-runs-run_id">6.9 `GET /v1/chat/runs/{run_id}`</a></li><li class="toc-level-3"><a href="#6-10-get-v1-chat-runs-run_id-events">6.10 `GET /v1/chat/runs/{run_id}/events`</a></li><li class="toc-level-3"><a href="#6-11-get-v1-chat-threads-thread_id-events">6.11 `GET /v1/chat/threads/{thread_id}/events`</a></li><li class="toc-level-3"><a href="#6-12-get-v1-chat-threads-thread_id-memory-state">6.12 `GET /v1/chat/threads/{thread_id}/memory/state`</a></li><li class="toc-level-3"><a href="#6-13-post-v1-chat-threads-thread_id-memory-mode">6.13 `POST /v1/chat/threads/{thread_id}/memory/mode`</a></li><li class="toc-level-3"><a href="#6-14-post-v1-chat-threads-thread_id-memory-flush">6.14 `POST /v1/chat/threads/{thread_id}/memory/flush`</a></li><li class="toc-level-3"><a href="#6-15-get-v1-chat-dialogues">6.15 `GET /v1/chat/dialogues`</a></li><li class="toc-level-3"><a href="#6-16-get-v1-chat-dialogues-dialogue_id">6.16 `GET /v1/chat/dialogues/{dialogue_id}`</a></li><li class="toc-level-3"><a href="#6-17-get-v1-chat-threads-thread_id-schedules">6.17 `GET /v1/chat/threads/{thread_id}/schedules`</a></li><li class="toc-level-3"><a href="#6-18-get-v1-chat-threads-thread_id-schedules-heartbeat">6.18 `GET /v1/chat/threads/{thread_id}/schedules/heartbeat`</a></li><li class="toc-level-3"><a href="#6-19-get-v1-chat-threads-thread_id-schedules-schedule_id">6.19 `GET /v1/chat/threads/{thread_id}/schedules/{schedule_id}`</a></li><li class="toc-level-3"><a href="#6-20-post-v1-chat-threads-thread_id-schedules">6.20 `POST /v1/chat/threads/{thread_id}/schedules`</a></li><li class="toc-level-3"><a href="#6-21-patch-v1-chat-threads-thread_id-schedules-schedule_id">6.21 `PATCH /v1/chat/threads/{thread_id}/schedules/{schedule_id}`</a></li><li class="toc-level-3"><a href="#6-22-delete-v1-chat-threads-thread_id-schedules-schedule_id">6.22 `DELETE /v1/chat/threads/{thread_id}/schedules/{schedule_id}`</a></li><li class="toc-level-2"><a href="#7-sse-reference-sse-事件参考">7. SSE Reference / SSE 事件参考</a></li><li class="toc-level-3"><a href="#7-1-run-stream-events-run-级事件">7.1 Run stream events / Run 级事件</a></li><li class="toc-level-3"><a href="#7-2-thread-stream-events-thread-级事件">7.2 Thread stream events / Thread 级事件</a></li><li class="toc-level-2"><a href="#8-testing-recommendations-测试建议">8. Testing Recommendations / 测试建议</a></li><li class="toc-level-3"><a href="#8-1-minimal-real-time-chat-flow-最小实时聊天联调流程">8.1 Minimal real-time chat flow / 最小实时聊天联调流程</a></li><li class="toc-level-3"><a href="#8-2-thread-memory-verification-线程记忆验证">8.2 Thread memory verification / 线程记忆验证</a></li><li class="toc-level-3"><a href="#8-3-schedule-verification-日程验证">8.3 Schedule verification / 日程验证</a></li><li class="toc-level-3"><a href="#8-4-recommended-companion-file-推荐配套文件">8.4 Recommended companion file / 推荐配套文件</a></li><li class="toc-level-2"><a href="#9-change-notes-变更说明">9. Change Notes / 变更说明</a></li></ul></section>
+    <h1 id="m-agent-chat-api-reference">M-Agent Chat API Reference</h1>
+<blockquote><p>Status / 状态: aligned with the current implementation in <code>src/m_agent/api/</code> Audience / 读者: backend developers, frontend developers, QA, and integration testers Scope / 范围: HTTP JSON APIs, SSE streams, auth, user config, chat runs, dialogue archives, thread memory, and schedules</p></blockquote>
+<h2 id="1-overview-总览">1. Overview / 总览</h2>
+<p>This document replaces the old single-file <code>docs/chat_api.md</code> and is written against the current FastAPI implementation in:</p>
+<ul>
+<li><code>src/m_agent/api/chat_api_web.py</code></li>
+<li><code>src/m_agent/api/chat_api_runtime.py</code></li>
+<li><code>src/m_agent/api/chat_api_records.py</code></li>
+<li><code>src/m_agent/api/user_access.py</code></li>
+<li><code>src/m_agent/api/chat_dialogue_store.py</code></li>
+<li><code>src/m_agent/api/schedule_heartbeat.py</code></li>
+</ul>
+<p>当前 Chat API 不是“每次请求携带完整 config”的模式，而是“服务启动时固定 config，运行时维护 thread session”的模式。</p>
+<p>The current Chat API is not a per-request config override service. It uses a startup-fixed runtime config and keeps thread-scoped session state in memory while the server is alive.</p>
+<h3 id="1-1-core-runtime-model-核心运行模型">1.1 Core runtime model / 核心运行模型</h3>
+<ul>
+<li><code>POST /v1/chat/runs</code> creates an asynchronous chat run.</li>
+<li><code>GET /v1/chat/runs/{run_id}/events</code> is the main real-time event stream for one chat run.</li>
+<li><code>GET /v1/chat/runs/{run_id}</code> returns the final run snapshot.</li>
+<li><code>thread_id</code> identifies a long-lived chat thread with buffered history and memory-capture state.</li>
+<li>When auth is enabled, the server internally scopes thread ids as <code>username::public_thread_id</code>.</li>
+<li>Thread memory currently supports two modes:</li>
+<li><code>manual</code>: new chat rounds enter the pending memory buffer and can later be flushed</li>
+<li><code>off</code>: new chat rounds remain available to current chat history, but do not enter the pending memory buffer</li>
+</ul>
+<h3 id="1-2-important-separation-一个重要的接口边界">1.2 Important separation / 一个重要的接口边界</h3>
+<ul>
+<li><code>GET /v1/chat/runs/{run_id}/events</code> is the detailed per-run trace channel.</li>
+<li><code>GET /v1/chat/threads/{thread_id}/events</code> is the thread lifecycle channel.</li>
+</ul>
+<p>Do not treat them as interchangeable.</p>
+<p>不要把它们当成同一个事件流来消费。</p>
+<p>In the current implementation:</p>
+<ul>
+<li>normal user chat trace events belong to the run stream</li>
+<li>thread events mainly cover memory state changes, flush progress, schedule CRUD, and schedule execution</li>
+</ul>
+<h2 id="2-quick-navigation-快速导航">2. Quick Navigation / 快速导航</h2>
+<table><thead><tr><th>Group</th><th>Endpoints</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td>Health</td><td><code>GET /</code> <code>GET /healthz</code></td><td>服务健康、运行参数、端点清单</td><td>Service health, runtime metadata, endpoint map</td></tr><tr><td>Auth</td><td><code>POST /v1/auth/register</code> <code>POST /v1/auth/login</code> <code>GET /v1/auth/me</code> <code>POST /v1/auth/logout</code></td><td>用户注册、登录、会话信息、登出</td><td>Registration, login, session inspection, logout</td></tr><tr><td>User config</td><td><code>GET /v1/users/me/config/schema</code> <code>PATCH /v1/users/me/config</code></td><td>当前用户可编辑配置元数据与更新接口</td><td>Editable config metadata and patch API</td></tr><tr><td>Chat runs</td><td><code>POST /v1/chat/runs</code> <code>GET /v1/chat/runs/{run_id}</code> <code>GET /v1/chat/runs/{run_id}/events</code></td><td>创建对话、获取结果、订阅 run 级事件</td><td>Create run, fetch final result, subscribe to run events</td></tr><tr><td>Thread events</td><td><code>GET /v1/chat/threads/{thread_id}/events</code></td><td>线程级事件流</td><td>Thread-level SSE stream</td></tr><tr><td>Thread memory</td><td><code>GET /v1/chat/threads/{thread_id}/memory/state</code> <code>POST /v1/chat/threads/{thread_id}/memory/mode</code> <code>POST /v1/chat/threads/{thread_id}/memory/flush</code></td><td>查看线程记忆状态、切换模式、手动 flush</td><td>Inspect thread state, switch memory mode, manually flush</td></tr><tr><td>Dialogues</td><td><code>GET /v1/chat/dialogues</code> <code>GET /v1/chat/dialogues/{dialogue_id}</code></td><td>已 flush 的对话归档列表与详情</td><td>Flushed dialogue archive list and detail</td></tr><tr><td>Schedules</td><td><code>GET/POST/PATCH/DELETE /v1/chat/threads/{thread_id}/schedules...</code></td><td>日程提醒查询、创建、更新、取消</td><td>Schedule query, create, update, cancel</td></tr></tbody></table>
+<h2 id="3-startup-启动方式">3. Startup / 启动方式</h2>
+<h3 id="3-1-example-示例">3.1 Example / 示例</h3>
+<pre><code class="language-powershell">$env:PYTHONPATH = &quot;src&quot;
+python -m m_agent.api.chat_api `
+  --host 127.0.0.1 `
+  --port 8777 `
+  --config config/agents/chat/chat_controller.yaml `
+  --idle-flush-seconds 1800 `
+  --history-max-rounds 12 `
+  --schedule-beat-seconds 10 `
+  --schedule-busy-retry-seconds 5 `
+  --users-db config/users/users.json `
+  --session-ttl-seconds 43200</code></pre>
+<h3 id="3-2-startup-arguments-启动参数">3.2 Startup arguments / 启动参数</h3>
+<table><thead><tr><th>Arg</th><th>Default</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>--host</code></td><td><code>127.0.0.1</code></td><td>绑定地址</td><td>Bind host</td></tr><tr><td><code>--port</code></td><td><code>8777</code></td><td>绑定端口</td><td>Bind port</td></tr><tr><td><code>--config</code></td><td><code>config/agents/chat/chat_controller.yaml</code></td><td>启动后固定的 chat config</td><td>Startup-fixed chat config</td></tr><tr><td><code>--idle-flush-seconds</code></td><td><code>1800</code></td><td><code>manual</code> 模式下 pending buffer 的空闲自动 flush 时间</td><td>Idle timeout before pending manual memory is auto-flushed</td></tr><tr><td><code>--history-max-rounds</code></td><td><code>12</code></td><td>每个线程在服务内保留的最大轮次数</td><td>Max in-memory rounds retained per thread</td></tr><tr><td><code>--schedule-beat-seconds</code></td><td><code>10</code></td><td>日程心跳扫描周期</td><td>Schedule heartbeat scan interval</td></tr><tr><td><code>--schedule-busy-retry-seconds</code></td><td><code>5</code></td><td>线程忙时的日程重试延迟</td><td>Schedule retry delay when the target thread is busy</td></tr><tr><td><code>--users-db</code></td><td><code>config/users/users.json</code></td><td>用户数据库路径</td><td>User database path</td></tr><tr><td><code>--session-ttl-seconds</code></td><td><code>43200</code></td><td>登录会话有效期，单位秒</td><td>Session TTL in seconds</td></tr><tr><td><code>--disable-auth</code></td><td>off</td><td>关闭注册/登录与 Bearer 校验，进入匿名模式</td><td>Disable auth and run in anonymous mode</td></tr><tr><td><code>--debug</code></td><td>off</td><td>打开更详细的服务日志</td><td>Enable verbose backend logs</td></tr></tbody></table>
+<h3 id="3-3-built-in-docs-内置文档">3.3 Built-in docs / 内置文档</h3>
+<ul>
+<li>Swagger UI: <code>http://127.0.0.1:8777/docs</code></li>
+<li>OpenAPI JSON: <code>http://127.0.0.1:8777/openapi.json</code></li>
+</ul>
+<h2 id="4-common-conventions-通用约定">4. Common Conventions / 通用约定</h2>
+<table><thead><tr><th>Item</th><th>Value / Format</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td>Base content type</td><td><code>application/json</code></td><td>普通 HTTP 接口收发 JSON</td><td>Regular HTTP endpoints use JSON</td></tr><tr><td>SSE content type</td><td><code>text/event-stream</code></td><td>事件流使用标准 SSE</td><td>Event streams use standard SSE</td></tr><tr><td>Time format</td><td>ISO 8601, usually UTC with <code>Z</code></td><td>时间戳通常为 UTC <code>Z</code> 格式</td><td>Timestamps are usually ISO UTC with <code>Z</code></td></tr><tr><td>Auth header</td><td><code>Authorization: Bearer &lt;token&gt;</code></td><td>默认会话认证头</td><td>Primary auth header</td></tr><tr><td>Alternate auth header</td><td><code>X-Session-Token: &lt;token&gt;</code></td><td>备用会话认证头</td><td>Alternate session header</td></tr><tr><td>Error envelope</td><td><code>{&quot;error&quot;: &quot;...&quot;}</code></td><td>失败时至少包含 <code>error</code> 字段</td><td>Failures contain at least <code>error</code></td></tr><tr><td>Run polling resume</td><td><code>after_seq</code> on run SSE, default <code>0</code></td><td>run 事件流默认可从头追事件</td><td>Run stream can replay from the beginning by default</td></tr><tr><td>Thread live tail</td><td><code>after_seq</code> on thread SSE, default <code>-1</code></td><td>thread 事件流默认从“当前尾部”开始订阅新事件</td><td>Thread stream follows only new events by default</td></tr><tr><td>Config override</td><td>request body <code>config</code> is rejected</td><td>当前服务不支持请求级切换 config</td><td>Request-level config override is not supported</td></tr></tbody></table>
+<h3 id="4-1-auth-behavior-鉴权行为">4.1 Auth behavior / 鉴权行为</h3>
+<ul>
+<li>When auth is enabled, chat APIs require a valid session token.</li>
+<li>When auth is disabled by <code>--disable-auth</code>, auth endpoints return <code>503</code>, but chat endpoints are open.</li>
+</ul>
+<p>启用认证时，聊天相关接口需要合法 token。</p>
+<p>使用 <code>--disable-auth</code> 关闭认证后，注册/登录相关接口会返回 <code>503</code>，但聊天接口可匿名访问。</p>
+<h3 id="4-2-error-shape-错误返回">4.2 Error shape / 错误返回</h3>
+<p>Most errors use a minimal JSON shape:</p>
+<p>大多数错误都使用一个最小 JSON 结构：</p>
+<pre><code class="language-json">{
+  &quot;error&quot;: &quot;message text&quot;
+}</code></pre>
+<p>Some endpoints may include extra debugging fields, for example:</p>
+<pre><code class="language-json">{
+  &quot;error&quot;: &quot;service config is fixed at startup; restart the API with --config to change it&quot;,
+  &quot;config_path&quot;: &quot;F:\\AI\\M-Agent\\config\\agents\\chat\\chat_controller.yaml&quot;
+}</code></pre>
+<h3 id="4-3-public-vs-internal-thread-ids-公共线程-id-与内部线程-id">4.3 Public vs internal thread ids / 公共线程 ID 与内部线程 ID</h3>
+<p>When auth is enabled:</p>
+<ul>
+<li>request path / body still uses the public thread id, for example <code>demo-thread</code></li>
+<li>the runtime internally uses <code>username::demo-thread</code></li>
+<li>public API responses usually convert the thread id back to the public form</li>
+</ul>
+<p>认证开启后，调用方仍使用公开线程 ID，但服务内部会自动做用户隔离。</p>
+<h2 id="5-shared-schemas-公共对象模型">5. Shared Schemas / 公共对象模型</h2>
+<p>This section describes the recurring objects used by multiple endpoints.</p>
+<p>本节描述多个接口反复出现的对象结构。</p>
+<h3 id="5-1-errorresponse">5.1 <code>ErrorResponse</code></h3>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>error</code></td><td><code>string</code></td><td>错误信息</td><td>Error message</td></tr></tbody></table>
+<h3 id="5-2-authenticateduser">5.2 <code>AuthenticatedUser</code></h3>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>username</code></td><td><code>string</code></td><td>登录用户名，小写规范化</td><td>Login username, normalized to lowercase</td></tr><tr><td><code>display_name</code></td><td><code>string</code></td><td>展示名</td><td>Display name</td></tr><tr><td><code>role</code></td><td><code>string</code></td><td>当前角色，<code>basic</code> 或 <code>advanced</code></td><td>Current role, <code>basic</code> or <code>advanced</code></td></tr><tr><td><code>config_path</code></td><td><code>string</code></td><td>当前用户生效的 chat config 路径</td><td>Effective chat config path for this user</td></tr><tr><td><code>created_at</code></td><td><code>string</code></td><td>用户创建时间</td><td>User creation time</td></tr><tr><td><code>updated_at</code></td><td><code>string</code></td><td>用户最近配置更新时间</td><td>Last config update time</td></tr><tr><td><code>editable_fields</code></td><td><code>object</code></td><td>按配置 section 给出可编辑字段列表</td><td>Editable field names grouped by config section</td></tr></tbody></table>
+<h3 id="5-3-runacceptedresponse">5.3 <code>RunAcceptedResponse</code></h3>
+<p>Returned by <code>POST /v1/chat/runs</code>.</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>run_id</code></td><td><code>string</code></td><td>异步 run ID</td><td>Asynchronous run id</td></tr><tr><td><code>status</code></td><td><code>string</code></td><td>初始状态，通常为 <code>queued</code></td><td>Initial status, usually <code>queued</code></td></tr><tr><td><code>thread_id</code></td><td><code>string</code></td><td>公开线程 ID</td><td>Public thread id</td></tr><tr><td><code>user_id</code></td><td>`string \</td><td>null`</td><td>归属用户；匿名模式下可能为空</td></tr><tr><td><code>events_url</code></td><td><code>string</code></td><td>该 run 的 SSE 地址</td><td>SSE URL for this run</td></tr><tr><td><code>result_url</code></td><td><code>string</code></td><td>该 run 的最终结果地址</td><td>Final result URL for this run</td></tr></tbody></table>
+<h3 id="5-4-runsnapshot">5.4 <code>RunSnapshot</code></h3>
+<p>Returned by <code>GET /v1/chat/runs/{run_id}</code>.</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>run_id</code></td><td><code>string</code></td><td>run ID</td><td>Run id</td></tr><tr><td><code>status</code></td><td><code>string</code></td><td><code>queued</code> / <code>running</code> / <code>completed</code> / <code>failed</code></td><td>Run status</td></tr><tr><td><code>config_path</code></td><td><code>string</code></td><td>本 run 实际使用的 config 路径</td><td>Config path used by this run</td></tr><tr><td><code>thread_id</code></td><td><code>string</code></td><td>公开线程 ID</td><td>Public thread id</td></tr><tr><td><code>user_id</code></td><td>`string \</td><td>null`</td><td>归属用户</td></tr><tr><td><code>message</code></td><td><code>string</code></td><td>用户本轮输入</td><td>User message for this run</td></tr><tr><td><code>created_at</code></td><td><code>string</code></td><td>run 创建时间</td><td>Run creation time</td></tr><tr><td><code>finished_at</code></td><td>`string \</td><td>null`</td><td>run 完成时间</td></tr><tr><td><code>event_count</code></td><td><code>integer</code></td><td>当前已累计事件数</td><td>Number of captured events</td></tr><tr><td><code>result</code></td><td>`object \</td><td>null`</td><td>最终 chat result，对应下文 <code>ChatResult</code></td></tr><tr><td><code>error</code></td><td>`string \</td><td>null`</td><td>失败时的错误文本</td></tr></tbody></table>
+<h3 id="5-5-chatresult">5.5 <code>ChatResult</code></h3>
+<p>The <code>result</code> object inside a completed run snapshot.</p>
+<p><code>RunSnapshot.result</code> 中的最终业务结果对象。</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>success</code></td><td><code>boolean</code></td><td>当前 chat 调用是否成功</td><td>Whether the chat execution succeeded</td></tr><tr><td><code>thread_id</code></td><td><code>string</code></td><td>公开线程 ID</td><td>Public thread id</td></tr><tr><td><code>question</code></td><td><code>string</code></td><td>本轮问题文本</td><td>Current user question</td></tr><tr><td><code>answer</code></td><td><code>string</code></td><td>最终回答</td><td>Final answer</td></tr><tr><td><code>history_messages</code></td><td><code>array[object]</code></td><td>发给主控 chat 的历史消息数组</td><td>History messages passed to the controller</td></tr><tr><td><code>agent_result</code></td><td><code>object</code></td><td>主控/召回层的结构化结果</td><td>Structured controller/recall result</td></tr><tr><td><code>memory_write</code></td><td><code>null</code></td><td>当前 run 返回中固定为 <code>null</code></td><td>Currently always <code>null</code> in run output</td></tr><tr><td><code>memory_capture</code></td><td><code>object</code></td><td>当前轮的 memory capture 状态</td><td>Memory capture state for this round</td></tr><tr><td><code>thread_state</code></td><td><code>object</code></td><td>本轮结束后的线程状态快照</td><td>Thread-state snapshot after this run</td></tr></tbody></table>
+<p>Common <code>agent_result</code> fields:</p>
+<p><code>agent_result</code> 常见字段：</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>answer</code></td><td><code>string</code></td><td>结构化回答文本</td><td>Structured answer text</td></tr><tr><td><code>gold_answer</code></td><td>`string \</td><td>null`</td><td>简短答案摘要</td></tr><tr><td><code>evidence</code></td><td>`string \</td><td>null`</td><td>证据摘要</td></tr><tr><td><code>sub_questions</code></td><td><code>array[string]</code></td><td>recall 分解后的子问题</td><td>Decomposed sub-questions</td></tr><tr><td><code>plan_summary</code></td><td>`string \</td><td>null`</td><td>本轮策略/计划摘要</td></tr><tr><td><code>tool_call_count</code></td><td><code>integer</code></td><td>召回与控制层工具调用总数的近似统计</td><td>Approximate tool-call count</td></tr><tr><td><code>question_plan</code></td><td><code>object</code></td><td>拆题计划</td><td>Question plan</td></tr><tr><td><code>sub_question_results</code></td><td><code>array[object]</code></td><td>子问题执行结果</td><td>Sub-question execution results</td></tr><tr><td><code>recall_mode</code></td><td>`string \</td><td>null`</td><td>当前使用的 recall 模式</td></tr><tr><td><code>recall_modes</code></td><td><code>array[string]</code></td><td>trace summary 中出现过的 recall 模式列表</td><td>Recall modes seen in the trace summary</td></tr><tr><td><code>recall_history</code></td><td><code>array[object]</code></td><td>主控层记录的 recall 调用历史</td><td>Recall history recorded by the controller</td></tr><tr><td><code>controller_tool_count</code></td><td><code>integer</code></td><td>顶层控制器工具调用数</td><td>Top-level controller tool count</td></tr><tr><td><code>controller_tool_names</code></td><td><code>array[string]</code></td><td>顶层控制器工具名称列表</td><td>Top-level controller tool names</td></tr><tr><td><code>controller_tool_history</code></td><td><code>array[object]</code></td><td>顶层控制器工具调用历史</td><td>Top-level controller tool history</td></tr></tbody></table>
+<p>Notes:</p>
+<ul>
+<li><code>agent_result</code> is intentionally broader than a strict fixed schema.</li>
+<li>exact keys vary by execution path</li>
+<li>shallow recall, deep recall, direct answer, and top-level controller tools may produce slightly different payloads</li>
+</ul>
+<p>说明：</p>
+<ul>
+<li><code>agent_result</code> 不是一个完全刚性的固定 schema</li>
+<li>不同执行路径下字段可能略有差异</li>
+</ul>
+<h3 id="5-6-memorycapture">5.6 <code>MemoryCapture</code></h3>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>mode</code></td><td><code>string</code></td><td>线程当时的 memory mode</td><td>Thread memory mode at capture time</td></tr><tr><td><code>status</code></td><td><code>string</code></td><td>常见值：<code>buffered</code>、<code>skipped</code></td><td>Common values: <code>buffered</code>, <code>skipped</code></td></tr><tr><td><code>reason</code></td><td>`string \</td><td>null`</td><td>跳过原因</td></tr><tr><td><code>pending_rounds</code></td><td><code>integer</code></td><td>当前 pending 轮次数</td><td>Number of pending rounds</td></tr><tr><td><code>pending_turns</code></td><td><code>integer</code></td><td>当前 pending turn 数</td><td>Number of pending turns</td></tr></tbody></table>
+<h3 id="5-7-threadstate">5.7 <code>ThreadState</code></h3>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>thread_id</code></td><td><code>string</code></td><td>公开线程 ID</td><td>Public thread id</td></tr><tr><td><code>mode</code></td><td><code>string</code></td><td><code>manual</code> 或 <code>off</code></td><td><code>manual</code> or <code>off</code></td></tr><tr><td><code>history_rounds</code></td><td><code>integer</code></td><td>当前线程保留的总轮次数</td><td>Total retained rounds</td></tr><tr><td><code>history_messages</code></td><td><code>integer</code></td><td>当前发给 chat history 的消息数</td><td>Current count of chat-history messages</td></tr><tr><td><code>pending_rounds</code></td><td><code>integer</code></td><td>尚未 flush 的轮次数</td><td>Pending round count</td></tr><tr><td><code>pending_turns</code></td><td><code>integer</code></td><td>尚未 flush 的 turn 数</td><td>Pending turn count</td></tr><tr><td><code>has_pending_data</code></td><td><code>boolean</code></td><td>是否存在待写回数据</td><td>Whether pending data exists</td></tr><tr><td><code>last_activity_at</code></td><td><code>string</code></td><td>最近一轮 assistant 完成时间</td><td>Last assistant activity time</td></tr><tr><td><code>last_flush_at</code></td><td>`string \</td><td>null`</td><td>最近一次成功 flush 时间</td></tr><tr><td><code>last_flush_attempt_at</code></td><td>`string \</td><td>null`</td><td>最近一次尝试 flush 时间</td></tr><tr><td><code>last_flush_reason</code></td><td>`string \</td><td>null`</td><td>最近一次 flush 的 reason</td></tr><tr><td><code>last_flush_success</code></td><td>`boolean \</td><td>null`</td><td>最近一次 flush 是否成功</td></tr><tr><td><code>idle_flush_seconds</code></td><td><code>integer</code></td><td>当前线程使用的空闲 flush 配置</td><td>Idle flush timeout</td></tr><tr><td><code>idle_flush_deadline</code></td><td>`string \</td><td>null`</td><td>如存在 pending 数据，则给出预计自动 flush 时间</td></tr><tr><td><code>history_rounds_data</code></td><td><code>array[object]</code></td><td>当前线程历史轮次明细</td><td>Detailed retained rounds</td></tr><tr><td><code>history_preview</code></td><td><code>array[object]</code></td><td>最近 3 条轮次预览</td><td>Last 3 retained rounds</td></tr></tbody></table>
+<p>Each item in <code>history_rounds_data</code> / <code>history_preview</code> contains:</p>
+<ul>
+<li><code>round_id</code></li>
+<li><code>capture_state</code></li>
+<li><code>source</code></li>
+<li><code>flush_id</code></li>
+<li><code>user_message</code></li>
+<li><code>assistant_message</code></li>
+<li><code>user_at</code></li>
+<li><code>assistant_at</code></li>
+</ul>
+<h3 id="5-8-dialoguesummary">5.8 <code>DialogueSummary</code></h3>
+<p>Returned inside <code>GET /v1/chat/dialogues</code>.</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>dialogue_id</code></td><td><code>string</code></td><td>对话归档 ID</td><td>Dialogue archive id</td></tr><tr><td><code>thread_id</code></td><td><code>string</code></td><td>公开线程 ID</td><td>Public thread id</td></tr><tr><td><code>start_time</code></td><td>`string \</td><td>null`</td><td>对话开始时间</td></tr><tr><td><code>end_time</code></td><td>`string \</td><td>null`</td><td>对话结束时间</td></tr><tr><td><code>source</code></td><td>`string \</td><td>null`</td><td>来源，例如 <code>chat_api_thread_flush</code></td></tr><tr><td><code>round_count</code></td><td><code>integer</code></td><td>轮次数</td><td>Round count</td></tr><tr><td><code>turn_count</code></td><td><code>integer</code></td><td>turn 数</td><td>Turn count</td></tr><tr><td><code>preview</code></td><td><code>string</code></td><td>预览文本</td><td>Preview text</td></tr><tr><td><code>dialogue_file</code></td><td><code>string</code></td><td>后端文件路径，便于排查</td><td>Backend file path for debugging</td></tr></tbody></table>
+<h3 id="5-9-dialoguedetail">5.9 <code>DialogueDetail</code></h3>
+<p>Returned by <code>GET /v1/chat/dialogues/{dialogue_id}</code>.</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>dialogue_id</code></td><td><code>string</code></td><td>对话归档 ID</td><td>Dialogue id</td></tr><tr><td><code>thread_id</code></td><td><code>string</code></td><td>公开线程 ID</td><td>Public thread id</td></tr><tr><td><code>thread_id_internal</code></td><td>`string \</td><td>null`</td><td>内部线程 ID，调试字段</td></tr><tr><td><code>user_id</code></td><td>`string \</td><td>null`</td><td>对话用户标识</td></tr><tr><td><code>participants</code></td><td><code>array[string]</code></td><td>对话参与者</td><td>Dialogue participants</td></tr><tr><td><code>meta</code></td><td><code>object</code></td><td>原始元数据</td><td>Original metadata</td></tr><tr><td><code>turns</code></td><td><code>array[object]</code></td><td>标准化 turn 列表</td><td>Normalized turn list</td></tr><tr><td><code>round_count</code></td><td><code>integer</code></td><td>轮次数</td><td>Round count</td></tr><tr><td><code>turn_count</code></td><td><code>integer</code></td><td>turn 数</td><td>Turn count</td></tr><tr><td><code>dialogue_file</code></td><td><code>string</code></td><td>后端文件路径</td><td>Backend file path</td></tr></tbody></table>
+<p>Each <code>turns[]</code> item contains:</p>
+<ul>
+<li><code>turn_id</code></li>
+<li><code>speaker</code></li>
+<li><code>text</code></li>
+<li><code>timestamp</code></li>
+</ul>
+<h3 id="5-10-scheduleitem">5.10 <code>ScheduleItem</code></h3>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>schedule_id</code></td><td><code>string</code></td><td>日程 ID，形如 <code>sch_xxx</code></td><td>Schedule id, usually <code>sch_xxx</code></td></tr><tr><td><code>owner_id</code></td><td><code>string</code></td><td>日程归属 owner</td><td>Schedule owner id</td></tr><tr><td><code>thread_id</code></td><td><code>string</code></td><td>该日程真正绑定的公开线程 ID</td><td>Actual public thread id bound to this schedule</td></tr><tr><td><code>title</code></td><td><code>string</code></td><td>日程标题</td><td>Schedule title</td></tr><tr><td><code>status</code></td><td><code>string</code></td><td><code>pending</code> / <code>leased</code> / <code>running</code> / <code>done</code> / <code>failed</code> / <code>canceled</code></td><td>Schedule status</td></tr><tr><td><code>due_at_utc</code></td><td><code>string</code></td><td>UTC 到期时间</td><td>UTC due time</td></tr><tr><td><code>due_at_local</code></td><td><code>string</code></td><td>本地时区时间</td><td>Local due time</td></tr><tr><td><code>due_display</code></td><td><code>string</code></td><td>适合 UI 显示的本地时间</td><td>UI-friendly local time</td></tr><tr><td><code>timezone_name</code></td><td><code>string</code></td><td>IANA 时区名</td><td>IANA timezone name</td></tr><tr><td><code>original_time_text</code></td><td><code>string</code></td><td>用户原始时间文本或标准化文本</td><td>Original or normalized time text</td></tr><tr><td><code>action_type</code></td><td><code>string</code></td><td>当前 API 创建的任务固定为 <code>chat_prompt</code></td><td>Current API creates <code>chat_prompt</code> actions</td></tr><tr><td><code>action_payload</code></td><td><code>object</code></td><td>执行动作负载</td><td>Execution payload</td></tr><tr><td><code>created_at</code></td><td><code>string</code></td><td>创建时间</td><td>Creation time</td></tr><tr><td><code>updated_at</code></td><td><code>string</code></td><td>更新时间</td><td>Update time</td></tr><tr><td><code>source_text</code></td><td><code>string</code></td><td>来源文本</td><td>Source text</td></tr><tr><td><code>metadata</code></td><td><code>object</code></td><td>扩展元数据</td><td>Extra metadata</td></tr></tbody></table>
+<h3 id="5-11-scheduleheartbeat">5.11 <code>ScheduleHeartbeat</code></h3>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>enabled</code></td><td><code>boolean</code></td><td>心跳是否启用</td><td>Whether heartbeat is enabled</td></tr><tr><td><code>worker_alive</code></td><td><code>boolean</code></td><td>心跳线程是否存活</td><td>Whether the heartbeat worker is alive</td></tr><tr><td><code>created_at</code></td><td><code>string</code></td><td>心跳协调器创建时间</td><td>Heartbeat coordinator creation time</td></tr><tr><td><code>beat_interval_seconds</code></td><td><code>integer</code></td><td>扫描周期</td><td>Scan interval</td></tr><tr><td><code>interval_seconds</code></td><td><code>integer</code></td><td>与 <code>beat_interval_seconds</code> 等价</td><td>Same as <code>beat_interval_seconds</code></td></tr><tr><td><code>batch_limit</code></td><td><code>integer</code></td><td>单次心跳最大 lease 数</td><td>Max leases per beat</td></tr><tr><td><code>busy_retry_seconds</code></td><td><code>integer</code></td><td>线程忙时的重试秒数</td><td>Retry seconds when thread is busy</td></tr><tr><td><code>beats_total</code></td><td><code>integer</code></td><td>已执行心跳次数</td><td>Total beats executed</td></tr><tr><td><code>items_leased</code></td><td><code>integer</code></td><td>已 lease 的任务总数</td><td>Total leased items</td></tr><tr><td><code>items_started</code></td><td><code>integer</code></td><td>已开始执行的任务总数</td><td>Total started items</td></tr><tr><td><code>items_completed</code></td><td><code>integer</code></td><td>已完成任务总数</td><td>Total completed items</td></tr><tr><td><code>items_failed</code></td><td><code>integer</code></td><td>已失败任务总数</td><td>Total failed items</td></tr><tr><td><code>items_busy_retried</code></td><td><code>integer</code></td><td>因线程忙而重试的任务总数</td><td>Total busy-retried items</td></tr><tr><td><code>last_beat_started_at</code></td><td>`string \</td><td>null`</td><td>最近一次扫描开始时间</td></tr><tr><td><code>last_beat_finished_at</code></td><td>`string \</td><td>null`</td><td>最近一次扫描结束时间</td></tr><tr><td><code>next_beat_due_at</code></td><td>`string \</td><td>null`</td><td>下一次扫描时间</td></tr><tr><td><code>last_error</code></td><td>`string \</td><td>null`</td><td>最近错误</td></tr></tbody></table>
+<h3 id="5-12-sseenvelope">5.12 <code>SSEEnvelope</code></h3>
+<p>Every SSE event uses the standard envelope below:</p>
+<p>所有 SSE 事件都遵循下面这个标准包裹层：</p>
+<pre><code class="language-text">id: &lt;seq&gt;
+event: &lt;type&gt;
+data: {&quot;run_id&quot;:&quot;...&quot;,&quot;seq&quot;:1,&quot;timestamp&quot;:&quot;...&quot;,&quot;type&quot;:&quot;run_started&quot;,&quot;payload&quot;:{...}}</code></pre>
+<p>Common fields:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>run_id</code> or <code>thread_id</code></td><td><code>string</code></td><td>对应 run 或 thread 的标识</td><td>Run id or thread id</td></tr><tr><td><code>seq</code></td><td><code>integer</code></td><td>单流内单调递增序号</td><td>Monotonic sequence number within the stream</td></tr><tr><td><code>timestamp</code></td><td><code>string</code></td><td>事件生成时间</td><td>Event timestamp</td></tr><tr><td><code>type</code></td><td><code>string</code></td><td>事件类型</td><td>Event type</td></tr><tr><td><code>payload</code></td><td><code>object</code></td><td>事件主体</td><td>Event payload</td></tr></tbody></table>
+<h2 id="6-endpoint-reference-端点说明">6. Endpoint Reference / 端点说明</h2>
+<h3 id="6-1-get-and-get-healthz">6.1 <code>GET /</code> and <code>GET /healthz</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>返回服务健康信息、运行时配置概览、可用端点清单</li>
+<li>Return health info, runtime metadata, and endpoint map</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>none</li>
+</ul>
+<p>Response fields:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>ok</code></td><td><code>boolean</code></td><td>固定为 <code>true</code></td><td>Always <code>true</code></td></tr><tr><td><code>service</code></td><td><code>string</code></td><td>服务名，当前为 <code>m-agent-chat-api</code></td><td>Service name</td></tr><tr><td><code>root</code></td><td><code>string</code></td><td>项目根目录</td><td>Project root path</td></tr><tr><td><code>runtime</code></td><td><code>object</code></td><td>主 chat runtime 健康信息</td><td>Main chat runtime health payload</td></tr><tr><td><code>schedule_heartbeat</code></td><td><code>object</code></td><td>日程心跳健康信息</td><td>Schedule heartbeat health payload</td></tr><tr><td><code>auth</code></td><td>`object \</td><td>null`</td><td>认证服务健康信息；匿名模式下为 <code>null</code></td></tr><tr><td><code>endpoints</code></td><td><code>object</code></td><td>主要端点映射</td><td>Key endpoint map</td></tr><tr><td><code>auth_required_for_chat</code></td><td><code>boolean</code></td><td>聊天接口是否要求 token</td><td>Whether chat endpoints require auth</td></tr></tbody></table>
+<p>Example:</p>
+<pre><code class="language-json">{
+  &quot;ok&quot;: true,
+  &quot;service&quot;: &quot;m-agent-chat-api&quot;,
+  &quot;root&quot;: &quot;F:\\AI\\M-Agent&quot;,
+  &quot;runtime&quot;: {
+    &quot;config_path&quot;: &quot;F:\\AI\\M-Agent\\config\\agents\\chat\\chat_controller.yaml&quot;,
+    &quot;default_thread_id&quot;: &quot;test-agent-1&quot;,
+    &quot;persist_memory&quot;: true,
+    &quot;idle_flush_seconds&quot;: 1800,
+    &quot;history_max_rounds&quot;: 12
+  },
+  &quot;auth_required_for_chat&quot;: true
+}</code></pre>
+<h3 id="6-2-post-v1-auth-register">6.2 <code>POST /v1/auth/register</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>注册用户并生成其专属配置目录</li>
+<li>Register a user and scaffold a user-specific config bundle</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>none</li>
+<li>returns <code>503</code> if auth is disabled</li>
+</ul>
+<p>Request body:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>username</code></td><td><code>string</code></td><td>yes</td><td>用户名，3-32 位，只允许字母、数字、点、下划线、横线</td><td>Username, 3-32 chars, letters/digits/dot/underscore/dash only</td></tr><tr><td><code>password</code></td><td><code>string</code></td><td>yes</td><td>密码，至少 8 位</td><td>Password, at least 8 characters</td></tr><tr><td><code>role</code></td><td><code>string</code></td><td>no</td><td><code>basic</code> 或 <code>advanced</code>，默认 <code>basic</code></td><td><code>basic</code> or <code>advanced</code>, default <code>basic</code></td></tr><tr><td><code>display_name</code></td><td><code>string</code></td><td>no</td><td>展示名</td><td>Display name</td></tr><tr><td><code>assistant_name</code></td><td><code>string</code></td><td>no</td><td>聊天助手显示名</td><td>Chat assistant display name</td></tr><tr><td><code>persona_prompt</code></td><td><code>string</code></td><td>no</td><td>用户自定义 persona prompt</td><td>Custom persona prompt</td></tr><tr><td><code>workflow_id</code></td><td><code>string</code></td><td>no</td><td>记忆工作流隔离 ID</td><td>Memory workflow namespace</td></tr></tbody></table>
+<p>Success response:</p>
+<pre><code class="language-json">{
+  &quot;user&quot;: {
+    &quot;username&quot;: &quot;alice&quot;,
+    &quot;display_name&quot;: &quot;alice&quot;,
+    &quot;role&quot;: &quot;basic&quot;,
+    &quot;config_path&quot;: &quot;F:\\AI\\M-Agent\\config\\users\\alice\\chat.yaml&quot;,
+    &quot;created_at&quot;: &quot;2026-04-05T09:00:00Z&quot;,
+    &quot;updated_at&quot;: &quot;2026-04-05T09:00:00Z&quot;,
+    &quot;editable_fields&quot;: {
+      &quot;chat&quot;: [&quot;chat_assistant_name&quot;, &quot;chat_persona_prompt&quot;],
+      &quot;memory_agent&quot;: [],
+      &quot;memory_core&quot;: []
+    }
+  }
+}</code></pre>
+<p>Common errors:</p>
+<ul>
+<li><code>400</code>: invalid username, short password, invalid role, or missing fields</li>
+<li><code>409</code>: user already exists</li>
+<li><code>503</code>: auth service disabled</li>
+</ul>
+<h3 id="6-3-post-v1-auth-login">6.3 <code>POST /v1/auth/login</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>用户登录并获取 Bearer token</li>
+<li>Login and obtain a Bearer token</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>none</li>
+<li>returns <code>503</code> if auth is disabled</li>
+</ul>
+<p>Request body:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>username</code></td><td><code>string</code></td><td>yes</td><td>用户名</td><td>Username</td></tr><tr><td><code>password</code></td><td><code>string</code></td><td>yes</td><td>密码</td><td>Password</td></tr></tbody></table>
+<p>Success response:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>user</code></td><td><code>AuthenticatedUser</code></td><td>用户信息</td><td>User info</td></tr><tr><td><code>access_token</code></td><td><code>string</code></td><td>Bearer token</td><td>Bearer token</td></tr><tr><td><code>token_type</code></td><td><code>string</code></td><td>固定为 <code>bearer</code></td><td>Always <code>bearer</code></td></tr><tr><td><code>expires_at</code></td><td><code>string</code></td><td>token 过期时间</td><td>Token expiration time</td></tr></tbody></table>
+<p>Example:</p>
+<pre><code class="language-json">{
+  &quot;user&quot;: {
+    &quot;username&quot;: &quot;alice&quot;,
+    &quot;display_name&quot;: &quot;alice&quot;,
+    &quot;role&quot;: &quot;basic&quot;,
+    &quot;config_path&quot;: &quot;F:\\AI\\M-Agent\\config\\users\\alice\\chat.yaml&quot;,
+    &quot;created_at&quot;: &quot;2026-04-05T09:00:00Z&quot;,
+    &quot;updated_at&quot;: &quot;2026-04-05T09:00:00Z&quot;,
+    &quot;editable_fields&quot;: {
+      &quot;chat&quot;: [&quot;chat_assistant_name&quot;, &quot;chat_persona_prompt&quot;],
+      &quot;memory_agent&quot;: [],
+      &quot;memory_core&quot;: []
+    }
+  },
+  &quot;access_token&quot;: &quot;paste-me&quot;,
+  &quot;token_type&quot;: &quot;bearer&quot;,
+  &quot;expires_at&quot;: &quot;2026-04-05T21:00:00Z&quot;
+}</code></pre>
+<p>Common errors:</p>
+<ul>
+<li><code>400</code>: missing username or password</li>
+<li><code>401</code>: invalid username or password</li>
+<li><code>503</code>: auth service disabled</li>
+</ul>
+<h3 id="6-4-get-v1-auth-me">6.4 <code>GET /v1/auth/me</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>返回当前 token 对应的用户信息</li>
+<li>Return the current authenticated user</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>required when auth is enabled</li>
+</ul>
+<p>Success response:</p>
+<pre><code class="language-json">{
+  &quot;user&quot;: {
+    &quot;username&quot;: &quot;alice&quot;,
+    &quot;display_name&quot;: &quot;alice&quot;,
+    &quot;role&quot;: &quot;basic&quot;,
+    &quot;config_path&quot;: &quot;F:\\AI\\M-Agent\\config\\users\\alice\\chat.yaml&quot;,
+    &quot;created_at&quot;: &quot;2026-04-05T09:00:00Z&quot;,
+    &quot;updated_at&quot;: &quot;2026-04-05T09:00:00Z&quot;,
+    &quot;editable_fields&quot;: {
+      &quot;chat&quot;: [&quot;chat_assistant_name&quot;, &quot;chat_persona_prompt&quot;],
+      &quot;memory_agent&quot;: [],
+      &quot;memory_core&quot;: []
+    }
+  }
+}</code></pre>
+<p>Common errors:</p>
+<ul>
+<li><code>401</code>: missing/invalid/expired token</li>
+<li><code>503</code>: auth service disabled</li>
+</ul>
+<h3 id="6-5-post-v1-auth-logout">6.5 <code>POST /v1/auth/logout</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>使当前 token 失效</li>
+<li>Invalidate the current token</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>required when auth is enabled</li>
+</ul>
+<p>Success response:</p>
+<pre><code class="language-json">{
+  &quot;success&quot;: true
+}</code></pre>
+<h3 id="6-6-get-v1-users-me-config-schema">6.6 <code>GET /v1/users/me/config/schema</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>返回当前用户可查看/可编辑的配置 schema 与当前值</li>
+<li>Return editable config schema metadata and current values for the current user</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>required</li>
+</ul>
+<p>Top-level response:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>user</code></td><td><code>object</code></td><td>当前用户与配置路径信息</td><td>Current user and config path</td></tr><tr><td><code>sections</code></td><td><code>object</code></td><td><code>chat</code> / <code>memory_agent</code> / <code>memory_core</code> 三个 section</td><td>Three config sections</td></tr></tbody></table>
+<p>Each <code>sections.&lt;name&gt;</code> object contains:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>editable_fields</code></td><td><code>array[string]</code></td><td>当前角色可修改字段列表</td><td>Fields editable for the current role</td></tr><tr><td><code>fields</code></td><td><code>object</code></td><td>字段元数据映射</td><td>Field metadata map</td></tr><tr><td><code>patch_example</code></td><td><code>object</code></td><td>当前值裁出来的 patch 示例</td><td>Patch example built from current values</td></tr></tbody></table>
+<p>Each <code>fields.&lt;key&gt;</code> object contains:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>type</code></td><td><code>string</code></td><td>字段类型说明</td><td>Field type</td></tr><tr><td><code>description</code></td><td><code>string</code></td><td>字段用途说明</td><td>Field description</td></tr><tr><td><code>editable</code></td><td><code>boolean</code></td><td>当前角色能否改这个字段</td><td>Whether the current role may edit the field</td></tr><tr><td><code>present</code></td><td><code>boolean</code></td><td>当前配置里是否出现该字段</td><td>Whether the field is present in current config</td></tr><tr><td><code>current_value</code></td><td><code>any</code></td><td>当前值</td><td>Current value</td></tr></tbody></table>
+<h3 id="6-7-patch-v1-users-me-config">6.7 <code>PATCH /v1/users/me/config</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>更新当前用户的可编辑配置</li>
+<li>Update editable config values for the current user</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>required</li>
+</ul>
+<p>Request body:</p>
+<pre><code class="language-json">{
+  &quot;chat&quot;: {
+    &quot;chat_assistant_name&quot;: &quot;Memory Assistant&quot;,
+    &quot;chat_persona_prompt&quot;: &quot;Be concise.&quot;
+  },
+  &quot;memory_agent&quot;: {},
+  &quot;memory_core&quot;: {}
+}</code></pre>
+<p>Body rules / 请求规则:</p>
+<ul>
+<li>top-level keys are <code>chat</code>, <code>memory_agent</code>, <code>memory_core</code></li>
+<li>each section must be an object if present</li>
+<li>at least one effective field change is required</li>
+<li>unsupported keys return <code>400</code></li>
+<li>disallowed keys for the current role return <code>403</code></li>
+</ul>
+<p>Current editable field matrix:</p>
+<p>Role <code>basic</code>:</p>
+<ul>
+<li><code>chat.chat_assistant_name</code></li>
+<li><code>chat.chat_persona_prompt</code></li>
+</ul>
+<p>Role <code>advanced</code> adds:</p>
+<ul>
+<li><code>chat.chat_user_name</code></li>
+<li><code>chat.persist_memory</code></li>
+<li><code>chat.enabled_tools</code></li>
+<li><code>chat.tool_defaults</code></li>
+<li><code>chat.thread_id</code></li>
+<li><code>memory_agent.model_name</code></li>
+<li><code>memory_agent.agent_temperature</code></li>
+<li><code>memory_agent.recursion_limit</code></li>
+<li><code>memory_agent.retry_recursion_limit</code></li>
+<li><code>memory_agent.detail_search_defaults</code></li>
+<li><code>memory_agent.network_retry_attempts</code></li>
+<li><code>memory_agent.network_retry_backoff_seconds</code></li>
+<li><code>memory_agent.network_retry_backoff_multiplier</code></li>
+<li><code>memory_agent.network_retry_max_backoff_seconds</code></li>
+<li><code>memory_core.workflow_id</code></li>
+<li><code>memory_core.memory_owner_name</code></li>
+<li><code>memory_core.memory_similarity_threshold</code></li>
+<li><code>memory_core.memory_top_k</code></li>
+<li><code>memory_core.memory_use_threshold</code></li>
+<li><code>memory_core.embed_provider</code></li>
+</ul>
+<p>Success response:</p>
+<pre><code class="language-json">{
+  &quot;user&quot;: {
+    &quot;username&quot;: &quot;alice&quot;,
+    &quot;display_name&quot;: &quot;alice&quot;,
+    &quot;role&quot;: &quot;basic&quot;,
+    &quot;config_path&quot;: &quot;F:\\AI\\M-Agent\\config\\users\\alice\\chat.yaml&quot;,
+    &quot;created_at&quot;: &quot;2026-04-05T09:00:00Z&quot;,
+    &quot;updated_at&quot;: &quot;2026-04-05T09:10:00Z&quot;,
+    &quot;editable_fields&quot;: {
+      &quot;chat&quot;: [&quot;chat_assistant_name&quot;, &quot;chat_persona_prompt&quot;],
+      &quot;memory_agent&quot;: [],
+      &quot;memory_core&quot;: []
+    }
+  }
+}</code></pre>
+<h3 id="6-8-post-v1-chat-runs">6.8 <code>POST /v1/chat/runs</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>创建一个异步 chat run</li>
+<li>Create an asynchronous chat run</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>required when auth is enabled</li>
+<li>open in anonymous mode</li>
+</ul>
+<p>Request body:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>thread_id</code></td><td><code>string</code></td><td>no</td><td>线程 ID；为空时使用默认线程</td><td>Thread id; defaults to runtime default thread</td></tr><tr><td><code>message</code></td><td><code>string</code></td><td>yes</td><td>用户消息</td><td>User message</td></tr><tr><td><code>config</code></td><td><code>string</code></td><td>no</td><td>当前实现不支持，请勿传</td><td>Not supported in current implementation</td></tr></tbody></table>
+<p>Behavior notes / 行为说明:</p>
+<ul>
+<li>if <code>config</code> is provided and non-empty, the server returns <code>400</code></li>
+<li>successful creation returns only run metadata, not the final answer</li>
+</ul>
+<p>Example request:</p>
+<pre><code class="language-json">{
+  &quot;thread_id&quot;: &quot;demo-thread&quot;,
+  &quot;message&quot;: &quot;帮我回忆一下我上次提到的旅行计划。&quot;
+}</code></pre>
+<p>Success response:</p>
+<pre><code class="language-json">{
+  &quot;run_id&quot;: &quot;run_123&quot;,
+  &quot;status&quot;: &quot;queued&quot;,
+  &quot;thread_id&quot;: &quot;demo-thread&quot;,
+  &quot;user_id&quot;: &quot;alice&quot;,
+  &quot;events_url&quot;: &quot;/v1/chat/runs/run_123/events&quot;,
+  &quot;result_url&quot;: &quot;/v1/chat/runs/run_123&quot;
+}</code></pre>
+<p>Common errors:</p>
+<ul>
+<li><code>400</code>: message empty or unsupported request-level config override</li>
+<li><code>401</code>: missing/invalid token when auth is enabled</li>
+</ul>
+<h3 id="6-9-get-v1-chat-runs-run_id">6.9 <code>GET /v1/chat/runs/{run_id}</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>获取某个 run 的最终快照</li>
+<li>Fetch the snapshot of a run</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the run owner</li>
+</ul>
+<p>Notes / 说明:</p>
+<ul>
+<li>if auth is enabled, users can only read their own runs</li>
+<li><code>result</code> becomes non-null only after completion</li>
+</ul>
+<h3 id="6-10-get-v1-chat-runs-run_id-events">6.10 <code>GET /v1/chat/runs/{run_id}/events</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>订阅单个 run 的完整实时事件流</li>
+<li>Subscribe to the full real-time event stream of a single run</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the run owner</li>
+</ul>
+<p>Query params:</p>
+<table><thead><tr><th>Param</th><th>Type</th><th>Default</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>after_seq</code></td><td><code>integer</code></td><td><code>0</code></td><td>仅返回 <code>seq &gt; after_seq</code> 的事件</td><td>Return only events with <code>seq &gt; after_seq</code></td></tr></tbody></table>
+<p>Stream behavior / 事件流行为:</p>
+<ul>
+<li>media type is <code>text/event-stream</code></li>
+<li>emits <code>: keep-alive</code> comments when idle</li>
+<li>closes automatically after the run is done and no further tail events remain</li>
+</ul>
+<p>Recommended usage / 推荐用法:</p>
+<ol>
+<li>call <code>POST /v1/chat/runs</code></li>
+<li>immediately connect to the run SSE URL</li>
+<li>optionally call <code>GET /v1/chat/runs/{run_id}</code> for final verification</li>
+</ol>
+<h3 id="6-11-get-v1-chat-threads-thread_id-events">6.11 <code>GET /v1/chat/threads/{thread_id}/events</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>订阅线程级生命周期事件</li>
+<li>Subscribe to thread lifecycle events</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the thread owner</li>
+</ul>
+<p>Query params:</p>
+<table><thead><tr><th>Param</th><th>Type</th><th>Default</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>after_seq</code></td><td><code>integer</code></td><td><code>-1</code></td><td>默认从当前尾部开始，仅看新事件；传 <code>0</code> 可回放当前缓存</td><td>Default follows only new events from the live tail; pass <code>0</code> to replay current buffer</td></tr></tbody></table>
+<p>Important note / 重要说明:</p>
+<ul>
+<li>this is not the same as the run trace stream</li>
+<li>do not use it as a replacement for <code>/v1/chat/runs/{run_id}/events</code></li>
+</ul>
+<p>当前实现里，thread 事件流主要包含：</p>
+<ul>
+<li>memory mode changes</li>
+<li>memory flush progress</li>
+<li>schedule CRUD events</li>
+<li>schedule execution events</li>
+</ul>
+<h3 id="6-12-get-v1-chat-threads-thread_id-memory-state">6.12 <code>GET /v1/chat/threads/{thread_id}/memory/state</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>获取线程当前内存状态快照</li>
+<li>Fetch the current thread memory snapshot</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the thread owner</li>
+</ul>
+<p>Success response:</p>
+<ul>
+<li><code>ThreadState</code></li>
+</ul>
+<h3 id="6-13-post-v1-chat-threads-thread_id-memory-mode">6.13 <code>POST /v1/chat/threads/{thread_id}/memory/mode</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>切换线程 memory mode</li>
+<li>Change the thread memory mode</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the thread owner</li>
+</ul>
+<p>Request body:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>mode</code></td><td><code>string</code></td><td>no</td><td>目标模式，支持 <code>manual</code> 和 <code>off</code></td><td>Target mode, <code>manual</code> or <code>off</code></td></tr><tr><td><code>discard_pending</code></td><td><code>boolean</code></td><td>no</td><td>是否把当前 pending 轮次标记为 <code>skipped</code></td><td>Whether to mark current pending rounds as <code>skipped</code></td></tr></tbody></table>
+<p>Behavior note / 行为说明:</p>
+<ul>
+<li>invalid or empty <code>mode</code> falls back to <code>manual</code></li>
+<li><code>discard_pending</code> does not delete history; it only marks pending rounds as skipped</li>
+</ul>
+<p>Success response fields:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>success</code></td><td><code>boolean</code></td><td>是否成功</td><td>Whether the change succeeded</td></tr><tr><td><code>thread_id</code></td><td><code>string</code></td><td>公开线程 ID</td><td>Public thread id</td></tr><tr><td><code>mode</code></td><td><code>string</code></td><td>生效模式</td><td>Effective mode</td></tr><tr><td><code>discard_pending</code></td><td><code>boolean</code></td><td>是否执行了 pending 丢弃逻辑</td><td>Whether pending discard logic was requested</td></tr><tr><td><code>thread_state</code></td><td><code>ThreadState</code></td><td>更新后的线程状态</td><td>Updated thread state</td></tr></tbody></table>
+<h3 id="6-14-post-v1-chat-threads-thread_id-memory-flush">6.14 <code>POST /v1/chat/threads/{thread_id}/memory/flush</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>手动把 pending 对话轮次写入长期记忆</li>
+<li>Manually flush pending chat rounds into long-term memory</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the thread owner</li>
+</ul>
+<p>Request body:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>reason</code></td><td><code>string</code></td><td>no</td><td>flush 原因，默认 <code>manual_api</code></td><td>Flush reason, default <code>manual_api</code></td></tr></tbody></table>
+<p>Success response fields:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>success</code></td><td><code>boolean</code></td><td>flush 是否成功</td><td>Whether flush succeeded</td></tr><tr><td><code>thread_id</code></td><td><code>string</code></td><td>公开线程 ID</td><td>Public thread id</td></tr><tr><td><code>flush_reason</code></td><td><code>string</code></td><td>flush reason</td><td>Flush reason</td></tr><tr><td><code>status</code></td><td><code>string</code></td><td><code>noop</code> / <code>written</code> / <code>failed</code></td><td>Flush status</td></tr><tr><td><code>message</code></td><td>`string \</td><td>null`</td><td>无待写回时的提示文本</td></tr><tr><td><code>rounds_flushed</code></td><td><code>integer</code></td><td>本次写入轮次数</td><td>Number of flushed rounds</td></tr><tr><td><code>turns_flushed</code></td><td><code>integer</code></td><td>本次写入 turn 数</td><td>Number of flushed turns</td></tr><tr><td><code>memory_write</code></td><td>`object \</td><td>null`</td><td>记忆写入结果摘要</td></tr><tr><td><code>thread_state</code></td><td><code>ThreadState</code></td><td>flush 后线程状态</td><td>Thread state after flush</td></tr><tr><td><code>error</code></td><td>`string \</td><td>null`</td><td>失败错误</td></tr></tbody></table>
+<p>Notes / 说明:</p>
+<ul>
+<li>if there are no pending rounds, the endpoint returns <code>success: true</code> and <code>status: &quot;noop&quot;</code></li>
+<li>flush progress is also emitted to the thread SSE stream</li>
+</ul>
+<h3 id="6-15-get-v1-chat-dialogues">6.15 <code>GET /v1/chat/dialogues</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>获取已 flush 到归档目录的对话列表</li>
+<li>List archived dialogues already flushed to storage</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the current user</li>
+</ul>
+<p>Query params:</p>
+<table><thead><tr><th>Param</th><th>Type</th><th>Default</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>thread_id</code></td><td><code>string</code></td><td>empty</td><td>按线程过滤</td><td>Filter by thread</td></tr><tr><td><code>limit</code></td><td><code>integer</code></td><td><code>30</code></td><td>返回条数</td><td>Page size</td></tr><tr><td><code>offset</code></td><td><code>integer</code></td><td><code>0</code></td><td>偏移量</td><td>Offset</td></tr></tbody></table>
+<p>Response fields:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>items</code></td><td><code>array[DialogueSummary]</code></td><td>当前页归档项</td><td>Current page of dialogue summaries</td></tr><tr><td><code>offset</code></td><td><code>integer</code></td><td>当前 offset</td><td>Current offset</td></tr><tr><td><code>limit</code></td><td><code>integer</code></td><td>当前 limit</td><td>Current limit</td></tr><tr><td><code>next_offset</code></td><td>`integer \</td><td>null`</td><td>下一页 offset</td></tr><tr><td><code>has_more</code></td><td><code>boolean</code></td><td>是否还有下一页</td><td>Whether more pages exist</td></tr><tr><td><code>total</code></td><td><code>integer</code></td><td>总数</td><td>Total count</td></tr></tbody></table>
+<h3 id="6-16-get-v1-chat-dialogues-dialogue_id">6.16 <code>GET /v1/chat/dialogues/{dialogue_id}</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>获取某个归档对话的详细内容</li>
+<li>Fetch the details of one archived dialogue</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the current user</li>
+</ul>
+<p>Success response:</p>
+<ul>
+<li><code>DialogueDetail</code></li>
+</ul>
+<p>Common errors:</p>
+<ul>
+<li><code>404</code>: not found or not visible to the current user</li>
+</ul>
+<h3 id="6-17-get-v1-chat-threads-thread_id-schedules">6.17 <code>GET /v1/chat/threads/{thread_id}/schedules</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>列出当前 owner 的日程</li>
+<li>List schedules for the current owner</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the current user</li>
+</ul>
+<p>Query params:</p>
+<table><thead><tr><th>Param</th><th>Type</th><th>Default</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>include_completed</code></td><td><code>boolean</code></td><td><code>false</code></td><td>是否包含已结束状态</td><td>Include terminal statuses</td></tr><tr><td><code>limit</code></td><td><code>integer</code></td><td><code>20</code></td><td>返回条数，服务端会限制到 <code>1..100</code></td><td>Page size, clamped to <code>1..100</code></td></tr><tr><td><code>keyword</code></td><td><code>string</code></td><td>empty</td><td>关键字搜索</td><td>Keyword search</td></tr><tr><td><code>statuses</code></td><td><code>string</code></td><td>empty</td><td>逗号分隔的状态列表</td><td>Comma-separated status list</td></tr></tbody></table>
+<p>Important note / 重要说明:</p>
+<ul>
+<li>this endpoint is owner-scoped, not strictly thread-scoped</li>
+<li>the path <code>thread_id</code> is mainly used as a public wrapper value</li>
+<li>list results may include schedules whose actual <code>item.thread_id</code> belongs to another thread of the same owner</li>
+</ul>
+<p>这个行为是当前实现的真实语义，测试时不要误以为列表一定只包含路径里的那个线程。</p>
+<p>Success response fields:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>thread_id</code></td><td><code>string</code></td><td>请求路径中的公开线程 ID</td><td>Public thread id from the request path</td></tr><tr><td><code>scope</code></td><td><code>string</code></td><td>固定为 <code>owner</code></td><td>Always <code>owner</code></td></tr><tr><td><code>owner_id</code></td><td><code>string</code></td><td>当前 owner</td><td>Current owner id</td></tr><tr><td><code>count</code></td><td><code>integer</code></td><td>返回项数</td><td>Returned item count</td></tr><tr><td><code>include_completed</code></td><td><code>boolean</code></td><td>是否包含终态</td><td>Whether terminal items are included</td></tr><tr><td><code>keyword</code></td><td><code>string</code></td><td>生效关键字</td><td>Effective keyword</td></tr><tr><td><code>statuses</code></td><td><code>array[string]</code></td><td>生效状态过滤器</td><td>Effective status filter</td></tr><tr><td><code>items</code></td><td><code>array[ScheduleItem]</code></td><td>日程列表</td><td>Schedule items</td></tr><tr><td><code>heartbeat</code></td><td><code>ScheduleHeartbeat</code></td><td>当前心跳状态摘要</td><td>Current heartbeat summary</td></tr></tbody></table>
+<h3 id="6-18-get-v1-chat-threads-thread_id-schedules-heartbeat">6.18 <code>GET /v1/chat/threads/{thread_id}/schedules/heartbeat</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>返回日程心跳工作器状态</li>
+<li>Return schedule heartbeat worker status</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the current user</li>
+</ul>
+<p>Success response:</p>
+<pre><code class="language-json">{
+  &quot;thread_id&quot;: &quot;demo-thread&quot;,
+  &quot;scope&quot;: &quot;owner&quot;,
+  &quot;heartbeat&quot;: {
+    &quot;enabled&quot;: true,
+    &quot;worker_alive&quot;: true,
+    &quot;beat_interval_seconds&quot;: 10
+  }
+}</code></pre>
+<h3 id="6-19-get-v1-chat-threads-thread_id-schedules-schedule_id">6.19 <code>GET /v1/chat/threads/{thread_id}/schedules/{schedule_id}</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>获取某个日程详情</li>
+<li>Fetch one schedule item</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the current user</li>
+</ul>
+<p>Important note / 重要说明:</p>
+<ul>
+<li>lookup is owner-scoped by <code>schedule_id</code></li>
+<li>the wrapper <code>thread_id</code> comes from the request path</li>
+<li>the actual bound thread is <code>item.thread_id</code></li>
+</ul>
+<p>Success response:</p>
+<pre><code class="language-json">{
+  &quot;thread_id&quot;: &quot;demo-thread&quot;,
+  &quot;item&quot;: {
+    &quot;schedule_id&quot;: &quot;sch_abc123&quot;,
+    &quot;thread_id&quot;: &quot;work-thread&quot;,
+    &quot;title&quot;: &quot;Weekly report&quot;,
+    &quot;status&quot;: &quot;pending&quot;
+  }
+}</code></pre>
+<h3 id="6-20-post-v1-chat-threads-thread_id-schedules">6.20 <code>POST /v1/chat/threads/{thread_id}/schedules</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>创建一个聊天提醒型日程</li>
+<li>Create a chat-prompt schedule</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the current user</li>
+</ul>
+<p>Request body:</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>Required</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>title</code></td><td><code>string</code></td><td>conditional</td><td>标题；与 <code>prompt</code> 至少二选一</td><td>Title; required unless <code>prompt</code> or <code>source_text</code> is present</td></tr><tr><td><code>prompt</code></td><td><code>string</code></td><td>conditional</td><td>到点时发给 chat 的提示文本</td><td>Prompt sent to chat when due</td></tr><tr><td><code>due_at</code></td><td><code>string</code></td><td>yes</td><td>ISO datetime 字符串</td><td>ISO datetime string</td></tr><tr><td><code>timezone_name</code></td><td><code>string</code></td><td>no</td><td>时区名；无 offset 时间会按该时区解释</td><td>Timezone name used when <code>due_at</code> has no offset</td></tr><tr><td><code>original_time_text</code></td><td><code>string</code></td><td>no</td><td>原始时间文本</td><td>Original time text</td></tr><tr><td><code>source_text</code></td><td><code>string</code></td><td>no</td><td>来源文本</td><td>Source text</td></tr><tr><td><code>metadata</code></td><td><code>object</code></td><td>no</td><td>扩展元数据</td><td>Extra metadata</td></tr></tbody></table>
+<p>Rules / 规则:</p>
+<ul>
+<li>if both <code>title</code> and <code>prompt</code> are empty, the server also tries <code>source_text</code></li>
+<li><code>due_at</code> must be a valid ISO datetime string</li>
+<li>if <code>due_at</code> has no timezone offset, the server applies <code>timezone_name</code></li>
+<li>the created <code>action_type</code> is fixed as <code>chat_prompt</code></li>
+</ul>
+<p>Success response:</p>
+<pre><code class="language-json">{
+  &quot;success&quot;: true,
+  &quot;thread_id&quot;: &quot;demo-thread&quot;,
+  &quot;item&quot;: {
+    &quot;schedule_id&quot;: &quot;sch_abc123&quot;,
+    &quot;thread_id&quot;: &quot;demo-thread&quot;,
+    &quot;title&quot;: &quot;交周报&quot;,
+    &quot;status&quot;: &quot;pending&quot;,
+    &quot;due_at_utc&quot;: &quot;2026-04-06T01:30:00Z&quot;,
+    &quot;due_at_local&quot;: &quot;2026-04-06T09:30:00+08:00&quot;,
+    &quot;due_display&quot;: &quot;2026-04-06 09:30&quot;,
+    &quot;timezone_name&quot;: &quot;Asia/Shanghai&quot;
+  }
+}</code></pre>
+<h3 id="6-21-patch-v1-chat-threads-thread_id-schedules-schedule_id">6.21 <code>PATCH /v1/chat/threads/{thread_id}/schedules/{schedule_id}</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>更新日程字段</li>
+<li>Update schedule fields</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the current user</li>
+</ul>
+<p>Request body:</p>
+<p>All fields are optional.</p>
+<p>所有字段都可选。</p>
+<table><thead><tr><th>Field</th><th>Type</th><th>中文说明</th><th>English description</th></tr></thead><tbody><tr><td><code>title</code></td><td><code>string</code></td><td>新标题</td><td>New title</td></tr><tr><td><code>prompt</code></td><td><code>string</code></td><td>更新 action payload 里的 prompt</td><td>Update the prompt inside action payload</td></tr><tr><td><code>due_at</code></td><td><code>string</code></td><td>新到期时间</td><td>New due datetime</td></tr><tr><td><code>timezone_name</code></td><td><code>string</code></td><td>新时区</td><td>New timezone</td></tr><tr><td><code>original_time_text</code></td><td><code>string</code></td><td>新的原始时间文本</td><td>New original time text</td></tr><tr><td><code>source_text</code></td><td><code>string</code></td><td>新来源文本</td><td>New source text</td></tr><tr><td><code>metadata</code></td><td><code>object</code></td><td>要 merge 的 metadata</td><td>Metadata patch to merge</td></tr></tbody></table>
+<p>Rules / 规则:</p>
+<ul>
+<li>if <code>prompt</code> is present, it cannot be empty</li>
+<li>if <code>due_at</code> is updated, the server normalizes timezone fields again</li>
+<li>update is owner-scoped by <code>schedule_id</code></li>
+</ul>
+<h3 id="6-22-delete-v1-chat-threads-thread_id-schedules-schedule_id">6.22 <code>DELETE /v1/chat/threads/{thread_id}/schedules/{schedule_id}</code></h3>
+<p>用途 / Purpose:</p>
+<ul>
+<li>取消日程</li>
+<li>Cancel a schedule</li>
+</ul>
+<p>Auth / 鉴权:</p>
+<ul>
+<li>same auth visibility as the current user</li>
+</ul>
+<p>Behavior / 行为:</p>
+<ul>
+<li>the item status becomes <code>canceled</code></li>
+<li><code>metadata.canceled_at</code> is recorded</li>
+<li>cancellation is owner-scoped by <code>schedule_id</code></li>
+</ul>
+<p>Success response:</p>
+<pre><code class="language-json">{
+  &quot;success&quot;: true,
+  &quot;thread_id&quot;: &quot;demo-thread&quot;,
+  &quot;item&quot;: {
+    &quot;schedule_id&quot;: &quot;sch_abc123&quot;,
+    &quot;thread_id&quot;: &quot;work-thread&quot;,
+    &quot;status&quot;: &quot;canceled&quot;
+  }
+}</code></pre>
+<h2 id="7-sse-reference-sse-事件参考">7. SSE Reference / SSE 事件参考</h2>
+<h3 id="7-1-run-stream-events-run-级事件">7.1 Run stream events / Run 级事件</h3>
+<p>The following event types may appear on <code>GET /v1/chat/runs/{run_id}/events</code>.</p>
+<p>下列事件类型可能出现在 <code>GET /v1/chat/runs/{run_id}/events</code>。</p>
+<table><thead><tr><th>Event type</th><th>中文说明</th><th>English description</th><th>Common payload fields</th></tr></thead><tbody><tr><td><code>run_started</code></td><td>run 开始</td><td>Run started</td><td><code>thread_id</code>, <code>message</code>, <code>config_path</code>, <code>user_id</code></td></tr><tr><td><code>recall_started</code></td><td>recall 工具开始</td><td>Recall started</td><td><code>mode</code>, <code>question</code></td></tr><tr><td><code>question_strategy</code></td><td>deep recall 判断先直答还是先拆题</td><td>Strategy decision before decomposition</td><td><code>question</code>, <code>decompose_first</code>, <code>reason</code></td></tr><tr><td><code>plan_update</code></td><td>拆题计划更新</td><td>Question-plan update</td><td><code>goal</code>, <code>question_type</code>, <code>decomposition_reason</code>, <code>sub_questions</code>, <code>suggested_tool_order</code>, <code>completion_criteria</code></td></tr><tr><td><code>sub_question_started</code></td><td>子问题开始</td><td>Sub-question started</td><td><code>index</code>, <code>question</code>, <code>status</code></td></tr><tr><td><code>tool_call</code></td><td>工具调用开始</td><td>Tool call started</td><td><code>call_id</code>, <code>tool_name</code>, <code>status</code>, <code>params</code>, optional <code>ts</code></td></tr><tr><td><code>tool_result</code></td><td>工具调用完成或失败</td><td>Tool call completed or failed</td><td><code>call_id</code>, <code>tool_name</code>, <code>status</code>, optional <code>result</code>, optional <code>error</code></td></tr><tr><td><code>sub_question_completed</code></td><td>子问题完成</td><td>Sub-question completed</td><td><code>index</code>, <code>question</code>, <code>status</code>, <code>answer</code>, optional <code>gold_answer</code>, optional <code>evidence</code>, optional <code>error</code></td></tr><tr><td><code>direct_answer_payload</code></td><td>直答路径输出结构化结果</td><td>Structured payload from the direct-answer path</td><td><code>answer</code>, <code>gold_answer</code>, <code>evidence</code>, <code>sub_questions</code>, <code>plan_summary</code></td></tr><tr><td><code>direct_answer_fallback</code></td><td>直答不足，转为拆题</td><td>Direct-answer fallback to decomposition</td><td><code>reason</code>, <code>question</code></td></tr><tr><td><code>final_answer_payload</code></td><td>recall 最终结构化回答</td><td>Final structured recall answer</td><td><code>answer</code>, <code>gold_answer</code>, <code>evidence</code>, <code>tool_call_count</code>, <code>question_plan</code>, <code>sub_question_results</code></td></tr><tr><td><code>recall_completed</code></td><td>recall 结束</td><td>Recall completed</td><td><code>mode</code>, <code>question</code>, <code>answer</code></td></tr><tr><td><code>assistant_message</code></td><td>面向用户的最终回答</td><td>Final user-facing answer</td><td><code>thread_id</code>, <code>answer</code></td></tr><tr><td><code>memory_capture_updated</code></td><td>当前轮次的 memory capture 状态</td><td>Memory capture status for the run</td><td><code>mode</code>, <code>status</code>, <code>reason</code>, <code>pending_rounds</code>, <code>pending_turns</code></td></tr><tr><td><code>thread_state_updated</code></td><td>当前 run 看到的线程状态快照</td><td>Thread-state snapshot observed by the run</td><td><code>thread_state</code></td></tr><tr><td><code>chat_result</code></td><td>主控/召回层最终结构化结果</td><td>Final structured agent result</td><td><code>agent_result</code></td></tr><tr><td><code>run_completed</code></td><td>run 成功结束</td><td>Run completed</td><td><code>thread_id</code>, <code>answer</code>, <code>result</code></td></tr><tr><td><code>run_failed</code></td><td>run 失败</td><td>Run failed</td><td><code>thread_id</code>, <code>error</code></td></tr></tbody></table>
+<p>Important notes / 重要说明:</p>
+<ul>
+<li><code>chat_result.payload.agent_result</code> is a final structured result, not a live tool trace</li>
+<li><code>run_completed.payload.result</code> already contains the final business result, so many clients do not need an extra <code>GET /v1/chat/runs/{run_id}</code> call</li>
+<li><code>tool_calls</code> are intentionally not exposed as a final top-level field in the run result</li>
+</ul>
+<h3 id="7-2-thread-stream-events-thread-级事件">7.2 Thread stream events / Thread 级事件</h3>
+<p>The following event types may appear on <code>GET /v1/chat/threads/{thread_id}/events</code>.</p>
+<p>下列事件类型可能出现在 <code>GET /v1/chat/threads/{thread_id}/events</code>。</p>
+<table><thead><tr><th>Event type</th><th>中文说明</th><th>English description</th><th>Common payload fields</th></tr></thead><tbody><tr><td><code>thread_state_updated</code></td><td>线程状态变化</td><td>Thread-state change</td><td><code>thread_state</code></td></tr><tr><td><code>flush_started</code></td><td>手动或空闲 flush 开始</td><td>Flush started</td><td><code>operation_id</code>, <code>thread_id</code>, <code>flush_reason</code>, <code>pending_rounds</code>, <code>pending_turns</code></td></tr><tr><td><code>flush_stage</code></td><td>flush 各阶段进度</td><td>Flush stage progress</td><td><code>operation_id</code>, <code>thread_id</code>, <code>flush_reason</code>, <code>stage</code>, <code>stage_label</code>, <code>status</code>, optional <code>result</code>, optional <code>error</code></td></tr><tr><td><code>flush_completed</code></td><td>flush 完成</td><td>Flush completed</td><td><code>operation_id</code>, <code>thread_id</code>, <code>flush_reason</code>, <code>success</code>, <code>status</code>, <code>rounds_flushed</code>, <code>turns_flushed</code>, optional <code>memory_write</code>, optional <code>error</code>, <code>thread_state</code></td></tr><tr><td><code>schedule_created</code></td><td>手动创建日程</td><td>Schedule created</td><td><code>thread_id</code>, <code>schedule</code></td></tr><tr><td><code>schedule_updated</code></td><td>手动更新日程</td><td>Schedule updated</td><td><code>thread_id</code>, <code>schedule</code></td></tr><tr><td><code>schedule_canceled</code></td><td>手动取消日程</td><td>Schedule canceled</td><td><code>thread_id</code>, <code>schedule</code></td></tr><tr><td><code>schedule_due</code></td><td>心跳发现到点任务</td><td>A due schedule was leased by heartbeat</td><td><code>thread_id</code>, <code>schedule_id</code>, <code>title</code>, <code>status</code>, <code>due_at_utc</code>, <code>timezone_name</code></td></tr><tr><td><code>schedule_busy_retry</code></td><td>目标线程忙，稍后重试</td><td>Target thread busy; retry later</td><td><code>thread_id</code>, <code>schedule_id</code>, <code>status</code>, <code>retry_after_seconds</code></td></tr><tr><td><code>schedule_started</code></td><td>到点任务开始执行</td><td>Due schedule execution started</td><td><code>thread_id</code>, <code>schedule_id</code>, <code>run_id</code></td></tr><tr><td><code>schedule_completed</code></td><td>到点任务执行完成</td><td>Due schedule execution completed</td><td><code>thread_id</code>, <code>schedule_id</code>, <code>run_id</code>, <code>status</code>, <code>answer</code></td></tr><tr><td><code>schedule_failed</code></td><td>到点任务执行失败</td><td>Due schedule execution failed</td><td><code>thread_id</code>, <code>schedule_id</code>, <code>run_id</code>, <code>error</code></td></tr><tr><td><code>assistant_message</code></td><td>日程触发后的回答</td><td>Assistant message emitted by a schedule trigger</td><td><code>thread_id</code>, <code>answer</code>, <code>source</code>, <code>schedule_id</code></td></tr></tbody></table>
+<p>Notes / 说明:</p>
+<ul>
+<li>thread streams do not automatically terminate like run streams</li>
+<li>a schedule-triggered assistant message appears on the thread stream, not on a user-created run stream</li>
+<li><code>thread_id</code> inside thread SSE payload is converted back to the public thread id</li>
+</ul>
+<h2 id="8-testing-recommendations-测试建议">8. Testing Recommendations / 测试建议</h2>
+<h3 id="8-1-minimal-real-time-chat-flow-最小实时聊天联调流程">8.1 Minimal real-time chat flow / 最小实时聊天联调流程</h3>
+<ol>
+<li>Login if auth is enabled.</li>
+<li>Call <code>POST /v1/chat/runs</code>.</li>
+<li>Connect to <code>GET /v1/chat/runs/{run_id}/events</code>.</li>
+<li>Render <code>assistant_message</code> and/or <code>run_completed.payload.result.answer</code>.</li>
+<li>Optionally fetch <code>GET /v1/chat/runs/{run_id}</code> as a final snapshot.</li>
+</ol>
+<h3 id="8-2-thread-memory-verification-线程记忆验证">8.2 Thread memory verification / 线程记忆验证</h3>
+<ol>
+<li>Run several chat turns on the same <code>thread_id</code>.</li>
+<li>Call <code>GET /v1/chat/threads/{thread_id}/memory/state</code>.</li>
+<li>Verify <code>pending_rounds</code>, <code>history_rounds</code>, and <code>idle_flush_deadline</code>.</li>
+<li>Call <code>POST /v1/chat/threads/{thread_id}/memory/flush</code>.</li>
+<li>Verify <code>status</code>, <code>memory_write</code>, and <code>pending_rounds == 0</code>.</li>
+</ol>
+<h3 id="8-3-schedule-verification-日程验证">8.3 Schedule verification / 日程验证</h3>
+<ol>
+<li>Create a schedule with <code>POST /v1/chat/threads/{thread_id}/schedules</code>.</li>
+<li>Verify it appears in <code>GET /v1/chat/threads/{thread_id}/schedules</code>.</li>
+<li>Subscribe to <code>GET /v1/chat/threads/{thread_id}/events</code>.</li>
+<li>Wait for <code>schedule_due</code>, <code>schedule_started</code>, and <code>schedule_completed</code>.</li>
+<li>Verify the schedule status becomes <code>done</code>.</li>
+</ol>
+<h3 id="8-4-recommended-companion-file-推荐配套文件">8.4 Recommended companion file / 推荐配套文件</h3>
+<p>Use the request collection in:</p>
+<p>请配合下面这个请求集合文件使用：</p>
+<ul>
+<li><code>docs/chat_api/testing.http</code></li>
+</ul>
+<p>It contains ready-to-edit requests for:</p>
+<ul>
+<li>health</li>
+<li>register / login / me / logout</li>
+<li>config schema and patch</li>
+<li>create run / get run</li>
+<li>memory state / mode / flush</li>
+<li>dialogue list / detail</li>
+<li>schedule list / create / update / cancel</li>
+</ul>
+<h2 id="9-change-notes-变更说明">9. Change Notes / 变更说明</h2>
+<p>Compared with the old <code>docs/chat_api.md</code>, the new reference explicitly documents:</p>
+<p>相较旧版 <code>docs/chat_api.md</code>，这份新文档明确补齐了这些当前实现细节：</p>
+<ul>
+<li>auth endpoints and auth-disabled behavior</li>
+<li>per-user runtime scoping</li>
+<li>user config schema and patch semantics</li>
+<li>dialogue archive APIs</li>
+<li>thread events versus run events</li>
+<li>schedule heartbeat and owner-scoped schedule behavior</li>
+<li>current request/response shapes from the actual implementation</li>
+</ul>
+    <section class="appendix"><h1 id="appendix-testing-http">Appendix: testing.http</h1><p>This appendix includes the ready-to-edit request collection from <code>docs/chat_api/testing.http</code>.</p><pre><code>@baseUrl = http://127.0.0.1:8777
+@username = demo_user
+@password = password123
+@accessToken = paste_access_token_here
+@threadId = demo-thread
+@runId = run_xxx
+@dialogueId = chat_xxx
+@scheduleId = sch_xxx
+
+### Health
+GET {{baseUrl}}/healthz
+
+### Auth
+### Skip this group when the server runs with --disable-auth.
+
+POST {{baseUrl}}/v1/auth/register
+Content-Type: application/json
+
+{
+  &quot;username&quot;: &quot;{{username}}&quot;,
+  &quot;password&quot;: &quot;{{password}}&quot;,
+  &quot;role&quot;: &quot;basic&quot;,
+  &quot;display_name&quot;: &quot;Demo User&quot;,
+  &quot;assistant_name&quot;: &quot;Memory Assistant&quot;,
+  &quot;persona_prompt&quot;: &quot;Be concise and helpful.&quot;
+}
+
+###
+
+POST {{baseUrl}}/v1/auth/login
+Content-Type: application/json
+
+{
+  &quot;username&quot;: &quot;{{username}}&quot;,
+  &quot;password&quot;: &quot;{{password}}&quot;
+}
+
+###
+
+GET {{baseUrl}}/v1/auth/me
+Authorization: Bearer {{accessToken}}
+
+###
+
+POST {{baseUrl}}/v1/auth/logout
+Authorization: Bearer {{accessToken}}
+
+### User config
+
+GET {{baseUrl}}/v1/users/me/config/schema
+Authorization: Bearer {{accessToken}}
+
+###
+
+PATCH {{baseUrl}}/v1/users/me/config
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  &quot;chat&quot;: {
+    &quot;chat_assistant_name&quot;: &quot;Memory Assistant&quot;,
+    &quot;chat_persona_prompt&quot;: &quot;Please answer in concise Chinese.&quot;
+  }
+}
+
+### Chat run
+
+POST {{baseUrl}}/v1/chat/runs
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  &quot;thread_id&quot;: &quot;{{threadId}}&quot;,
+  &quot;message&quot;: &quot;Please summarize the main points we discussed before.&quot;
+}
+
+###
+
+GET {{baseUrl}}/v1/chat/runs/{{runId}}
+Authorization: Bearer {{accessToken}}
+
+### SSE note
+### Open in browser, curl, or an SSE client.
+### curl -N -H &quot;Authorization: Bearer &lt;token&gt;&quot; &quot;{{baseUrl}}/v1/chat/runs/{{runId}}/events&quot;
+
+GET {{baseUrl}}/v1/chat/runs/{{runId}}/events
+Authorization: Bearer {{accessToken}}
+
+### Thread events
+### This stream is for memory flush and schedule lifecycle events.
+### curl -N -H &quot;Authorization: Bearer &lt;token&gt;&quot; &quot;{{baseUrl}}/v1/chat/threads/{{threadId}}/events?after_seq=0&quot;
+
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/events?after_seq=0
+Authorization: Bearer {{accessToken}}
+
+### Thread memory
+
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/memory/state
+Authorization: Bearer {{accessToken}}
+
+###
+
+POST {{baseUrl}}/v1/chat/threads/{{threadId}}/memory/mode
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  &quot;mode&quot;: &quot;manual&quot;,
+  &quot;discard_pending&quot;: false
+}
+
+###
+
+POST {{baseUrl}}/v1/chat/threads/{{threadId}}/memory/flush
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  &quot;reason&quot;: &quot;manual_test&quot;
+}
+
+### Dialogues
+
+GET {{baseUrl}}/v1/chat/dialogues?thread_id={{threadId}}&amp;limit=20&amp;offset=0
+Authorization: Bearer {{accessToken}}
+
+###
+
+GET {{baseUrl}}/v1/chat/dialogues/{{dialogueId}}
+Authorization: Bearer {{accessToken}}
+
+### Schedules
+
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules
+Authorization: Bearer {{accessToken}}
+
+###
+
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules?include_completed=true&amp;limit=20&amp;keyword=&amp;statuses=
+Authorization: Bearer {{accessToken}}
+
+###
+
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules/heartbeat
+Authorization: Bearer {{accessToken}}
+
+###
+
+POST {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  &quot;title&quot;: &quot;Weekly report&quot;,
+  &quot;prompt&quot;: &quot;Remind me to submit the weekly report&quot;,
+  &quot;due_at&quot;: &quot;2026-04-06T09:30&quot;,
+  &quot;timezone_name&quot;: &quot;Asia/Shanghai&quot;,
+  &quot;source_text&quot;: &quot;manual testing create&quot;
+}
+
+###
+
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules/{{scheduleId}}
+Authorization: Bearer {{accessToken}}
+
+###
+
+PATCH {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules/{{scheduleId}}
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  &quot;title&quot;: &quot;Project weekly report&quot;,
+  &quot;prompt&quot;: &quot;Remind me to submit the project weekly report&quot;,
+  &quot;due_at&quot;: &quot;2026-04-06T10:15&quot;,
+  &quot;timezone_name&quot;: &quot;Asia/Shanghai&quot;,
+  &quot;source_text&quot;: &quot;manual testing update&quot;,
+  &quot;metadata&quot;: {
+    &quot;updated_by&quot;: &quot;testing.http&quot;
+  }
+}
+
+###
+
+DELETE {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules/{{scheduleId}}
+Authorization: Bearer {{accessToken}}
+</code></pre></section>
+  </main>
+</body>
+</html>
