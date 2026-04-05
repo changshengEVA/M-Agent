@@ -1,0 +1,63 @@
+# Locked server-oriented Python dependencies for the current chat deployment path.
+#
+# Source of versions:
+# - Local conda env: MAG
+# - Generated on: 2026-04-05
+#
+# Intent:
+# - Match the repo's current chat API/runtime path on Ubuntu servers
+# - Keep versions close to the known-good MAG environment
+# - Avoid forcing Windows-only or CUDA-specific packages into the default server install
+#
+# Notes:
+# - This file is narrower than requirements.txt for deployment stability.
+# - The current chat stack uses DeepSeek/OpenAI-compatible chat + Alibaba embeddings + Neo4j.
+# - If you later enable local HuggingFace/BGE/quantized model paths, install the optional block below.
+
+# Core config / API
+python-dotenv==1.1.1
+PyYAML==6.0.2
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic==2.12.5
+
+# Agent / LLM stack
+langchain==1.2.10
+langgraph==1.0.10
+langchain-openai==1.1.10
+langchain-deepseek==1.0.1
+openai==2.24.0
+
+# Memory / graph / retrieval
+neo4j==5.28.2
+py2neo==2021.2.4
+numpy==2.2.6
+llama-index==0.14.12
+llama-index-graph-stores-neo4j==0.5.1
+
+# Repo-kept integrations currently present in requirements.txt
+llama-index-llms-ollama==0.7.3
+llama-index-llms-huggingface==0.6.1
+llama-index-embeddings-huggingface==0.6.1
+llama-index-embeddings-azure-openai==0.4.1
+llama-index-llms-azure-openai==0.4.2
+pypdf==6.1.0
+pyvis==0.3.2
+
+# Email integration
+google-api-python-client==2.193.0
+google-auth-httplib2==0.3.1
+google-auth-oauthlib==1.3.1
+
+# Optional notebook/dev helpers retained from current repo usage
+ipython==8.37.0
+ipywidgets==8.1.7
+
+# Optional local-model extras from MAG
+# Install these only if the server will use local HuggingFace/BGE/quantized model paths.
+# sentence-transformers==5.1.0
+# transformers==4.56.2
+# accelerate==1.10.1
+# sentencepiece==0.2.1
+# bitsandbytes==0.47.0
+# torch==2.7.1
