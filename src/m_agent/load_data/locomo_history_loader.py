@@ -18,6 +18,8 @@ import re
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from m_agent.paths import PROJECT_ROOT
+
 logger = logging.getLogger(__name__)
 
 
@@ -225,11 +227,10 @@ def load_locomo_dialogues(file_path: str = None) -> List[Dict[str, Any]]:
 def load_locomo_dialogues_from_directory(dir_path: str = None) -> List[Dict[str, Any]]:
     """
     从目录加载 LoCoMo JSON 文件并构造 dialogue 列表。
-    默认目录：data/REALTALK/data/locomo
+    默认目录：data/locomo
     """
     if dir_path is None:
-        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        dir_path = os.path.join(project_root, "data", "REALTALK", "data", "locomo")
+        dir_path = os.fspath(PROJECT_ROOT / "data" / "locomo")
 
     if not os.path.isdir(dir_path):
         logger.error(f"目录不存在: {dir_path}")

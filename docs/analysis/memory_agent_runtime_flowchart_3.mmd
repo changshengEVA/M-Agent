@@ -1,0 +1,11 @@
+﻿flowchart TD
+    A[Call search_details] --> B[Read Current Scope]
+    B --> C[Count Consecutive search_details Calls]
+    C --> D{Over Consecutive Limit}
+    D -->|Yes| X[Return blocked true consecutive limit]
+    D -->|No| E{Over Scope Limit}
+    E -->|Yes| Y[Return blocked true scope limit]
+    E -->|No| F{Over Round Limit}
+    F -->|Yes| Z[Return blocked true round limit]
+    F -->|No| G[Run memory_sys search_details]
+    G --> H[Record Result to Tool Calls]

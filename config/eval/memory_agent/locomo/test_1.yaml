@@ -1,0 +1,15 @@
+# Used by: `python scripts/run_eval_locomo.py --question-config`
+# Purpose: run a fixed LoCoMo QA subset by sample_id + qa index.
+#
+# Rules:
+# - `sample_id` must match one item in `data/locomo/data/locomo10.json`
+# - `qa_indices` are 0-based indexes inside that sample's `qa` list
+# - keep only the questions listed here; sample-fraction / max-samples will be ignored
+
+name: test_1
+description: Small fixed subset for manual debugging and regression checks.
+
+questions:
+  - sample_id: conv-30
+    qa_indices: [3, 24, 36, 37, 38, 44, 56, 57, 65, 66, 68]
+    # qa_indices: [2, 8]

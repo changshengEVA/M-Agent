@@ -17,6 +17,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+import yaml
+
 from _bootstrap import bootstrap_project
 
 
@@ -42,12 +44,16 @@ logger = logging.getLogger("run_eval_locomo")
 
 
 DEFAULT_TEST_ID = "default"
+DEFAULT_QUESTION_CONFIG_PATH = "config/eval/memory_agent/locomo/test_1.yaml"
 PREDICTION_FILE_NAME = "locomo10_agent_qa.json"
 STATS_FILE_NAME = "locomo10_agent_qa_stats.json"
 RUN_LOG_FILE_NAME = "locomo10_agent_qa_run.log"
 TRACE_FILE_NAME = "locomo10_agent_qa_qa_trace.jsonl"
 SKIPPED_QA_CATEGORIES = {5}
 EVAL_CATEGORY_ORDER = [4, 1, 2, 3]
+LOCOMO_SOURCE_QA_INDEX_KEY = "_locomo_source_qa_index"
+EVIDENCE_DIALOG_REF_PATTERN = re.compile(r"D\d+:\d+")
+EPISODE_REF_PATTERN = re.compile(r"dlg_[A-Za-z0-9._-]+:ep_[A-Za-z0-9._-]+")
 
 
 def parse_args() -> argparse.Namespace:
@@ -105,7 +111,10 @@ def parse_args() -> argparse.Namespace:
         "--sample-fraction",
         type=float,
         default=0.1,
-        help="Uniform random fraction of samples to evaluate (default: 0.1).",
+        help=(
+            "Uniform random fraction of samples to evaluate (default: 0.1). "
+            "Ignored when --question-config is used."
+        ),
     )
     parser.add_argument(
         "--sample-seed",
@@ -131,6 +140,17 @@ def parse_args() -> argparse.Namespace:
         default=0.0,
         help="Optional delay between QA calls.",
     )
+    parser.add_argument(
+        "--question-config",
+        nargs="?",
+        const=DEFAULT_QUESTION_CONFIG_PATH,
+        default="",
+        help=(
+            "Optional yaml path for fixed question selection. Pass --question-config "
+            f"to use {DEFAULT_QUESTION_CONFIG_PATH}, or provide a custom yaml path. "
+            "When enabled, --sample-fraction and --max-samples are ignored."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -142,6 +162,132 @@ def _sanitize_test_id(test_id: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", cleaned)
     cleaned = cleaned.strip("._-")
     return cleaned or DEFAULT_TEST_ID
+
+
+def _load_yaml(path: str) -> Any:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
+def _parse_question_indices(raw_value: Any, *, item_label: str) -> List[int]:
+    if isinstance(raw_value, int):
+        raw_items = [raw_value]
+    elif isinstance(raw_value, list):
+        raw_items = raw_value
+    else:
+        raise ValueError(f"{item_label}: qa_indices must be an int or list[int].")
+
+    parsed: List[int] = []
+    seen = set()
+    for raw_idx in raw_items:
+        try:
+            qa_idx = int(raw_idx)
+        except Exception as exc:
+            raise ValueError(f"{item_label}: invalid qa index {raw_idx!r}.") from exc
+        if qa_idx < 0:
+            raise ValueError(f"{item_label}: qa index must be >= 0, got {qa_idx}.")
+        if qa_idx in seen:
+            continue
+        seen.add(qa_idx)
+        parsed.append(qa_idx)
+
+    if not parsed:
+        raise ValueError(f"{item_label}: qa_indices cannot be empty.")
+    return parsed
+
+
+def load_question_selection_config(path: str) -> Dict[str, List[int]]:
+    payload = _load_yaml(path)
+    if not isinstance(payload, dict):
+        raise ValueError("Question config must be a yaml mapping.")
+
+    questions = payload.get("questions")
+    if not isinstance(questions, list) or not questions:
+        raise ValueError("Question config must contain a non-empty top-level 'questions' list.")
+
+    selection: Dict[str, List[int]] = {}
+    seen_per_sample: Dict[str, set[int]] = {}
+
+    for item_idx, item in enumerate(questions, start=1):
+        item_label = f"questions[{item_idx}]"
+        if not isinstance(item, dict):
+            raise ValueError(f"{item_label}: each item must be a mapping.")
+
+        sample_id = str(item.get("sample_id", "") or "").strip()
+        if not sample_id:
+            raise ValueError(f"{item_label}: sample_id is required.")
+
+        if "qa_indices" in item:
+            qa_indices = _parse_question_indices(item.get("qa_indices"), item_label=item_label)
+        elif "qa_index" in item:
+            qa_indices = _parse_question_indices(item.get("qa_index"), item_label=item_label)
+        else:
+            raise ValueError(f"{item_label}: provide qa_indices or qa_index.")
+
+        target = selection.setdefault(sample_id, [])
+        target_seen = seen_per_sample.setdefault(sample_id, set())
+        for qa_idx in qa_indices:
+            if qa_idx in target_seen:
+                continue
+            target.append(qa_idx)
+            target_seen.add(qa_idx)
+
+    return selection
+
+
+def filter_samples_by_question_selection(
+    samples: List[Dict[str, Any]],
+    question_selection: Dict[str, List[int]],
+) -> List[Dict[str, Any]]:
+    if not question_selection:
+        return samples
+
+    sample_lookup = {}
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        sid = str(sample.get("sample_id"))
+        if sid not in sample_lookup:
+            sample_lookup[sid] = sample
+
+    missing_sample_ids = [sid for sid in question_selection if sid not in sample_lookup]
+    if missing_sample_ids:
+        missing_preview = ", ".join(missing_sample_ids[:5])
+        suffix = " ..." if len(missing_sample_ids) > 5 else ""
+        raise ValueError(
+            f"Question config references unknown sample_id(s): {missing_preview}{suffix}"
+        )
+
+    filtered_samples: List[Dict[str, Any]] = []
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        sid = str(sample.get("sample_id"))
+        selected_indices = question_selection.get(sid)
+        if not selected_indices:
+            continue
+
+        qas = sample.get("qa", [])
+        if not isinstance(qas, list):
+            raise ValueError(f"Sample {sid} has invalid qa payload: expected list.")
+
+        sample_copy = deepcopy(sample)
+        selected_qas: List[Any] = []
+        for qa_idx in selected_indices:
+            if qa_idx >= len(qas):
+                raise ValueError(
+                    f"Sample {sid} only has {len(qas)} QA items, but question config "
+                    f"requested qa_index={qa_idx}."
+                )
+            qa_copy = deepcopy(qas[qa_idx])
+            if isinstance(qa_copy, dict):
+                qa_copy.setdefault(LOCOMO_SOURCE_QA_INDEX_KEY, qa_idx)
+            selected_qas.append(qa_copy)
+
+        sample_copy["qa"] = selected_qas
+        filtered_samples.append(sample_copy)
+
+    return filtered_samples
 
 
 def _get_qa_category(qa: Dict[str, Any]) -> int:
@@ -221,6 +367,7 @@ def is_qa_processed(qa: Dict[str, Any], prediction_key: str) -> bool:
         prediction_key + "_answer",
         prediction_key + "_gold_answer",
         prediction_key + "_evidence",
+        prediction_key + "_evidence_episode_refs",
     )
     return any(key in qa for key in derived_keys)
 
@@ -249,6 +396,20 @@ def _apply_trace_record_to_qa(
 
     if record.get("prediction_evidence") is not None:
         qa[prediction_key + "_evidence"] = record.get("prediction_evidence")
+        applied = True
+
+    episode_refs = record.get("prediction_evidence_episode_refs")
+    if episode_refs is None:
+        episode_refs = record.get("evidence_episode_refs")
+    if episode_refs is not None:
+        qa[prediction_key + "_evidence_episode_refs"] = episode_refs
+        applied = True
+
+    episode_ref_count = record.get("prediction_evidence_episode_ref_count")
+    if episode_ref_count is None:
+        episode_ref_count = record.get("evidence_episode_ref_count")
+    if episode_ref_count is not None:
+        qa[prediction_key + "_evidence_episode_ref_count"] = episode_ref_count
         applied = True
 
     if record.get("prediction_tool_calls") is not None:
@@ -418,12 +579,319 @@ def b1_score_multi(prediction: str, ground_truth: str) -> float:
     return sum(scores) / len(scores)
 
 
+def _dedupe_keep_order(values: List[str]) -> List[str]:
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for value in values:
+        norm = str(value or "").strip()
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        ordered.append(norm)
+    return ordered
+
+
+def _extract_dialogue_refs_from_evidence(value: Any) -> List[str]:
+    refs: List[str] = []
+
+    def _collect(item: Any) -> None:
+        if item is None:
+            return
+        if isinstance(item, str):
+            refs.extend(EVIDENCE_DIALOG_REF_PATTERN.findall(item))
+            return
+        if isinstance(item, (list, tuple, set)):
+            for child in item:
+                _collect(child)
+            return
+        refs.extend(EVIDENCE_DIALOG_REF_PATTERN.findall(str(item)))
+
+    _collect(value)
+    return _dedupe_keep_order(refs)
+
+
+def _extract_episode_refs(value: Any) -> List[str]:
+    refs: List[str] = []
+
+    def _collect(item: Any) -> None:
+        if item is None:
+            return
+        if isinstance(item, str):
+            refs.extend(EPISODE_REF_PATTERN.findall(item))
+            return
+        if isinstance(item, (list, tuple, set)):
+            for child in item:
+                _collect(child)
+            return
+        refs.extend(EPISODE_REF_PATTERN.findall(str(item)))
+
+    _collect(value)
+    return _dedupe_keep_order(refs)
+
+
+def _is_successful_tool_call_for_eval(call: Dict[str, Any]) -> bool:
+    status = str(call.get("status", "") or "").strip().lower()
+    if status and status != "completed":
+        return False
+
+    result = call.get("result")
+    if isinstance(result, dict):
+        if bool(result.get("blocked", False)):
+            return False
+        if "hit" in result and not bool(result.get("hit")):
+            return False
+        if "success" in result and not bool(result.get("success")):
+            return False
+    return True
+
+
+def _collect_episode_refs_from_value(value: Any, refs: set[str]) -> None:
+    if isinstance(value, dict):
+        dialogue_id = str(value.get("dialogue_id", "") or "").strip()
+        episode_id = str(value.get("episode_id", "") or "").strip()
+        if dialogue_id and episode_id:
+            refs.add(f"{dialogue_id}:{episode_id}")
+        for child in value.values():
+            _collect_episode_refs_from_value(child, refs)
+        return
+
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            _collect_episode_refs_from_value(item, refs)
+
+
+def _extract_episode_refs_from_tool_calls(tool_calls: Any) -> List[str]:
+    if not isinstance(tool_calls, list):
+        return []
+
+    refs: set[str] = set()
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
+        if not _is_successful_tool_call_for_eval(call):
+            continue
+        _collect_episode_refs_from_value(call.get("result"), refs)
+        _collect_episode_refs_from_value(call.get("params"), refs)
+
+    return sorted(refs)
+
+
+def _get_prediction_episode_refs(qa: Dict[str, Any], prediction_key: str) -> List[str]:
+    refs = _extract_episode_refs(qa.get(prediction_key + "_evidence_episode_refs"))
+    if refs:
+        return refs
+
+    refs = _extract_episode_refs_from_tool_calls(qa.get(prediction_key + "_tool_calls"))
+    if refs:
+        return refs
+
+    refs = _extract_episode_refs(qa.get(prediction_key + "_evidence"))
+    if refs:
+        return refs
+
+    return _extract_episode_refs(qa.get(prediction_key + "_answer"))
+
+
+def _parse_episode_ref(ref: str) -> Tuple[str | None, str | None]:
+    text = str(ref or "").strip()
+    if not text or ":" not in text:
+        return None, None
+    dialogue_id, episode_id = text.rsplit(":", 1)
+    dialogue_id = dialogue_id.strip()
+    episode_id = episode_id.strip()
+    if not dialogue_id or not episode_id:
+        return None, None
+    return dialogue_id, episode_id
+
+
+def _parse_session_from_dialogue_id(dialogue_id: str) -> int | None:
+    match = re.search(r"_(\d+)$", str(dialogue_id or "").strip())
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except Exception:
+        return None
+
+
+def _parse_session_from_dialogue_ref(dialogue_ref: str) -> str | None:
+    match = re.fullmatch(r"D(\d+):\d+", str(dialogue_ref or "").strip())
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _load_dialogue_episode_turn_spans(
+    dialogue_id: str,
+    episodes_root: Path | None,
+    dialogue_episode_spans_cache: Dict[str, Dict[str, Tuple[int, int]]],
+) -> Dict[str, Tuple[int, int]]:
+    if dialogue_id in dialogue_episode_spans_cache:
+        return dialogue_episode_spans_cache[dialogue_id]
+
+    spans: Dict[str, Tuple[int, int]] = {}
+    if episodes_root is None:
+        dialogue_episode_spans_cache[dialogue_id] = spans
+        return spans
+
+    episode_file = episodes_root / "by_dialogue" / dialogue_id / "episodes_v1.json"
+    if not episode_file.exists():
+        dialogue_episode_spans_cache[dialogue_id] = spans
+        return spans
+
+    try:
+        payload = _load_json(str(episode_file))
+    except Exception as exc:
+        logger.debug("Failed to load episode file for %s: %s", dialogue_id, exc)
+        dialogue_episode_spans_cache[dialogue_id] = spans
+        return spans
+
+    episodes = payload.get("episodes", []) if isinstance(payload, dict) else []
+    if isinstance(episodes, list):
+        for episode in episodes:
+            if not isinstance(episode, dict):
+                continue
+            episode_id = str(episode.get("episode_id", "") or "").strip()
+            turn_span = episode.get("turn_span")
+            if not episode_id or not isinstance(turn_span, list) or len(turn_span) != 2:
+                continue
+            try:
+                start = int(turn_span[0])
+                end = int(turn_span[1])
+            except Exception:
+                continue
+            if end < start:
+                start, end = end, start
+            spans[episode_id] = (start, end)
+
+    dialogue_episode_spans_cache[dialogue_id] = spans
+    return spans
+
+
+def _episode_ref_to_dialogue_refs(
+    episode_ref: str,
+    episodes_root: Path | None,
+    episode_ref_cache: Dict[str, List[str]],
+    dialogue_episode_spans_cache: Dict[str, Dict[str, Tuple[int, int]]],
+) -> List[str]:
+    cached = episode_ref_cache.get(episode_ref)
+    if cached is not None:
+        return cached
+
+    dialogue_id, episode_id = _parse_episode_ref(episode_ref)
+    if not dialogue_id or not episode_id:
+        episode_ref_cache[episode_ref] = []
+        return []
+
+    session_num = _parse_session_from_dialogue_id(dialogue_id)
+    resolved: List[str] = []
+
+    spans = _load_dialogue_episode_turn_spans(
+        dialogue_id=dialogue_id,
+        episodes_root=episodes_root,
+        dialogue_episode_spans_cache=dialogue_episode_spans_cache,
+    )
+    turn_span = spans.get(episode_id)
+    if turn_span and session_num is not None:
+        start, end = turn_span
+        resolved = [f"D{session_num}:{dia_id}" for dia_id in range(start + 1, end + 2)]
+
+    if not resolved and session_num is not None:
+        resolved = [f"S{session_num}"]
+
+    resolved = _dedupe_keep_order(resolved)
+    episode_ref_cache[episode_ref] = resolved
+    return resolved
+
+
+def _compute_recall_from_episode_refs(
+    qa: Dict[str, Any],
+    prediction_key: str,
+    evidence_refs: List[str],
+    episodes_root: Path | None,
+    episode_ref_cache: Dict[str, List[str]],
+    dialogue_episode_spans_cache: Dict[str, Dict[str, Tuple[int, int]]],
+) -> float | None:
+    if not evidence_refs:
+        return 1.0
+
+    episode_refs = _get_prediction_episode_refs(qa, prediction_key)
+    if not episode_refs:
+        return None
+
+    pred_dialogue_refs: set[str] = set()
+    pred_session_refs: set[str] = set()
+    for episode_ref in episode_refs:
+        resolved_refs = _episode_ref_to_dialogue_refs(
+            episode_ref=episode_ref,
+            episodes_root=episodes_root,
+            episode_ref_cache=episode_ref_cache,
+            dialogue_episode_spans_cache=dialogue_episode_spans_cache,
+        )
+        for ref in resolved_refs:
+            if ref.startswith("D"):
+                pred_dialogue_refs.add(ref)
+            elif ref.startswith("S"):
+                pred_session_refs.add(ref)
+
+    hit_count = 0
+    for gt_ref in evidence_refs:
+        if gt_ref in pred_dialogue_refs:
+            hit_count += 1
+            continue
+        session_id = _parse_session_from_dialogue_ref(gt_ref)
+        if session_id and f"S{session_id}" in pred_session_refs:
+            hit_count += 1
+
+    return float(hit_count) / len(evidence_refs)
+
+
+def _compute_recall_from_context(
+    qa: Dict[str, Any], prediction_key: str, evidence_refs: List[str]
+) -> float | None:
+    if not evidence_refs:
+        return 1.0
+
+    context_key = prediction_key + "_context"
+    if context_key not in qa:
+        return None
+
+    ctx = qa.get(context_key, [])
+    if not isinstance(ctx, list) or not ctx:
+        return 0.0
+
+    ctx_values = [str(item).strip() for item in ctx if str(item).strip()]
+    if not ctx_values:
+        return 0.0
+
+    if ctx_values[0].startswith("S"):
+        sessions = {value[1:] for value in ctx_values if value.startswith("S") and len(value) > 1}
+        hit_count = 0
+        for gt_ref in evidence_refs:
+            session_id = _parse_session_from_dialogue_ref(gt_ref)
+            if session_id and session_id in sessions:
+                hit_count += 1
+        return float(hit_count) / len(evidence_refs)
+
+    ctx_set = set(ctx_values)
+    return float(sum(gt_ref in ctx_set for gt_ref in evidence_refs)) / len(evidence_refs)
+
+
 def eval_question_answering_locomo(
-    qas: List[Dict[str, Any]], prediction_key: str
+    qas: List[Dict[str, Any]],
+    prediction_key: str,
+    episodes_root: Path | None = None,
+    *,
+    episode_ref_cache: Dict[str, List[str]] | None = None,
+    dialogue_episode_spans_cache: Dict[str, Dict[str, Tuple[int, int]]] | None = None,
 ) -> Tuple[List[float], List[float], List[float]]:
     all_scores: List[float] = []
     all_b1_scores: List[float] = []
     all_recall: List[float] = []
+    if episode_ref_cache is None:
+        episode_ref_cache = {}
+    if dialogue_episode_spans_cache is None:
+        dialogue_episode_spans_cache = {}
 
     for qa in qas:
         if not should_evaluate_qa(qa):
@@ -451,21 +919,25 @@ def eval_question_answering_locomo(
         all_scores.append(score)
         all_b1_scores.append(b1)
 
-        context_key = prediction_key + "_context"
-        evidence = qa.get("evidence", []) if isinstance(qa.get("evidence", []), list) else []
-        if context_key in qa and evidence:
-            ctx = qa.get(context_key, [])
-            if isinstance(ctx, list) and ctx:
-                if str(ctx[0]).startswith("S"):
-                    sessions = [str(e)[1:] for e in ctx]
-                    recall_acc = float(
-                        sum(str(ev).split(":")[0][1:] in sessions for ev in evidence)
-                    ) / len(evidence)
-                else:
-                    recall_acc = float(sum(str(ev) in ctx for ev in evidence)) / len(evidence)
-                all_recall.append(recall_acc)
-                continue
-        all_recall.append(1.0)
+        evidence_refs = _extract_dialogue_refs_from_evidence(qa.get("evidence", []))
+        recall_acc = _compute_recall_from_episode_refs(
+            qa=qa,
+            prediction_key=prediction_key,
+            evidence_refs=evidence_refs,
+            episodes_root=episodes_root,
+            episode_ref_cache=episode_ref_cache,
+            dialogue_episode_spans_cache=dialogue_episode_spans_cache,
+        )
+        if recall_acc is None:
+            recall_acc = _compute_recall_from_context(
+                qa=qa,
+                prediction_key=prediction_key,
+                evidence_refs=evidence_refs,
+            )
+        if recall_acc is None:
+            recall_acc = 1.0 if not evidence_refs else 0.0
+
+        all_recall.append(recall_acc)
 
     return all_scores, all_b1_scores, all_recall
 
@@ -675,10 +1147,50 @@ def _prepare_out_sample(
     if not isinstance(existing_qas, list):
         return out_sample
 
-    for i, qa in enumerate(existing_qas):
-        if i >= len(out_sample["qa"]) or not isinstance(qa, dict):
-            continue
-        out_sample["qa"][i].update(qa)
+    def _pick_existing_qa(out_qa: Any, out_idx: int) -> Dict[str, Any] | None:
+        if not isinstance(out_qa, dict):
+            candidate = existing_qas[out_idx] if out_idx < len(existing_qas) else None
+            return candidate if isinstance(candidate, dict) else None
+
+        source_idx = out_qa.get(LOCOMO_SOURCE_QA_INDEX_KEY)
+        try:
+            source_idx = int(source_idx) if source_idx is not None else None
+        except Exception:
+            source_idx = None
+
+        if source_idx is not None:
+            for existing_qa in existing_qas:
+                if not isinstance(existing_qa, dict):
+                    continue
+                existing_source_idx = existing_qa.get(LOCOMO_SOURCE_QA_INDEX_KEY)
+                try:
+                    existing_source_idx = (
+                        int(existing_source_idx) if existing_source_idx is not None else None
+                    )
+                except Exception:
+                    existing_source_idx = None
+                if existing_source_idx == source_idx:
+                    return existing_qa
+
+        if out_idx < len(existing_qas) and isinstance(existing_qas[out_idx], dict):
+            candidate = existing_qas[out_idx]
+            if str(candidate.get("question", "") or "") == str(out_qa.get("question", "") or ""):
+                return candidate
+
+        out_question = str(out_qa.get("question", "") or "")
+        if out_question:
+            for existing_qa in existing_qas:
+                if not isinstance(existing_qa, dict):
+                    continue
+                if str(existing_qa.get("question", "") or "") == out_question:
+                    return existing_qa
+
+        return None
+
+    for out_idx, out_qa in enumerate(out_sample["qa"]):
+        existing_qa = _pick_existing_qa(out_qa, out_idx)
+        if isinstance(out_qa, dict) and isinstance(existing_qa, dict):
+            out_qa.update(existing_qa)
     return out_sample
 
 
@@ -714,6 +1226,56 @@ def _uniform_sample_by_fraction(
     return [samples[i] for i in picked_indices]
 
 
+def _resolve_relative_path(path_value: str, base_path: str) -> Path:
+    candidate = Path(path_value)
+    if candidate.is_absolute():
+        return candidate
+    return (Path(base_path).resolve().parent / candidate).resolve()
+
+
+def _resolve_locomo_episodes_root_from_agent_config(agent_config_path: str) -> Path | None:
+    try:
+        agent_cfg = _load_yaml(agent_config_path)
+    except Exception as exc:
+        logger.warning("Failed to load MemoryAgent config (%s): %s", agent_config_path, exc)
+        return None
+
+    if not isinstance(agent_cfg, dict):
+        logger.warning("MemoryAgent config is not a mapping: %s", agent_config_path)
+        return None
+
+    memory_core_path_raw = str(agent_cfg.get("memory_core_config_path", "") or "").strip()
+    if not memory_core_path_raw:
+        logger.warning("MemoryAgent config missing memory_core_config_path: %s", agent_config_path)
+        return None
+
+    memory_core_path = _resolve_relative_path(memory_core_path_raw, agent_config_path)
+    if not memory_core_path.exists():
+        logger.warning("MemoryCore config not found: %s", memory_core_path)
+        return None
+
+    try:
+        memory_core_cfg = _load_yaml(str(memory_core_path))
+    except Exception as exc:
+        logger.warning("Failed to load MemoryCore config (%s): %s", memory_core_path, exc)
+        return None
+
+    if not isinstance(memory_core_cfg, dict):
+        logger.warning("MemoryCore config is not a mapping: %s", memory_core_path)
+        return None
+
+    workflow_id = str(memory_core_cfg.get("workflow_id", "") or "").strip()
+    if not workflow_id:
+        logger.warning("workflow_id missing in MemoryCore config: %s", memory_core_path)
+        return None
+
+    episodes_root = Path(resolve_project_path(f"data/memory/{workflow_id}/episodes"))
+    if not episodes_root.exists():
+        logger.warning("episodes root not found: %s", episodes_root)
+        return None
+    return episodes_root
+
+
 def main() -> int:
     args = parse_args()
 
@@ -737,23 +1299,49 @@ def main() -> int:
     logger.info("log_file=%s", log_file)
     logger.info("trace_file=%s", trace_file)
     logger.info("Skipped QA categories: %s", sorted(SKIPPED_QA_CATEGORIES))
+    episodes_root = _resolve_locomo_episodes_root_from_agent_config(config_path)
+    if episodes_root is not None:
+        logger.info("episodes_root=%s", episodes_root)
+    else:
+        logger.warning(
+            "episodes_root unavailable; recall will fallback to coarse/session or context matching."
+        )
 
     samples = _load_json(data_file)
     if not isinstance(samples, list):
         raise ValueError(f"Expected list data in {data_file}")
 
     original_sample_count = len(samples)
-    samples = _uniform_sample_by_fraction(samples, args.sample_fraction, args.sample_seed)
-    logger.info(
-        "Uniform sample enabled: kept %d/%d samples (fraction=%.4f, seed=%d)",
-        len(samples),
-        original_sample_count,
-        args.sample_fraction,
-        args.sample_seed,
-    )
+    question_config_path = ""
+    if args.question_config:
+        question_config_path = str(resolve_project_path(args.question_config))
+        question_selection = load_question_selection_config(question_config_path)
+        samples = filter_samples_by_question_selection(samples, question_selection)
+        selected_question_count = sum(len(sample.get("qa", [])) for sample in samples)
+        logger.info("Question config enabled: %s", question_config_path)
+        logger.info(
+            "Question config selected %d/%d samples and %d questions.",
+            len(samples),
+            original_sample_count,
+            selected_question_count,
+        )
+        logger.info(
+            "Question config mode ignores sample sampling flags: sample_fraction=%.4f, max_samples=%d",
+            args.sample_fraction,
+            args.max_samples,
+        )
+    else:
+        samples = _uniform_sample_by_fraction(samples, args.sample_fraction, args.sample_seed)
+        logger.info(
+            "Uniform sample enabled: kept %d/%d samples (fraction=%.4f, seed=%d)",
+            len(samples),
+            original_sample_count,
+            args.sample_fraction,
+            args.sample_seed,
+        )
 
-    if args.max_samples and args.max_samples > 0:
-        samples = samples[: args.max_samples]
+        if args.max_samples and args.max_samples > 0:
+            samples = samples[: args.max_samples]
 
     existing_map: Dict[str, Dict[str, Any]] = {}
     if os.path.exists(out_file) and not args.overwrite:
@@ -833,7 +1421,12 @@ def main() -> int:
                     continue
 
                 question = str(qa.get("question", "") or "").strip()
-                thread_id = f"{args.thread_id_prefix}:{sid}:{q_idx}"
+                source_q_idx = qa.get(LOCOMO_SOURCE_QA_INDEX_KEY, q_idx)
+                try:
+                    source_q_idx = int(source_q_idx)
+                except Exception:
+                    source_q_idx = q_idx
+                thread_id = f"{args.thread_id_prefix}:{sid}:{source_q_idx}"
                 error_text = None
                 pred = ""
                 answer = ""
@@ -842,6 +1435,8 @@ def main() -> int:
                 question_plan: Any = None
                 sub_questions: Any = None
                 plan_summary = None
+                evidence_episode_refs: List[str] = []
+                evidence_episode_ref_count = 0
 
                 if not question:
                     error_text = "empty_question"
@@ -860,10 +1455,25 @@ def main() -> int:
                         question_plan = result.get("question_plan")
                         sub_questions = result.get("sub_questions")
                         plan_summary = result.get("plan_summary")
+                        evidence_episode_refs = _extract_episode_refs(
+                            result.get("evidence_episode_refs")
+                        )
+                        raw_ref_count = result.get("evidence_episode_ref_count")
+                        try:
+                            evidence_episode_ref_count = int(raw_ref_count)
+                        except Exception:
+                            evidence_episode_ref_count = len(evidence_episode_refs)
+                        evidence_episode_ref_count = max(
+                            evidence_episode_ref_count, len(evidence_episode_refs)
+                        )
                         qa[args.prediction_key] = pred
                         qa[args.prediction_key + "_answer"] = answer
                         qa[args.prediction_key + "_gold_answer"] = pred
                         qa[args.prediction_key + "_evidence"] = evidence
+                        qa[args.prediction_key + "_evidence_episode_refs"] = evidence_episode_refs
+                        qa[args.prediction_key + "_evidence_episode_ref_count"] = (
+                            evidence_episode_ref_count
+                        )
                         qa[args.prediction_key + "_tool_calls"] = (
                             tool_calls if isinstance(tool_calls, list) else []
                         )
@@ -890,7 +1500,14 @@ def main() -> int:
                             except Exception:
                                 pass
                         if is_network_api_error(exc):
-                            for suffix in ("", "_answer", "_gold_answer", "_evidence"):
+                            for suffix in (
+                                "",
+                                "_answer",
+                                "_gold_answer",
+                                "_evidence",
+                                "_evidence_episode_refs",
+                                "_evidence_episode_ref_count",
+                            ):
                                 qa.pop(args.prediction_key + suffix, None)
                             qa[args.prediction_key + "_error"] = error_text
                             fatal_error = exc
@@ -912,6 +1529,7 @@ def main() -> int:
                     "prediction_key": args.prediction_key,
                     "sample_id": sid,
                     "qa_index": q_idx,
+                    "source_qa_index": source_q_idx,
                     "category": qa.get("category"),
                     "thread_id": thread_id,
                     "question": question,
@@ -920,6 +1538,12 @@ def main() -> int:
                     "prediction_answer": qa.get(args.prediction_key + "_answer"),
                     "prediction_gold_answer": qa.get(args.prediction_key + "_gold_answer"),
                     "prediction_evidence": qa.get(args.prediction_key + "_evidence"),
+                    "prediction_evidence_episode_refs": qa.get(
+                        args.prediction_key + "_evidence_episode_refs"
+                    ),
+                    "prediction_evidence_episode_ref_count": qa.get(
+                        args.prediction_key + "_evidence_episode_ref_count"
+                    ),
                     "prediction_tool_calls": qa.get(args.prediction_key + "_tool_calls"),
                     "prediction_plan": qa.get(args.prediction_key + "_plan"),
                     "prediction_sub_questions": qa.get(args.prediction_key + "_sub_questions"),
@@ -954,11 +1578,19 @@ def main() -> int:
             progress.close()
         trace_fp.close()
 
+    episode_ref_cache: Dict[str, List[str]] = {}
+    dialogue_episode_spans_cache: Dict[str, Dict[str, Tuple[int, int]]] = {}
     for sample in out_map.values():
         qas = sample.get("qa", [])
         if not isinstance(qas, list):
             continue
-        f1_scores, b1_scores, recalls = eval_question_answering_locomo(qas, args.prediction_key)
+        f1_scores, b1_scores, recalls = eval_question_answering_locomo(
+            qas,
+            args.prediction_key,
+            episodes_root=episodes_root,
+            episode_ref_cache=episode_ref_cache,
+            dialogue_episode_spans_cache=dialogue_episode_spans_cache,
+        )
         for i, qa in enumerate(qas):
             if not isinstance(qa, dict):
                 continue
@@ -984,6 +1616,10 @@ def main() -> int:
     b1_summary = summarize_metric_by_category(out_samples_in_order, b1_metric_key)
     stats["summary_by_category_b1"] = b1_summary["summary_by_category"]
     stats["overall_b1"] = b1_summary["overall"]
+    recall_metric_key = args.model_key + "_recall"
+    recall_summary = summarize_metric_by_category(out_samples_in_order, recall_metric_key)
+    stats["summary_by_category_recall"] = recall_summary["summary_by_category"]
+    stats["overall_recall"] = recall_summary["overall"]
     all_stats = _load_json(stats_file) if os.path.exists(stats_file) else {}
     if not isinstance(all_stats, dict):
         all_stats = {}
@@ -997,6 +1633,7 @@ def main() -> int:
     logger.info("Evaluated new questions this run: %d", asked_count)
     logger.info("Overall accuracy (%s): %.3f", args.model_key, stats["overall_accuracy"])
     logger.info("Overall B1 (%s): %.3f", args.model_key, stats["overall_b1"])
+    logger.info("Overall recall (%s): %.3f", args.model_key, stats["overall_recall"])
     logger.info("Category accuracy: %s", json.dumps(stats["summary_by_category"], ensure_ascii=False))
     if fatal_error is not None:
         logger.error("Evaluation stopped early due to network/API error: %s", fatal_error)
@@ -1005,5 +1642,7 @@ def main() -> int:
 
 
 if __name__ == "__main__":
+    # Example:
+    # python scripts/run_eval_locomo.py --test-id locomo_subset_test --question-config
+    # python scripts/run_eval_locomo.py --test-id locomo_before_hybrid_test1 --question-config
     raise SystemExit(main())
-

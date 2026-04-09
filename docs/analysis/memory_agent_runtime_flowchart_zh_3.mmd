@@ -1,0 +1,11 @@
+﻿flowchart TD
+    A[调用 search_details] --> B[读取当前作用域]
+    B --> C[统计连续调用次数]
+    C --> D{超过连续上限}
+    D -->|是| X[返回 blocked 连续上限]
+    D -->|否| E{超过作用域上限}
+    E -->|是| Y[返回 blocked 作用域上限]
+    E -->|否| F{超过单轮上限}
+    F -->|是| Z[返回 blocked 单轮上限]
+    F -->|否| G[执行 memory_sys.search_details]
+    G --> H[记录结果到 tool_calls]
