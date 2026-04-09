@@ -547,7 +547,7 @@ class MemoryCore:
     def search_details(self, detail_query: str, topk: int = 5) -> Dict[str, Any]:
         """
         细节行为检索公开接口。
-        基于 scene.facts[*].embedding（或 Atomic fact 文本回退 embedding）进行向量检索。
+        基于 scene.facts 做混合检索（向量 + 关键词），并返回统一结果格式。
         """
         from .workflow.search.details_search import search_details as workflow_search_details
 
