@@ -285,7 +285,7 @@ class MemoryAgentPlanningMixin:
             parallelizable = bool(parsed.get("parallelizable", False))
             reason = str(parsed.get("reason", "") or "").strip()
             if decompose_first and not parallelizable:
-                # 涓茶渚濊禆棰橈細涓嶈鍒嗚В锛岄伩鍏嶅綋鍓嶉摼璺鎷?
+                # 串行依赖问题不要拆解，避免当前链路误拆。
                 return False, reason or "serial_dependency_detected"
             return decompose_first, reason or ("llm_parallel_decompose" if decompose_first else "llm_direct")
         except Exception as exc:

@@ -275,3 +275,100 @@ fact_extraction_v2:
 
     Episode:
     {episode}
+fact_extraction_v3:
+  zh: |
+    你是用于记忆构建的事实抽取器。
+
+    你会收到两类输入：
+    1) Chunk turns（当前分片对话，事实抽取的唯一主依据）
+    2) Episode context（只用于指代消解和时间补全，不能单独引入事实）
+
+    关键约束：
+    - 只抽取当前 Chunk turns 中可直接定位证据的事实。
+    - Episode context 只能帮助你补充指代和相对时间表达。
+    - 不要根据 Episode context 单独“脑补”当前分片没有出现的事实。
+
+    抽取规则：
+    - 每条 Atomic fact 只表达一个有意义的信息单元。
+    - 不要漏掉高价值短句，尤其是：
+      - 专名/人名/作品名/品牌名 mention（例如 “It’s Shia Labeouf!”）
+      - 对人或物的评价描述（例如 “They look graceful.”）
+      - 与业务推广相关的活动（fair/networking events/competition 等）
+    - 尽量保留检索关键字，避免不必要改写。
+    - 忽略寒暄、填充语、纯礼貌低信息句。
+    - 不要编造未被当前分片支持的事实。
+
+    只返回一个 JSON 对象，格式如下：
+    {
+      "event_log": {
+        "atomic_fact": [
+          {
+            "atomic_fact": "...",
+            "evidence_sentence": "...",
+            "fact_type": "event|opinion|mention|plan|advice|state|other",
+            "keywords": ["...", "..."]
+          }
+        ]
+      }
+    }
+
+    字段要求：
+    - evidence_sentence 必须来自当前 Chunk turns（可为近原句）。
+    - keywords 保留检索锚点（专名、地点、关键动词、关键形容词）。
+
+    Start time:
+    {start_time}
+
+    Chunk turns:
+    {dialogue_block}
+
+    Episode context:
+    {episode}
+  en: |
+    You are a fact extractor for memory construction.
+
+    You receive two inputs:
+    1) Chunk turns (the ONLY primary source for fact extraction)
+    2) Episode context (for coreference/time clarification only; NOT an independent fact source)
+
+    Critical constraints:
+    - Extract facts only if evidence exists in the current chunk turns.
+    - Use Episode context only to resolve pronouns/references or clarify relative time.
+    - Never introduce a fact that appears only in Episode context but not in the current chunk.
+
+    Extraction rules:
+    - One Atomic fact = one meaningful information unit.
+    - Do not miss high-value short facts, especially:
+      - proper noun mentions (e.g., "It's Shia Labeouf!")
+      - evaluative descriptions (e.g., "They look graceful.")
+      - business-promotion activities (fair/networking events/competition, etc.)
+    - Keep retrieval-important wording; avoid unnecessary paraphrasing.
+    - Ignore greetings/filler/polite-only low-information lines.
+    - Do not invent unsupported facts.
+
+    Return ONLY one JSON object with this schema:
+    {
+      "event_log": {
+        "atomic_fact": [
+          {
+            "atomic_fact": "...",
+            "evidence_sentence": "...",
+            "fact_type": "event|opinion|mention|plan|advice|state|other",
+            "keywords": ["...", "..."]
+          }
+        ]
+      }
+    }
+
+    Field requirements:
+    - evidence_sentence must be grounded in the current chunk turns.
+    - keywords should keep retrieval anchors (proper nouns, places, key verbs/adjectives).
+
+    Start time:
+    {start_time}
+
+    Chunk turns:
+    {dialogue_block}
+
+    Episode context:
+    {episode}

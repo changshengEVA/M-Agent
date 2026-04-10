@@ -31,6 +31,18 @@ logger = logging.getLogger(__name__)
 
 CONFIG_PATH = FACT_EXTRACTION_PROMPT_CONFIG_PATH
 
+_FACT_CHUNK_SIZE = 8
+_FACT_CHUNK_OVERLAP = 0
+
+_FACT_OPTIONAL_KEYS = (
+    "fact_type",
+    "keywords",
+    "entities",
+    "time_norm",
+    "relation",
+    "event_tags",
+)
+
 
 def get_memory_root(workflow_id: str) -> Path:
     return memory_workflow_dir(workflow_id)
@@ -166,6 +178,59 @@ def turns_to_dialogue_block(turns: List[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def split_turns_into_chunks(
+    turns: List[Dict[str, Any]],
+    chunk_size: int = _FACT_CHUNK_SIZE,
+    overlap: int = _FACT_CHUNK_OVERLAP,
+) -> List[List[Dict[str, Any]]]:
+    valid_turns = [t for t in turns if isinstance(t, dict)]
+    if not valid_turns:
+        return []
+
+    safe_chunk_size = max(1, int(chunk_size))
+    safe_overlap = max(0, int(overlap))
+    if safe_overlap >= safe_chunk_size:
+        safe_overlap = safe_chunk_size - 1
+
+    step = max(1, safe_chunk_size - safe_overlap)
+    chunks: List[List[Dict[str, Any]]] = []
+    start = 0
+    total = len(valid_turns)
+    while start < total:
+        end = min(total, start + safe_chunk_size)
+        chunk = valid_turns[start:end]
+        if chunk:
+            chunks.append(chunk)
+        if end >= total:
+            break
+        start += step
+    return chunks
+
+
+def _normalize_optional_fact_fields(raw_item: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw_item, dict):
+        return {}
+
+    normalized: Dict[str, Any] = {}
+    for key in _FACT_OPTIONAL_KEYS:
+        if key not in raw_item:
+            continue
+        value = raw_item.get(key)
+        if isinstance(value, str):
+            clean = value.strip()
+            if clean:
+                normalized[key] = clean
+            continue
+        if isinstance(value, list):
+            values = [str(v).strip() for v in value if str(v).strip()]
+            if values:
+                normalized[key] = values
+            continue
+        if isinstance(value, dict) and value:
+            normalized[key] = value
+    return normalized
+
+
 def extract_json_from_text(text: str) -> Any:
     payload = (text or "").strip()
     if not payload:
@@ -278,12 +343,12 @@ def normalize_fact_items(parsed_payload: Any) -> List[Dict[str, Any]]:
             atomic_fact = extract_atomic_fact(item)
             evidence_sentence = str(item.get("evidence_sentence", "")).strip()
             if atomic_fact:
-                normalized.append(
-                    {
-                        "Atomic fact": atomic_fact,
-                        "evidence_sentence": evidence_sentence,
-                    }
-                )
+                fact_item: Dict[str, Any] = {
+                    "Atomic fact": atomic_fact,
+                    "evidence_sentence": evidence_sentence,
+                }
+                fact_item.update(_normalize_optional_fact_fields(item))
+                normalized.append(fact_item)
         elif isinstance(item, str) and item.strip():
             normalized.append({"Atomic fact": item.strip()})
     return normalized
@@ -319,7 +384,7 @@ def fallback_extract_facts(turns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         "choreograph",
         "practice",
         "plan",
-        "鍑嗗",
+        "准备",
         "练习",
         "参加",
         "打算",
@@ -379,6 +444,16 @@ def build_atomic_fact_embedding_text(atomic_fact: str) -> str:
     return (atomic_fact or "").strip()
 
 
+def _normalize_dedupe_text(text: Any) -> str:
+    raw = str(text or "").strip().lower()
+    if not raw:
+        return ""
+    # Drop punctuation noise so minor formatting differences do not bypass dedupe.
+    raw = re.sub(r"[^\w\u4e00-\u9fff]+", " ", raw, flags=re.UNICODE)
+    raw = re.sub(r"\s+", " ", raw).strip()
+    return raw
+
+
 def complete_fact_item(
     raw_item: Dict[str, Any],
     source_ep: Dict[str, Any],
@@ -398,8 +473,9 @@ def complete_fact_item(
     except Exception as exc:
         logger.warning("Embedding generation failed for atomic_fact '%s': %s", embedding_input[:80], exc)
 
-    return {
+    output: Dict[str, Any] = {
         "Atomic fact": atomic_fact,
+        "evidence_sentence": evidence_sentence,
         "evidence": {
             "episode_id": str(source_ep.get("episode_id", "")),
             "dialogue_id": str(source_ep.get("dialogue_id", "")),
@@ -407,21 +483,44 @@ def complete_fact_item(
         "embedding": embedding,
     }
 
+    start_time = str(source_ep.get("start_time", "")).strip()
+    end_time = str(source_ep.get("end_time", "")).strip()
+    if start_time:
+        output["start_time"] = start_time
+    if end_time:
+        output["end_time"] = end_time
+
+    for key, value in _normalize_optional_fact_fields(raw_item).items():
+        if key not in output:
+            output[key] = value
+
+    return output
+
 
 def deduplicate_facts(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     unique: List[Dict[str, Any]] = []
-    seen = set()
+    seen_atomic = set()
+    seen_evidence = set()
     for item in facts:
         evidence = item.get("evidence", {})
-        atomic_fact = extract_atomic_fact(item).strip().lower()
-        key = (
-            atomic_fact,
-            str(evidence.get("episode_id", "")).strip(),
-            str(evidence.get("dialogue_id", "")).strip(),
-        )
-        if key in seen:
+        episode_id = str(evidence.get("episode_id", "")).strip()
+        dialogue_id = str(evidence.get("dialogue_id", "")).strip()
+
+        atomic_norm = _normalize_dedupe_text(extract_atomic_fact(item))
+        evidence_norm = _normalize_dedupe_text(item.get("evidence_sentence", ""))
+
+        atomic_key = (episode_id, dialogue_id, atomic_norm)
+        evidence_key = (episode_id, dialogue_id, evidence_norm)
+
+        if atomic_norm and atomic_key in seen_atomic:
             continue
-        seen.add(key)
+        if evidence_norm and evidence_key in seen_evidence:
+            continue
+
+        if atomic_norm:
+            seen_atomic.add(atomic_key)
+        if evidence_norm:
+            seen_evidence.add(evidence_key)
         unique.append(item)
     return unique
 
@@ -450,8 +549,7 @@ def build_facts_from_source_episode(
         return []
 
     turns = extract_turns(dialogue_data, turn_span if isinstance(turn_span, list) else [])
-    dialogue_block = turns_to_dialogue_block(turns)
-    if not dialogue_block.strip():
+    if not turns:
         return []
 
     episode_payload = build_episode_payload(
@@ -459,32 +557,87 @@ def build_facts_from_source_episode(
         turns=turns,
         dialogue_data=dialogue_data,
     )
-    episode_payload_text = json.dumps(episode_payload, ensure_ascii=False, indent=2)
-    start_time = str(episode_payload.get("start_time", "")).strip()
-
-    try:
-        raw_facts = call_fact_extraction(
-            dialogue_block=dialogue_block,
-            episode_payload_text=episode_payload_text,
-            start_time=start_time,
-            prompt_template=prompt_template,
-            llm_model=llm_model,
-        )
-    except Exception as exc:
-        logger.warning("LLM fact extraction failed for dialogue_id=%s, fallback enabled: %s", dialogue_id, exc)
-        raw_facts = fallback_extract_facts(turns)
-
-    if not raw_facts:
+    turn_chunks = split_turns_into_chunks(turns=turns)
+    if not turn_chunks:
         return []
 
-    completed = [
-        complete_fact_item(
-            raw_item=item,
-            source_ep=source_ep,
-            embed_model=embed_model,
-        )
-        for item in raw_facts
-    ]
+    completed: List[Dict[str, Any]] = []
+    total_chunks = len(turn_chunks)
+    episode_context = {
+        "episode_id": str(episode_payload.get("episode_id", "")),
+        "dialogue_id": str(episode_payload.get("dialogue_id", "")),
+        "start_time": str(episode_payload.get("start_time", "")),
+        "end_time": str(episode_payload.get("end_time", "")),
+        "participants": episode_payload.get("participants", []),
+    }
+
+    for chunk_index, chunk_turns in enumerate(turn_chunks, start=1):
+        if not chunk_turns:
+            continue
+
+        dialogue_block = turns_to_dialogue_block(chunk_turns)
+        if not dialogue_block.strip():
+            continue
+
+        chunk_turn_span = [
+            chunk_turns[0].get("turn_id"),
+            chunk_turns[-1].get("turn_id"),
+        ]
+        chunk_start_time = str(chunk_turns[0].get("timestamp", "")).strip()
+        chunk_end_time = str(chunk_turns[-1].get("timestamp", "")).strip()
+        chunk_payload = {
+            "episode_context": episode_context,
+            "chunk": {
+                "chunk_index": chunk_index,
+                "chunk_total": total_chunks,
+                "turn_span": chunk_turn_span,
+                "start_time": chunk_start_time,
+                "end_time": chunk_end_time,
+            },
+            "turns": [
+                {
+                    "turn_id": t.get("turn_id"),
+                    "speaker": str(t.get("speaker", "Unknown")),
+                    "text": str(t.get("text", "")),
+                    "timestamp": str(t.get("timestamp", "")),
+                }
+                for t in chunk_turns
+                if isinstance(t, dict)
+            ],
+        }
+        chunk_payload_text = json.dumps(chunk_payload, ensure_ascii=False, indent=2)
+        start_time = chunk_start_time or str(episode_payload.get("start_time", "")).strip()
+
+        try:
+            raw_facts = call_fact_extraction(
+                dialogue_block=dialogue_block,
+                episode_payload_text=chunk_payload_text,
+                start_time=start_time,
+                prompt_template=prompt_template,
+                llm_model=llm_model,
+            )
+        except Exception as exc:
+            logger.warning(
+                "LLM fact extraction failed for dialogue_id=%s chunk=%s/%s, fallback enabled: %s",
+                dialogue_id,
+                chunk_index,
+                total_chunks,
+                exc,
+            )
+            raw_facts = fallback_extract_facts(chunk_turns)
+
+        for item in raw_facts:
+            completed.append(
+                complete_fact_item(
+                    raw_item=item,
+                    source_ep=source_ep,
+                    embed_model=embed_model,
+                )
+            )
+
+    if not completed:
+        return []
+
     return deduplicate_facts(completed)
 
 

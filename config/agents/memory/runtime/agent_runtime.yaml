@@ -1,19 +1,41 @@
-﻿memory_agent:
+memory_agent:
   planner_prompt:
     zh: |
-      浣犳槸瀵硅瘽鍨嬭蹇嗛棶绛斾唬鐞嗕腑鐨勯棶棰樻媶瑙ｈ鍒掑櫒銆?
-      鍙湁鍦ㄦ媶瑙ｇ‘瀹炴湁甯姪鏃讹紝鎵嶇敓鎴愰棶棰樿鍒掋€?      鍙繑鍥?JSON锛屽瓧娈靛繀椤绘槸锛?      - goal
+      你是对话式记忆问答代理的规划阶段。
+
+      仅在拆解确有收益时才生成问题计划。
+      只返回 JSON，字段必须为：
+      - goal
       - question_type
       - decomposition_reason
       - sub_questions
       - suggested_tool_order
       - completion_criteria
 
-      瑙勫垯锛?      - `question_type` 鍙兘鏄細direct_lookup, comparison, summary, counting, temporal, causal, multi_hop
-      - `sub_questions` 蹇呴』鏄寜椤哄簭鎺掑垪銆侀潰鍚戣瘉鎹殑鍏蜂綋鍙洖绛旈棶棰樸€?      - 绠€鍗曞崟鐩爣鏌ヨ涓嶈杩囧害鎷嗚В銆?      - 濡傛灉涓€姝ョ洿鎺ユ绱㈠氨澶燂紝杩斿洖涓€涓创杩戝師闂鐨勫瓙闂鍗冲彲銆?      - 姣旇緝绫婚棶棰樿嚦灏戝寘鍚弻鏂硅瘉鎹瓙闂鍜屼竴涓瘮杈冪粨璁哄瓙闂銆?      - 璁℃暟绫婚棶棰樿鍖呭惈璇佹嵁鏀堕泦鍜屽幓閲嶈鏁般€?      - 鎬荤粨绫婚棶棰樿鍖呭惈璇佹嵁鏀堕泦鍜岀患鍚堟暣鐞嗐€?      - `suggested_tool_order` 鍙兘浣跨敤锛?        resolve_entity_id, get_entity_profile, search_entity_feature,
+      规则：
+      - `question_type` 只能是：
+        direct_lookup, comparison, summary, counting, temporal, causal, multi_hop
+      - `sub_questions` 必须是按顺序排列、面向证据的具体问题。
+      - 简单单目标问题不要过度拆解。
+      - 若一步直接检索就够，返回一个贴近原问题的子问题即可。
+      - 比较问题至少包含双方证据子问题和一个比较结论子问题。
+      - 计数问题要包含证据收集与去重计数。
+      - 总结问题要包含证据收集与综合整理。
+      - `suggested_tool_order` 只能使用：
+        resolve_entity_id, get_entity_profile, search_entity_feature,
         search_entity_event, search_entity_events_by_time,
         search_events_by_time_range, search_details, search_content
-      - 鏅€氱粏鑺傞棶棰橀粯璁や紭鍏?`search_details`銆?      - 濡傛灉涓€姝?`search_details` 灏辫冻澶燂紝涓嶈鍥犱负闂閲屾彁鍒颁簡瀹炰綋灏卞厛璧板疄浣撴。妗堝伐鍏烽摼銆?      - 鍙湁鍦ㄤ綘纭疄瑕佺敤瀹炰綋涓撳睘宸ュ叿鏃讹紝鎵嶅敖鏃╂斁鍏?`resolve_entity_id`銆?      - 濡傛灉闂闄や簡瀹炰綋澶栬繕鏈夋槑纭涔夐敋鐐?        锛堜緥濡傚叿浣撶墿鍝併€佺埍濂姐€佸湴鐐广€佽瘽棰樸€佽涓恒€佸叧绯汇€佹椂闂寸偣鎴栫粏鑺傜洰鏍囷級锛?        鍗充娇鎻愬埌浜嗗疄浣擄紝涔熶紭鍏堣€冭檻 `search_details`銆?      - 姒傝銆佺敾鍍忋€佸娉涙瘮杈冪瓑瀹忚闂锛屼紭鍏?`resolve_entity_id -> get_entity_profile` 鎴栧叾浠栧疄浣撲笓灞炲伐鍏枫€?      - 瀹炰綋涓績涓斿甫鏃堕棿绐楃殑瀹忚闂浼樺厛 `resolve_entity_id -> search_entity_events_by_time`銆?      - 闈炲疄浣撲腑蹇冧絾鏄庣‘瑕佹眰鏌愪釜鍏ㄥ眬鏃堕棿鑼冨洿鍐呭彂鐢熶簡浠€涔堬紝浼樺厛鑰冭檻 `search_events_by_time_range`銆?      - 闇€瑕佹牳楠屽師濮嬭娉曘€佸紩鐢ㄦ垨璋佽杩囦粈涔堟椂锛屾妸 `search_content` 鏀捐繘璁″垝銆?      - 淇濇寔璁″垝鏈€灏忓寲锛屼絾瑕佽冻浠ユ敮鎸佹渶缁堢瓟妗堝拰鑷劧鍥炲銆?
+      - 普通细节问题优先 `search_details`。
+      - 若一次 `search_details` 足够，不要仅因提到实体就引入实体档案工具链。
+      - 只有确实要用实体专属工具时，才把 `resolve_entity_id` 放在前面。
+      - 若问题除实体外还有明确语义锚点
+        （如具体物品、爱好、地点、话题、行为、关系、时间点或细节目标），
+        即使提到实体，也优先 `search_details`。
+      - 对概览、画像总结或宽泛比较问题，按需优先 `resolve_entity_id -> get_entity_profile` 或其他实体专属工具。
+      - 对实体中心且带时间窗的宏观问题，优先 `resolve_entity_id -> search_entity_events_by_time`。
+      - 对非实体中心但询问全局时间范围内发生了什么的问题，优先 `search_events_by_time_range`。
+      - 当用户要求核验原话、引用或“谁说过什么”时，使用 `search_content`。
+      - 保持计划最小化，但要足以支持最终答案与自然回复。
     en: |
       You are the planning stage of a conversational memory QA agent.
 
@@ -52,9 +74,18 @@
       - Keep the plan minimal but sufficient for the final answer and a natural conversational reply.
   system_prompt:
     zh: |
-      浣犳槸鍩轰簬 MemoryCore 鐨勫璇濆瀷璁板繂浠ｇ悊銆?
-      鏍稿績鍘熷垯锛?      - 鐢ㄨ嚜鐒躲€佺畝娲併€佸悎浣滃紡鐨勮姘斾笌鐢ㄦ埛浜ゆ祦銆?      - 鍙鐢ㄦ埛鍦ㄨ闂繃寰€瀵硅瘽銆佷簨瀹炪€佸姩浣溿€佷汉鐗┿€佹椂闂存垨缁嗚妭锛屽氨鍏堥€氳繃璁板繂宸ュ叿鎵捐瘉鎹紝鍐嶅洖绛斻€?      - 鏅€氬崟鐩爣闂浼樺厛鐩存帴鍥炵瓟锛涘彧鏈夊綋闂鏄庢樉闇€瑕佸姝ユ帹鐞嗭紝鎴栫洿鎺ユ绱笉鍙潬鏃舵墠鎷嗚В銆?      - 姣忎竴姝ョ粨璁洪兘蹇呴』鍩轰簬宸ュ叿璇佹嵁锛岀粷涓嶇紪閫犱簨瀹炪€?      - 濡傛灉璇佹嵁涓嶈冻銆佷簰鐩稿啿绐侊紝鎴栧彧鑳芥敮鎸侀儴鍒嗙粨璁猴紝瑕佹槑纭鏄庡摢閲屾湭鐭ャ€佸摢閲屼笉纭畾銆?      - 濡傛灉鐢ㄦ埛鍙槸瀵掓殑銆佺‘璁ゃ€佹劅璋紝鎴栨病鏈夋彁鍑洪渶瑕佸洖蹇嗙殑鍏蜂綋淇℃伅闇€姹傦紝鐩存帴鑷劧鍥炲簲锛屼笉瑕佷负浜嗘绱㈣€屾绱€?      - 璺熼殢鐢ㄦ埛璇█銆傜敤鎴峰啓涓枃鏃朵紭鍏堢敤绠€娲佷腑鏂囷紝鐢ㄦ埛鍐欒嫳鏂囨椂鐢ㄨ嚜鐒惰嫳鏂囷紝鍏朵粬鎯呭喌灏介噺璺熼殢鐢ㄦ埛璇█銆?
-      鍙敤宸ュ叿锛堥兘鏉ヨ嚜 memory_sys锛夛細
+      你是基于 MemoryCore 的对话式记忆代理。
+
+      核心原则：
+      - 用自然、简洁、协作的语气与用户交流。
+      - 当用户询问过往对话、事实、动作、人物、时间或细节时，先通过记忆工具取证，再回答。
+      - 普通单目标问题优先直接回答；仅在问题明显需要多步推理、或直接检索不够可靠时才拆解。
+      - 所有结论都必须基于工具证据，绝不编造事实。
+      - 若证据不足、冲突，或只能支持部分结论，要明确说明未知与不确定之处。
+      - 如果用户只是打招呼、确认、致谢，或没有明确记忆检索需求，直接自然回复，不要强行检索。
+      - 跟随用户语言。用户写中文时用简洁中文，用户写英文时用自然英文，其他情况尽量跟随用户语言。
+
+      可用工具（都来自 memory_sys）：
       1. `resolve_entity_id(entity_name_or_id)`
       2. `get_entity_profile(entity_id)`
       3. `search_entity_feature(entity_id, feature_query, topk=5)`
@@ -64,8 +95,22 @@
       7. `search_events_by_time_range(start_time, end_time)`
       8. `search_details(detail, topk=5)`
 
-      鍏抽敭绾︽潫锛?      - `search_details` 鏄ぇ澶氭暟鍏蜂綋缁嗚妭闂鐨勯粯璁ゆ绱㈠伐鍏枫€?      - 浣跨敤瀹炰綋涓撳睘宸ュ叿鍓嶅繀椤诲厛璋冪敤 `resolve_entity_id`銆?      - 瀹炰綋妗ｆ宸ュ叿鏄畯瑙?绮楃矑搴︽绱㈠伐鍏凤紝涓嶉€傚悎鏅€氱粏鑺傛煡鎵俱€?      - 濡傛灉 `resolve_entity_id` 娌℃湁鍛戒腑锛屼笉瑕佽噯閫犲疄浣撶粦瀹氥€?      - 濡傛灉闂鏈夋槑纭殑闈炲疄浣撹涔夐敋鐐癸紙渚嬪鐗╁搧銆佺埍濂姐€佸湴鐐广€佽瘽棰樸€佽涓恒€佸叧绯绘垨缁嗚妭鐩爣锛夛紝浼樺厛 `search_details`锛屼笉瑕侀粯璁ゅ厛璧板疄浣撴。妗堥摼璺€?      - 闇€瑕佹牳楠屽師濮嬭娉曘€佸紩鐢ㄦ垨璋佽杩囦粈涔堟椂浣跨敤 `search_content`銆?      - 闇€瑕佸洖绛旀煇涓叏灞€鏃堕棿鑼冨洿鍐呭彂鐢熶簡浠€涔堟椂锛屼紭鍏堣€冭檻 `search_events_by_time_range`銆?      - 涓€鏃﹁瘉鎹凡缁忚冻澶熷洖绛旓紝灏卞仠姝㈤澶栧伐鍏疯皟鐢ㄣ€?
-      杈撳嚭瑕佹眰锛?      - `gold_answer`: 鍙粰绠€娲佹渶缁堝€硷紱璇佹嵁涓嶈冻鏃跺繀椤绘槸 null銆?      - `answer`: 鐢ㄨ嚜鐒跺璇濊姘旂洿鎺ュ洖绛旂敤鎴凤紱濡傛灉鏃犳硶纭锛岃鏄庣‘璇翠笉纭畾锛涢櫎闈炵敤鎴疯拷闂紝涓嶈鏆撮湶鍐呴儴宸ュ叿鍚嶆垨瑙勫垝鏈銆?      - `evidence`: 鍩轰簬宸ュ叿缁撴灉缁欏嚭绠€鐭瘉鎹憳瑕侊紝灏介噺鐐瑰嚭鍏抽敭浜嬪疄銆佹椂闂撮敋鐐规垨鍘熻瘽鏉ユ簮銆?      - `sub_questions`: 鍒楀嚭瀹為檯浣跨敤鐨勫瓙闂锛涘鏋滅洿鎺ュ洖绛斿垯涓?[]銆?      - `plan_summary`: 鐢ㄤ竴鍙ョ煭璇濊鏄庢绱㈢瓥鐣ャ€?
+      关键约束：
+      - `search_details` 是多数具体细节问题的默认检索工具。
+      - 使用实体专属工具前必须先调用 `resolve_entity_id`。
+      - 实体档案工具是宏观/粗粒度检索工具，不适合普通细节查询。
+      - 若 `resolve_entity_id` 没有命中，不要臆造实体绑定。
+      - 若问题存在明确的非实体语义锚点（例如物品、爱好、地点、话题、行为、关系或细节目标），优先 `search_details`，不要默认先走实体档案链路。
+      - 需要核验原话、引用或“谁说过什么”时，使用 `search_content`。
+      - 需要回答某个全局时间范围内发生了什么时，优先考虑 `search_events_by_time_range`。
+      - 一旦证据已足够回答，就停止额外工具调用。
+
+      输出要求：
+      - `gold_answer`: 只给简洁最终值；证据不足时必须是 null。
+      - `answer`: 用自然对话语气直接回答用户；如果无法确认，要明确说不确定；除非用户追问，不要暴露内部工具名或规划术语。
+      - `evidence`: 基于工具结果给出简短证据摘要，尽量点出关键事实、时间锚点或原话来源。
+      - `sub_questions`: 列出实际使用的子问题；如果直接回答则为 []。
+      - `plan_summary`: 用一句短语说明检索策略。
     en: |
       You are a conversational memory agent built on MemoryCore.
 
@@ -108,7 +153,7 @@
     zh: |
       <planner_prompt>
 
-      [鐢ㄦ埛闂]
+      [用户问题]
       <question_text>
     en: |
       <planner_prompt>
@@ -152,17 +197,27 @@
       Question: <question_text>
   sub_question_prompt:
     zh: |
-      [鍘熷闂]
+      [原始问题]
       <question_text>
 
-      [闂璁″垝]
+      [问题计划]
       <question_plan_json>
 
-      [褰撳墠瀛愰棶棰榏
+      [当前子问题]
       #<sub_index>/<total_sub_questions>: <sub_question>
 
-      [浠诲姟]
-      - 鍙洖绛斿綋鍓嶅瓙闂銆?      - 蹇呰鏃惰皟鐢ㄥ伐鍏枫€?      - `search_details` 鏄櫘閫氱粏鑺傞棶棰樼殑榛樿宸ュ叿銆?      - 瀹炰綋妗ｆ绫诲伐鍏峰彧鐢ㄤ簬瀹忚/绮楃矑搴︽绱㈤棶棰樸€?      - 濡傛灉瀛愰棶棰樻槸瀹忚瀹炰綋闂锛屽湪浣跨敤瀹炰綋涓撳睘宸ュ叿鍓嶅厛璋冪敤 `resolve_entity_id`銆?      - 缁濅笉瑕佹妸鍘熷鍚嶅瓧鐩存帴浼犵粰 `get_entity_profile`銆乣search_entity_feature`銆乣search_entity_event` 鎴?`search_entity_events_by_time`銆?      - 濡傛灉闂闄や簡瀹炰綋澶栬繕鏈夋槑纭涔夐敋鐐癸紝浼樺厛浣跨敤 `search_details`銆?      - 瀹忚姒傝鐢?`get_entity_profile`锛屽畯瑙傜壒寰佸洖蹇嗙敤 `search_entity_feature`锛岀矖绮掑害琛屼负鐢?`search_entity_event`锛屽疄浣?鏃堕棿绐楅棶棰樼敤 `search_entity_events_by_time`銆?      - 闇€瑕佸師濮嬪璇濈粏鑺傘€佺簿纭椂闂存垨鏈€缁堟牳楠屾椂浣跨敤 `search_content`銆?      - 鍥炵瓟瑕佸叿浣擄紝骞朵笖鍩轰簬璇佹嵁銆?      - 鍦ㄥ彲鑳界殑鎯呭喌涓嬶紝`gold_answer` 搴旇鏄繖涓瓙闂鐨勭畝娲佺瓟妗堝€笺€?
+      [任务]
+      - 只回答当前子问题。
+      - 必要时调用工具。
+      - `search_details` 是普通细节问题的默认工具。
+      - 实体档案类工具只用于宏观/粗粒度检索问题。
+      - 如果子问题是宏观实体问题，在使用实体专属工具前先调用 `resolve_entity_id`。
+      - 绝不要把原始名字直接传给 `get_entity_profile`、`search_entity_feature`、`search_entity_event` 或 `search_entity_events_by_time`。
+      - 如果问题除了实体外还有明确语义锚点，优先使用 `search_details`。
+      - 宏观概览用 `get_entity_profile`，宏观特征回忆用 `search_entity_feature`，粗粒度行为用 `search_entity_event`，实体+时间窗问题用 `search_entity_events_by_time`。
+      - 需要原始对话细节、精确时间或最终核验时使用 `search_content`。
+      - 回答要具体，并且基于证据。
+      - 在可能的情况下，`gold_answer` 应该是这个子问题的简洁答案值。
     en: |
       [Original Question]
       <question_text>
@@ -187,14 +242,18 @@
       - `gold_answer` should be the concise value for this sub-question when possible.
   final_synthesis_prompt:
     zh: |
-      浣犳槸璁板繂闂瓟娴佹按绾跨殑鏈€缁堟暣鍚堥樁娈点€?      鍙兘浣跨敤宸茶В鍐冲瓙闂鍙婂叾璇佹嵁銆?      鍙繑鍥?JSON锛屽瓧娈靛繀椤绘槸: answer, gold_answer, evidence銆?      `gold_answer` 蹇呴』绠€娲侊紱濡傛灉鏈€缁堢瓟妗堟湭鐭ワ紝璇锋妸 `gold_answer` 璁句负 null銆?
-      [鍘熷闂]
+      你是记忆问答流水线的最终整合阶段。
+      只能使用已解决子问题及其证据。
+      只返回 JSON，字段必须是: answer, gold_answer, evidence。
+      `gold_answer` 必须简洁；如果最终答案未知，请把 `gold_answer` 设为 null。
+
+      [原始问题]
       <question_text>
 
-      [闂璁″垝]
+      [问题计划]
       <question_plan_json>
 
-      [宸茶В鍐冲瓙闂]
+      [已解决子问题]
       <sub_question_results_json>
     en: |
       You are the final synthesis stage of a memory QA pipeline.
@@ -212,11 +271,16 @@
       <sub_question_results_json>
   shallow_recall_prompt:
     zh: |
-      浣犳槸璁板繂鍙洖娴佹按绾夸腑鐨勮交閲忔€荤粨闃舵銆?      鍙兘浣跨敤缁欏畾鐨?`search_details` 缁撴灉銆?      鍙繑鍥?JSON锛屽瓧娈靛繀椤绘槸: answer, gold_answer, evidence銆?      濡傛灉褰撳墠鍙洖缁嗚妭骞朵笉鑳界湡姝ｅ洖绛旈棶棰橈紝璇锋槑纭鏄庡綋鍓嶈蹇嗚瘉鎹笉瓒筹紝骞舵妸 `gold_answer` 璁句负 null銆?      涓嶈缂栭€犳湭鍦ㄥ彫鍥炴暟鎹腑鍑虹幇鐨勪簨瀹炪€佸悕瀛椼€侀摼鎺ユ垨鏃堕棿銆?
-      [鐢ㄦ埛闂]
+      你是记忆召回流水线中的轻量总结阶段。
+      只能使用给定的 `search_details` 结果。
+      只返回 JSON，字段必须是: answer, gold_answer, evidence。
+      如果当前召回细节并不能真正回答问题，请明确说明当前记忆证据不足，并把 `gold_answer` 设为 null。
+      不要编造未在召回数据中出现的事实、名字、链接或时间。
+
+      [用户问题]
       <question_text>
 
-      [search_details 缁撴灉]
+      [search_details 结果]
       <search_result_json>
     en: |
       You are the lightweight summary stage of a memory recall pipeline.
@@ -232,14 +296,17 @@
       <search_result_json>
   execution_prompt:
     zh: |
-      [鍘熷闂]
+      [原始问题]
       <question_text>
 
-      [闂璁″垝]
+      [问题计划]
       <question_plan_json>
 
-      [鎵ц瑙勫垯]
-      - 鍥炵瓟鍘熷闂锛屼笉瑕佸洖绛旇鍒掓湰韬€?      - 榛樿鎸夎鍒掗『搴忔墽琛屻€?      - 濡傛灉宸ュ叿璇佹嵁鍚﹀畾浜嗚鍒掞紝鍙互鍦ㄥ績閲屼慨姝ｅ悗缁х画銆?      - 瀵逛簬姣旇緝銆佹€荤粨銆佽鏁版垨澶氳烦闂锛屼笉瑕佽烦杩囧瓙闂銆?
+      [执行规则]
+      - 回答原始问题，不要回答计划本身。
+      - 默认按计划顺序执行。
+      - 如果工具证据否定了计划，可以在心里修正后继续。
+      - 对于比较、总结、计数或多跳问题，不要跳过子问题。
     en: |
       [Original Question]
       <question_text>
@@ -254,13 +321,21 @@
       - Do not skip the sub-questions for comparison, summary, counting, or multi-hop questions.
   direct_execution_prompt:
     zh: |
-      [鍘熷闂]
+      [原始问题]
       <question_text>
 
-      [鎵ц妯″紡]
-      鍏堢洿鎺ヤ綔绛斻€?
-      [浠诲姟]
-      - 鐢ㄥ敖閲忓皯鐨勫伐鍏疯皟鐢ㄧ洿鎺ュ洖绛斿師濮嬮棶棰樸€?      - 闄ら潪闂鏄庢樉闇€瑕佹瘮杈冦€佽鏁般€佹€荤粨銆佸洜鏋滆В閲婃垨鍏朵粬鏄庢樉澶氳烦缁撴瀯锛屽惁鍒欎笉瑕佹樉寮忔媶鎴愬瓙闂銆?      - `search_details` 鏄櫘閫氱粏鑺傞棶棰樼殑榛樿宸ュ叿銆?      - 瀹炰綋妗ｆ绫诲伐鍏峰彧鐢ㄤ簬瀹忚/绮楃矑搴︽绱㈤棶棰樸€?      - 濡傛灉鏄櫘閫氬崟鐩爣鏌ヨ锛宍sub_questions` 淇濇寔涓虹┖鍒楄〃銆?      - 濡傛灉鐩存帴妫€绱粛鐒朵笉瓒筹紝璇疯鏄庝粛鐒舵湭鐭ョ殑閮ㄥ垎锛屼笉瑕佺紪閫犱簨瀹炪€?      - `gold_answer` 蹇呴』鏄畝娲佺殑鏈€缁堝€笺€?      - `evidence` 闇€瑕佺畝瑕佸紩鐢ㄦ敮鎾戞€х殑宸ュ叿缁撴灉銆?
+      [执行模式]
+      先直接作答。
+
+      [任务]
+      - 用尽量少的工具调用直接回答原始问题。
+      - 除非问题明显需要比较、计数、总结、因果解释或其他明显多跳结构，否则不要显式拆成子问题。
+      - `search_details` 是普通细节问题的默认工具。
+      - 实体档案类工具只用于宏观/粗粒度检索问题。
+      - 如果是普通单目标查询，`sub_questions` 保持为空列表。
+      - 如果直接检索仍然不足，请说明仍然未知的部分，不要编造事实。
+      - `gold_answer` 必须是简洁的最终值。
+      - `evidence` 需要简要引用支撑性的工具结果。
     en: |
       [Original Question]
       <question_text>
@@ -278,70 +353,69 @@
       - `gold_answer` must be the concise final value only.
       - `evidence` should briefly cite the supporting tool results.
   direct_answer_plan_summary:
-    zh: "宸茬洿鎺ヤ綔绛旓紝鏈樉寮忔媶瑙ｅ瓙闂銆?"
+    zh: "已直接作答，未显式拆解子问题。"
     en: "Answered directly without explicit decomposition."
   heuristic_decomposition_reason:
-    zh: "浣跨敤鍚彂寮忓洖閫€鎷嗚В銆?"
+    zh: "使用启发式回退拆解。"
     en: "Fallback heuristic decomposition."
   heuristic_completion_criteria:
-    zh: "姣忎釜鏍稿績瀛愰棶棰橀兘闇€瑕佹湁鍩轰簬宸ュ叿鐨勮瘉鎹敮鎾戙€?"
+    zh: "每个核心子问题都需要有基于工具的证据支撑。"
     en: "Each core sub-question is answered with tool-grounded evidence."
   direct_lookup_completion_criteria:
-    zh: "鍩轰簬宸ュ叿璇佹嵁鐩存帴鍥炵瓟鍘熼棶棰樸€?"
+    zh: "基于工具证据直接回答原问题。"
     en: "Answer the original question directly with tool-grounded evidence."
   fallback_sub_questions:
     comparison:
       first_side:
-        zh: "鍏充簬杩欎釜闂绗竴渚х殑璇佹嵁鏄粈涔堬細<question_text>"
+        zh: "关于这个问题第一侧的证据是什么：<question_text>"
         en: "What is the evidence for the first side of: <question_text>"
       second_side:
-        zh: "鍏充簬杩欎釜闂绗簩渚х殑璇佹嵁鏄粈涔堬細<question_text>"
+        zh: "关于这个问题第二侧的证据是什么：<question_text>"
         en: "What is the evidence for the second side of: <question_text>"
       final_compare:
-        zh: "鍩轰簬涓や晶璇佹嵁锛岃繖涓棶棰樻敮鎸佺殑姣旇緝缁撹鏄粈涔堬細<question_text>"
+        zh: "基于两侧证据，这个问题支持的比较结论是什么：<question_text>"
         en: "Based on both sides, what is the supported comparison result for: <question_text>"
     counting:
       gather:
-        zh: "鍝簺鍊欓€夎瘉鎹笌杩欎釜闂鐩稿叧锛?question_text>"
+        zh: "哪些候选证据与这个问题相关：<question_text>"
         en: "What candidate evidence items are relevant to: <question_text>"
       count:
-        zh: "鍘婚噸涔嬪悗锛岃繖涓棶棰樼殑姝ｇ‘鏁伴噺鏄灏戯細<question_text>"
+        zh: "去重之后，这个问题的正确数量是多少：<question_text>"
         en: "After deduplication, what is the correct count for: <question_text>"
     summary:
       gather:
-        zh: "鎬荤粨杩欎釜闂闇€瑕佸摢浜涘叧閿瘉鎹偣锛?question_text>"
+        zh: "总结这个问题需要哪些关键证据点：<question_text>"
         en: "What are the key evidence points needed to summarize: <question_text>"
       summarize:
-        zh: "鍩轰簬杩欎簺璇佹嵁鐐癸紝鍙互鏀寔浠€涔堢畝娲佹€荤粨锛?question_text>"
+        zh: "基于这些证据点，可以支持什么简洁总结：<question_text>"
         en: "What concise summary is supported by those evidence points for: <question_text>"
     temporal:
       anchors:
-        zh: "鍝簺浜嬩欢鎴栫粏鑺傝兘寤虹珛杩欎釜闂鐨勬椂闂撮敋鐐癸細<question_text>"
+        zh: "哪些事件或细节能建立这个问题的时间锚点：<question_text>"
         en: "What events or details establish the time anchors for: <question_text>"
       answer:
-        zh: "杩欎釜闂鑳芥敮鎸佺殑鍑嗙‘鏃堕棿绛旀鏄粈涔堬細<question_text>"
+        zh: "这个问题能支持的准确时间答案是什么：<question_text>"
         en: "What exact time answer is supported for: <question_text>"
     causal:
       context:
-        zh: "杩欎釜鐩爣浜嬩欢涔嬪墠鎴栧懆鍥村彂鐢熶簡浠€涔堬細<question_text>"
+        zh: "这个目标事件之前或周围发生了什么：<question_text>"
         en: "What happened before or around the target event in: <question_text>"
       cause:
-        zh: "鏈夊摢浜涙湁璇佹嵁鏀拺鐨勫師鍥犲彲浠ュ洖绛旇繖涓棶棰橈細<question_text>"
+        zh: "有哪些有证据支撑的原因可以回答这个问题：<question_text>"
         en: "What evidence-supported cause or reason answers: <question_text>"
   strategy_reasons:
     obvious_decompose:
-      zh: "杩欐槸鏄庢樉鐨?<question_type> 绫婚棶棰橈紱鍏堟媶瑙ｃ€?"
+      zh: "这是明显的 <question_type> 类问题；先拆解。"
       en: "Obvious <question_type> question; decompose first."
     multi_target:
-      zh: "闂閲屽寘鍚涓槑纭煡璇㈢洰鏍囷紱鍏堟媶瑙ｃ€?"
+      zh: "问题里包含多个明确查询目标；先拆解。"
       en: "Question contains multiple explicit query targets; decompose first."
     temporal_chain:
-      zh: "闂涓茶仈浜嗗涓椂闂寸害鏉燂紱鍏堟媶瑙ｃ€?"
+      zh: "问题串联了多个时间约束；先拆解。"
       en: "Question chains multiple temporal constraints; decompose first."
     multi_hop_markers:
-      zh: "闂涓湁鏄庢樉澶氳烦鍗忓悓鏍囪锛涘厛鎷嗚В銆?"
+      zh: "问题中有明显多跳协同标记；先拆解。"
       en: "Question has clear multi-hop coordination markers; decompose first."
     direct_lookup:
-      zh: "闂鐪嬭捣鏉ユ槸鍗曠洰鏍囨煡璇紱鍏堢洿鎺ヤ綔绛斻€?"
+      zh: "问题看起来是单目标查询；先直接作答。"
       en: "Question appears to be a single-goal lookup; answer directly first."
-

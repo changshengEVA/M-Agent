@@ -182,6 +182,10 @@ def search_details(
 def _compose_sparse_text(action_item: Dict[str, Any], atomic_fact_text: str) -> str:
     parts: List[str] = [atomic_fact_text]
 
+    evidence_sentence = action_item.get("evidence_sentence")
+    if isinstance(evidence_sentence, str) and evidence_sentence.strip():
+        parts.append(evidence_sentence.strip())
+
     main_entity = action_item.get("main_entity")
     if isinstance(main_entity, str) and main_entity.strip():
         parts.append(main_entity.strip())
@@ -191,6 +195,18 @@ def _compose_sparse_text(action_item: Dict[str, Any], atomic_fact_text: str) -> 
         for value in other_entities:
             if isinstance(value, str) and value.strip():
                 parts.append(value.strip())
+
+    for key in ("keywords", "event_tags"):
+        value = action_item.get(key)
+        if isinstance(value, list):
+            for token in value:
+                if isinstance(token, str) and token.strip():
+                    parts.append(token.strip())
+
+    for key in ("fact_type", "relation", "time_norm"):
+        value = action_item.get(key)
+        if isinstance(value, str) and value.strip():
+            parts.append(value.strip())
 
     return " ".join(parts)
 
