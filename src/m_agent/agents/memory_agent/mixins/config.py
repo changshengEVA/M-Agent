@@ -163,6 +163,7 @@ class MemoryAgentConfigMixin:
             hybrid_config = config.get("detail_search_hybrid_config")
         if not isinstance(hybrid_config, dict):
             hybrid_config = {}
+        facts_only_mode = bool(config.get("facts_only_mode", False))
 
         embed_provider = str(
             config.get("embed_provider", os.getenv("EMBED_PROVIDER", "local"))
@@ -193,6 +194,7 @@ class MemoryAgentConfigMixin:
             prompt_language=prompt_language,
             runtime_prompt_config_path=runtime_prompt_config_path,
             detail_search_hybrid_config=hybrid_config,
+            facts_only_mode=facts_only_mode,
         )
     @staticmethod
     def _load_facts_situation(memory_core: MemoryCore) -> Dict[str, Any]:
@@ -269,8 +271,15 @@ class MemoryAgentConfigMixin:
     @staticmethod
     def _ensure_kg_data_initialized(memory_core: MemoryCore) -> None:
         """确保 KG 数据已完成初始化或修复。"""
+        facts_only_mode = bool(getattr(memory_core, "facts_only_mode", False))
         scene_files = [p for p in memory_core.scene_dir.glob("*.json") if p.is_file()]
         if scene_files:
+            if facts_only_mode:
+                logger.info(
+                    "scene already has %d file(s), facts_only_mode=true so skip fact-entity import repair.",
+                    len(scene_files),
+                )
+                return
             should_repair, reason = MemoryAgentConfigMixin._should_repair_fact_entity_import(memory_core)
             if not should_repair:
                 logger.info("scene already has %d file(s), skip bootstrap import.", len(scene_files))

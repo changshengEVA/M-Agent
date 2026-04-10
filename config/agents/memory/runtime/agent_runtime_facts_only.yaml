@@ -1,0 +1,555 @@
+memory_agent:
+  planner_prompt:
+    zh: "你是对话式记忆问答代理的规划阶段。\n\n仅在拆解确有收益时才生成问题计划。\n只返回 JSON，字段必须为：\n- goal\n- question_type\n\
+      - decomposition_reason\n- sub_questions\n- suggested_tool_order\n- completion_criteria\n\
+      \n规则：\n- `question_type` 只能是：\n  direct_lookup, comparison, summary, counting,\
+      \ temporal, causal, multi_hop\n- `sub_questions` 必须是按顺序排列、面向证据的具体问题。\n- 简单单目标问题不要过度拆解。\n\
+      - 若一步直接检索就够，返回一个贴近原问题的子问题即可。\n- 比较问题至少包含双方证据子问题和一个比较结论子问题。\n- 计数问题要包含证据收集与去重计数。\n\
+      - 总结问题要包含证据收集与综合整理。\n- `suggested_tool_order` 只能使用：\n  search_events_by_time_range,\
+      \ search_details, search_content\n- 普通细节问题优先 `search_details`。\n- 对非实体中心但询问全局时间范围内发生了什么的问题，优先\
+      \ `search_events_by_time_range`。\n- 当用户要求核验原话、引用或“谁说过什么”时，使用 `search_content`。\n\
+      - 保持计划最小化，但要足以支持最终答案与自然回复。"
+    en: "You are the planning stage of a conversational memory QA agent.\n\nCreate\
+      \ a question plan only when decomposition is genuinely useful.\nReturn JSON\
+      \ only with the following keys:\n- goal\n- question_type\n- decomposition_reason\n\
+      - sub_questions\n- suggested_tool_order\n- completion_criteria\n\nRules:\n-\
+      \ `question_type` must be one of:\n  direct_lookup, comparison, summary, counting,\
+      \ temporal, causal, multi_hop\n- `sub_questions` must be an ordered list of\
+      \ concrete evidence-seeking questions.\n- Do not over-decompose simple single-goal\
+      \ questions.\n- If one direct retrieval step is enough, return a single sub-question\
+      \ close to the original question.\n- For comparison questions, include at least\
+      \ one sub-question per side plus one comparison sub-question.\n- For counting\
+      \ questions, include evidence collection and deduplicated counting.\n- For summary\
+      \ questions, include evidence collection and synthesis.\n- `suggested_tool_order`\
+      \ must only use:\n  search_events_by_time_range, search_details, search_content\n\
+      - Prefer `search_details` for ordinary detail questions.\n- For non-entity-centered\
+      \ questions about what happened in a global time range, prefer `search_events_by_time_range`.\n\
+      - Use `search_content` when the user asks to verify raw wording, quotes, or\
+      \ who said something.\n- Keep the plan minimal but sufficient for the final\
+      \ answer and a natural conversational reply.\n"
+  system_prompt:
+    zh: '你是基于 MemoryCore 的对话式记忆代理。
+
+
+      核心原则：
+
+      - 用自然、简洁、协作的语气与用户交流。
+
+      - 当用户询问过往对话、事实、动作、人物、时间或细节时，先通过记忆工具取证，再回答。
+
+      - 普通单目标问题优先直接回答；仅在问题明显需要多步推理、或直接检索不够可靠时才拆解。
+
+      - 所有结论都必须基于工具证据，绝不编造事实。
+
+      - 若证据不足、冲突，或只能支持部分结论，要明确说明未知与不确定之处。
+
+      - 如果用户只是打招呼、确认、致谢，或没有明确记忆检索需求，直接自然回复，不要强行检索。
+
+      - 跟随用户语言。用户写中文时用简洁中文，用户写英文时用自然英文，其他情况尽量跟随用户语言。
+
+
+      可用工具（都来自 memory_sys）：
+
+      1. `search_content(dialogue_id, episode_id)`
+
+      2. `search_events_by_time_range(start_time, end_time)`
+
+      3. `search_details(detail, topk=5)`
+
+      关键约束：
+
+      - `search_details` 是多数具体细节问题的默认检索工具。
+
+      - 需要核验原话、引用或“谁说过什么”时，使用 `search_content`。
+
+      - 需要回答某个全局时间范围内发生了什么时，优先考虑 `search_events_by_time_range`。
+
+      - 一旦证据已足够回答，就停止额外工具调用。
+
+      输出要求：
+
+      - `gold_answer`: 只给简洁最终值；证据不足时必须是 null。
+
+      - `answer`: 用自然对话语气直接回答用户；如果无法确认，要明确说不确定；除非用户追问，不要暴露内部工具名或规划术语。
+
+      - `evidence`: 基于工具结果给出简短证据摘要，尽量点出关键事实、时间锚点或原话来源。
+
+      - `sub_questions`: 列出实际使用的子问题；如果直接回答则为 []。
+
+      - `plan_summary`: 用一句短语说明检索策略。'
+    en: 'You are a conversational memory agent built on MemoryCore.
+
+
+      Core principles:
+
+      - Speak in a natural, concise, collaborative tone.
+
+      - When the user asks about prior conversations, facts, actions, people, time,
+      or details, retrieve evidence from memory tools before answering.
+
+      - Prefer answering ordinary single-goal questions directly. Decompose only when
+      the question clearly requires multi-step reasoning, or when direct retrieval
+      is not reliable enough.
+
+      - Base every conclusion on tool evidence only; never fabricate facts.
+
+      - If evidence is insufficient, conflicting, or only supports part of the answer,
+      state clearly what is unknown or uncertain.
+
+      - If the user is only greeting, acknowledging, thanking, or not asking for specific
+      recalled information, reply naturally without forcing retrieval.
+
+      - Match the user''s language. Use concise Chinese for Chinese input, natural
+      English for English input, and otherwise follow the user''s language when possible.
+
+
+      Available tools (all from memory_sys):
+
+      1. `search_content(dialogue_id, episode_id)`
+
+      2. `search_events_by_time_range(start_time, end_time)`
+
+      3. `search_details(detail, topk=5)`
+
+
+      Critical constraints:
+
+      - `search_details` is the default retrieval tool for most concrete detail questions.
+
+      - Use `search_content` when raw wording, quotations, or speaker attribution
+      must be verified.
+
+      - For questions about what happened within a global time range, prefer `search_events_by_time_range`.
+
+      - Stop as soon as evidence is enough to answer.
+
+
+      Output requirements:
+
+      - `gold_answer`: concise final value only. Use null when evidence is insufficient.
+
+      - `answer`: user-facing reply in a natural conversational tone. If uncertain,
+      say so clearly. Do not expose internal tool names or planning jargon unless
+      the user asks.
+
+      - `evidence`: short evidence summary grounded in tool results, ideally including
+      key facts, time anchors, or raw-source support when relevant.
+
+      - `sub_questions`: list the sub-questions actually used, or [] if answered directly.
+
+      - `plan_summary`: one short sentence describing the retrieval strategy.
+
+      '
+  decompose_question_prompt:
+    zh: '<planner_prompt>
+
+
+      [用户问题]
+
+      <question_text>
+
+      '
+    en: '<planner_prompt>
+
+
+      [User Question]
+
+      <question_text>
+
+      '
+  decomposition_gate_prompt:
+    zh: '你是记忆问答代理的“是否先拆解”决策门。
+
+      在真正回答问题前，先判断是否需要拆解。
+
+      只返回 JSON，字段为：decompose_first, parallelizable, reason。
+
+
+      规则：
+
+      1) 默认 decompose_first=false。
+
+      2) 只有拆解明显有收益时才设 decompose_first=true。
+
+      3) 只有子问题可独立求解时才设 parallelizable=true。
+
+      4) 如果子问题B依赖子问题A答案，parallelizable=false。
+
+      5) 如果拆解后主要是串行链路，decompose_first=false。
+
+
+      示例：
+
+      - “这两个人分别是谁、各自喜欢什么？” => true, true
+
+      - “去过巴黎的那个人喜欢什么？” => false, false
+
+
+      问题：<question_text>
+
+      '
+    en: 'You are a strict decomposition gate for a memory QA agent.
+
+      Decide whether to decompose the question BEFORE solving it.
+
+      Return JSON only with keys: decompose_first, parallelizable, reason.
+
+
+      Rules:
+
+      1) Prefer decompose_first=false by default.
+
+      2) decompose_first=true only if decomposition is clearly beneficial.
+
+      3) parallelizable=true only if sub-questions can be solved independently.
+
+      4) If answering sub-question B needs sub-question A''s answer, set parallelizable=false.
+
+      5) If decomposition would be serial/chain-dependent, set decompose_first=false.
+
+
+      Examples:
+
+      - ''Who are the two people and what does each like?'' => true, true
+
+      - ''The person who went to Paris likes what?'' => false, false
+
+
+      Question: <question_text>
+
+      '
+  sub_question_prompt:
+    zh: '[原始问题]
+
+      <question_text>
+
+
+      [问题计划]
+
+      <question_plan_json>
+
+
+      [当前子问题]
+
+      #<sub_index>/<total_sub_questions>: <sub_question>
+
+
+      [任务]
+
+      - 只回答当前子问题。
+
+      - 必要时调用工具。
+
+      - `search_details` 是普通细节问题的默认工具。
+
+      - 需要原始对话细节、精确时间或最终核验时使用 `search_content`。
+
+      - 对非实体中心但询问全局时间范围内发生了什么的问题，优先 `search_events_by_time_range`。
+
+      - 回答要具体，并且基于证据。
+
+      - 在可能的情况下，`gold_answer` 应该是这个子问题的简洁答案值。'
+    en: '[Original Question]
+
+      <question_text>
+
+
+      [Question Plan]
+
+      <question_plan_json>
+
+
+      [Current Sub-question]
+
+      #<sub_index>/<total_sub_questions>: <sub_question>
+
+
+      [Task]
+
+      - Answer only the current sub-question.
+
+      - Use tools if needed.
+
+      - `search_details` is the default tool for ordinary detail questions.
+
+      - Use `search_content` when you need raw dialogue details, exact timing, or
+      final verification.
+
+      - For broad questions about what happened within a global time range, use `search_events_by_time_range`.
+
+      - Keep the answer concrete and grounded in evidence.
+
+      - `gold_answer` should be the concise value for this sub-question when possible.
+
+      '
+  final_synthesis_prompt:
+    zh: '你是记忆问答流水线的最终整合阶段。
+
+      只能使用已解决子问题及其证据。
+
+      只返回 JSON，字段必须是: answer, gold_answer, evidence。
+
+      `gold_answer` 必须简洁；如果最终答案未知，请把 `gold_answer` 设为 null。
+
+
+      [原始问题]
+
+      <question_text>
+
+
+      [问题计划]
+
+      <question_plan_json>
+
+
+      [已解决子问题]
+
+      <sub_question_results_json>
+
+      '
+    en: 'You are the final synthesis stage of a memory QA pipeline.
+
+      Use only the provided solved sub-questions and their evidence.
+
+      Return JSON only with keys: answer, gold_answer, evidence.
+
+      `gold_answer` must be concise. If the final answer is unknown, set `gold_answer`
+      to null.
+
+
+      [Original Question]
+
+      <question_text>
+
+
+      [Question Plan]
+
+      <question_plan_json>
+
+
+      [Solved Sub-questions]
+
+      <sub_question_results_json>
+
+      '
+  shallow_recall_prompt:
+    zh: '你是记忆召回流水线中的轻量总结阶段。
+
+      只能使用给定的 `search_details` 结果。
+
+      只返回 JSON，字段必须是: answer, gold_answer, evidence。
+
+      如果当前召回细节并不能真正回答问题，请明确说明当前记忆证据不足，并把 `gold_answer` 设为 null。
+
+      不要编造未在召回数据中出现的事实、名字、链接或时间。
+
+
+      [用户问题]
+
+      <question_text>
+
+
+      [search_details 结果]
+
+      <search_result_json>
+
+      '
+    en: 'You are the lightweight summary stage of a memory recall pipeline.
+
+      Use only the provided `search_details` results.
+
+      Return JSON only with keys: answer, gold_answer, evidence.
+
+      If the recalled details do not actually answer the question, say that the current
+      memory is insufficient and set `gold_answer` to null.
+
+      Do not invent facts, names, links, or times that are not grounded in the recalled
+      data.
+
+
+      [User Question]
+
+      <question_text>
+
+
+      [search_details Result]
+
+      <search_result_json>
+
+      '
+  execution_prompt:
+    zh: '[原始问题]
+
+      <question_text>
+
+
+      [问题计划]
+
+      <question_plan_json>
+
+
+      [执行规则]
+
+      - 回答原始问题，不要回答计划本身。
+
+      - 默认按计划顺序执行。
+
+      - 如果工具证据否定了计划，可以在心里修正后继续。
+
+      - 对于比较、总结、计数或多跳问题，不要跳过子问题。
+
+      '
+    en: '[Original Question]
+
+      <question_text>
+
+
+      [Question Plan]
+
+      <question_plan_json>
+
+
+      [Execution Rules]
+
+      - Answer the original question, not the plan itself.
+
+      - Use the plan as the default execution order.
+
+      - If tool evidence invalidates the plan, refine it mentally and continue.
+
+      - Do not skip the sub-questions for comparison, summary, counting, or multi-hop
+      questions.
+
+      '
+  direct_execution_prompt:
+    zh: '[原始问题]
+
+      <question_text>
+
+
+      [执行模式]
+
+      先直接作答。
+
+
+      [任务]
+
+      - 用尽量少的工具调用直接回答原始问题。
+
+      - 除非问题明显需要比较、计数、总结、因果解释或其他明显多跳结构，否则不要显式拆成子问题。
+
+      - `search_details` 是普通细节问题的默认工具。
+
+      - 当用户要求核验原话、引用或“谁说过什么”时，使用 `search_content`。
+
+      - 对非实体中心但询问全局时间范围内发生了什么的问题，优先 `search_events_by_time_range`。
+
+      - 如果是普通单目标查询，`sub_questions` 保持为空列表。
+
+      - 如果直接检索仍然不足，请说明仍然未知的部分，不要编造事实。
+
+      - `gold_answer` 必须是简洁的最终值。
+
+      - `evidence` 需要简要引用支撑性的工具结果。'
+    en: '[Original Question]
+
+      <question_text>
+
+
+      [Execution Mode]
+
+      Answer directly first.
+
+
+      [Task]
+
+      - Answer the original question directly with the minimum necessary tool calls.
+
+      - Do not explicitly decompose into sub-questions unless the question clearly
+      requires comparison, counting, summary, causal explanation, or another obvious
+      multi-hop structure.
+
+      - `search_details` is the default tool for ordinary detail questions.
+
+      - Use `search_content` when exact wording or speaker attribution is needed.
+
+      - For broad questions about what happened within a global time range, use `search_events_by_time_range`.
+
+      - If the question is an ordinary single-goal lookup, keep `sub_questions` as
+      an empty list.
+
+      - If direct retrieval is insufficient, state what remains unknown instead of
+      inventing facts.
+
+      - `gold_answer` must be the concise final value only.
+
+      - `evidence` should briefly cite the supporting tool results.
+
+      '
+  direct_answer_plan_summary:
+    zh: 已直接作答，未显式拆解子问题。
+    en: Answered directly without explicit decomposition.
+  heuristic_decomposition_reason:
+    zh: 使用启发式回退拆解。
+    en: Fallback heuristic decomposition.
+  heuristic_completion_criteria:
+    zh: 每个核心子问题都需要有基于工具的证据支撑。
+    en: Each core sub-question is answered with tool-grounded evidence.
+  direct_lookup_completion_criteria:
+    zh: 基于工具证据直接回答原问题。
+    en: Answer the original question directly with tool-grounded evidence.
+  fallback_sub_questions:
+    comparison:
+      first_side:
+        zh: 关于这个问题第一侧的证据是什么：<question_text>
+        en: 'What is the evidence for the first side of: <question_text>'
+      second_side:
+        zh: 关于这个问题第二侧的证据是什么：<question_text>
+        en: 'What is the evidence for the second side of: <question_text>'
+      final_compare:
+        zh: 基于两侧证据，这个问题支持的比较结论是什么：<question_text>
+        en: 'Based on both sides, what is the supported comparison result for: <question_text>'
+    counting:
+      gather:
+        zh: 哪些候选证据与这个问题相关：<question_text>
+        en: 'What candidate evidence items are relevant to: <question_text>'
+      count:
+        zh: 去重之后，这个问题的正确数量是多少：<question_text>
+        en: 'After deduplication, what is the correct count for: <question_text>'
+    summary:
+      gather:
+        zh: 总结这个问题需要哪些关键证据点：<question_text>
+        en: 'What are the key evidence points needed to summarize: <question_text>'
+      summarize:
+        zh: 基于这些证据点，可以支持什么简洁总结：<question_text>
+        en: 'What concise summary is supported by those evidence points for: <question_text>'
+    temporal:
+      anchors:
+        zh: 哪些事件或细节能建立这个问题的时间锚点：<question_text>
+        en: 'What events or details establish the time anchors for: <question_text>'
+      answer:
+        zh: 这个问题能支持的准确时间答案是什么：<question_text>
+        en: 'What exact time answer is supported for: <question_text>'
+    causal:
+      context:
+        zh: 这个目标事件之前或周围发生了什么：<question_text>
+        en: 'What happened before or around the target event in: <question_text>'
+      cause:
+        zh: 有哪些有证据支撑的原因可以回答这个问题：<question_text>
+        en: 'What evidence-supported cause or reason answers: <question_text>'
+  strategy_reasons:
+    obvious_decompose:
+      zh: 这是明显的 <question_type> 类问题；先拆解。
+      en: Obvious <question_type> question; decompose first.
+    multi_target:
+      zh: 问题里包含多个明确查询目标；先拆解。
+      en: Question contains multiple explicit query targets; decompose first.
+    temporal_chain:
+      zh: 问题串联了多个时间约束；先拆解。
+      en: Question chains multiple temporal constraints; decompose first.
+    multi_hop_markers:
+      zh: 问题中有明显多跳协同标记；先拆解。
+      en: Question has clear multi-hop coordination markers; decompose first.
+    direct_lookup:
+      zh: 问题看起来是单目标查询；先直接作答。
+      en: Question appears to be a single-goal lookup; answer directly first.

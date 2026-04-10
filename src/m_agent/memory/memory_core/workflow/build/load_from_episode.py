@@ -194,6 +194,7 @@ def load_from_episode_path(
         fact_prompt_version = str(getattr(memory_core, "fact_prompt_version", "v2"))
         memory_owner_name = str(getattr(memory_core, "memory_owner_name", "changshengEVA"))
         prompt_language = str(getattr(memory_core, "prompt_language", "zh"))
+        facts_only_mode = bool(getattr(memory_core, "facts_only_mode", False))
 
         # system-owned behavior: import flow controls force_update internally
         force_update = False
@@ -281,97 +282,147 @@ def load_from_episode_path(
                 },
             )
 
-            _emit_progress(
-                progress_callback,
-                "flush_stage",
-                {
-                    "stage": "extract_fact_entities",
-                    "stage_label": "Extract fact entities",
-                    "status": "started",
-                },
-            )
-            if hasattr(memory_core, "extract_fact_entities"):
-                fact_entity_stats = memory_core.extract_fact_entities(
-                    force_update=force_update,
-                    use_tqdm=True,
+            if facts_only_mode:
+                _emit_progress(
+                    progress_callback,
+                    "flush_stage",
+                    {
+                        "stage": "extract_fact_entities",
+                        "stage_label": "Extract fact entities",
+                        "status": "skipped",
+                        "reason": "facts_only_mode=true",
+                    },
                 )
+                _emit_progress(
+                    progress_callback,
+                    "flush_stage",
+                    {
+                        "stage": "import_fact_entities",
+                        "stage_label": "Import fact entities",
+                        "status": "skipped",
+                        "reason": "facts_only_mode=true",
+                    },
+                )
+                build_result = {
+                    "success": True,
+                    "scene_file_count": scene_file_count,
+                    "fact_stats": fact_stats,
+                    "fact_entity_stats": {
+                        "success": True,
+                        "skipped": True,
+                        "reason": "facts_only_mode=true",
+                    },
+                    "fact_import_stats": {
+                        "success": True,
+                        "skipped": True,
+                        "reason": "facts_only_mode=true",
+                    },
+                    "episodes_root": str(episodes_root_for_build),
+                    "scene_root": str(scene_root),
+                    "facts_root": str(getattr(memory_core, "facts_dir", memory_core.memory_root / "facts")),
+                    "facts_situation_file": str(
+                        getattr(memory_core, "facts_situation_file", memory_core.memory_root / "facts_situation.json")
+                    ),
+                    "scene_prompt_version": scene_prompt_version,
+                    "fact_prompt_version": fact_prompt_version,
+                    "memory_owner_name": memory_owner_name,
+                    "prompt_language": prompt_language,
+                    "force_update": force_update,
+                    "facts_only_mode": True,
+                }
             else:
-                from m_agent.memory.memory_core.workflow.build.extract_fact_entities import (
-                    extract_fact_entities as workflow_extract_fact_entities,
+                _emit_progress(
+                    progress_callback,
+                    "flush_stage",
+                    {
+                        "stage": "extract_fact_entities",
+                        "stage_label": "Extract fact entities",
+                        "status": "started",
+                    },
+                )
+                if hasattr(memory_core, "extract_fact_entities"):
+                    fact_entity_stats = memory_core.extract_fact_entities(
+                        force_update=force_update,
+                        use_tqdm=True,
+                    )
+                else:
+                    from m_agent.memory.memory_core.workflow.build.extract_fact_entities import (
+                        extract_fact_entities as workflow_extract_fact_entities,
+                    )
+
+                    fact_entity_stats = workflow_extract_fact_entities(
+                        memory_core=memory_core,
+                        force_update=force_update,
+                        use_tqdm=True,
+                    )
+                _emit_progress(
+                    progress_callback,
+                    "flush_stage",
+                    {
+                        "stage": "extract_fact_entities",
+                        "stage_label": "Extract fact entities",
+                        "status": "completed",
+                        "result": fact_entity_stats,
+                    },
                 )
 
-                fact_entity_stats = workflow_extract_fact_entities(
-                    memory_core=memory_core,
-                    force_update=force_update,
-                    use_tqdm=True,
+                _emit_progress(
+                    progress_callback,
+                    "flush_stage",
+                    {
+                        "stage": "import_fact_entities",
+                        "stage_label": "Import fact entities",
+                        "status": "started",
+                    },
                 )
-            _emit_progress(
-                progress_callback,
-                "flush_stage",
-                {
-                    "stage": "extract_fact_entities",
-                    "stage_label": "Extract fact entities",
-                    "status": "completed",
-                    "result": fact_entity_stats,
-                },
-            )
+                if hasattr(memory_core, "import_fact_entities"):
+                    fact_import_stats = memory_core.import_fact_entities(
+                        force_update=force_update,
+                        use_tqdm=True,
+                        progress_callback=progress_callback,
+                    )
+                else:
+                    from m_agent.memory.memory_core.workflow.build.import_fact_entities import (
+                        import_fact_entities as workflow_import_fact_entities,
+                    )
 
-            _emit_progress(
-                progress_callback,
-                "flush_stage",
-                {
-                    "stage": "import_fact_entities",
-                    "stage_label": "Import fact entities",
-                    "status": "started",
-                },
-            )
-            if hasattr(memory_core, "import_fact_entities"):
-                fact_import_stats = memory_core.import_fact_entities(
-                    force_update=force_update,
-                    use_tqdm=True,
-                    progress_callback=progress_callback,
-                )
-            else:
-                from m_agent.memory.memory_core.workflow.build.import_fact_entities import (
-                    import_fact_entities as workflow_import_fact_entities,
+                    fact_import_stats = workflow_import_fact_entities(
+                        memory_core=memory_core,
+                        force_update=force_update,
+                        use_tqdm=True,
+                    )
+                _emit_progress(
+                    progress_callback,
+                    "flush_stage",
+                    {
+                        "stage": "import_fact_entities",
+                        "stage_label": "Import fact entities",
+                        "status": "completed",
+                        "result": fact_import_stats,
+                    },
                 )
 
-                fact_import_stats = workflow_import_fact_entities(
-                    memory_core=memory_core,
-                    force_update=force_update,
-                    use_tqdm=True,
-                )
-            _emit_progress(
-                progress_callback,
-                "flush_stage",
-                {
-                    "stage": "import_fact_entities",
-                    "stage_label": "Import fact entities",
-                    "status": "completed",
-                    "result": fact_import_stats,
-                },
-            )
-
-            build_result = {
-                "success": bool(fact_import_stats.get("success", True)),
-                "scene_file_count": scene_file_count,
-                "fact_stats": fact_stats,
-                "fact_entity_stats": fact_entity_stats,
-                "fact_import_stats": fact_import_stats,
-                "episodes_root": str(episodes_root_for_build),
-                "scene_root": str(scene_root),
-                "facts_root": str(getattr(memory_core, "facts_dir", memory_core.memory_root / "facts")),
-                "facts_situation_file": str(
-                    getattr(memory_core, "facts_situation_file", memory_core.memory_root / "facts_situation.json")
-                ),
-                "scene_prompt_version": scene_prompt_version,
-                "fact_prompt_version": fact_prompt_version,
-                "memory_owner_name": memory_owner_name,
-                "prompt_language": prompt_language,
-                "force_update": force_update,
-            }
-            if not build_result["success"]:
-                build_result["error"] = "fact entity import failed"
+                build_result = {
+                    "success": bool(fact_import_stats.get("success", True)),
+                    "scene_file_count": scene_file_count,
+                    "fact_stats": fact_stats,
+                    "fact_entity_stats": fact_entity_stats,
+                    "fact_import_stats": fact_import_stats,
+                    "episodes_root": str(episodes_root_for_build),
+                    "scene_root": str(scene_root),
+                    "facts_root": str(getattr(memory_core, "facts_dir", memory_core.memory_root / "facts")),
+                    "facts_situation_file": str(
+                        getattr(memory_core, "facts_situation_file", memory_core.memory_root / "facts_situation.json")
+                    ),
+                    "scene_prompt_version": scene_prompt_version,
+                    "fact_prompt_version": fact_prompt_version,
+                    "memory_owner_name": memory_owner_name,
+                    "prompt_language": prompt_language,
+                    "force_update": force_update,
+                    "facts_only_mode": False,
+                }
+                if not build_result["success"]:
+                    build_result["error"] = "fact entity import failed"
 
         results["scene_build_result"] = build_result
         if not build_result.get("success", False):

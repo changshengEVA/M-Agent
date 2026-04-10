@@ -55,6 +55,7 @@ class MemoryCore:
         prompt_language: str = "zh",
         runtime_prompt_config_path: Optional[str | Path] = None,
         detail_search_hybrid_config: Optional[Dict[str, Any]] = None,
+        facts_only_mode: bool = False,
     ):
         """
         初始化 MemoryCore
@@ -88,6 +89,7 @@ class MemoryCore:
             if isinstance(detail_search_hybrid_config, dict)
             else {}
         )
+        self.facts_only_mode = bool(facts_only_mode)
         
         # 1. 构建数据路径（极简化：不再使用 kg_data/entity/relation 文件结构）
         self.memory_root = memory_workflow_dir(workflow_id)
@@ -130,6 +132,7 @@ class MemoryCore:
         logger.info(f"Prompt language: {self.prompt_language}")
         logger.info(f"Runtime prompt config: {self.runtime_prompt_config_path}")
         logger.info("Detail search hybrid config: %s", self.detail_search_hybrid_config)
+        logger.info("Facts-only mode: %s", self.facts_only_mode)
         
         # 2. 初始化 EventBus
         self.event_bus = EventBus()

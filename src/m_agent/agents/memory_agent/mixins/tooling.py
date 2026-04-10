@@ -325,13 +325,39 @@ class MemoryAgentToolingMixin:
         def search_details(detail: str, topk: Optional[int] = None) -> Dict[str, Any]:
             return self._search_details_with_trace(detail=detail, topk=topk)
 
-        return [
-            resolve_entity_id,
-            get_entity_profile,
-            search_entity_feature,
-            search_entity_event,
-            search_entity_events_by_time,
-            search_content,
-            search_events_by_time_range,
-            search_details,
+        all_tools = {
+            "resolve_entity_id": resolve_entity_id,
+            "get_entity_profile": get_entity_profile,
+            "search_entity_feature": search_entity_feature,
+            "search_entity_event": search_entity_event,
+            "search_entity_events_by_time": search_entity_events_by_time,
+            "search_content": search_content,
+            "search_events_by_time_range": search_events_by_time_range,
+            "search_details": search_details,
+        }
+        default_order = [
+            "resolve_entity_id",
+            "get_entity_profile",
+            "search_entity_feature",
+            "search_entity_event",
+            "search_entity_events_by_time",
+            "search_content",
+            "search_events_by_time_range",
+            "search_details",
         ]
+        facts_only_mode = bool(getattr(self.memory_sys, "facts_only_mode", False))
+        if facts_only_mode:
+            enabled_order = [
+                "search_content",
+                "search_events_by_time_range",
+                "search_details",
+            ]
+            logger.info(
+                "facts_only_mode=true, restrict memory agent tools to: %s",
+                ", ".join(enabled_order),
+            )
+        else:
+            enabled_order = default_order
+
+        self.available_memory_tool_names = list(enabled_order)
+        return [all_tools[name] for name in enabled_order]

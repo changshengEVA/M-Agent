@@ -77,8 +77,23 @@ class MemoryAgentPlanningMixin:
         """doc."""
         if not isinstance(payload.get("sub_questions"), list):
             payload["sub_questions"] = []
-    @staticmethod
-    def _normalize_question_plan(question_text: str, plan: Dict[str, Any]) -> Dict[str, Any]:
+    def _filter_suggested_tool_order(self, tool_order: List[str]) -> List[str]:
+        """Keep suggested tools within currently available runtime tools."""
+        if not isinstance(tool_order, list):
+            return []
+        available = list(getattr(self, "available_memory_tool_names", []) or [])
+        if not available:
+            return [str(item).strip() for item in tool_order if str(item).strip()]
+
+        available_set = set(available)
+        filtered = [str(item).strip() for item in tool_order if str(item).strip() in available_set]
+        if filtered:
+            return filtered
+
+        fallback_order = ["search_details", "search_content", "search_events_by_time_range"]
+        fallback = [name for name in fallback_order if name in available_set]
+        return fallback or available[:1]
+    def _normalize_question_plan(self, question_text: str, plan: Dict[str, Any]) -> Dict[str, Any]:
         """doc."""
         normalized_sub_questions = plan.get("sub_questions", [])
         if not isinstance(normalized_sub_questions, list):
@@ -91,6 +106,7 @@ class MemoryAgentPlanningMixin:
         if not isinstance(tool_order, list):
             tool_order = []
         tool_order = [str(item).strip() for item in tool_order if str(item).strip()]
+        tool_order = self._filter_suggested_tool_order(tool_order)
 
         question_type = str(plan.get("question_type", "") or "").strip().lower()
         if not question_type:
@@ -254,10 +270,12 @@ class MemoryAgentPlanningMixin:
             "question_type": question_type,
             "decomposition_reason": self._get_runtime_prompt_text("heuristic_decomposition_reason"),
             "sub_questions": sub_questions,
-            "suggested_tool_order": [
-                "search_events_by_time_range" if question_type == "temporal" else "search_details",
-                "search_content",
-            ],
+            "suggested_tool_order": self._filter_suggested_tool_order(
+                [
+                    "search_events_by_time_range" if question_type == "temporal" else "search_details",
+                    "search_content",
+                ]
+            ),
             "completion_criteria": self._get_runtime_prompt_text("heuristic_completion_criteria"),
         }
     def _build_decomposition_gate_prompt(self, question_text: str) -> str:
@@ -301,7 +319,7 @@ class MemoryAgentPlanningMixin:
             "question_type": "direct_lookup",
             "decomposition_reason": reason,
             "sub_questions": [],
-            "suggested_tool_order": ["search_details", "search_content"],
+            "suggested_tool_order": self._filter_suggested_tool_order(["search_details", "search_content"]),
             "completion_criteria": self._get_runtime_prompt_text("direct_lookup_completion_criteria"),
         }
     @staticmethod
