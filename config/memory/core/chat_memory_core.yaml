@@ -18,3 +18,13 @@ entity_statement_force_update: false
 
 # Embedding provider: local/bge/alibaba/aliyun/dashscope
 embed_provider: "aliyun"
+
+# Hybrid detail retrieval tuning (search_details: dense + sparse BM25 + RRF)
+detail_search_hybrid:
+  dense_recall_topn: 30
+  sparse_recall_topn: 30
+  rrf_k: 60
+  dense_weight: 1.0
+  sparse_weight: 1.0
+  bm25_k1: 1.5
+  bm25_b: 0.75

@@ -51,3 +51,10 @@ Config map:
   Role: developer-only MemoryCore config with explicit model choices
 
 Prompt and integration files are shared building blocks rather than entry configs; runtime prompts are colocated with their owning module configs.
+
+MemoryCore retrieval tuning:
+
+- `config/memory/core/*.yaml` supports `detail_search_hybrid` for `search_details`:
+  - `dense_recall_topn`, `sparse_recall_topn`
+  - `rrf_k`, `dense_weight`, `sparse_weight`
+  - `bm25_k1`, `bm25_b`

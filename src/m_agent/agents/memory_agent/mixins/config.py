@@ -158,6 +158,11 @@ class MemoryAgentConfigMixin:
             config.get("runtime_prompt_config_path"),
             default_path=MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH,
         )
+        hybrid_config = config.get("detail_search_hybrid")
+        if not isinstance(hybrid_config, dict):
+            hybrid_config = config.get("detail_search_hybrid_config")
+        if not isinstance(hybrid_config, dict):
+            hybrid_config = {}
 
         embed_provider = str(
             config.get("embed_provider", os.getenv("EMBED_PROVIDER", "local"))
@@ -187,6 +192,7 @@ class MemoryAgentConfigMixin:
             memory_owner_name=memory_owner_name,
             prompt_language=prompt_language,
             runtime_prompt_config_path=runtime_prompt_config_path,
+            detail_search_hybrid_config=hybrid_config,
         )
     @staticmethod
     def _load_facts_situation(memory_core: MemoryCore) -> Dict[str, Any]:

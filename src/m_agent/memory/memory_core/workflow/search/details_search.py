@@ -18,12 +18,14 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
-_DENSE_RECALL_TOPN = 30
-_SPARSE_RECALL_TOPN = 30
-_RRF_K = 60
+_DEFAULT_DENSE_RECALL_TOPN = 30
+_DEFAULT_SPARSE_RECALL_TOPN = 30
+_DEFAULT_RRF_K = 60
+_DEFAULT_DENSE_WEIGHT = 1.0
+_DEFAULT_SPARSE_WEIGHT = 1.0
 
-_BM25_K1 = 1.5
-_BM25_B = 0.75
+_DEFAULT_BM25_K1 = 1.5
+_DEFAULT_BM25_B = 0.75
 
 _WORD_TOKEN_PATTERN = re.compile(r"[a-z0-9]+(?:'[a-z0-9]+)?", flags=re.IGNORECASE)
 _CJK_TOKEN_PATTERN = re.compile(r"[\u4e00-\u9fff]")
@@ -34,6 +36,7 @@ def search_details(
     scene_dir: Path,
     embed_func: Callable[[str], List[float]],
     topk: int = 5,
+    hybrid_config: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Search action details by hybrid retrieval.
@@ -56,6 +59,7 @@ def search_details(
     }
     """
     safe_topk = _safe_int(topk, default=5, minimum=1)
+    resolved_hybrid = _resolve_hybrid_search_config(hybrid_config)
     query_text = (detail_query or "").strip()
 
     result: Dict[str, Any] = {
@@ -136,20 +140,24 @@ def search_details(
     if not candidates:
         return result
 
-    top_n_dense = max(safe_topk, _DENSE_RECALL_TOPN)
-    top_n_sparse = max(safe_topk, _SPARSE_RECALL_TOPN)
+    top_n_dense = max(safe_topk, int(resolved_hybrid["dense_recall_topn"]))
+    top_n_sparse = max(safe_topk, int(resolved_hybrid["sparse_recall_topn"]))
 
     dense_top_indices = _dense_recall_indices(candidates=candidates, top_n=top_n_dense)
     sparse_top_indices = _sparse_recall_indices(
         candidates=candidates,
         query_tokens=query_tokens,
         top_n=top_n_sparse,
+        bm25_k1=float(resolved_hybrid["bm25_k1"]),
+        bm25_b=float(resolved_hybrid["bm25_b"]),
     )
     fused_indices = _fuse_with_rrf(
         candidates=candidates,
         dense_top_indices=dense_top_indices,
         sparse_top_indices=sparse_top_indices,
-        rrf_k=_RRF_K,
+        rrf_k=int(resolved_hybrid["rrf_k"]),
+        dense_weight=float(resolved_hybrid["dense_weight"]),
+        sparse_weight=float(resolved_hybrid["sparse_weight"]),
     )
 
     top_results: List[Dict[str, Any]] = []
@@ -201,6 +209,8 @@ def _sparse_recall_indices(
     candidates: List[Dict[str, Any]],
     query_tokens: List[str],
     top_n: int,
+    bm25_k1: float,
+    bm25_b: float,
 ) -> List[int]:
     if not query_tokens or not candidates:
         return []
@@ -210,7 +220,12 @@ def _sparse_recall_indices(
     if bm25_index is None:
         return []
 
-    sparse_scores = _score_bm25(query_tokens=query_tokens, bm25_index=bm25_index)
+    sparse_scores = _score_bm25(
+        query_tokens=query_tokens,
+        bm25_index=bm25_index,
+        bm25_k1=bm25_k1,
+        bm25_b=bm25_b,
+    )
     for idx, score in enumerate(sparse_scores):
         candidates[idx]["sparse_score"] = float(score)
 
@@ -224,6 +239,8 @@ def _fuse_with_rrf(
     dense_top_indices: Sequence[int],
     sparse_top_indices: Sequence[int],
     rrf_k: int,
+    dense_weight: float,
+    sparse_weight: float,
 ) -> List[int]:
     dense_rank = {idx: rank for rank, idx in enumerate(dense_top_indices, start=1)}
     sparse_rank = {idx: rank for rank, idx in enumerate(sparse_top_indices, start=1)}
@@ -238,11 +255,11 @@ def _fuse_with_rrf(
 
         d_rank = dense_rank.get(idx)
         if d_rank is not None:
-            dense_component = 1.0 / float(rrf_k + d_rank)
+            dense_component = float(dense_weight) / float(rrf_k + d_rank)
 
         s_rank = sparse_rank.get(idx)
         if s_rank is not None:
-            sparse_component = 1.0 / float(rrf_k + s_rank)
+            sparse_component = float(sparse_weight) / float(rrf_k + s_rank)
 
         fused_score = dense_component + sparse_component
         dense_similarity = float(candidates[idx].get("dense_similarity", 0.0))
@@ -303,7 +320,12 @@ def _build_bm25_index(tokenized_docs: List[List[str]]) -> Optional[Dict[str, Any
     }
 
 
-def _score_bm25(query_tokens: List[str], bm25_index: Dict[str, Any]) -> List[float]:
+def _score_bm25(
+    query_tokens: List[str],
+    bm25_index: Dict[str, Any],
+    bm25_k1: float,
+    bm25_b: float,
+) -> List[float]:
     total_docs = int(bm25_index.get("total_docs", 0))
     scores = [0.0] * total_docs
     if total_docs <= 0:
@@ -332,11 +354,11 @@ def _score_bm25(query_tokens: List[str], bm25_index: Dict[str, Any]) -> List[flo
             except Exception:
                 continue
 
-            denominator = tf + _BM25_K1 * (1.0 - _BM25_B + _BM25_B * (dl / avg_doc_len))
+            denominator = tf + bm25_k1 * (1.0 - bm25_b + bm25_b * (dl / avg_doc_len))
             if denominator <= 0.0:
                 continue
 
-            scores[doc_idx] += idf * ((tf * (_BM25_K1 + 1.0)) / denominator)
+            scores[doc_idx] += idf * ((tf * (bm25_k1 + 1.0)) / denominator)
 
     return scores
 
@@ -414,3 +436,68 @@ def _safe_int(value: Any, default: int, minimum: int = 1) -> int:
     except Exception:
         parsed = default
     return max(minimum, parsed)
+
+
+def _safe_float(value: Any, default: float, minimum: float) -> float:
+    try:
+        parsed = float(value)
+    except Exception:
+        parsed = default
+    if parsed < minimum:
+        return minimum
+    return parsed
+
+
+def _resolve_hybrid_search_config(hybrid_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    raw = hybrid_config if isinstance(hybrid_config, dict) else {}
+    dense_recall_topn = _safe_int(
+        raw.get("dense_recall_topn"),
+        default=_DEFAULT_DENSE_RECALL_TOPN,
+        minimum=1,
+    )
+    sparse_recall_topn = _safe_int(
+        raw.get("sparse_recall_topn"),
+        default=_DEFAULT_SPARSE_RECALL_TOPN,
+        minimum=1,
+    )
+    rrf_k = _safe_int(
+        raw.get("rrf_k"),
+        default=_DEFAULT_RRF_K,
+        minimum=1,
+    )
+    dense_weight = _safe_float(
+        raw.get("dense_weight"),
+        default=_DEFAULT_DENSE_WEIGHT,
+        minimum=0.0,
+    )
+    sparse_weight = _safe_float(
+        raw.get("sparse_weight"),
+        default=_DEFAULT_SPARSE_WEIGHT,
+        minimum=0.0,
+    )
+    if dense_weight <= 0.0 and sparse_weight <= 0.0:
+        dense_weight = _DEFAULT_DENSE_WEIGHT
+        sparse_weight = _DEFAULT_SPARSE_WEIGHT
+
+    bm25_k1 = _safe_float(
+        raw.get("bm25_k1"),
+        default=_DEFAULT_BM25_K1,
+        minimum=0.0,
+    )
+    bm25_b = _safe_float(
+        raw.get("bm25_b"),
+        default=_DEFAULT_BM25_B,
+        minimum=0.0,
+    )
+    if bm25_b > 1.0:
+        bm25_b = 1.0
+
+    return {
+        "dense_recall_topn": dense_recall_topn,
+        "sparse_recall_topn": sparse_recall_topn,
+        "rrf_k": rrf_k,
+        "dense_weight": dense_weight,
+        "sparse_weight": sparse_weight,
+        "bm25_k1": bm25_k1,
+        "bm25_b": bm25_b,
+    }

@@ -54,6 +54,7 @@ class MemoryCore:
         memory_owner_name: str = "changshengEVA",
         prompt_language: str = "zh",
         runtime_prompt_config_path: Optional[str | Path] = None,
+        detail_search_hybrid_config: Optional[Dict[str, Any]] = None,
     ):
         """
         初始化 MemoryCore
@@ -82,6 +83,11 @@ class MemoryCore:
         self.runtime_prompt_config_path = Path(
             runtime_prompt_config_path or MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH
         ).resolve()
+        self.detail_search_hybrid_config = (
+            dict(detail_search_hybrid_config)
+            if isinstance(detail_search_hybrid_config, dict)
+            else {}
+        )
         
         # 1. 构建数据路径（极简化：不再使用 kg_data/entity/relation 文件结构）
         self.memory_root = memory_workflow_dir(workflow_id)
@@ -123,6 +129,7 @@ class MemoryCore:
         logger.info(f"Memory owner: {self.memory_owner_name}")
         logger.info(f"Prompt language: {self.prompt_language}")
         logger.info(f"Runtime prompt config: {self.runtime_prompt_config_path}")
+        logger.info("Detail search hybrid config: %s", self.detail_search_hybrid_config)
         
         # 2. 初始化 EventBus
         self.event_bus = EventBus()
@@ -562,6 +569,7 @@ class MemoryCore:
             scene_dir=self.scene_dir,
             embed_func=self.embed_func,
             topk=topk,
+            hybrid_config=self.detail_search_hybrid_config,
         )
 
     def resolve_entity_id(self, entity_name_or_id: str) -> Dict[str, Any]:
