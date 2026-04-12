@@ -10,7 +10,7 @@ $repoRoot = Resolve-Path (Join-Path $scriptDir "..")
 Set-Location $repoRoot
 
 if ($UseCondaRun) {
-  conda run -n $MagEnvName python scripts/sweep_locomo_hybrid_params.py `
+  conda run -n $MagEnvName python scripts/run_locomo/sweep_locomo_hybrid_params.py `
     --test-id-prefix hybrid_grid `
     --dense-recall-topn 20 `
     --sparse-recall-topn 20 `
@@ -19,7 +19,7 @@ if ($UseCondaRun) {
     --overwrite
 }
 else {
-  python scripts/sweep_locomo_hybrid_params.py `
+  python scripts/run_locomo/sweep_locomo_hybrid_params.py `
     --test-id-prefix hybrid_grid `
     --dense-recall-topn 20 `
     --sparse-recall-topn 20 `
@@ -27,4 +27,3 @@ else {
     --detail-topk 5,10,15 `
     --overwrite
 }
-

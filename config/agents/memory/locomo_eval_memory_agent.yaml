@@ -1,4 +1,4 @@
-# Used by: `python scripts/run_eval_locomo.py`
+# Used by: `python scripts/run_locomo/run_eval_locomo.py`
 # Purpose: default MemoryAgent config for LoCoMo evaluation.
 model_name: "deepseek-chat"
 agent_temperature: 0.0
@@ -18,10 +18,10 @@ network_retry_max_backoff_seconds: 20.0
 auto_bootstrap_kg_data: true
 
 detail_search_defaults:
-  topk: 5
-max_consecutive_search_details_calls: 3
-max_search_details_calls_per_scope: 3
-max_search_details_calls_per_round: 20
+  topk: 10
+max_consecutive_search_details_calls: 5
+max_search_details_calls_per_scope: 5
+max_search_details_calls_per_round: 30
 attach_episode_refs_to_answer: true
 evidence_episode_ref_max_in_text: 8
 

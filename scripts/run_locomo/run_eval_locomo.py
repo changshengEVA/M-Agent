@@ -44,7 +44,6 @@ logger = logging.getLogger("run_eval_locomo")
 
 
 DEFAULT_TEST_ID = "default"
-DEFAULT_QUESTION_CONFIG_PATH = "config/eval/memory_agent/locomo/test_1.yaml"
 PREDICTION_FILE_NAME = "locomo10_agent_qa.json"
 STATS_FILE_NAME = "locomo10_agent_qa_stats.json"
 RUN_LOG_FILE_NAME = "locomo10_agent_qa_run.log"
@@ -142,13 +141,20 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--question-config",
-        nargs="?",
-        const=DEFAULT_QUESTION_CONFIG_PATH,
+        type=str,
         default="",
         help=(
-            "Optional yaml path for fixed question selection. Pass --question-config "
-            f"to use {DEFAULT_QUESTION_CONFIG_PATH}, or provide a custom yaml path. "
+            "Optional yaml path for fixed question selection. "
             "When enabled, --sample-fraction and --max-samples are ignored."
+        ),
+    )
+    parser.add_argument(
+        "--conv-ids",
+        type=str,
+        default="",
+        help=(
+            "Optional comma-separated LoCoMo conv ids to evaluate, e.g. "
+            "'conv-30,conv-48'. Applied before question filtering/sampling."
         ),
     )
     return parser.parse_args()
@@ -233,6 +239,41 @@ def load_question_selection_config(path: str) -> Dict[str, List[int]]:
             target_seen.add(qa_idx)
 
     return selection
+
+
+def _parse_conv_ids(raw_value: str) -> List[str]:
+    conv_ids: List[str] = []
+    seen = set()
+    for token in str(raw_value or "").split(","):
+        value = token.strip()
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        conv_ids.append(value)
+    return conv_ids
+
+
+def filter_samples_by_conv_ids(
+    samples: List[Dict[str, Any]],
+    conv_ids: List[str],
+) -> Tuple[List[Dict[str, Any]], List[str]]:
+    if not conv_ids:
+        return samples, []
+
+    target = set(conv_ids)
+    filtered: List[Dict[str, Any]] = []
+    hit_ids = set()
+
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        sample_id = str(sample.get("sample_id", "") or "").strip()
+        if sample_id in target:
+            filtered.append(sample)
+            hit_ids.add(sample_id)
+
+    missing = sorted(target - hit_ids)
+    return filtered, missing
 
 
 def filter_samples_by_question_selection(
@@ -1312,6 +1353,19 @@ def main() -> int:
         raise ValueError(f"Expected list data in {data_file}")
 
     original_sample_count = len(samples)
+    conv_ids = _parse_conv_ids(args.conv_ids)
+    if conv_ids:
+        samples, missing_conv_ids = filter_samples_by_conv_ids(samples, conv_ids)
+        logger.info(
+            "Conv-id filter enabled: selected %d/%d samples (conv_ids=%s)",
+            len(samples),
+            original_sample_count,
+            conv_ids,
+        )
+        if missing_conv_ids:
+            logger.warning("Requested conv_ids not found: %s", missing_conv_ids)
+        original_sample_count = len(samples)
+
     question_config_path = ""
     if args.question_config:
         question_config_path = str(resolve_project_path(args.question_config))
@@ -1643,6 +1697,6 @@ def main() -> int:
 
 if __name__ == "__main__":
     # Example:
-    # python scripts/run_eval_locomo.py --test-id locomo_subset_test --question-config
-    # python scripts/run_eval_locomo.py --test-id locomo_before_hybrid_test1 --question-config
+    # python scripts/run_locomo/run_eval_locomo.py --test-id locomo_subset_test --question-config path/to/questions.yaml
+    # python scripts/run_locomo/run_eval_locomo.py --test-id locomo_before_hybrid_test1 --conv-ids conv-30
     raise SystemExit(main())

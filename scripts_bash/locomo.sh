@@ -15,7 +15,7 @@ else
   PY_CMD=("${PYTHON_BIN}")
 fi
 
-"${PY_CMD[@]}" scripts/sweep_locomo_hybrid_params.py \
+"${PY_CMD[@]}" scripts/run_locomo/sweep_locomo_hybrid_params.py \
   --test-id-prefix hybrid_grid \
   --dense-recall-topn 20 \
   --sparse-recall-topn 20 \

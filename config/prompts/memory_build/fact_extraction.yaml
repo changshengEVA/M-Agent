@@ -345,6 +345,11 @@ fact_extraction_v3:
     - Keep retrieval-important wording; avoid unnecessary paraphrasing.
     - Ignore greetings/filler/polite-only low-information lines.
     - Do not invent unsupported facts.
+    - For relative time expressions (e.g., yesterday, today, tomorrow, last week, next month),
+      resolve them against `Start time` whenever possible.
+    - Keep the original relative phrase and append resolved absolute time in parentheses.
+      Example: `yesterday (January 19, 2023)`, `next month (May 2023)`.
+    - If only coarse granularity can be resolved, keep coarse granularity; do not invent a clock time.
 
     Return ONLY one JSON object with this schema:
     {
@@ -354,7 +359,12 @@ fact_extraction_v3:
             "atomic_fact": "...",
             "evidence_sentence": "...",
             "fact_type": "event|opinion|mention|plan|advice|state|other",
-            "keywords": ["...", "..."]
+            "keywords": ["...", "..."],
+            "time_norm": {
+              "anchor": "ISO datetime",
+              "resolved": "absolute date/month/year",
+              "granularity": "day|month|year"
+            }
           }
         ]
       }
@@ -363,6 +373,7 @@ fact_extraction_v3:
     Field requirements:
     - evidence_sentence must be grounded in the current chunk turns.
     - keywords should keep retrieval anchors (proper nouns, places, key verbs/adjectives).
+    - `time_norm` is optional, but recommended when a relative time is resolved.
 
     Start time:
     {start_time}

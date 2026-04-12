@@ -6,7 +6,7 @@ Grid-search hybrid retrieval parameters for LoCoMo eval.
 This script:
 1) reads a base MemoryAgent config;
 2) generates temporary MemoryCore/Agent configs for each parameter combination;
-3) runs `scripts/run_eval_locomo.py` sequentially;
+3) runs `scripts/run_locomo/run_eval_locomo.py` sequentially;
 4) writes a sweep summary (jsonl/json/csv) under log/<test-id-prefix>/_sweep/.
 """
 
@@ -33,7 +33,7 @@ bootstrap_project()
 
 
 def _project_root() -> Path:
-    return Path(__file__).resolve().parents[1]
+    return Path(__file__).resolve().parents[2]
 
 
 def _resolve_project_path(raw: str) -> Path:
@@ -225,7 +225,7 @@ def _run_eval(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Sweep hybrid retrieval params and run scripts/run_eval_locomo.py continuously."
+        description="Sweep hybrid retrieval params and run scripts/run_locomo/run_eval_locomo.py continuously."
     )
     parser.add_argument(
         "--agent-config",
@@ -477,7 +477,7 @@ def main() -> int:
 
         cmd = [
             sys.executable,
-            str((project_root / "scripts" / "run_eval_locomo.py").resolve()),
+            str((project_root / "scripts" / "run_locomo" / "run_eval_locomo.py").resolve()),
             "--config",
             str(run_agent_cfg_path),
             "--data-file",

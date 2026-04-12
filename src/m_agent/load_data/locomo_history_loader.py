@@ -198,6 +198,8 @@ def extract_dialogues_from_locomo(raw_data: Any, source_file: str = "") -> List[
                     "language": "en",
                     "platform": "locomo",
                     "version": 1,
+                    "sample_id": sample_id,
+                    "session_num": session_num,
                 },
                 "turns": turns,
             }

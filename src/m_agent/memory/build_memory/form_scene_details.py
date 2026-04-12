@@ -13,6 +13,8 @@ from __future__ import annotations
 import json
 import logging
 import re
+from calendar import monthrange
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -42,6 +44,165 @@ _FACT_OPTIONAL_KEYS = (
     "relation",
     "event_tags",
 )
+
+_RELATIVE_TIME_EN_PATTERN = re.compile(
+    r"\b("
+    r"day before yesterday|day after tomorrow|"
+    r"yesterday|today|tomorrow|"
+    r"last week|next week|"
+    r"last month|this month|next month|"
+    r"last year|this year|next year"
+    r")\b",
+    flags=re.IGNORECASE,
+)
+_RELATIVE_TIME_ZH_PATTERN = re.compile(
+    r"(前天|后天|昨天|今天|明天|上周|下周|上个月|本月|下个月|去年|今年|明年)"
+)
+
+
+def _parse_anchor_datetime(anchor_text: str) -> Optional[datetime]:
+    value = str(anchor_text or "").strip()
+    if not value:
+        return None
+
+    candidates = [value]
+    if value.endswith("Z"):
+        candidates.append(value[:-1] + "+00:00")
+
+    for candidate in candidates:
+        try:
+            return datetime.fromisoformat(candidate)
+        except Exception:
+            continue
+
+    for fmt in ("%Y-%m-%d", "%Y/%m/%d"):
+        try:
+            return datetime.strptime(value, fmt)
+        except Exception:
+            continue
+    return None
+
+
+def _shift_month(anchor_dt: datetime, month_delta: int) -> datetime:
+    month_index = anchor_dt.month - 1 + month_delta
+    year = anchor_dt.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(anchor_dt.day, monthrange(year, month)[1])
+    return anchor_dt.replace(year=year, month=month, day=day)
+
+
+def _format_abs_day_en(dt: datetime) -> str:
+    return f"{dt.strftime('%B')} {dt.day}, {dt.year}"
+
+
+def _format_abs_month_en(dt: datetime) -> str:
+    return f"{dt.strftime('%B')} {dt.year}"
+
+
+def _format_abs_day_zh(dt: datetime) -> str:
+    return dt.strftime("%Y-%m-%d")
+
+
+def _format_abs_month_zh(dt: datetime) -> str:
+    return dt.strftime("%Y-%m")
+
+
+def _has_following_time_annotation(text: str, match_end: int) -> bool:
+    tail = str(text[match_end:] if match_end < len(text) else "")
+    return bool(re.match(r"^\s*[（(][^）)]*\d{4}[^）)]*[）)]", tail))
+
+
+def _resolve_relative_time_label(label: str, anchor_dt: datetime, *, zh: bool) -> Optional[str]:
+    token = str(label or "").strip().lower()
+    if not token:
+        return None
+
+    if zh:
+        if token == "前天":
+            return _format_abs_day_zh(anchor_dt - timedelta(days=2))
+        if token == "昨天":
+            return _format_abs_day_zh(anchor_dt - timedelta(days=1))
+        if token == "今天":
+            return _format_abs_day_zh(anchor_dt)
+        if token == "明天":
+            return _format_abs_day_zh(anchor_dt + timedelta(days=1))
+        if token == "后天":
+            return _format_abs_day_zh(anchor_dt + timedelta(days=2))
+        if token == "上周":
+            return _format_abs_day_zh(anchor_dt - timedelta(days=7))
+        if token == "下周":
+            return _format_abs_day_zh(anchor_dt + timedelta(days=7))
+        if token == "上个月":
+            return _format_abs_month_zh(_shift_month(anchor_dt, -1))
+        if token == "本月":
+            return _format_abs_month_zh(anchor_dt)
+        if token == "下个月":
+            return _format_abs_month_zh(_shift_month(anchor_dt, 1))
+        if token == "去年":
+            return str(anchor_dt.year - 1)
+        if token == "今年":
+            return str(anchor_dt.year)
+        if token == "明年":
+            return str(anchor_dt.year + 1)
+        return None
+
+    if token == "day before yesterday":
+        return _format_abs_day_en(anchor_dt - timedelta(days=2))
+    if token == "yesterday":
+        return _format_abs_day_en(anchor_dt - timedelta(days=1))
+    if token == "today":
+        return _format_abs_day_en(anchor_dt)
+    if token == "tomorrow":
+        return _format_abs_day_en(anchor_dt + timedelta(days=1))
+    if token == "day after tomorrow":
+        return _format_abs_day_en(anchor_dt + timedelta(days=2))
+    if token == "last week":
+        return _format_abs_day_en(anchor_dt - timedelta(days=7))
+    if token == "next week":
+        return _format_abs_day_en(anchor_dt + timedelta(days=7))
+    if token == "last month":
+        return _format_abs_month_en(_shift_month(anchor_dt, -1))
+    if token == "this month":
+        return _format_abs_month_en(anchor_dt)
+    if token == "next month":
+        return _format_abs_month_en(_shift_month(anchor_dt, 1))
+    if token == "last year":
+        return str(anchor_dt.year - 1)
+    if token == "this year":
+        return str(anchor_dt.year)
+    if token == "next year":
+        return str(anchor_dt.year + 1)
+    return None
+
+
+def _annotate_relative_time(text: str, anchor_text: str) -> str:
+    raw = str(text or "").strip()
+    if not raw:
+        return raw
+
+    anchor_dt = _parse_anchor_datetime(anchor_text)
+    if anchor_dt is None:
+        return raw
+
+    def _replace_en(match: re.Match[str]) -> str:
+        if _has_following_time_annotation(raw, match.end()):
+            return match.group(0)
+        resolved = _resolve_relative_time_label(match.group(0), anchor_dt, zh=False)
+        if not resolved:
+            return match.group(0)
+        return f"{match.group(0)} ({resolved})"
+
+    annotated = _RELATIVE_TIME_EN_PATTERN.sub(_replace_en, raw)
+
+    def _replace_zh(match: re.Match[str]) -> str:
+        if _has_following_time_annotation(annotated, match.end()):
+            return match.group(0)
+        resolved = _resolve_relative_time_label(match.group(0), anchor_dt, zh=True)
+        if not resolved:
+            return match.group(0)
+        return f"{match.group(0)}（{resolved}）"
+
+    return _RELATIVE_TIME_ZH_PATTERN.sub(_replace_zh, annotated)
 
 
 def get_memory_root(workflow_id: str) -> Path:
@@ -463,6 +624,9 @@ def complete_fact_item(
     atomic_fact = extract_atomic_fact(raw_item)
     if not atomic_fact:
         atomic_fact = evidence_sentence or "unknown_atomic_fact"
+    anchor_start_time = str(source_ep.get("start_time", "")).strip()
+    if anchor_start_time:
+        atomic_fact = _annotate_relative_time(atomic_fact, anchor_start_time)
 
     embedding: List[float] = []
     embedding_input = build_atomic_fact_embedding_text(atomic_fact=atomic_fact)

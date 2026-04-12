@@ -72,30 +72,29 @@ EMBED_PROVIDER=aliyun
 LLM_PROVIDER=deepseek
 ```
 
-4. 先做 LoCoMo 预处理（`memory_pre`，现在仅生成 dialogues + episodes）
+4. 先做 LoCoMo 预处理（配置驱动 + conv_id 对齐）
 
-> `run_eval_locomo.py` 默认读取 `config/agents/memory/locomo_eval_memory_agent.yaml`。  
-> 该文件里的 `memory_core_config_path` 会指向 `config/memory/core/locomo_eval_memory_core.yaml`，  
-> 其中配置了 `workflow_id`。请确保预处理 `--id` 与该 `workflow_id` 保持一致。
+先编辑 `config/eval/memory_agent/locomo/test_env.yaml`：
+- `selection.conv_ids`（要构造/评测的会话）
+- `import.process_id`（workflow_id）
+- `eval.test_id`
+
+然后执行：
 
 ```bash
-python scripts/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo
+python scripts/run_locomo/import_locomo.py --env-config config/eval/memory_agent/locomo/test_env.yaml
 ```
 
-预处理完成后会在 `data/memory/testlocomo/` 生成（或更新）：
+预处理完成后会在 `data/memory/<process_id>/` 生成（或更新）：
 
 - `dialogues/`
 - `episodes/`
 - `scene/`（由 MemoryCore 在导入 `episodes/` 时内部生成）
 
-5. 运行 LoCoMo 评测脚本
+5. 运行 LoCoMo 评测脚本（同一配置文件）
 
 ```bash
-# Quick check: sampled run
-python scripts/run_eval_locomo.py --test-id quickstart --sample-fraction 0.1
-
-# Full run: 10/10 samples
-# python scripts/run_eval_locomo.py --test-id quickstart-full --sample-fraction 1.0
+python scripts/run_locomo/eval_locomo.py --env-config config/eval/memory_agent/locomo/test_env.yaml
 ```
 
 6. 查看输出结果

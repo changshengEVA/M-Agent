@@ -35,11 +35,8 @@ Config map:
   Used by: `chat_memory_core.yaml` / `locomo_eval_memory_core.yaml`
   Role: MemoryCore runtime prompt templates used by extraction/merge/resolution services
 - `config/agents/memory/locomo_eval_memory_agent.yaml`
-  Used by: `python scripts/run_eval_locomo.py`
+  Used by: `python scripts/run_locomo/run_eval_locomo.py`
   Role: default MemoryAgent config for LoCoMo evaluation
-- `config/eval/memory_agent/locomo/test_1.yaml`
-  Used by: `python scripts/run_eval_locomo.py --question-config`
-  Role: fixed LoCoMo question subset selection by `sample_id` + `qa_indices`
 - `config/memory/core/locomo_eval_memory_core.yaml`
   Used by: `locomo_eval_memory_agent.yaml`
   Role: MemoryCore backend for LoCoMo evaluation
