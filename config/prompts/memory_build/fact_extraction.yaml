@@ -298,6 +298,12 @@ fact_extraction_v3:
     - 忽略寒暄、填充语、纯礼貌低信息句。
     - 不要编造未被当前分片支持的事实。
 
+    fact_type（固定四类，禁止自造新标签；细粒度用 keywords 表达）：
+    - event：随时间展开或可与锚点时间对齐的动态事项（已发生/进行中/已排期），例如行动、出行、到访、上线发布、上课、比赛、会面、宣布的决定/计划落地节点。
+    - situation：相对稳定或跨多轮成立的背景与状态（身份、职业、持有物、店铺/项目阶段、长期关系、习惯处境）；不是单独一条“某一瞬间动作”。
+    - expression：对话里**值得被引用的表述内容**（观点、偏好、建议、定义、主张、隐喻/类比/比较、评价），须能对应到说话人；旅行目的地+目的若写在叙述里也可归此类或 event，择更利于检索的一类即可。
+    - other：仅当确实无法归入以上三类；此时 keywords 必须格外具体，禁止空泛。
+
     只返回一个 JSON 对象，格式如下：
     {
       "event_log": {
@@ -305,7 +311,7 @@ fact_extraction_v3:
           {
             "atomic_fact": "...",
             "evidence_sentence": "...",
-            "fact_type": "event|opinion|mention|plan|advice|state|other",
+            "fact_type": "event|situation|expression|other",
             "keywords": ["...", "..."]
           }
         ]
@@ -314,7 +320,7 @@ fact_extraction_v3:
 
     字段要求：
     - evidence_sentence 必须来自当前 Chunk turns（可为近原句）。
-    - keywords 保留检索锚点（专名、地点、关键动词、关键形容词）。
+    - keywords 保留检索锚点（专名、地点、关键动词、关键形容词）；需要更细的语义标签时只放在 keywords，不要发明新的 fact_type。
 
     Start time:
     {start_time}
@@ -351,6 +357,12 @@ fact_extraction_v3:
       Example: `yesterday (January 19, 2023)`, `next month (May 2023)`.
     - If only coarse granularity can be resolved, keep coarse granularity; do not invent a clock time.
 
+    fact_type — fixed four-way taxonomy (do NOT invent new type labels; put nuance in keywords):
+    - event: time-bounded or time-anchorable dynamics (past/present/scheduled): actions, travel, visits, launches, classes, competitions, meetings, announced decisions tied to a timeline.
+    - situation: relatively stable or cross-turn background: roles, employment, possessions, business stage, standing relationships, habitual context; not a single instantaneous act.
+    - expression: substantively retrievable utterance content (opinions, preferences, advice, definitions, claims, metaphors/analogies/comparisons, evaluations), with explicit speaker when applicable.
+    - other: only when none of the above fits; keywords must be extra-specific.
+
     Return ONLY one JSON object with this schema:
     {
       "event_log": {
@@ -358,7 +370,7 @@ fact_extraction_v3:
           {
             "atomic_fact": "...",
             "evidence_sentence": "...",
-            "fact_type": "event|opinion|mention|plan|advice|state|other",
+            "fact_type": "event|situation|expression|other",
             "keywords": ["...", "..."],
             "time_norm": {
               "anchor": "ISO datetime",
@@ -372,7 +384,7 @@ fact_extraction_v3:
 
     Field requirements:
     - evidence_sentence must be grounded in the current chunk turns.
-    - keywords should keep retrieval anchors (proper nouns, places, key verbs/adjectives).
+    - keywords should keep retrieval anchors (proper nouns, places, key verbs/adjectives); never compensate for a missing type by inventing a new fact_type value.
     - `time_norm` is optional, but recommended when a relative time is resolved.
 
     Start time:
@@ -380,6 +392,146 @@ fact_extraction_v3:
 
     Chunk turns:
     {dialogue_block}
+
+    Episode context:
+    {episode}
+
+fact_extraction_v4:
+  zh: |
+    你是一位专业的信息抽取分析师和信息架构师。
+    你的任务是分析给定输入，并生成一个面向事实检索优化的事件日志。
+
+    你会收到四类输入：
+    1) Start time：当前子块的锚点时间（用于解析相对时间）。
+    2) Chunk turns：当前子块对话文本（**唯一允许抽取事实的文本范围**；覆盖义务仅针对本块）。
+    3) Segment context：当前 segment 的**完整对话**（只读，用于指代消解与时间理解；不得仅为出现在此处的信息编造**未在 Chunk turns 中出现**的事实）。
+    4) Episode context：JSON 结构体，含整段 episode 对话等（只读，用途同 Segment context）。
+
+    核心定义（覆盖原则，不做类型分类）：
+    - Chunk turns 内每一个**可核查片段**都应至少被一条 `atomic_fact` 字符串覆盖。
+    - 可核查片段：含具体命题、事件、状态、建议、态度、隐喻、专名、时间、地点、数量等，值得被记忆检索的内容。
+    - 寒暄、纯礼貌、填充语、低信息量闲聊可整段不抽；除此之外不应遗漏。
+
+    输出要求：
+    仅返回一个合法 JSON 对象，格式如下（`atomic_fact` 为字符串数组；也可使用 `{"atomic_fact":"..."}` 对象数组，二者择一即可）：
+    {
+      "event_log": {
+        "time": "<输入的 Start time 原样保留>",
+        "atomic_fact": [
+          "...",
+          "..."
+        ]
+      }
+    }
+
+    提取规则：
+    1. 原子性
+    - 每条字符串必须只表达一个连贯意义单元（行为、情绪、原因、计划、决定、陈述等）。
+    - 若一句话包含多个独立含义，必须拆分为多条。
+    - 每条事实应可独立检索与理解。
+
+    2. 证据约束
+    - 只抽取在 **Chunk turns** 中能直接对上证的内容；可利用 Segment context / Episode context **消解代词、补全说话人**，但不得引入仅存在于上下文、而 Chunk turns 中无依据的命题。
+
+    3. 时间处理
+    - event_log.time 固定写入输入 Start time（原样保留）。
+    - 保留文本中明确日期/时间表达。
+    - 相对时间（如“昨天/上周/明天”）应尽量基于 Start time（或 Chunk 内轮次时间）解析，并在事实中保留原表达并追加绝对日期（如：昨天（2024-03-09））。
+    - 若只能解析到粗粒度（月/年），保持粗粒度，不要编造精确时刻。
+
+    4. 内容保留与归因
+    - 严格基于输入，不得编造，不得过度推断。
+    - 尽量显式写明“谁说/做了什么”。
+    - 在有足够上下文时进行指代消解（他/她/它/他们 -> 明确实体），否则保持原意。
+    - 事实正文内保留检索锚点（人名、地名、项目名、术语、关键动词/形容词），勿依赖额外字段。
+
+    5. 过滤规则
+    - 过滤寒暄、纯礼貌、填充词、低信息量闲聊。
+    - 不要因为有“说/建议/告诉”等字眼就丢弃内容：若说话人给出了**可独立成句的建议、定义、解释、主张或具体信息**，必须抽成一条事实，并显式写明说话人（例如“Jon 建议 Gina …”）。
+    - Chunk turns 里若出现以 `[Image: ...]` 开头的行，它属于**紧前一条说话轮次的图像说明**，必须把其中出现的具体物体、场景、工具（如 clipboard、notepad）写成可检索事实，并与相关人物/用途对齐。
+
+    6. 表达要求
+    - 使用完整、简洁、可检索的陈述句。
+    - 优先第三人称表达，避免含混代词。
+    - 不合并逻辑无关信息到同一条事实。
+
+    7. 输出约束
+    - 仅输出 JSON 对象，不要附加解释、注释、Markdown。
+    - 确保 JSON 可解析，字段名与结构严格匹配。
+
+    Start time:
+    {start_time}
+
+    Chunk turns:
+    {dialogue_block}
+
+    Segment context (read-only):
+    {segment_context}
+
+    Episode context:
+    {episode}
+  en: |
+    You are a professional information extraction analyst and information architect.
+    Your task is to generate a retrieval-optimized event log from the provided inputs.
+
+    You receive four inputs:
+    1) Start time: anchor time for resolving relative dates in this sub-chunk.
+    2) Chunk turns: the current dialogue sub-chunk (the **ONLY** text range you may extract facts from; coverage applies to this block only).
+    3) Segment context: the **full** dialogue of the current segment (read-only for coreference and time; do NOT invent facts whose support appears only here and not in Chunk turns).
+    4) Episode context: JSON payload including full-episode dialogue (read-only; same constraints as Segment context).
+
+    Core definition (coverage, no taxonomy):
+    - Every **verifiable span** in Chunk turns should be covered by at least one string in `atomic_fact`.
+    - Verifiable: concrete claims, events, states, advice, attitudes, metaphors, names, times, places, quantities—anything worth retrieving later.
+    - Skip greetings, fillers, polite-only, and low-information chit-chat as a group; do not skip substantive content.
+
+    Output:
+    Return ONLY one JSON object. `atomic_fact` is an array of strings (or an array of objects `{"atomic_fact":"..."}`—either form is acceptable):
+    {
+      "event_log": {
+        "time": "<copy Start time exactly>",
+        "atomic_fact": [
+          "...",
+          "..."
+        ]
+      }
+    }
+
+    Extraction rules:
+    1. Atomicity
+    - One coherent meaning unit per string; split multi-meaning sentences.
+    - Each fact must be independently understandable and searchable.
+
+    2. Evidence
+    - Ground every fact in **Chunk turns**; use Segment/Episode context only to resolve pronouns and speakers, not to add unsupported propositions.
+
+    3. Time
+    - Copy Start time into event_log.time unchanged.
+    - Preserve explicit dates; resolve relative phrases against Start time (or turn timestamps in the chunk) and append absolute dates in parentheses when possible.
+
+    4. Attribution and wording
+    - No fabrication or over-inference; explicit who said/did what when possible.
+    - Keep retrieval anchors inside the fact text (names, places, key verbs/adjectives).
+
+    5. Filtering
+    - Skip greetings/fillers/low-info lines.
+    - Keep substantive speech acts (advice, definitions, claims) with explicit speaker.
+    - **Metaphors and comparisons** must stay as standalone facts with retrieval-critical wording.
+    - **Travel/trips** with place + purpose → fact(s); **social activities** with who/what/when; resolve "last Friday" etc. against anchors.
+    - **Launch/start** with "just/today/yesterday" → include resolved calendar day when implied by session day.
+    - `[Image: ...]` lines belong to the previous turn—extract objects/tools/settings as facts.
+
+    6. Output constraints
+    - JSON only, valid and matching the schema.
+
+    Start time:
+    {start_time}
+
+    Chunk turns:
+    {dialogue_block}
+
+    Segment context (read-only):
+    {segment_context}
 
     Episode context:
     {episode}

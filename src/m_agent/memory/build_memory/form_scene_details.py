@@ -6,6 +6,14 @@ Scene fact extraction module.
 Scan scene files under one workflow and write back a `facts` field for each
 scene. Each fact item stores one extracted atomic fact from source episode
 spans referenced by scene.source.episodes.
+
+Fact contract (brief):
+- A fact is one self-contained, retrievable claim grounded in dialogue.
+- Completeness is coverage-based: every verifiable span in the current chunk
+  should be represented by at least one fact (low-information turns may be
+  skipped as a group).
+- Episodes must define segment boundaries; there is no fallback mechanical
+  chunking across the whole episode when segments are missing.
 """
 
 from __future__ import annotations
@@ -35,6 +43,10 @@ CONFIG_PATH = FACT_EXTRACTION_PROMPT_CONFIG_PATH
 
 _FACT_CHUNK_SIZE = 8
 _FACT_CHUNK_OVERLAP = 0
+
+# Segment-internal sub-chunking for fact extraction (turn counts).
+_FACT_SEGMENT_SUBCHUNK_THRESHOLD = 5
+_FACT_SUBCHUNK_MAX_TURNS = 4
 
 _FACT_OPTIONAL_KEYS = (
     "fact_type",
@@ -333,9 +345,22 @@ def normalize_line(speaker: str, text: str) -> str:
 
 
 def turns_to_dialogue_block(turns: List[Dict[str, Any]]) -> str:
+    """Format turns for fact-extraction prompts.
+
+    Appends `blip_caption` (when present) so object/setting cues from images
+    enter the textual evidence the LLM sees — otherwise facts like
+    "clipboard with a notepad" never appear in atomic facts.
+    """
     lines: List[str] = []
     for turn in turns:
-        lines.append(normalize_line(str(turn.get("speaker", "Unknown")), str(turn.get("text", ""))))
+        if not isinstance(turn, dict):
+            continue
+        lines.append(
+            normalize_line(str(turn.get("speaker", "Unknown")), str(turn.get("text", "")))
+        )
+        cap = turn.get("blip_caption")
+        if isinstance(cap, str) and cap.strip():
+            lines.append(f"  [Image: {cap.strip()}]")
     return "\n".join(lines)
 
 
@@ -366,6 +391,43 @@ def split_turns_into_chunks(
             break
         start += step
     return chunks
+
+
+def segment_turns_into_fact_subchunks(
+    seg_turns: List[Dict[str, Any]],
+) -> List[List[Dict[str, Any]]]:
+    """Split one segment's turns for LLM fact extraction.
+
+    If the segment has more than `_FACT_SEGMENT_SUBCHUNK_THRESHOLD` turns,
+    use consecutive windows of at most `_FACT_SUBCHUNK_MAX_TURNS` turns;
+    otherwise return a single chunk (the whole segment).
+    """
+    valid = [t for t in seg_turns if isinstance(t, dict)]
+    if not valid:
+        return []
+    n = len(valid)
+    if n <= _FACT_SEGMENT_SUBCHUNK_THRESHOLD:
+        return [valid]
+    out: List[List[Dict[str, Any]]] = []
+    i = 0
+    while i < n:
+        out.append(valid[i : i + _FACT_SUBCHUNK_MAX_TURNS])
+        i += _FACT_SUBCHUNK_MAX_TURNS
+    return out
+
+
+def _normalize_chunk_params(
+    chunk_size: Optional[int],
+    chunk_overlap: Optional[int],
+) -> Tuple[int, int]:
+    size = _FACT_CHUNK_SIZE if chunk_size is None else int(chunk_size)
+    overlap = _FACT_CHUNK_OVERLAP if chunk_overlap is None else int(chunk_overlap)
+
+    size = max(1, size)
+    overlap = max(0, overlap)
+    if overlap >= size:
+        overlap = size - 1
+    return size, overlap
 
 
 def _normalize_optional_fact_fields(raw_item: Dict[str, Any]) -> Dict[str, Any]:
@@ -446,18 +508,9 @@ def build_episode_payload(
     turns: List[Dict[str, Any]],
     dialogue_data: Dict[str, Any],
 ) -> Dict[str, Any]:
-    normalized_turns: List[Dict[str, Any]] = []
-    for turn in turns:
-        if not isinstance(turn, dict):
-            continue
-        normalized_turns.append(
-            {
-                "turn_id": turn.get("turn_id"),
-                "speaker": str(turn.get("speaker", "Unknown")),
-                "text": str(turn.get("text", "")),
-                "timestamp": str(turn.get("timestamp", "")),
-            }
-        )
+    normalized_turns: List[Dict[str, Any]] = [
+        dict(turn) for turn in turns if isinstance(turn, dict)
+    ]
 
     payload: Dict[str, Any] = {
         "episode_id": str(source_ep.get("episode_id", "")),
@@ -504,6 +557,8 @@ def normalize_fact_items(parsed_payload: Any) -> List[Dict[str, Any]]:
             atomic_fact = extract_atomic_fact(item)
             evidence_sentence = str(item.get("evidence_sentence", "")).strip()
             if atomic_fact:
+                if not evidence_sentence:
+                    evidence_sentence = atomic_fact
                 fact_item: Dict[str, Any] = {
                     "Atomic fact": atomic_fact,
                     "evidence_sentence": evidence_sentence,
@@ -511,7 +566,8 @@ def normalize_fact_items(parsed_payload: Any) -> List[Dict[str, Any]]:
                 fact_item.update(_normalize_optional_fact_fields(item))
                 normalized.append(fact_item)
         elif isinstance(item, str) and item.strip():
-            normalized.append({"Atomic fact": item.strip()})
+            s = item.strip()
+            normalized.append({"Atomic fact": s, "evidence_sentence": s})
     return normalized
 
 
@@ -521,16 +577,20 @@ def call_fact_extraction(
     start_time: str,
     prompt_template: str,
     llm_model: Optional[Callable[[str], str]] = None,
+    *,
+    segment_context_block: str = "",
 ) -> List[Dict[str, Any]]:
     if llm_model is None:
         from m_agent.load_model.OpenAIcall import get_llm
 
         llm_model = get_llm(model_temperature=0.1)
 
+    seg_ctx = (segment_context_block or "").strip()
     full_prompt = (
         prompt_template.replace("{dialogue_block}", dialogue_block)
         .replace("{episode}", episode_payload_text)
         .replace("{start_time}", start_time)
+        .replace("{segment_context}", seg_ctx if seg_ctx else "(无)")
     )
     response = llm_model(full_prompt)
     parsed = extract_json_from_text(response)
@@ -619,11 +679,14 @@ def complete_fact_item(
     raw_item: Dict[str, Any],
     source_ep: Dict[str, Any],
     embed_model: Callable[[Any], Any],
+    segment_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     evidence_sentence = str(raw_item.get("evidence_sentence", "")).strip()
     atomic_fact = extract_atomic_fact(raw_item)
     if not atomic_fact:
         atomic_fact = evidence_sentence or "unknown_atomic_fact"
+    if not evidence_sentence:
+        evidence_sentence = atomic_fact
     anchor_start_time = str(source_ep.get("start_time", "")).strip()
     if anchor_start_time:
         atomic_fact = _annotate_relative_time(atomic_fact, anchor_start_time)
@@ -637,13 +700,22 @@ def complete_fact_item(
     except Exception as exc:
         logger.warning("Embedding generation failed for atomic_fact '%s': %s", embedding_input[:80], exc)
 
+    evidence: Dict[str, Any] = {
+        "episode_id": str(source_ep.get("episode_id", "")),
+        "dialogue_id": str(source_ep.get("dialogue_id", "")),
+    }
+    if isinstance(segment_info, dict):
+        seg_id = str(segment_info.get("segment_id", "")).strip()
+        seg_span = segment_info.get("turn_span")
+        if seg_id:
+            evidence["segment_id"] = seg_id
+        if isinstance(seg_span, list) and len(seg_span) == 2:
+            evidence["segment_turn_span"] = seg_span
+
     output: Dict[str, Any] = {
         "Atomic fact": atomic_fact,
         "evidence_sentence": evidence_sentence,
-        "evidence": {
-            "episode_id": str(source_ep.get("episode_id", "")),
-            "dialogue_id": str(source_ep.get("dialogue_id", "")),
-        },
+        "evidence": evidence,
         "embedding": embedding,
     }
 
@@ -689,6 +761,48 @@ def deduplicate_facts(facts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return unique
 
 
+def _resolve_segments_as_chunks(
+    source_ep: Dict[str, Any],
+    all_episode_turns: List[Dict[str, Any]],
+) -> Optional[List[Tuple[List[Dict[str, Any]], Dict[str, Any]]]]:
+    """Split episode turns by segment boundaries from source_ep.
+
+    Returns a list of (segment_turns, segment_info) pairs, or None if
+    segments are missing or invalid (caller must skip fact extraction).
+    """
+    segments = source_ep.get("segments")
+    if not isinstance(segments, list) or not segments:
+        return None
+
+    turn_by_id: Dict[int, Dict[str, Any]] = {}
+    for turn in all_episode_turns:
+        tid = turn.get("turn_id")
+        if isinstance(tid, int):
+            turn_by_id[tid] = turn
+
+    result: List[Tuple[List[Dict[str, Any]], Dict[str, Any]]] = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        seg_span = seg.get("turn_span")
+        if not (isinstance(seg_span, list) and len(seg_span) == 2):
+            continue
+        try:
+            start_id, end_id = int(seg_span[0]), int(seg_span[1])
+        except (TypeError, ValueError):
+            continue
+
+        seg_turns = [
+            turn_by_id[tid]
+            for tid in sorted(turn_by_id)
+            if start_id <= tid <= end_id
+        ]
+        if seg_turns:
+            result.append((seg_turns, seg))
+
+    return result if result else None
+
+
 def build_facts_from_source_episode(
     source_ep: Dict[str, Any],
     dialogues_root: Path,
@@ -721,12 +835,18 @@ def build_facts_from_source_episode(
         turns=turns,
         dialogue_data=dialogue_data,
     )
-    turn_chunks = split_turns_into_chunks(turns=turns)
-    if not turn_chunks:
+
+    segment_chunks = _resolve_segments_as_chunks(source_ep, turns)
+    if not segment_chunks:
+        logger.warning(
+            "Skipping fact extraction for dialogue_id=%s: missing or empty segments in source_ep",
+            dialogue_id,
+        )
         return []
 
+    episode_dialogue_block = turns_to_dialogue_block(turns)
+
     completed: List[Dict[str, Any]] = []
-    total_chunks = len(turn_chunks)
     episode_context = {
         "episode_id": str(episode_payload.get("episode_id", "")),
         "dialogue_id": str(episode_payload.get("dialogue_id", "")),
@@ -735,69 +855,97 @@ def build_facts_from_source_episode(
         "participants": episode_payload.get("participants", []),
     }
 
-    for chunk_index, chunk_turns in enumerate(turn_chunks, start=1):
-        if not chunk_turns:
+    segment_index = 0
+    for seg_turns, segment_info in segment_chunks:
+        if not seg_turns:
             continue
+        segment_index += 1
+        segment_dialogue_block = turns_to_dialogue_block(seg_turns)
+        subchunks = segment_turns_into_fact_subchunks(seg_turns)
+        total_sub = len(subchunks)
 
-        dialogue_block = turns_to_dialogue_block(chunk_turns)
-        if not dialogue_block.strip():
-            continue
+        for sub_idx, chunk_turns in enumerate(subchunks, start=1):
+            if not chunk_turns:
+                continue
 
-        chunk_turn_span = [
-            chunk_turns[0].get("turn_id"),
-            chunk_turns[-1].get("turn_id"),
-        ]
-        chunk_start_time = str(chunk_turns[0].get("timestamp", "")).strip()
-        chunk_end_time = str(chunk_turns[-1].get("timestamp", "")).strip()
-        chunk_payload = {
-            "episode_context": episode_context,
-            "chunk": {
-                "chunk_index": chunk_index,
-                "chunk_total": total_chunks,
-                "turn_span": chunk_turn_span,
-                "start_time": chunk_start_time,
-                "end_time": chunk_end_time,
-            },
-            "turns": [
-                {
-                    "turn_id": t.get("turn_id"),
-                    "speaker": str(t.get("speaker", "Unknown")),
-                    "text": str(t.get("text", "")),
-                    "timestamp": str(t.get("timestamp", "")),
-                }
-                for t in chunk_turns
-                if isinstance(t, dict)
-            ],
-        }
-        chunk_payload_text = json.dumps(chunk_payload, ensure_ascii=False, indent=2)
-        start_time = chunk_start_time or str(episode_payload.get("start_time", "")).strip()
+            dialogue_block = turns_to_dialogue_block(chunk_turns)
+            if not dialogue_block.strip():
+                continue
 
-        try:
-            raw_facts = call_fact_extraction(
-                dialogue_block=dialogue_block,
-                episode_payload_text=chunk_payload_text,
-                start_time=start_time,
-                prompt_template=prompt_template,
-                llm_model=llm_model,
-            )
-        except Exception as exc:
-            logger.warning(
-                "LLM fact extraction failed for dialogue_id=%s chunk=%s/%s, fallback enabled: %s",
+            chunk_turn_span = [
+                chunk_turns[0].get("turn_id"),
+                chunk_turns[-1].get("turn_id"),
+            ]
+            chunk_start_time = str(chunk_turns[0].get("timestamp", "")).strip()
+            chunk_end_time = str(chunk_turns[-1].get("timestamp", "")).strip()
+
+            segment_label = ""
+            if isinstance(segment_info, dict):
+                segment_label = str(segment_info.get("topic", "")).strip()
+
+            chunk_payload: Dict[str, Any] = {
+                "episode_context": episode_context,
+                "segment_dialogue_block": segment_dialogue_block,
+                "episode_dialogue_block": episode_dialogue_block,
+                "chunk": {
+                    "segment_index": segment_index,
+                    "subchunk_index": sub_idx,
+                    "subchunk_total": total_sub,
+                    "turn_span": chunk_turn_span,
+                    "start_time": chunk_start_time,
+                    "end_time": chunk_end_time,
+                },
+                "turns": [
+                    dict(t)
+                    for t in chunk_turns
+                    if isinstance(t, dict)
+                ],
+            }
+            if segment_label:
+                chunk_payload["chunk"]["segment_topic"] = segment_label
+
+            chunk_payload_text = json.dumps(chunk_payload, ensure_ascii=False, indent=2)
+            start_time = chunk_start_time or str(episode_payload.get("start_time", "")).strip()
+
+            logger.info(
+                "Fact extract dialogue_id=%s segment=%s subchunk=%s/%s turns=%s-%s",
                 dialogue_id,
-                chunk_index,
-                total_chunks,
-                exc,
+                segment_index,
+                sub_idx,
+                total_sub,
+                chunk_turn_span[0],
+                chunk_turn_span[1],
             )
-            raw_facts = fallback_extract_facts(chunk_turns)
 
-        for item in raw_facts:
-            completed.append(
-                complete_fact_item(
-                    raw_item=item,
-                    source_ep=source_ep,
-                    embed_model=embed_model,
+            try:
+                raw_facts = call_fact_extraction(
+                    dialogue_block=dialogue_block,
+                    episode_payload_text=chunk_payload_text,
+                    start_time=start_time,
+                    prompt_template=prompt_template,
+                    llm_model=llm_model,
+                    segment_context_block=segment_dialogue_block,
                 )
-            )
+            except Exception as exc:
+                logger.warning(
+                    "LLM fact extraction failed for dialogue_id=%s segment=%s subchunk=%s/%s, fallback: %s",
+                    dialogue_id,
+                    segment_index,
+                    sub_idx,
+                    total_sub,
+                    exc,
+                )
+                raw_facts = fallback_extract_facts(chunk_turns)
+
+            for item in raw_facts:
+                completed.append(
+                    complete_fact_item(
+                        raw_item=item,
+                        source_ep=source_ep,
+                        embed_model=embed_model,
+                        segment_info=segment_info,
+                    )
+                )
 
     if not completed:
         return []

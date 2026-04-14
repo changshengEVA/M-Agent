@@ -55,3 +55,13 @@ MemoryCore retrieval tuning:
   - `dense_recall_topn`, `sparse_recall_topn`
   - `rrf_k`, `dense_weight`, `sparse_weight`
   - `bm25_k1`, `bm25_b`
+- `config/memory/core/*.yaml` supports `detail_search_multi_route` for multi-route recall:
+  - `enable`, `route_count`, `query_generator`, `route_types`
+  - `per_route_topk`, `fusion`, `max_workers`, `rrf_k`
+
+MemoryAgent runtime knobs:
+
+- `config/agents/memory/*.yaml` supports `workspace`:
+  - `enable_state_machine`, `max_rounds`, `max_actions_per_round`
+  - `max_episode_candidates`, `max_keep`, `min_evidence_to_answer`
+  - `remedy_recall_max_times`, `enable_detail_search_multi_route`

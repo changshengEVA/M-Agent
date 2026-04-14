@@ -1,7 +1,8 @@
 # Unified LoCoMo test environment config
 # Used by:
-# - python scripts/run_locomo/import_locomo.py --env-config config/eval/memory_agent/locomo/test_env.yaml
-# - python scripts/run_locomo/eval_locomo.py   --env-config config/eval/memory_agent/locomo/test_env.yaml
+# - python scripts/run_locomo/import_locomo.py  --env-config config/eval/memory_agent/locomo/test_env.yaml
+# - python scripts/run_locomo/warmup_locomo.py  --env-config config/eval/memory_agent/locomo/test_env.yaml
+# - python scripts/run_locomo/eval_locomo.py    --env-config config/eval/memory_agent/locomo/test_env.yaml
 
 name: locomo_test_env
 description: Build/evaluate with explicit conv_id scope to avoid mixed-memory contamination.
@@ -13,7 +14,16 @@ data:
 selection:
   # Option A: evaluate full QA set inside selected conversations.
   conv_ids:
+    - conv-26
     - conv-30
+    - conv-41
+    - conv-42
+    - conv-43
+    - conv-44
+    - conv-47
+    - conv-48
+    - conv-49
+    - conv-50
   # Option B: evaluate only specific questions (sample_id + qa_indices).
   # If Option B is provided, conv_ids will be auto-expanded with sample_id values below.
   # questions:
@@ -21,13 +31,12 @@ selection:
   #     qa_indices: [3, 24, 36]
 
 import:
-  process_id: test_facts_only
+  process_id: baseline
   # Clean data/memory/<process_id>/dialogues + episodes before rebuild.
   clean_output: true
-  enable_episode_scoring_filter: false
 
 eval:
-  test_id: rebuild_test_facts_only
+  test_id: new_baseline
   memory_agent_config: config/agents/memory/locomo_eval_memory_agent.yaml
   model_key: memory_agent
   prediction_key: memory_agent_prediction

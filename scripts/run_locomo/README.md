@@ -19,7 +19,23 @@ Set:
 python scripts/run_locomo/import_locomo.py --env-config config/eval/memory_agent/locomo/test_env.yaml
 ```
 
-## 3) Run evaluation (only selected conv_ids)
+## 3) Warmup: generate scenes + atomic facts from episodes
+
+```bash
+python scripts/run_locomo/warmup_locomo.py --env-config config/eval/memory_agent/locomo/test_env.yaml
+```
+
+Reads the same `eval.memory_agent_config` as `eval_locomo.py`, initializes MemoryCore
+with identical parameters, and calls `load_from_episode_path` to build
+scene JSON files (with atomic facts + embeddings) into `data/memory/<workflow_id>/scene/`.
+
+Use `--force` to delete existing scenes and regenerate from scratch.
+Use `--dry-run` to print resolved config without executing.
+
+If this step is skipped, `eval_locomo.py` will run the same warmup implicitly
+on first agent creation (when the scene directory is empty).
+
+## 4) Run evaluation (only selected conv_ids)
 
 ```bash
 python scripts/run_locomo/eval_locomo.py --env-config config/eval/memory_agent/locomo/test_env.yaml

@@ -1,312 +1,249 @@
 dialogue_segmentation:
   system_prompt:
     zh: |
-      你是对话分段模块。
-      你的任务是支持基于 buffer 的 Dialogue -> Episode 切分。
+      你是对话分段模块，负责两级切分：Episode（粗粒度）和 Segment（细粒度）。
 
-      脚本会按顺序扫描对话轮次，并维护一个 episode_buffer。
-      对每个新 turn，你只需要判断它应该：
-      - 继续追加到当前 episode_buffer
-      - 还是开启一个新的 Episode
+      脚本按顺序扫描对话轮次，同时维护 episode 和 segment 两层 buffer。
+      对每个候选 turn，你需要做三选一判断：
+      - append：追加到当前 segment（同时也属于当前 episode）
+      - segment_break：当前 segment 结束，开启新 segment，但仍在同一 episode 内
+      - episode_break：当前 episode 结束，同时也结束当前 segment，开启新的 episode
 
-      一个 Episode 应该是：
-      - 语义上自洽
-      - 时间 / 场景上连续
-      - 围绕一个稳定交互目标展开
+      Episode：围绕一个稳定的交互目标、在连续的时间场景内展开的完整对话片段。
+      Segment：Episode 内部的一个聚焦子话题，讨论焦点发生局部转移时切分。
 
-      不要过度切分简短确认、澄清问题、局部展开或轻微跑题。
-      只输出 JSON，不要改变下游结构，也不要输出 JSON 之外的内容。
+      关键规则：
+      1. 告别/寒暄轮次处理：对话末尾的告别（"bye""see ya"、表情符号等）和简短寒暄
+         应当 append 到前一个 segment/episode，不应单独拆分为新的 episode。
+         仅当告别之后又开启了全新的实质性话题时，才考虑 episode_break。
+      2. segment_break 的积极使用：当一个 segment 已经积累了 4-6 轮以上，
+         且讨论焦点出现了可辨识的转移（如换了讨论对象、从事实描述转到情感表达、
+         从一个人的近况转到另一个人的近况），应优先考虑 segment_break。
+      3. 不要过度切分简短确认、澄清和局部展开（1-2 轮的追问不触发切分）。
+
+      只输出 JSON，不输出 JSON 之外的内容。
     en: |
-      You are a dialogue segmentation module.
+      You are a dialogue segmentation module performing two-level segmentation:
+      Episode (coarse) and Segment (fine-grained).
 
-      Your job is to support buffer-based Dialogue -> Episode segmentation.
-      The script scans dialogue turns in order and maintains an episode_buffer.
-      For each new turn, you only decide whether that turn should:
-      - continue the current episode_buffer
-      - start a new Episode
+      The script scans turns sequentially and maintains both an episode buffer
+      and a segment buffer. For each candidate turn you must choose one of:
+      - append: the turn continues the current segment (and episode)
+      - segment_break: end the current segment and start a new one, still within the same episode
+      - episode_break: end the current episode (and segment), start a brand-new episode
 
-      An Episode should be:
-      - semantically self-contained
-      - temporally / situationally continuous
-      - centered on one stable interaction goal
+      Episode: a coherent dialogue span centered on one stable interaction goal
+      within a continuous time / situation context.
+      Segment: a focused sub-topic within an episode; split when the local
+      discussion focus shifts while the broader goal remains.
 
-      Do not over-segment brief acknowledgements, clarification questions,
-      local elaborations, or minor subtopic drift.
-      Output JSON only and do not change downstream structure.
+      Key rules:
+      1. Farewell / small-talk handling: Brief farewell turns at the end of a
+         conversation ("bye", "see ya", emojis, etc.) should be APPENDED to the
+         preceding segment/episode. Do NOT split them into a new episode.
+         Only consider episode_break after a farewell if a brand-new substantive
+         topic is introduced afterwards.
+      2. Proactive use of segment_break: When the current segment already has
+         4-6+ turns AND the discussion focus has noticeably shifted (e.g.,
+         switching whose update is being discussed, moving from factual
+         recounting to emotional support, shifting from one life domain to
+         another), prefer segment_break.
+      3. Do not over-segment brief acknowledgements, clarification questions,
+         or local elaborations (1-2 turn follow-ups do not warrant a split).
+
+      Output JSON only.
   decision_prompt:
     zh: |
-      脚本正在逐轮扫描对话。
+      脚本正在逐轮扫描对话，同时进行 Episode + Segment 两级切分。
 
       Dialogue context:
       <DIALOGUE_CONTEXT_JSON>
 
-      Current episode_buffer:
-      <CURRENT_BUFFER_JSON>
+      当前 Episode 已完成的 segments:
+      <COMPLETED_SEGMENTS_JSON>
+
+      当前 Segment buffer:
+      <CURRENT_SEGMENT_BUFFER_JSON>
 
       Candidate next turn:
       <CANDIDATE_TURN_JSON>
 
-      请判断这个候选 turn 是否仍然属于同一个 Episode。
+      请做三选一判断：
 
-      判定标准：
-      1. 交互目标仍然相同或高度连续
-      2. 时间 / 生活场景 / 事件现场仍然连续
-      3. 讨论焦点整体上仍然稳定
+      判定标准（从松到紧）：
+      1. episode_break — 交互目标发生大的转变，或时间/场景发生明显跳转
+         例：从"讨论旅行"整体切换到"讨论工作安排"
+         注意：简短的告别/寒暄（"bye""再见"、表情符号）不构成 episode_break，
+         应 append 到当前 episode 中。
+      2. segment_break — 讨论焦点发生局部转移，但仍在同一交互目标/场景内
+         典型触发场景：
+         - 从 A 的近况转到 B 的近况（如从"你的工作进展"转到"我最近的经历"）
+         - 从事实陈述转到寻求建议或情感支持
+         - 从一个具体事件/物品转到另一个（如从"分享照片"转到"讨论计划"）
+         - 对话引入了新的实体（人物、地点、项目）作为讨论中心
+         - 当前 segment 已有 5 轮以上且候选 turn 引入了新的讨论角度
+      3. append — 仍在讨论同一焦点，包括追问、确认、澄清、展开细节、
+         以及对话末尾的告别轮次
 
-      当候选 turn 仍然属于同一完整交互片段时，选择 `append`。
-      只有在交互目标、场景语境或整体焦点出现明显断裂时，才选择 `split`。
+      注意：
+      - 单轮确认/追问不触发切分，但当话题确实转移时不要犹豫使用 segment_break
+      - segment 应保持语义自洽，通常包含 2-6 轮完整的子话题讨论
+      - 如果当前 segment 已超过 6 轮，请更加积极地检测焦点变化
+      - episode_break 同时意味着 segment_break
 
       输出 JSON：
       {
-        "decision": "append" | "split",
+        "decision": "append" | "segment_break" | "episode_break",
         "reason": "<short explanation>"
       }
     en: |
-      The script is currently scanning one dialogue turn at a time.
+      The script is scanning turns one at a time, performing two-level
+      segmentation (Episode + Segment).
 
       Dialogue context:
       <DIALOGUE_CONTEXT_JSON>
 
-      Current episode_buffer:
-      <CURRENT_BUFFER_JSON>
+      Completed segments in current Episode:
+      <COMPLETED_SEGMENTS_JSON>
+
+      Current Segment buffer:
+      <CURRENT_SEGMENT_BUFFER_JSON>
 
       Candidate next turn:
       <CANDIDATE_TURN_JSON>
 
-      Decide whether the candidate turn still belongs to the SAME Episode
-      as the current episode_buffer.
+      Make a three-way decision:
 
-      Criteria:
-      1. The interaction goal is still the same or highly continuous.
-      2. The time / life situation / scene is still continuous.
-      3. The discussion focus is still globally stable.
+      Criteria (from coarsest to finest break):
+      1. episode_break — the interaction goal changes substantially, or there
+         is an obvious jump in time / scene / life situation.
+         Example: switching from "travel planning" to "work schedule discussion".
+         NOTE: Brief farewell turns ("bye", "see ya", emojis) do NOT warrant
+         an episode_break. They should be appended to the current episode.
+      2. segment_break — the local discussion focus shifts, but the broader
+         interaction goal / scene remains the same.
+         Typical triggers:
+         - Switching from person A's update to person B's update
+           (e.g., "your job progress" → "my recent experience")
+         - Moving from factual recounting to seeking advice or emotional support
+         - Shifting from one specific event/object to another
+           (e.g., "sharing a photo" → "discussing plans")
+         - A new entity (person, place, project) becomes the discussion center
+         - The current segment already has 5+ turns and the candidate turn
+           introduces a noticeably different angle
+      3. append — the candidate turn continues the same focus: follow-up
+         questions, confirmations, clarifications, elaborations, and
+         farewell turns at the end of a conversation.
 
-      Choose `append` when the candidate turn is still part of the same interaction fragment.
-      Choose `split` only when there is a meaningful break in goal, scene context, or overall focus.
+      Guidelines:
+      - A single acknowledgement should not trigger a split, but DO NOT
+        hesitate to use segment_break when the topic genuinely shifts.
+      - A segment should be semantically self-contained, typically 2-6 turns.
+      - If the current segment already exceeds 6 turns, be MORE aggressive
+        in detecting focus changes.
+      - episode_break implies segment_break.
 
       Output JSON:
       {
-        "decision": "append" | "split",
+        "decision": "append" | "segment_break" | "episode_break",
         "reason": "<short explanation>"
       }
   topic_prompt:
     zh: |
-      脚本刚刚完成了一个 episode_buffer。
+      脚本刚刚完成了一个 episode。
 
       Dialogue context:
       <DIALOGUE_CONTEXT_JSON>
 
-      Completed episode_buffer:
-      <EPISODE_BUFFER_JSON>
+      Episode 包含的 segments:
+      <EPISODE_SEGMENTS_JSON>
 
       请为整个 Episode 写一个简短 topic 标签。
 
       要求：
-      1. 概括整个 Episode，而不是只看最后一轮
-      2. 优先使用简洁名词短语或短描述
-      3. 除非对整体至关重要，否则不要写得过细
-      4. 不要提到 “episode”“buffer” 或 turn id
+      1. 概括整个 Episode 的核心交互目标，而不是只看某个 segment
+      2. 标签必须包含具体的事件、人物或决定，避免泛泛的抽象词汇
+         好例子："Jon 展示海边舞蹈工作室愿景"、"Gina 获得时尚实习机会"
+         坏例子："支持与鼓励"、"商业讨论"、"梦想与动力"
+      3. 优先使用简洁短语（4-10 个词）
+      4. 不要提到 "episode""segment""buffer" 或 turn id
 
       输出 JSON：
       {
         "topic": "<short topic label>"
       }
     en: |
-      A complete episode_buffer has been finalized by the script.
+      An episode has been finalized by the script.
 
       Dialogue context:
       <DIALOGUE_CONTEXT_JSON>
 
-      Completed episode_buffer:
-      <EPISODE_BUFFER_JSON>
+      Segments in this episode:
+      <EPISODE_SEGMENTS_JSON>
 
-      Write one short topic label that summarizes the WHOLE interaction fragment.
+      Write one short topic label that summarizes the WHOLE episode.
 
       Requirements:
-      1. Summarize the full Episode, not only the last turn.
-      2. Prefer a concise noun phrase or short descriptive phrase.
-      3. Avoid over-specific wording unless it is central to the whole Episode.
-      4. Do not mention "episode", "buffer", or turn ids.
+      1. Summarize the overall interaction goal, not just one segment.
+      2. The label MUST include specific events, people, or decisions.
+         Avoid vague abstract phrases.
+         Good: "Jon showcases seaside dance studio vision"
+         Good: "Gina lands fashion internship opportunity"
+         Bad:  "Support and motivation"
+         Bad:  "Business discussion"
+         Bad:  "Dreams and aspirations"
+      3. Prefer a concise phrase (4-10 words).
+      4. Do not mention "episode", "segment", "buffer", or turn ids.
 
       Output JSON:
       {
         "topic": "<short topic label>"
       }
-
-scoring_sys:
-  episode_factual_novelty_scoring:
-    score_name: factual
-    system_prompt:
-      zh: |
-        你是记忆系统中的 Factual Novelty 评分模块。
-        你的职责是判断这个 episode 是否为记忆主体 <memory_owner_name> 引入了新的事实信息。
-        只评估这一维度，只输出结构化 JSON，不要评估情绪、重要性或下游用途。
-      en: |
-        You are a Factual Novelty Scoring module in a memory system.
-        Evaluate whether the episode introduces NEW FACTUAL INFORMATION for the memory owner <memory_owner_name>.
-        Judge this dimension only and output structured JSON only.
-    user_prompt:
-      zh: |
-        给定以下 Episode Candidate（JSON）：
-
-        <EPISODE_JSON>
-
-        请评估其 factual novelty。
-
-        打分：
-        - 0：没有事实信息
-        - 1：有事实信息，但并未引入新事实
-        - 2：引入了记忆主体此前无法合理假定的新事实
-
-        输出 JSON：
-        {
-          "episode_id": "<string>",
-          "dialogue_id": "<string>",
-          "factual_novelty": <0|1|2>,
-          "rationale": "<short, concrete explanation>"
-        }
-      en: |
-        Given the following Episode Candidate in JSON format:
-
-        <EPISODE_JSON>
-
-        Evaluate its factual novelty.
-
-        Scoring:
-        - 0: no factual information is present
-        - 1: factual information exists but does not introduce new facts
-        - 2: new factual information is introduced for the memory owner
-
-        Output JSON:
-        {
-          "episode_id": "<string>",
-          "dialogue_id": "<string>",
-          "factual_novelty": <0|1|2>,
-          "rationale": "<short, concrete explanation>"
-        }
-  episode_emotional_novelty_scoring:
-    score_name: emotion
-    system_prompt:
-      zh: |
-        你是记忆系统中的 Emotional Novelty 评分模块。
-        你只判断 episode 是否为记忆主体 <memory_owner_name> 引入了新的情绪状态或明确的情绪变化。
-        只输出结构化 JSON，不评估事实正确性、重要性或情绪类型。
-      en: |
-        You are an Emotional Novelty Scoring module in a memory system.
-        Determine whether the episode introduces a NEW emotional state or an explicit emotional change for the memory owner <memory_owner_name>.
-        Output structured JSON only.
-    user_prompt:
-      zh: |
-        给定以下 Episode Candidate（JSON）：
-
-        <EPISODE_JSON>
-
-        请评估其 emotional novelty。
-
-        打分：
-        - 0：没有新的情绪更新
-        - 1：出现了新的情绪状态或明确的情绪变化
-
-        输出 JSON：
-        {
-          "episode_id": "<string>",
-          "dialogue_id": "<string>",
-          "emotional_novelty": <0|1>,
-          "rationale": "<short, concrete explanation>"
-        }
-      en: |
-        Given the following Episode Candidate in JSON format:
-
-        <EPISODE_JSON>
-
-        Evaluate its emotional novelty.
-
-        Scoring:
-        - 0: no emotional update occurs
-        - 1: a new emotional state or explicit emotional change is introduced
-
-        Output JSON:
-        {
-          "episode_id": "<string>",
-          "dialogue_id": "<string>",
-          "emotional_novelty": <0|1>,
-          "rationale": "<short, concrete explanation>"
-        }
-
-episode_information_scoring:
-  system_prompt:
+  segment_topic_prompt:
     zh: |
-      你是记忆系统中的 Episode Information Scoring 模块。
-      你只评估两个维度：
-      1. Information Density
-      2. Novelty
+      脚本刚刚完成了一个 segment（Episode 内的子话题片段）。
 
-      请严格基于 episode 内容本身进行保守、可解释、可复现的判断，只输出结构化 JSON。
-    en: |
-      You are an Episode Information Scoring module in a memory system.
-      Evaluate only two dimensions:
-      1. Information Density
-      2. Novelty
+      Dialogue context:
+      <DIALOGUE_CONTEXT_JSON>
 
-      Base judgment strictly on the episode content itself and output structured JSON only.
-  user_prompt:
-    zh: |
-      给定以下 Episode Candidate（JSON）：
+      Completed segment buffer:
+      <SEGMENT_BUFFER_JSON>
 
-      <EPISODE_JSON>
+      请为这个 segment 写一个简短的子话题标签。
 
-      请评估其信息特征。
-
-      1. Information Density（0|1|2）
-      - 0：几乎全是闲聊、情绪表达或寒暄，几乎没有可结构化的信息
-      - 1：有一些可识别信息单元，但较少、较弱或混杂严重
-      - 2：包含多个清晰的信息单元，可独立表示为事实、决定、条件、承诺等
-
-      2. Novelty（0|1|2）
-      - 0：没有给 <memory_owner_name> 的主观世界模型带来更新
-      - 1：带来弱或隐性的更新
-      - 2：带来清晰的新事实、决定、承诺、条件或交互状态更新
+      要求：
+      1. 概括 segment 的具体讨论焦点，必须体现"在聊什么具体的事"
+         好例子："Jon 丢了银行工作决定创业"、"约下周五一起上舞蹈课"
+         坏例子："支持与鼓励"、"追求梦想"
+      2. 尽量简洁（3-10 个词）
+      3. 不要提到 "segment""buffer" 或 turn id
 
       输出 JSON：
       {
-        "episode_id": "<string>",
-        "dialogue_id": "<string>",
-        "information_score": {
-          "density": <0|1|2>,
-          "novelty": <0|1|2>
-        },
-        "rationale": {
-          "density": "<short, concrete explanation>",
-          "novelty": "<short, concrete explanation>"
-        }
+        "topic": "<short sub-topic label>"
       }
     en: |
-      Given the following Episode Candidate in JSON format:
+      A segment (sub-topic span within an episode) has been finalized.
 
-      <EPISODE_JSON>
+      Dialogue context:
+      <DIALOGUE_CONTEXT_JSON>
 
-      Evaluate its informational characteristics.
+      Completed segment buffer:
+      <SEGMENT_BUFFER_JSON>
 
-      1. Information Density (0|1|2)
-      - 0: mostly chit-chat, emotional expression, or phatic interaction
-      - 1: contains some identifiable information units, but they are sparse or weak
-      - 2: contains multiple clear information units that can be represented independently
+      Write one short sub-topic label for this segment.
 
-      2. Novelty (0|1|2)
-      - 0: no subjective update occurs for <memory_owner_name>
-      - 1: a weak or implicit update occurs
-      - 2: a clear subjective update occurs
+      Requirements:
+      1. Capture the SPECIFIC discussion focus — what concrete thing was
+         being talked about.
+         Good: "Jon lost banking job, decides to start a business"
+         Good: "Planning a dance session next Friday"
+         Bad:  "Support and encouragement"
+         Bad:  "Pursuing dreams"
+      2. Keep it concise (3-10 words).
+      3. Do not mention "segment", "buffer", or turn ids.
 
       Output JSON:
       {
-        "episode_id": "<string>",
-        "dialogue_id": "<string>",
-        "information_score": {
-          "density": <0|1|2>,
-          "novelty": <0|1|2>
-        },
-        "rationale": {
-          "density": "<short, concrete explanation>",
-          "novelty": "<short, concrete explanation>"
-        }
+        "topic": "<short sub-topic label>"
       }

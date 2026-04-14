@@ -163,6 +163,9 @@ class MemoryAgentConfigMixin:
             hybrid_config = config.get("detail_search_hybrid_config")
         if not isinstance(hybrid_config, dict):
             hybrid_config = {}
+        multi_route_config = config.get("detail_search_multi_route")
+        if not isinstance(multi_route_config, dict):
+            multi_route_config = {}
         facts_only_mode = bool(config.get("facts_only_mode", False))
 
         embed_provider = str(
@@ -194,6 +197,7 @@ class MemoryAgentConfigMixin:
             prompt_language=prompt_language,
             runtime_prompt_config_path=runtime_prompt_config_path,
             detail_search_hybrid_config=hybrid_config,
+            detail_search_multi_route_config=multi_route_config,
             facts_only_mode=facts_only_mode,
         )
     @staticmethod

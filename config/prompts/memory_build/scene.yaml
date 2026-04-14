@@ -122,6 +122,95 @@ scene_former_v2:
       "diary": "..."
     }
 
+scene_former_v3:
+  zh: |
+    你是一位专业的情景记忆提炼员，擅长将复杂 episode 转化为清晰、可检索、可回忆的 memory scene。
+    你的任务是基于输入内容生成一个 scene，包含两个字段：theme 和 diary。
+
+    Memory owner:
+    <memory_owner_name>
+
+    Input:
+    <txt_string>
+
+    请遵循以下指导原则：
+
+    1. 客观且忠于原文
+    - 所有信息必须来自输入文本，不得编造。
+    - 允许总结与归纳，但不得加入原文未出现的主观评价或过度推断。
+    - diary 中不要出现“这体现了……”“这表明……”等评价性引申语句。
+
+    2. 叙事性与连贯性
+    - diary 必须使用第三人称，不使用第一人称。
+    - 将事件起点、关键过程、转折和结果/当前状态串联为一段自然叙事，而不是要点堆砌。
+    - 清晰写出发生了什么、涉及谁、讨论或决策了什么，以及文本中明确出现的情绪或动机状态。
+
+    3. 角色边界清晰
+    - 若 Memory owner 只是信息接收者或提问者，应如实描述其角色，不暗示其主导事件。
+    - 过滤无关噪声，但保留理解事件所必需的上下文。
+
+    4. 检索友好
+    - theme 是高密度短标签，用于召回；概括“核心事件 + 关键对象/主题”。
+    - theme 应简洁、聚焦，不堆叠细节，不写成完整句子。
+    - diary 中尽量保留关键实体名词（人名、地点、项目名、术语、时间、文件路径、URL 等），便于后续检索。
+
+    Output:
+    仅输出严格合法的 JSON 对象：
+    {
+      "theme": "...",
+      "diary": "..."
+    }
+
+    自检清单（生成前必须逐项通过）：
+    - 是否只输出 JSON 对象，无额外解释？
+    - theme 是否简洁且可检索，未混入无关细节？
+    - diary 是否为一段连贯叙事，并覆盖“事件-人物-讨论/决策-结果/状态”？
+    - 是否避免编造、评价性引申和与原文不符的推断？
+  en: |
+    You are a professional Scene Memory Builder.
+    Your task is to convert a complex episode into a clear, retrievable, recall-oriented memory scene.
+    Generate exactly two fields: theme and diary.
+
+    Memory owner:
+    <memory_owner_name>
+
+    Input:
+    <txt_string>
+
+    Follow these guidelines:
+
+    1. Objective and faithful to source
+    - Use only information grounded in the input; do not invent facts.
+    - Summarization is allowed, but do not add subjective judgment or unsupported inference.
+    - Avoid evaluative extrapolation phrasing in the diary.
+
+    2. Narrative coherence
+    - The diary must be written in third person, not first person.
+    - Present the event as one coherent narrative: starting point, key process, turning points, and outcome/current state.
+    - Clearly cover what happened, who was involved, what was discussed/decided, and any explicit emotional or motivational state.
+
+    3. Clear role boundaries
+    - If the memory owner is only a receiver of information or a question asker, describe that role accurately and do not imply leadership.
+    - Filter irrelevant noise while keeping context necessary to understand the event.
+
+    4. Retrieval-oriented writing
+    - theme should be a high-density short label for recall, summarizing "core event + key object/topic".
+    - Keep theme concise and focused; do not turn it into a full sentence.
+    - Preserve key entities in diary when available (people, places, project names, technical terms, times, file paths, URLs).
+
+    Output:
+    Return strictly valid JSON only:
+    {
+      "theme": "...",
+      "diary": "..."
+    }
+
+    Self-check before finalizing:
+    - Is the output JSON-only with no extra text?
+    - Is theme concise, searchable, and free of irrelevant details?
+    - Is diary one coherent narrative covering event, people, discussion/decision, and outcome/state?
+    - Did you avoid fabrication, evaluative extrapolation, and unsupported inference?
+
 scene_feature_v1:
   zh: |
     你是 Entity Feature Extractor。

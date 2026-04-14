@@ -176,24 +176,9 @@ class MemoryAgentStateMixin:
             str(k): self._safe_trace_value(v)
             for k, v in self._last_question_plan.items()
         }
-    def _set_active_search_scope(self, scope: str) -> None:
-        """设置当前检索作用域。"""
-        normalized = str(scope or "").strip()
-        self._active_search_scope = normalized or "global"
-    def _get_active_search_scope(self) -> str:
-        """获取当前检索作用域。"""
-        return str(getattr(self, "_active_search_scope", "global") or "global").strip() or "global"
     def _resolve_topk(self, topk: Optional[int]) -> int:
         """解析 topk 参数，缺省时使用默认值。"""
         return self.detail_search_defaults["topk"] if topk is None else int(topk)
-    def _count_consecutive_search_details_calls(self) -> int:
-        """统计连续的 search_details 调用次数。"""
-        count = 0
-        for call in reversed(self._current_tool_calls):
-            if str(call.get("tool_name", "") or "").strip() != "search_details":
-                break
-            count += 1
-        return count
     @staticmethod
     def _is_successful_tool_call(call: Dict[str, Any]) -> bool:
         """判断工具调用是否成功且未被阻断。"""
@@ -275,7 +260,5 @@ class MemoryAgentStateMixin:
         self._current_tool_calls = []
         self._last_tool_calls = []
         self._last_question_plan = None
-        self._search_details_scope_counts: Dict[str, int] = {}
-        self._search_details_round_count = 0
         self._active_search_scope = "global"
 

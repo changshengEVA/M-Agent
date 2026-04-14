@@ -56,7 +56,6 @@ def main() -> int:
         raise ValueError("import.process_id must not be empty.")
 
     clean_output = bool(import_cfg.get("clean_output", True))
-    enable_episode_scoring_filter = bool(import_cfg.get("enable_episode_scoring_filter", False))
 
     data_file = resolve_project_path(data_cfg["file"])
     if not data_file.exists():
@@ -75,7 +74,6 @@ def main() -> int:
             sum(len(v) for v in question_selection.values()),
         )
     logger.info("clean_output=%s", clean_output)
-    logger.info("enable_episode_scoring_filter=%s", enable_episode_scoring_filter)
     if args.dry_run:
         logger.info("Dry-run mode, skip import execution.")
         return 0
@@ -84,7 +82,6 @@ def main() -> int:
         process_id=process_id,
         data_source=str(data_file),
         loader_type=data_cfg["loader_type"],
-        enable_episode_scoring_filter=enable_episode_scoring_filter,
         include_conv_ids=conv_ids,
         clean_output=clean_output,
     )

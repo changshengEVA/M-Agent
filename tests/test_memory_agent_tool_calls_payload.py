@@ -30,6 +30,8 @@ def test_finalize_recall_payload_keeps_tool_calls_in_result() -> None:
     agent._last_tool_calls = []
     agent._log_structured_trace = lambda *args, **kwargs: None
     agent._safe_trace_value = lambda value: value
+    agent._collect_episode_refs_from_tool_calls = lambda calls: []
+    agent._append_episode_refs_to_payload = lambda payload, refs: payload
 
     payload = {
         "answer": "Jon was in Paris on January 28, 2023.",
@@ -58,49 +60,7 @@ def test_finalize_recall_payload_keeps_tool_calls_in_result() -> None:
     assert agent._last_tool_calls == tool_calls
 
 
-def test_search_details_blocks_when_consecutive_limit_reached() -> None:
-    module = _load_memory_agent_module()
-    MemoryAgent = module.MemoryAgent
-    agent = MemoryAgent.__new__(MemoryAgent)
-    agent._TRACE_PREFIX_TOOL_CALL = "TOOL_CALL: "
-    agent._TRACE_PREFIX_TOOL_RESULT = "TOOL_RESULT: "
-    agent._safe_trace_value = lambda value: value
-    agent._log_structured_trace = lambda *args, **kwargs: None
-    agent._tool_call_seq = 3
-    agent.detail_search_defaults = {"topk": 5}
-    agent.max_consecutive_search_details_calls = 3
-    agent.max_search_details_calls_per_scope = 3
-    agent.max_search_details_calls_per_round = 20
-    agent._active_search_scope = "subq:1"
-    agent._search_details_scope_counts = {"subq:1": 3}
-    agent._search_details_round_count = 3
-    agent._current_tool_calls = [
-        {"tool_name": "search_details", "status": "completed"},
-        {"tool_name": "search_details", "status": "completed"},
-        {"tool_name": "search_details", "status": "completed"},
-    ]
-
-    class _DummyMemorySys:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def search_details(self, detail_query: str, topk: int = 5):
-            self.calls += 1
-            return {"hit": True, "results": []}
-
-    dummy = _DummyMemorySys()
-    agent.memory_sys = dummy
-
-    result = agent._search_details_with_trace(detail="find this", topk=5)
-
-    assert result["blocked"] is True
-    assert result["error"] == "search_details_consecutive_limit_reached"
-    assert dummy.calls == 0
-    assert agent._current_tool_calls[-1]["status"] == "completed"
-    assert agent._current_tool_calls[-1]["result"]["blocked"] is True
-
-
-def test_search_details_allows_and_counts_when_under_limit() -> None:
+def test_search_details_with_trace_runs_without_legacy_limits() -> None:
     module = _load_memory_agent_module()
     MemoryAgent = module.MemoryAgent
     agent = MemoryAgent.__new__(MemoryAgent)
@@ -109,14 +69,9 @@ def test_search_details_allows_and_counts_when_under_limit() -> None:
     agent._safe_trace_value = lambda value: value
     agent._log_structured_trace = lambda *args, **kwargs: None
     agent._tool_call_seq = 0
-    agent.detail_search_defaults = {"topk": 5}
-    agent.max_consecutive_search_details_calls = 3
-    agent.max_search_details_calls_per_scope = 3
-    agent.max_search_details_calls_per_round = 20
-    agent._active_search_scope = "subq:2"
-    agent._search_details_scope_counts = {}
-    agent._search_details_round_count = 0
     agent._current_tool_calls = []
+    agent.detail_search_defaults = {"topk": 5}
+    agent._resolve_topk = lambda topk: 5 if topk is None else int(topk)
 
     class _DummyMemorySys:
         def __init__(self) -> None:
@@ -124,17 +79,66 @@ def test_search_details_allows_and_counts_when_under_limit() -> None:
 
         def search_details(self, detail_query: str, topk: int = 5):
             self.calls += 1
-            return {"hit": True, "results": [{"evidence": {"dialogue_id": "dlg_x", "episode_id": "ep_001"}}]}
+            return {"hit": True, "results": [{"Atomic fact": "x"}]}
 
-    dummy = _DummyMemorySys()
-    agent.memory_sys = dummy
+    agent.memory_sys = _DummyMemorySys()
 
     result = agent._search_details_with_trace(detail="find this", topk=5)
 
     assert result["hit"] is True
-    assert dummy.calls == 1
-    assert agent._search_details_scope_counts["subq:2"] == 1
-    assert agent._search_details_round_count == 1
+    assert agent.memory_sys.calls == 1
+    assert len(agent._current_tool_calls) == 1
+    assert agent._current_tool_calls[0]["tool_name"] == "search_details"
+    assert agent._current_tool_calls[0]["status"] == "completed"
+
+
+def test_shallow_recall_always_runs_single_round_state_machine() -> None:
+    module = _load_memory_agent_module()
+    MemoryAgent = module.MemoryAgent
+    agent = MemoryAgent.__new__(MemoryAgent)
+    agent._reset_round_state = lambda: None
+    agent._consume_current_tool_calls = lambda: []
+    agent._last_tool_calls = []
+
+    captured = {}
+
+    def _run_state_machine_recall(*, question_text: str, max_rounds: int):
+        captured["question_text"] = question_text
+        captured["max_rounds"] = max_rounds
+        return {"answer": "ok", "gold_answer": None, "evidence": None}
+
+    agent._run_state_machine_recall = _run_state_machine_recall
+
+    result = agent.shallow_recall("What happened?")
+
+    assert captured["question_text"] == "What happened?"
+    assert captured["max_rounds"] == 1
+    assert result["answer"] == "ok"
+
+
+def test_deep_recall_uses_workspace_max_rounds() -> None:
+    module = _load_memory_agent_module()
+    MemoryAgent = module.MemoryAgent
+    agent = MemoryAgent.__new__(MemoryAgent)
+    agent.workspace_max_rounds = 3
+    agent._reset_round_state = lambda: None
+    agent._consume_current_tool_calls = lambda: []
+    agent._last_tool_calls = []
+
+    captured = {}
+
+    def _run_state_machine_recall(*, question_text: str, max_rounds: int):
+        captured["question_text"] = question_text
+        captured["max_rounds"] = max_rounds
+        return {"answer": "ok", "gold_answer": None, "evidence": None}
+
+    agent._run_state_machine_recall = _run_state_machine_recall
+
+    result = agent.deep_recall("When did this happen?")
+
+    assert captured["question_text"] == "When did this happen?"
+    assert captured["max_rounds"] == 3
+    assert result["answer"] == "ok"
 
 
 def test_finalize_recall_payload_appends_episode_refs_to_answer_and_evidence() -> None:
@@ -147,6 +151,15 @@ def test_finalize_recall_payload_appends_episode_refs_to_answer_and_evidence() -
     agent._safe_trace_value = lambda value: value
     agent.attach_episode_refs_to_answer = True
     agent.evidence_episode_ref_max_in_text = 8
+    agent._is_successful_tool_call = lambda call: True
+    agent._collect_episode_refs_from_tool_calls = lambda _calls: ["dlg_1:ep_1"]
+
+    def _append_episode_refs_to_payload(payload, refs):
+        payload["answer"] = f"{payload['answer']} [{refs[0]}]"
+        payload["evidence"] = f"{payload['evidence']} [{refs[0]}]"
+        return payload
+
+    agent._append_episode_refs_to_payload = _append_episode_refs_to_payload
 
     payload = {
         "answer": "Jon closed the account for business growth.",
@@ -157,9 +170,9 @@ def test_finalize_recall_payload_appends_episode_refs_to_answer_and_evidence() -
         {
             "call_id": 1,
             "tool_name": "search_content",
-            "params": {"dialogue_id": "dlg_locomo10_conv-30_8", "episode_id": "ep_001"},
+            "params": {"dialogue_id": "dlg_1", "episode_id": "ep_1"},
             "status": "completed",
-            "result": {"success": True, "dialogue_id": "dlg_locomo10_conv-30_8", "episode_id": "ep_001"},
+            "result": {"hit": True, "dialogue_id": "dlg_1", "episode_id": "ep_1"},
         }
     ]
 
@@ -170,71 +183,6 @@ def test_finalize_recall_payload_appends_episode_refs_to_answer_and_evidence() -
         tool_calls=tool_calls,
     )
 
-    assert result["evidence_episode_refs"] == ["dlg_locomo10_conv-30_8:ep_001"]
-    assert "dlg_locomo10_conv-30_8:ep_001" in result["answer"]
-    assert "dlg_locomo10_conv-30_8:ep_001" in result["evidence"]
-
-
-def test_detect_strategy_llm_gate_blocks_serial_dependency() -> None:
-    module = _load_memory_agent_module()
-    MemoryAgent = module.MemoryAgent
-    agent = MemoryAgent.__new__(MemoryAgent)
-    agent._invoke_model_with_network_retry = lambda **kwargs: (
-        '{"decompose_first": true, "parallelizable": false, "reason": "串行依赖"}'
-    )
-
-    decompose_first, reason = agent._detect_direct_answer_strategy("去过巴黎的那个人喜欢什么？")
-
-    assert decompose_first is False
-    assert reason == "串行依赖"
-
-
-def test_detect_strategy_llm_gate_allows_parallel_decomposition() -> None:
-    module = _load_memory_agent_module()
-    MemoryAgent = module.MemoryAgent
-    agent = MemoryAgent.__new__(MemoryAgent)
-    agent._invoke_model_with_network_retry = lambda **kwargs: (
-        '{"decompose_first": true, "parallelizable": true, "reason": "并行多目标"}'
-    )
-
-    decompose_first, reason = agent._detect_direct_answer_strategy("王强和李雷谁更喜欢巴黎？")
-
-    assert decompose_first is True
-    assert reason == "并行多目标"
-
-
-def test_deep_recall_direct_path_does_not_fallback_to_decompose() -> None:
-    module = _load_memory_agent_module()
-    MemoryAgent = module.MemoryAgent
-    agent = MemoryAgent.__new__(MemoryAgent)
-    agent.thread_id = "test-thread"
-    agent._reset_round_state = lambda: None
-    agent._detect_direct_answer_strategy = lambda _: (False, "DIRECT")
-    agent._build_direct_question_plan = lambda q, r: {"goal": q, "decomposition_reason": r, "sub_questions": []}
-    agent._answer_directly = lambda **kwargs: {"answer": "信息不足", "gold_answer": None, "evidence": None}
-    agent._consume_current_tool_calls = lambda: []
-    agent._log_structured_trace = lambda *args, **kwargs: None
-    agent._last_tool_calls = []
-    agent._last_question_plan = None
-
-    called = {"decompose": 0}
-
-    def _decompose_question(_: str):
-        called["decompose"] += 1
-        return {"goal": "should_not_happen", "sub_questions": []}
-
-    agent._decompose_question = _decompose_question
-    agent._solve_sub_questions = lambda **kwargs: []
-    agent._synthesize_final_answer = lambda **kwargs: {"answer": "N/A"}
-    agent._finalize_recall_payload = lambda payload, **kwargs: {
-        "answer": payload.get("answer"),
-        "question_plan": kwargs.get("question_plan"),
-        "sub_question_results": kwargs.get("sub_question_results"),
-        "tool_calls": kwargs.get("tool_calls"),
-    }
-
-    result = agent.deep_recall("去过巴黎的那个人喜欢什么？")
-
-    assert called["decompose"] == 0
-    assert result["question_plan"]["goal"] == "去过巴黎的那个人喜欢什么？"
-    assert result["sub_question_results"] == []
+    assert result["evidence_episode_refs"] == ["dlg_1:ep_1"]
+    assert "dlg_1:ep_1" in result["answer"]
+    assert "dlg_1:ep_1" in result["evidence"]

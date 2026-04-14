@@ -1,6 +1,6 @@
 # Used by: `config/agents/memory/locomo_eval_memory_agent.yaml`
 # Purpose: MemoryCore config for LoCoMo evaluation data/workflow.
-workflow_id: "test_facts_only"
+workflow_id: "baseline"
 runtime_prompt_config_path: "./runtime/memory_core_runtime.yaml"
 prompt_language: "en"
 
@@ -11,8 +11,8 @@ memory_top_k: 3
 memory_use_threshold: true
 
 # Build/import settings
-scene_prompt_version: "v2"
-fact_prompt_version: "v3"
+scene_prompt_version: "v3"
+fact_prompt_version: "v4"
 memory_owner_name: "changshengEVA"
 # true: only build to scene facts; skip extract_fact_entities/import_fact_entities
 # and MemoryAgent will expose only search_content/search_events_by_time_range/search_details
@@ -34,3 +34,13 @@ detail_search_hybrid:
   sparse_weight: 0.5
   bm25_k1: 1.2
   bm25_b: 0.25
+
+detail_search_multi_route:
+  enable: true
+  route_count: 5
+  query_generator: "llm"
+  route_types: ["entity", "action", "time", "relation", "topic"]
+  per_route_topk: 12
+  fusion: "rrf"
+  max_workers: 5
+  rrf_k: 50

@@ -12,12 +12,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import yaml
+
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langchain.chat_models import init_chat_model
 
 from m_agent.config_paths import (
     DEFAULT_MEMORY_AGENT_CONFIG_PATH,
+    MEMORY_AGENT_TOOL_DESCRIPTIONS_PATH,
     resolve_config_path,
 )
 from m_agent.paths import ENV_PATH
@@ -70,8 +73,6 @@ class AgentResponse:
     answer: str
     gold_answer: Optional[str] = None
     evidence: Optional[str] = None
-    sub_questions: Optional[List[str]] = None
-    plan_summary: Optional[str] = None
 
 
 class MemoryAgent(
@@ -88,11 +89,9 @@ class MemoryAgent(
         flags=re.IGNORECASE,
     )
     _JSON_BLOCK_PATTERN = re.compile(r"\{[\s\S]*\}")
-    _TRACE_PREFIX_QUESTION_STRATEGY = "QUESTION STRATEGY: "
-    _TRACE_PREFIX_DIRECT_ANSWER = "DIRECT ANSWER PAYLOAD: "
-    _TRACE_PREFIX_DIRECT_FALLBACK = "DIRECT ANSWER FALLBACK: "
     _TRACE_PREFIX_TOOL_CALL = "TOOL CALL DETAIL: "
     _TRACE_PREFIX_TOOL_RESULT = "TOOL RESULT DETAIL: "
+    _TRACE_PREFIX_WORKSPACE_STATE = "WORKSPACE STATE: "
     _TRACE_PREFIX_FINAL_PAYLOAD = "FINAL ANSWER PAYLOAD: "
     _CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 
@@ -112,8 +111,6 @@ class MemoryAgent(
         self._current_tool_calls: List[Dict[str, Any]] = []
         self._last_tool_calls: List[Dict[str, Any]] = []
         self._last_question_plan: Optional[Dict[str, Any]] = None
-        self._search_details_scope_counts: Dict[str, int] = {}
-        self._search_details_round_count = 0
         self._active_search_scope = "global"
         self._tool_call_seq = 0
 
@@ -123,22 +120,43 @@ class MemoryAgent(
         detail_cfg = self.config.get("detail_search_defaults", {})
         if isinstance(detail_cfg, dict):
             self.detail_search_defaults.update(detail_cfg)
-        # backward compatibility
-        action_cfg = self.config.get("action_search_defaults", {})
-        if isinstance(action_cfg, dict):
-            self.detail_search_defaults.update(action_cfg)
-        self.max_consecutive_search_details_calls = max(
-            1,
-            int(self.config.get("max_consecutive_search_details_calls", 3)),
+        workspace_cfg = self.config.get("workspace", {})
+        if not isinstance(workspace_cfg, dict):
+            workspace_cfg = {}
+        self.enable_state_machine = bool(workspace_cfg.get("enable_state_machine", True))
+        self.workspace_max_rounds = max(1, int(workspace_cfg.get("max_rounds", 2)))
+        self.workspace_max_actions_per_round = max(1, int(workspace_cfg.get("max_actions_per_round", 4)))
+        self.workspace_max_episode_candidates = max(1, int(workspace_cfg.get("max_episode_candidates", 12)))
+        self.workspace_max_keep = max(1, int(workspace_cfg.get("max_keep", 6)))
+        self.workspace_min_evidence_to_answer = max(1, int(workspace_cfg.get("min_evidence_to_answer", 1)))
+        self.workspace_remedy_recall_max_times = max(
+            0,
+            int(workspace_cfg.get("remedy_recall_max_times", 1)),
         )
-        self.max_search_details_calls_per_scope = max(
-            1,
-            int(self.config.get("max_search_details_calls_per_scope", 3)),
-        )
-        self.max_search_details_calls_per_round = max(
-            self.max_search_details_calls_per_scope,
-            int(self.config.get("max_search_details_calls_per_round", 20)),
-        )
+        self.action_planner_mode = str(workspace_cfg.get("action_planner", "rule")).strip().lower()
+        enabled_tools_cfg = workspace_cfg.get("enabled_tools")
+        if isinstance(enabled_tools_cfg, list):
+            self._enabled_tools = [str(t).strip() for t in enabled_tools_cfg if str(t).strip()]
+        else:
+            self._enabled_tools = None
+        rerank_cfg = workspace_cfg.get("rerank", {})
+        if not isinstance(rerank_cfg, dict):
+            rerank_cfg = {}
+        self.rerank_enabled = bool(rerank_cfg.get("enable", False))
+        self.rerank_score_threshold = float(rerank_cfg.get("score_threshold", 0.2))
+        self.rerank_max_documents = max(1, int(rerank_cfg.get("max_documents", 16)))
+        self.rerank_func = None
+        if self.rerank_enabled:
+            rerank_provider = str(rerank_cfg.get("provider", "aliyun")).strip().lower()
+            rerank_model = str(rerank_cfg.get("model_name", "")).strip()
+            if rerank_provider in {"alibaba", "aliyun", "dashscope"}:
+                from m_agent.load_model.AlibabaRerankCall import get_rerank_func
+                self.rerank_func = get_rerank_func(model_name=rerank_model)
+                logger.info("Workspace rerank enabled: provider=%s, model=%s", rerank_provider, rerank_model or "(default)")
+            else:
+                logger.warning("Unsupported rerank provider: %s, rerank disabled", rerank_provider)
+                self.rerank_enabled = False
+
         self.attach_episode_refs_to_answer = bool(
             self.config.get("attach_episode_refs_to_answer", True)
         )
@@ -180,11 +198,17 @@ class MemoryAgent(
             language=self.prompt_language,
             path_desc=f"{self.runtime_prompt_config_path}.memory_agent.system_prompt",
         )
-        self.planner_prompt = resolve_prompt_value(
-            self.runtime_prompts.get("planner_prompt"),
-            language=self.prompt_language,
-            path_desc=f"{self.runtime_prompt_config_path}.memory_agent.planner_prompt",
-        )
+        tool_descriptions = self._load_tool_descriptions()
+        if tool_descriptions and self._enabled_tools:
+            from .action_planner import build_tool_registry_from_config
+            self.tool_registry = build_tool_registry_from_config(
+                tool_descriptions,
+                self._enabled_tools,
+                language=self.prompt_language,
+            )
+        else:
+            self.tool_registry = None
+
         self.model_name = str(self.config.get("model_name", "deepseek-chat"))
         self.agent_temperature = float(self.config.get("agent_temperature", 0.0))
 
@@ -203,6 +227,19 @@ class MemoryAgent(
             response_format=ToolStrategy(AgentResponse),
         )
 
+    @staticmethod
+    def _load_tool_descriptions() -> Dict[str, Any]:
+        """Load the canonical tool_descriptions.yaml (fixed path, not configurable)."""
+        path = MEMORY_AGENT_TOOL_DESCRIPTIONS_PATH
+        if not path.exists():
+            logger.warning("tool_descriptions.yaml not found at %s, using built-in defaults", path)
+            return {}
+        with open(path, "r", encoding="utf-8") as f:
+            payload = yaml.safe_load(f) or {}
+        if not isinstance(payload, dict):
+            logger.warning("tool_descriptions.yaml must be a dict, got %s", type(payload).__name__)
+            return {}
+        return payload
 
 
 def create_memory_agent(config_path: str | Path = DEFAULT_CONFIG_PATH) -> MemoryAgent:

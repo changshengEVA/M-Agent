@@ -131,7 +131,7 @@ def _summarize_event_payload(event_type: str, payload: Dict[str, Any]) -> str:
         agent_result = payload.get("agent_result") if isinstance(payload.get("agent_result"), dict) else {}
         return (
             f"tool_calls={agent_result.get('tool_call_count')} "
-            f"plan_summary={_short_text(agent_result.get('plan_summary'))}"
+            f"gold_answer={_short_text(agent_result.get('gold_answer'))}"
         )
     if event_type == "run_completed":
         return f"thread={payload.get('thread_id')}"

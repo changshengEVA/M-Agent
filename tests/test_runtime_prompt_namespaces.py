@@ -34,10 +34,25 @@ def test_memory_agent_runtime_contains_unified_prompts() -> None:
     memory_runtime = _load_yaml(PROJECT_ROOT / "config" / "agents" / "memory" / "runtime" / "agent_runtime.yaml")
     memory_agent = memory_runtime["memory_agent"]
 
-    assert "planner_prompt" in memory_agent
-    assert "decomposition_gate_prompt" in memory_agent
     assert "system_prompt" in memory_agent
+    assert "workspace_judge_prompt" in memory_agent
+    assert "action_plan_prompt" in memory_agent
+    assert "final_answer_from_workspace_prompt" in memory_agent
+    assert "tool_descriptions" not in memory_agent
     assert "prompt_profiles" not in memory_agent
+
+
+def test_tool_descriptions_yaml_exists_and_valid() -> None:
+    tool_desc_path = PROJECT_ROOT / "config" / "agents" / "memory" / "tool_descriptions.yaml"
+    assert tool_desc_path.exists(), "tool_descriptions.yaml must exist"
+    payload = _load_yaml(tool_desc_path)
+    assert len(payload) > 0, "tool_descriptions.yaml must define at least one tool"
+    for action_type, tool_cfg in payload.items():
+        assert isinstance(tool_cfg, dict), f"{action_type} must be a dict"
+        desc = tool_cfg.get("description")
+        assert isinstance(desc, dict), f"{action_type}.description must be a zh/en dict"
+        assert "zh" in desc and "en" in desc, f"{action_type}.description must have zh and en"
+        assert "params" in tool_cfg, f"{action_type} must have params"
 
 
 def test_memory_agent_configs_keep_prompt_content_in_runtime() -> None:

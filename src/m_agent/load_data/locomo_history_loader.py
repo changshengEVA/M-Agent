@@ -161,14 +161,19 @@ def extract_dialogues_from_locomo(raw_data: Any, source_file: str = "") -> List[
                     text = str(text)
 
                 turn_dt = session_start + timedelta(seconds=turn_idx * 5)
-                turns.append(
-                    {
-                        "turn_id": turn_idx,
-                        "speaker": speaker,
-                        "text": text,
-                        "timestamp": turn_dt.isoformat(),
-                    }
-                )
+                turn_payload: Dict[str, Any] = {
+                    "turn_id": turn_idx,
+                    "speaker": speaker,
+                    "text": text,
+                    "timestamp": turn_dt.isoformat(),
+                }
+                if "blip_caption" in msg:
+                    raw_blip_caption = msg.get("blip_caption")
+                    if isinstance(raw_blip_caption, str):
+                        turn_payload["blip_caption"] = raw_blip_caption
+                    elif raw_blip_caption is not None:
+                        turn_payload["blip_caption"] = str(raw_blip_caption)
+                turns.append(turn_payload)
 
             if not turns:
                 logger.warning(f"sample={sample_id} {session_key} 没有有效 turns，跳过")

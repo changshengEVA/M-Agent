@@ -178,12 +178,12 @@ def stage1_construct_dialogues_for_id(
 def stage2_construct_episodes_for_id(
     process_id: str,
     llm_model: Optional[Callable[[str], str]] = None,
-    enable_episode_scoring_filter: bool = False,
+    prompt_language: str = "en",
 ) -> bool:
     logger.info("=" * 50)
     logger.info("Stage 2: construct episodes for process_id=%s", process_id)
     logger.info("memory_owner_name=%s", DEFAULT_MEMORY_OWNER_NAME)
-    logger.info("enable_episode_scoring_filter=%s", enable_episode_scoring_filter)
+    logger.info("prompt_language=%s", prompt_language)
     logger.info("=" * 50)
 
     if not build_episodes_with_id(
@@ -191,7 +191,7 @@ def stage2_construct_episodes_for_id(
         str(PROJECT_ROOT),
         DEFAULT_MEMORY_OWNER_NAME,
         llm_model=llm_model,
-        enable_episode_scoring_filter=enable_episode_scoring_filter,
+        prompt_language=prompt_language,
     ):
         logger.error("Build episodes failed")
         return False
@@ -219,14 +219,12 @@ def run_full_pipeline_for_id(
     process_id: str,
     data_source: Optional[str] = None,
     loader_type: str = "auto",
-    enable_episode_scoring_filter: bool = False,
     include_conv_ids: Optional[Sequence[str]] = None,
     clean_output: bool = False,
 ) -> bool:
     logger.info("Run simplified pipeline for process_id=%s", process_id)
     logger.info("data_source=%s loader_type=%s", data_source if data_source else "default", loader_type)
     logger.info("memory_owner_name=%s", DEFAULT_MEMORY_OWNER_NAME)
-    logger.info("enable_episode_scoring_filter=%s", enable_episode_scoring_filter)
     logger.info("include_conv_ids=%s", _normalize_conv_ids(include_conv_ids))
     logger.info("clean_output=%s", clean_output)
 
@@ -247,7 +245,6 @@ def run_full_pipeline_for_id(
     if not stage2_construct_episodes_for_id(
         process_id,
         llm_model=llm_model,
-        enable_episode_scoring_filter=enable_episode_scoring_filter,
     ):
         logger.warning("Stage 2 failed")
         return False
@@ -267,11 +264,6 @@ def main() -> None:
         default="auto",
         choices=["auto", "realtalk", "locomo", "default"],
         help="Dialogue loader type",
-    )
-    parser.add_argument(
-        "--enable-episode-scoring-filter",
-        action="store_true",
-        help="Enable episode qualification scoring and eligibility filtering (disabled by default).",
     )
     parser.add_argument(
         "--conv-ids",
@@ -294,7 +286,6 @@ def main() -> None:
         args.id,
         data_source=args.data_source,
         loader_type=args.loader_type,
-        enable_episode_scoring_filter=args.enable_episode_scoring_filter,
         include_conv_ids=include_conv_ids,
         clean_output=args.clean_output,
     )

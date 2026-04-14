@@ -1,9 +1,10 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
 Utilities for memory build pipeline.
 
-This module wraps episode build + optional qualification/filtering stages.
+This module wraps episode build and writes default pass-through eligibility
+records so every built episode is available downstream.
 """
 
 from __future__ import annotations
@@ -115,14 +116,9 @@ def build_episodes_with_id(
     project_root: str | Path | None = None,
     memory_owner_name: str = "changshengEVA",
     llm_model: Optional[Callable[[str], str]] = None,
-    enable_episode_scoring_filter: bool = False,
+    prompt_language: str = "en",
 ) -> bool:
-    """
-    Build episodes for a workflow under data/memory/{process_id}/.
-
-    When enable_episode_scoring_filter is False (default), this function skips
-    qualification/filtering and marks all episodes as scene/kg/emo available.
-    """
+    """Build episodes for a workflow under data/memory/{process_id}/."""
     try:
         if project_root is None:
             project_root = PROJECT_ROOT
@@ -137,7 +133,7 @@ def build_episodes_with_id(
         logger.info("dialogues_root=%s", dialogues_root)
         logger.info("episodes_root=%s", episodes_root)
         logger.info("memory_owner_name=%s", memory_owner_name)
-        logger.info("enable_episode_scoring_filter=%s", enable_episode_scoring_filter)
+        logger.info("prompt_language=%s", prompt_language)
 
         from m_agent.memory.build_memory.build_episode import scan_and_build_episodes
 
@@ -147,42 +143,20 @@ def build_episodes_with_id(
             episodes_root=episodes_root,
             memory_owner_name=memory_owner_name,
             llm_model=llm_model,
+            prompt_language=prompt_language,
         )
 
-        if enable_episode_scoring_filter:
-            logger.info("Run qualification stage")
-            from m_agent.memory.build_memory.qualify_episode import scan_and_qualify_episodes
-
-            scan_and_qualify_episodes(
-                use_tqdm=True,
-                dialogues_root=dialogues_root,
-                episodes_root=episodes_root,
-                memory_owner_name=memory_owner_name,
-                llm_model=llm_model,
-            )
-
-            logger.info("Run eligibility filtering stage")
-            from m_agent.memory.build_memory.filter_episode import scan_and_filter_episodes
-
-            scan_and_filter_episodes(
-                episode_version="v1",
-                eligibility_version="v1",
-                use_tqdm=True,
-                force_update_situation=True,
-                episodes_root=episodes_root,
-            )
-        else:
-            logger.info("Skip qualification/filter. Mark all episodes as available by default.")
-            dialogue_count, episode_count = _mark_all_episodes_available(
-                episodes_root=episodes_root,
-                episode_version="v1",
-                eligibility_version="v1",
-            )
-            logger.info(
-                "Pass-through eligibility generated: dialogues=%s episodes=%s",
-                dialogue_count,
-                episode_count,
-            )
+        logger.info("Mark all episodes as available by default.")
+        dialogue_count, episode_count = _mark_all_episodes_available(
+            episodes_root=episodes_root,
+            episode_version="v1",
+            eligibility_version="v1",
+        )
+        logger.info(
+            "Pass-through eligibility generated: dialogues=%s episodes=%s",
+            dialogue_count,
+            episode_count,
+        )
 
         logger.info("Episode build flow completed for workflow=%s", process_id)
         return True
@@ -200,7 +174,7 @@ def build_episodes_custom(
     episodes_root: Path,
     memory_owner_name: str = "changshengEVA",
     llm_model: Optional[Callable[[str], str]] = None,
-    enable_episode_scoring_filter: bool = False,
+    prompt_language: str = "en",
 ) -> bool:
     """Build episodes using explicit dialogue/episode roots."""
     try:
@@ -208,7 +182,7 @@ def build_episodes_custom(
         logger.info("dialogues_root=%s", dialogues_root)
         logger.info("episodes_root=%s", episodes_root)
         logger.info("memory_owner_name=%s", memory_owner_name)
-        logger.info("enable_episode_scoring_filter=%s", enable_episode_scoring_filter)
+        logger.info("prompt_language=%s", prompt_language)
 
         dialogues_root.mkdir(parents=True, exist_ok=True)
         episodes_root.mkdir(parents=True, exist_ok=True)
@@ -221,42 +195,20 @@ def build_episodes_custom(
             episodes_root=episodes_root,
             memory_owner_name=memory_owner_name,
             llm_model=llm_model,
+            prompt_language=prompt_language,
         )
 
-        if enable_episode_scoring_filter:
-            logger.info("Run qualification stage")
-            from m_agent.memory.build_memory.qualify_episode import scan_and_qualify_episodes
-
-            scan_and_qualify_episodes(
-                use_tqdm=True,
-                dialogues_root=dialogues_root,
-                episodes_root=episodes_root,
-                memory_owner_name=memory_owner_name,
-                llm_model=llm_model,
-            )
-
-            logger.info("Run eligibility filtering stage")
-            from m_agent.memory.build_memory.filter_episode import scan_and_filter_episodes
-
-            scan_and_filter_episodes(
-                episode_version="v1",
-                eligibility_version="v1",
-                use_tqdm=True,
-                force_update_situation=True,
-                episodes_root=episodes_root,
-            )
-        else:
-            logger.info("Skip qualification/filter. Mark all episodes as available by default.")
-            dialogue_count, episode_count = _mark_all_episodes_available(
-                episodes_root=episodes_root,
-                episode_version="v1",
-                eligibility_version="v1",
-            )
-            logger.info(
-                "Pass-through eligibility generated: dialogues=%s episodes=%s",
-                dialogue_count,
-                episode_count,
-            )
+        logger.info("Mark all episodes as available by default.")
+        dialogue_count, episode_count = _mark_all_episodes_available(
+            episodes_root=episodes_root,
+            episode_version="v1",
+            eligibility_version="v1",
+        )
+        logger.info(
+            "Pass-through eligibility generated: dialogues=%s episodes=%s",
+            dialogue_count,
+            episode_count,
+        )
 
         logger.info("Episode build flow completed")
         return True
@@ -273,7 +225,7 @@ def run_memory_build_for_id(
     process_id: str,
     source_dialogues_dir: Path | None = None,
     llm_model: Optional[Callable[[str], str]] = None,
-    enable_episode_scoring_filter: bool = False,
+    prompt_language: str = "en",
 ) -> bool:
     """Run memory build for one workflow id."""
     try:
@@ -303,7 +255,7 @@ def run_memory_build_for_id(
             process_id,
             project_root,
             llm_model=llm_model,
-            enable_episode_scoring_filter=enable_episode_scoring_filter,
+            prompt_language=prompt_language,
         )
 
     except Exception as exc:
@@ -312,4 +264,3 @@ def run_memory_build_for_id(
 
         logger.error(traceback.format_exc())
         return False
-

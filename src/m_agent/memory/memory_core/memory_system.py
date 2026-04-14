@@ -55,6 +55,7 @@ class MemoryCore:
         prompt_language: str = "zh",
         runtime_prompt_config_path: Optional[str | Path] = None,
         detail_search_hybrid_config: Optional[Dict[str, Any]] = None,
+        detail_search_multi_route_config: Optional[Dict[str, Any]] = None,
         facts_only_mode: bool = False,
     ):
         """
@@ -87,6 +88,11 @@ class MemoryCore:
         self.detail_search_hybrid_config = (
             dict(detail_search_hybrid_config)
             if isinstance(detail_search_hybrid_config, dict)
+            else {}
+        )
+        self.detail_search_multi_route_config = (
+            dict(detail_search_multi_route_config)
+            if isinstance(detail_search_multi_route_config, dict)
             else {}
         )
         self.facts_only_mode = bool(facts_only_mode)
@@ -132,6 +138,7 @@ class MemoryCore:
         logger.info(f"Prompt language: {self.prompt_language}")
         logger.info(f"Runtime prompt config: {self.runtime_prompt_config_path}")
         logger.info("Detail search hybrid config: %s", self.detail_search_hybrid_config)
+        logger.info("Detail search multi-route config: %s", self.detail_search_multi_route_config)
         logger.info("Facts-only mode: %s", self.facts_only_mode)
         
         # 2. 初始化 EventBus
@@ -504,17 +511,24 @@ class MemoryCore:
     # ============================================================================
     # 公开接口
     # ============================================================================
-    def search_content(self, dialogue_id: str, episode_id: str) -> Dict[str, Any]:
+    def search_content(
+        self,
+        dialogue_id: str,
+        episode_id: str,
+        segment_id: str | None = None,
+    ) -> Dict[str, Any]:
         """
         内容检索公开接口。
-        输入 dialogue_id 和 episode_id，返回对应对话片段的具体内容。
+        输入 dialogue_id 和 episode_id（可选 segment_id），返回对应对话片段的具体内容。
+        当提供 segment_id 时，仅返回该 segment 对应的 turn 范围。
         """
         from .workflow.search.content_search import search_content as workflow_search_content
 
         logger.info(
-            "调用 search_content 接口: dialogue_id=%s, episode_id=%s",
+            "调用 search_content 接口: dialogue_id=%s, episode_id=%s, segment_id=%s",
             dialogue_id,
             episode_id,
+            segment_id,
         )
         return workflow_search_content(
             dialogue_id=dialogue_id,
@@ -522,7 +536,40 @@ class MemoryCore:
             scene_dir=self.scene_dir,
             dialogues_dir=self.dialogues_dir,
             episodes_dir=self.episodes_dir,
+            segment_id=segment_id,
         )
+
+    def search_contents_by_episode_refs(self, episode_refs: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        """
+        批量内容检索接口。
+        输入 [{"dialogue_id":"...", "episode_id":"...", "segment_id":"..."(可选)}, ...]，
+        返回对应内容结果列表。当提供 segment_id 时按 segment 粒度切片。
+        """
+        if not isinstance(episode_refs, list):
+            return []
+
+        results: List[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in episode_refs:
+            if not isinstance(item, dict):
+                continue
+            dialogue_id = str(item.get("dialogue_id", "")).strip()
+            episode_id = str(item.get("episode_id", "")).strip()
+            segment_id = str(item.get("segment_id", "")).strip() or None
+            if not dialogue_id or not episode_id:
+                continue
+            ref = f"{dialogue_id}:{episode_id}"
+            if segment_id:
+                ref = f"{ref}:{segment_id}"
+            if ref in seen:
+                continue
+            seen.add(ref)
+            results.append(self.search_content(
+                dialogue_id=dialogue_id,
+                episode_id=episode_id,
+                segment_id=segment_id,
+            ))
+        return results
 
     def search_events_by_time_range(self, start_time: str, end_time: str) -> List[Dict[str, Any]]:
         """
@@ -573,6 +620,40 @@ class MemoryCore:
             embed_func=self.embed_func,
             topk=topk,
             hybrid_config=self.detail_search_hybrid_config,
+        )
+
+    def search_details_multi_route(
+        self,
+        detail_query: str,
+        topk: int = 5,
+        route_config: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        多路并行细节检索公开接口。
+        """
+        from .workflow.search.multi_route_details_search import (
+            search_details_multi_route as workflow_search_details_multi_route,
+        )
+
+        resolved_route_config = (
+            dict(route_config)
+            if isinstance(route_config, dict)
+            else dict(self.detail_search_multi_route_config)
+        )
+        logger.info(
+            "调用 search_details_multi_route 接口: detail_query=%s, topk=%s, route_config=%s",
+            detail_query,
+            topk,
+            resolved_route_config,
+        )
+        return workflow_search_details_multi_route(
+            detail_query=detail_query,
+            scene_dir=self.scene_dir,
+            embed_func=self.embed_func,
+            topk=topk,
+            hybrid_config=self.detail_search_hybrid_config,
+            route_config=resolved_route_config,
+            llm_func=self.llm_func,
         )
 
     def resolve_entity_id(self, entity_name_or_id: str) -> Dict[str, Any]:

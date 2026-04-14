@@ -314,7 +314,6 @@ class ChatMemoryPersistence:
 
     def _build_trace_summary(self, rounds: List[Dict[str, Any]]) -> Dict[str, Any]:
         tool_call_count = 0
-        last_plan_summary = None
         recall_modes: List[str] = []
         for item in rounds:
             agent_result = item.get("agent_result")
@@ -322,15 +321,11 @@ class ChatMemoryPersistence:
                 continue
             if isinstance(agent_result.get("tool_call_count"), int):
                 tool_call_count += int(agent_result.get("tool_call_count", 0) or 0)
-            plan_summary = str(agent_result.get("plan_summary", "") or "").strip()
-            if plan_summary:
-                last_plan_summary = plan_summary
             recall_mode = str(agent_result.get("recall_mode", "") or "").strip()
             if recall_mode and recall_mode not in recall_modes:
                 recall_modes.append(recall_mode)
 
         return {
-            "plan_summary": last_plan_summary,
             "tool_call_count": tool_call_count,
             "recall_modes": recall_modes,
         }

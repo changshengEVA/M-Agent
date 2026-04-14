@@ -105,7 +105,5 @@ python scripts/run_locomo/eval_locomo.py --env-config config/eval/memory_agent/l
 - `log/<test-id>/locomo10_agent_qa_run.log`
 - `log/<test-id>/locomo10_agent_qa_qa_trace.jsonl`
 
-Each QA item now also stores intermediate decomposition fields such as
-`memory_agent_prediction_plan`, `memory_agent_prediction_sub_questions`, and
-`memory_agent_prediction_plan_summary`, so you can inspect whether the agent
-actually decomposed the question before retrieving evidence.
+Each QA item may also store `memory_agent_prediction_plan` (the internal
+question-plan metadata) alongside predictions and evidence fields.

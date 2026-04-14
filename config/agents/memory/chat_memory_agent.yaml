@@ -4,7 +4,7 @@ model_name: "deepseek-chat"
 agent_temperature: 0.0
 memory_core_config_path: "../../memory/core/chat_memory_core.yaml"
 runtime_prompt_config_path: "./runtime/agent_runtime.yaml"
-prompt_language: "zh"
+prompt_language: "en"
 recursion_limit: 60
 retry_recursion_limit: 120
 model_timeout_seconds: 180
@@ -17,9 +17,21 @@ auto_bootstrap_kg_data: true
 
 detail_search_defaults:
   topk: 5
-max_consecutive_search_details_calls: 3
-max_search_details_calls_per_scope: 3
-max_search_details_calls_per_round: 20
+workspace:
+  enable_state_machine: true
+  max_rounds: 2
+  max_actions_per_round: 4
+  max_episode_candidates: 12
+  max_keep: 6
+  min_evidence_to_answer: 1
+  remedy_recall_max_times: 1
+  action_planner: "llm"
+  enabled_tools:
+    - EVENT_DETAIL_RECALL
+    - EVENT_TIME_RECALL
+    - ENTITY_FEATURE_SEARCH
+    - ENTITY_EVENT_SEARCH
+    - RECALL_REMEDY_MULTI_ROUTE
 attach_episode_refs_to_answer: true
 evidence_episode_ref_max_in_text: 8
 

@@ -39,3 +39,13 @@ detail_search_hybrid:
   sparse_weight: 1.0
   bm25_k1: 1.5
   bm25_b: 0.75
+
+detail_search_multi_route:
+  enable: true
+  route_count: 4
+  query_generator: "llm"
+  route_types: ["entity", "action", "time", "relation", "topic"]
+  per_route_topk: 8
+  fusion: "rrf"
+  max_workers: 4
+  rrf_k: 60

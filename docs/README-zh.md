@@ -104,6 +104,5 @@ python scripts/run_locomo/eval_locomo.py --env-config config/eval/memory_agent/l
 - `log/<test-id>/locomo10_agent_qa_run.log`
 - `log/<test-id>/locomo10_agent_qa_qa_trace.jsonl`
 
-每条 QA 结果现在还会额外保存中间拆解字段，例如
-`memory_agent_prediction_plan`、`memory_agent_prediction_sub_questions`、
-`memory_agent_prediction_plan_summary`，可以直接检查 Agent 是否真的先拆题再检索作答。
+每条 QA 结果可能还会保存内部规划元数据字段 `memory_agent_prediction_plan`，
+与预测与证据等字段一并写入。

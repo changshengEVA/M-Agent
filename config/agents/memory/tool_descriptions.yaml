@@ -1,0 +1,29 @@
+EVENT_DETAIL_RECALL:
+  description:
+    zh: "对记忆片段的事实和对话内容进行语义检索。适用于关于事件、话题或人物的一般性问题。"
+    en: "Semantic search over episode facts and dialogue details. Best for general questions about events, topics, or people."
+  params: '{"detail_query": "<search query>", "topk": <int, default 10>}'
+
+EVENT_TIME_RECALL:
+  description:
+    zh: "按日期/时间范围检索事件。当问题涉及具体日期或时间段时使用。"
+    en: "Retrieve events within a specific date/time range. Use when the question mentions dates or time periods."
+  params: '{"start_time": "<ISO date>", "end_time": "<ISO date>"}'
+
+ENTITY_FEATURE_SEARCH:
+  description:
+    zh: "搜索特定人物或实体的特征、属性（如爱好、性格、偏好等）。"
+    en: "Search features, attributes, or traits of a specific person or entity (e.g. hobbies, personality, preferences)."
+  params: '{"entity_id": "<person/entity name>", "feature_query": "<what to search>", "topk": <int, default 5>}'
+
+ENTITY_EVENT_SEARCH:
+  description:
+    zh: "搜索与特定人物或实体相关的事件或活动。"
+    en: "Search events or activities related to a specific person or entity."
+  params: '{"entity_id": "<person/entity name>", "event_query": "<what happened>", "topk": <int, default 5>}'
+
+RECALL_REMEDY_MULTI_ROUTE:
+  description:
+    zh: "多路召回补救措施，当之前的搜索未找到有用证据时作为最后手段使用。同时搜索多个索引。"
+    en: "Broad multi-route recall as a last resort when previous searches found nothing useful. Searches across multiple indexes simultaneously."
+  params: '{"detail_query": "<search query>", "topk": <int, default 10>}'

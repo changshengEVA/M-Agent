@@ -1,560 +1,223 @@
 #!/usr/bin/env python3
-# 2025-12-28 changshengEVA
+# -*- coding: utf-8 -*-
 """
-Episode Filtering 模块。
-扫描 qualifications 文件，根据 eligibility 规则过滤 episodes，并生成 eligibility 文件。
+Episode eligibility persistence helpers.
+
+This module intentionally contains no LLM scoring/filtering logic.
+It only writes:
+1. per-dialogue eligibility files
+2. merged episode_situation.json
 """
 
-import os
+from __future__ import annotations
+
 import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
-from tqdm import tqdm
+from typing import Any, Dict, List
 
 from m_agent.paths import memory_stage_dir
-# 添加项目根目录到 Python 路径，确保可以导入 load_model
 
-# 配置日志：只显示 WARNING 及以上级别，减少输出噪音
-logging.basicConfig(level=logging.WARNING, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
 logger = logging.getLogger(__name__)
 
-# 路径配置
 EPISODES_ROOT = memory_stage_dir("default", "episodes")
 
-def ensure_directory(path: Path):
-    """确保目录存在"""
+
+def ensure_directory(path: Path) -> None:
+    """Ensure the target directory exists."""
     path.mkdir(parents=True, exist_ok=True)
 
-def scan_qualification_files(episodes_root: Path = None) -> List[Path]:
-    """
-    扫描所有 qualification 文件。
-    返回所有找到的 qualification 文件路径列表。
-    
-    Args:
-        episodes_root: episodes根目录，如果为None则使用默认的EPISODES_ROOT
-    """
-    if episodes_root is None:
-        episodes_root = EPISODES_ROOT
-    
-    qualification_files = []
-    # 扫描 by_dialogue 目录
-    by_dialogue_dir = episodes_root / "by_dialogue"
-    if not by_dialogue_dir.exists():
-        return qualification_files
-    
-    for dialogue_dir in by_dialogue_dir.iterdir():
-        if dialogue_dir.is_dir():
-            qualification_file = dialogue_dir / "qualifications_v1.json"
-            if qualification_file.exists():
-                qualification_files.append(qualification_file)
-    
-    return qualification_files
 
-def get_eligibility_path(qualification_file: Path, eligibility_version: str = "v1") -> Path:
-    """
-    根据 qualification 文件路径生成对应的 eligibility 文件路径。
-    格式: episodes/by_dialogue/{dialogue_id}/eligibility_{version}.json
-    """
-    dialogue_dir = qualification_file.parent
-    return dialogue_dir / f"eligibility_{eligibility_version}.json"
+def _utc_now_iso() -> str:
+    return datetime.utcnow().isoformat() + "Z"
 
-def needs_eligibility_filter(qualification_file: Path, eligibility_version: str = "v1") -> bool:
-    """检查 qualification 是否需要生成 eligibility（eligibility 文件不存在）。"""
-    eligibility_file = get_eligibility_path(qualification_file, eligibility_version)
-    return not eligibility_file.exists()
 
-def load_qualifications(qualification_file: Path) -> Dict:
-    """加载 qualification JSON 文件"""
-    with open(qualification_file, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-def load_episodes(dialogue_dir: Path, episode_version: str = "v1") -> Dict:
-    """加载 episode JSON 文件"""
-    episode_file = dialogue_dir / f"episodes_{episode_version}.json"
-    if not episode_file.exists():
-        raise FileNotFoundError(f"Episode file not found: {episode_file}")
-    
-    with open(episode_file, 'r', encoding='utf-8') as f:
-        return json.load(f)
-
-def build_episode_index(episode_data: Dict) -> Dict[str, Dict]:
-    """
-    建立 episode_id 到 episode 元数据的索引。
-    """
-    episode_index = {}
-    for ep in episode_data.get("episodes", []):
-        ep_id = ep.get("episode_id")
-        if ep_id:
-            episode_index[ep_id] = ep
-    return episode_index
-
-def apply_eligibility_rules(episode: Dict, qualification: Dict) -> Dict:
-    """
-    应用 eligibility 规则，返回过滤结果。
-    
-    Args:
-        episode: episode 元数据
-        qualification: qualification 数据
-        
-    Returns:
-        包含 eligible、reason、rule_hits、scene_available、kg_available、emo_available 的字典
-    """
-    score = qualification.get("scene_potential_score", {})
-    rule_hits = []
-    eligible = True
-    reason = "scene_buildable"
-    
-    # 获取 novelty 值
-    factual_novelty = score.get("factual_novelty", 0)
-    emotional_novelty = score.get("emotional_novelty", 0)
-    
-    # 计算新的判定条件
-    scene_available = (
-        factual_novelty >= 1
-        and (factual_novelty == 2 or emotional_novelty == 1)
-    )
-    kg_available = factual_novelty >= 1
-    emo_available = emotional_novelty == 1
-    
-    # Rule 1: information density
-    if score.get("information_density", 1) < 1:
-        eligible = False
-        reason = "information_density_0"
-        rule_hits.append("information_density_0")
-    
-    # Rule 2: pure social interaction filter
-    turn_span = episode.get("turn_span", [0, 0])
-    turn_count = turn_span[1] - turn_span[0] + 1 if len(turn_span) == 2 else 0
-    
-    if (
-        episode.get("intent_type") == "emotional_interaction"
-        and episode.get("interaction_mode") == "casual_banter"
-        and turn_count <= 3
-    ):
-        eligible = False
-        reason = "pure_social_interaction"
-        rule_hits.append("emotional_casual_short")
-    
-    return {
-        "eligible": eligible,
-        "reason": reason,
-        "rule_hits": rule_hits,
-        "scene_available": scene_available,
-        "kg_available": kg_available,
-        "emo_available": emo_available,
-        "factual_novelty": factual_novelty,
-        "emotional_novelty": emotional_novelty
+def _normalize_result(result: Dict[str, Any], dialogue_id: str) -> Dict[str, Any]:
+    episode_id = str(result.get("episode_id", "")).strip()
+    normalized = {
+        "episode_id": episode_id,
+        "dialogue_id": str(result.get("dialogue_id", dialogue_id) or dialogue_id),
+        "eligible": bool(result.get("eligible", True)),
+        "reason": str(result.get("reason", "all_available_default") or "all_available_default"),
+        "rule_hits": result.get("rule_hits", []),
+        "scene_available": bool(result.get("scene_available", True)),
+        "kg_available": bool(result.get("kg_available", True)),
+        "emo_available": bool(result.get("emo_available", True)),
+        "factual_novelty": int(result.get("factual_novelty", 2)),
+        "emotional_novelty": int(result.get("emotional_novelty", 1)),
     }
+    if not isinstance(normalized["rule_hits"], list):
+        normalized["rule_hits"] = []
+    return normalized
 
-def filter_qualifications(qualification_data: Dict, episode_data: Dict) -> List[Dict]:
-    """
-    过滤 qualifications，生成 eligibility 结果。
-    
-    Args:
-        qualification_data: qualification 数据
-        episode_data: episode 数据
-        
-    Returns:
-        eligibility 结果列表（包含完整信息）
-    """
-    # 建立 episode 索引
-    episode_index = build_episode_index(episode_data)
-    
-    results = []
-    qualifications = qualification_data.get("qualifications", [])
-    
-    for q in qualifications:
-        ep_id = q.get("episode_id")
-        ep = episode_index.get(ep_id)
-        
-        if ep is None:
-            logger.warning(f"Episode {ep_id} not found in episode data, skipping")
-            continue
-        
-        # 应用 eligibility 规则
-        eligibility_result = apply_eligibility_rules(ep, q)
-        
-        results.append({
-            "episode_id": ep_id,
-            "dialogue_id": q.get("dialogue_id", ""),
-            "eligible": eligibility_result["eligible"],
-            "reason": eligibility_result["reason"],
-            "rule_hits": eligibility_result["rule_hits"],
-            "scene_available": eligibility_result["scene_available"],
-            "kg_available": eligibility_result["kg_available"],
-            "emo_available": eligibility_result["emo_available"],
-            "factual_novelty": eligibility_result["factual_novelty"],
-            "emotional_novelty": eligibility_result["emotional_novelty"]
-        })
-    
-    return results
 
-def save_eligibility(results: List[Dict], dialogue_id: str, eligibility_file: Path,
-                     eligibility_version: str = "v1"):
-    """Save eligibility results to disk."""
+def save_eligibility(
+    results: List[Dict[str, Any]],
+    dialogue_id: str,
+    eligibility_file: Path,
+    eligibility_version: str = "v1",
+) -> None:
+    """Save one dialogue's eligibility results to disk."""
     ensure_directory(eligibility_file.parent)
-    
-    eligibility_output = {
+
+    normalized_results: List[Dict[str, Any]] = []
+    for item in results or []:
+        if not isinstance(item, dict):
+            continue
+        normalized = _normalize_result(item, dialogue_id)
+        if not normalized["episode_id"]:
+            continue
+        normalized_results.append(normalized)
+
+    payload = {
         "dialogue_id": dialogue_id,
         "eligibility_version": eligibility_version,
-        "generated_at": datetime.utcnow().isoformat() + "Z",
-        "results": results
+        "generated_at": _utc_now_iso(),
+        "results": normalized_results,
     }
-    
-    with open(eligibility_file, 'w', encoding='utf-8') as f:
-        json.dump(eligibility_output, f, ensure_ascii=False, indent=2)
+
+    with open(eligibility_file, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
-def save_episode_situation(results: List[Dict], dialogue_id: str, episodes_root: Path = None):
+def _empty_situation_stats() -> Dict[str, Any]:
+    return {
+        "total_episodes": 0,
+        "scene_available": {"count": 0, "episode_keys": []},
+        "kg_available": {"count": 0, "episode_keys": []},
+        "emo_available": {"count": 0, "episode_keys": []},
+        "by_novelty": {
+            "factual_novelty_0": {"count": 0, "episode_keys": []},
+            "factual_novelty_1": {"count": 0, "episode_keys": []},
+            "factual_novelty_2": {"count": 0, "episode_keys": []},
+            "emotional_novelty_0": {"count": 0, "episode_keys": []},
+            "emotional_novelty_1": {"count": 0, "episode_keys": []},
+        },
+    }
+
+
+def _load_existing_situation(situation_file: Path) -> Dict[str, Any]:
+    if not situation_file.exists():
+        return {"statistics": _empty_situation_stats(), "episodes": {}}
+
+    try:
+        with open(situation_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        logger.warning("Failed to load existing episode_situation.json: %s", exc)
+        data = {}
+
+    if not isinstance(data, dict):
+        data = {}
+
+    if "statistics" not in data or not isinstance(data.get("statistics"), dict):
+        data["statistics"] = _empty_situation_stats()
+    if "episodes" not in data or not isinstance(data.get("episodes"), dict):
+        data["episodes"] = {}
+
+    return data
+
+
+def _append_if(condition: bool, key: str, bucket: List[str]) -> None:
+    if condition:
+        bucket.append(key)
+
+
+def save_episode_situation(results: List[Dict[str, Any]], dialogue_id: str, episodes_root: Path | None = None) -> None:
     """
-    Save episode_situation.json for one dialogue.
-
-    Args:
-        results: Eligibility results for each episode.
-        dialogue_id: Dialogue identifier.
-        episodes_root: Episodes root directory.
+    Merge one dialogue's eligibility into episodes/episode_situation.json.
     """
     if episodes_root is None:
         episodes_root = EPISODES_ROOT
-    
+
     situation_file = episodes_root / "episode_situation.json"
-    
-    # 加载现有 situation 数据（如果存在）
-    existing_data = {}
-    if situation_file.exists():
-        try:
-            with open(situation_file, 'r', encoding='utf-8') as f:
-                existing_data = json.load(f)
-        except Exception as e:
-            logger.warning(f"加载现有 episode_situation.json 失败: {e}")
-            existing_data = {}
-    
-    # 确保数据结构正确
-    if "statistics" not in existing_data:
-        existing_data["statistics"] = {
-            "total_episodes": 0,
-            "scene_available": {"count": 0, "episode_keys": []},
-            "kg_available": {"count": 0, "episode_keys": []},
-            "emo_available": {"count": 0, "episode_keys": []},
-            "by_novelty": {
-                "factual_novelty_0": {"count": 0, "episode_keys": []},
-                "factual_novelty_1": {"count": 0, "episode_keys": []},
-                "factual_novelty_2": {"count": 0, "episode_keys": []},
-                "emotional_novelty_0": {"count": 0, "episode_keys": []},
-                "emotional_novelty_1": {"count": 0, "episode_keys": []}
-            }
-        }
-    
-    if "episodes" not in existing_data:
-        existing_data["episodes"] = {}
-    
-    # 更新或添加当前 dialogue 的 episode 信息
-    for result in results:
-        ep_id = result["episode_id"]
-        # 使用组合键作为唯一标识：dialogue_id:episode_id
-        episode_key = f"{dialogue_id}:{ep_id}"
-        
-        # 保存完整的 episode 信息，保留现有字段（如 scene_generated 等）
-        if episode_key in existing_data["episodes"]:
-            # 合并现有字段
-            existing_episode = existing_data["episodes"][episode_key]
-            # 更新基础字段
-            existing_episode.update({
-                "scene_available": result["scene_available"],
-                "kg_available": result["kg_available"],
-                "emo_available": result["emo_available"],
-                "factual_novelty": result["factual_novelty"],
-                "emotional_novelty": result["emotional_novelty"],
-                "eligible": result["eligible"],
-                "reason": result["reason"],
-                "updated_at": datetime.utcnow().isoformat() + "Z"
-            })
-            # 确保 episode_key、episode_id、dialogue_id 不变（但应该已经存在）
-            existing_episode["episode_key"] = episode_key
-            existing_episode["episode_id"] = ep_id
-            existing_episode["dialogue_id"] = dialogue_id
-            # 保留其他字段（如 scene_generated, scene_generated_at, scene_file 等）
-            existing_data["episodes"][episode_key] = existing_episode
-        else:
-            # 创建新条目
-            existing_data["episodes"][episode_key] = {
+    data = _load_existing_situation(situation_file)
+    episodes_map: Dict[str, Any] = data.get("episodes", {})
+
+    for item in results or []:
+        if not isinstance(item, dict):
+            continue
+        normalized = _normalize_result(item, dialogue_id)
+        episode_id = normalized["episode_id"]
+        if not episode_id:
+            continue
+
+        episode_key = f"{dialogue_id}:{episode_id}"
+        existing = episodes_map.get(episode_key, {})
+        if not isinstance(existing, dict):
+            existing = {}
+
+        existing.update(
+            {
                 "episode_key": episode_key,
-                "episode_id": ep_id,
+                "episode_id": episode_id,
                 "dialogue_id": dialogue_id,
-                "scene_available": result["scene_available"],
-                "kg_available": result["kg_available"],
-                "emo_available": result["emo_available"],
-                "factual_novelty": result["factual_novelty"],
-                "emotional_novelty": result["emotional_novelty"],
-                "eligible": result["eligible"],
-                "reason": result["reason"],
-                "updated_at": datetime.utcnow().isoformat() + "Z"
+                "scene_available": normalized["scene_available"],
+                "kg_available": normalized["kg_available"],
+                "emo_available": normalized["emo_available"],
+                "factual_novelty": normalized["factual_novelty"],
+                "emotional_novelty": normalized["emotional_novelty"],
+                "eligible": normalized["eligible"],
+                "reason": normalized["reason"],
+                "updated_at": _utc_now_iso(),
             }
-    
-    # 重新计算统计信息
-    scene_available_keys = []
-    kg_available_keys = []
-    emo_available_keys = []
-    
-    factual_novelty_0_keys = []
-    factual_novelty_1_keys = []
-    factual_novelty_2_keys = []
-    emotional_novelty_0_keys = []
-    emotional_novelty_1_keys = []
-    
-    for episode_key, ep_data in existing_data["episodes"].items():
-        if ep_data.get("scene_available"):
-            scene_available_keys.append(episode_key)
-        if ep_data.get("kg_available"):
-            kg_available_keys.append(episode_key)
-        if ep_data.get("emo_available"):
-            emo_available_keys.append(episode_key)
-        
-        # 按 novelty 分类
-        factual_novelty = ep_data.get("factual_novelty", 0)
+        )
+        episodes_map[episode_key] = existing
+
+    scene_available_keys: List[str] = []
+    kg_available_keys: List[str] = []
+    emo_available_keys: List[str] = []
+    factual_novelty_0_keys: List[str] = []
+    factual_novelty_1_keys: List[str] = []
+    factual_novelty_2_keys: List[str] = []
+    emotional_novelty_0_keys: List[str] = []
+    emotional_novelty_1_keys: List[str] = []
+
+    for episode_key, ep_data in episodes_map.items():
+        if not isinstance(ep_data, dict):
+            continue
+
+        _append_if(bool(ep_data.get("scene_available")), episode_key, scene_available_keys)
+        _append_if(bool(ep_data.get("kg_available")), episode_key, kg_available_keys)
+        _append_if(bool(ep_data.get("emo_available")), episode_key, emo_available_keys)
+
+        factual_novelty = int(ep_data.get("factual_novelty", 0))
         if factual_novelty == 0:
             factual_novelty_0_keys.append(episode_key)
         elif factual_novelty == 1:
             factual_novelty_1_keys.append(episode_key)
         elif factual_novelty == 2:
             factual_novelty_2_keys.append(episode_key)
-        
-        emotional_novelty = ep_data.get("emotional_novelty", 0)
+
+        emotional_novelty = int(ep_data.get("emotional_novelty", 0))
         if emotional_novelty == 0:
             emotional_novelty_0_keys.append(episode_key)
         elif emotional_novelty == 1:
             emotional_novelty_1_keys.append(episode_key)
-    
-    # 更新统计信息
-    existing_data["statistics"] = {
-        "total_episodes": len(existing_data["episodes"]),
-        "scene_available": {
-            "count": len(scene_available_keys),
-            "episode_keys": scene_available_keys
-        },
-        "kg_available": {
-            "count": len(kg_available_keys),
-            "episode_keys": kg_available_keys
-        },
-        "emo_available": {
-            "count": len(emo_available_keys),
-            "episode_keys": emo_available_keys
-        },
+
+    data["statistics"] = {
+        "total_episodes": len(episodes_map),
+        "scene_available": {"count": len(scene_available_keys), "episode_keys": scene_available_keys},
+        "kg_available": {"count": len(kg_available_keys), "episode_keys": kg_available_keys},
+        "emo_available": {"count": len(emo_available_keys), "episode_keys": emo_available_keys},
         "by_novelty": {
-            "factual_novelty_0": {
-                "count": len(factual_novelty_0_keys),
-                "episode_keys": factual_novelty_0_keys
-            },
-            "factual_novelty_1": {
-                "count": len(factual_novelty_1_keys),
-                "episode_keys": factual_novelty_1_keys
-            },
-            "factual_novelty_2": {
-                "count": len(factual_novelty_2_keys),
-                "episode_keys": factual_novelty_2_keys
-            },
-            "emotional_novelty_0": {
-                "count": len(emotional_novelty_0_keys),
-                "episode_keys": emotional_novelty_0_keys
-            },
-            "emotional_novelty_1": {
-                "count": len(emotional_novelty_1_keys),
-                "episode_keys": emotional_novelty_1_keys
-            }
-        }
+            "factual_novelty_0": {"count": len(factual_novelty_0_keys), "episode_keys": factual_novelty_0_keys},
+            "factual_novelty_1": {"count": len(factual_novelty_1_keys), "episode_keys": factual_novelty_1_keys},
+            "factual_novelty_2": {"count": len(factual_novelty_2_keys), "episode_keys": factual_novelty_2_keys},
+            "emotional_novelty_0": {"count": len(emotional_novelty_0_keys), "episode_keys": emotional_novelty_0_keys},
+            "emotional_novelty_1": {"count": len(emotional_novelty_1_keys), "episode_keys": emotional_novelty_1_keys},
+        },
     }
-    
-    # 添加元数据
-    existing_data["metadata"] = {
-        "last_updated": datetime.utcnow().isoformat() + "Z",
+    data["episodes"] = episodes_map
+    data["metadata"] = {
+        "last_updated": _utc_now_iso(),
         "source_dialogue": dialogue_id,
-        "episode_count": len(results)
+        "episode_count": len(results or []),
     }
-    
-    # 保存文件
+
     ensure_directory(situation_file.parent)
-    with open(situation_file, 'w', encoding='utf-8') as f:
-        json.dump(existing_data, f, ensure_ascii=False, indent=2)
-    
-    # logger.info(f"更新 episode_situation.json: 统计信息已更新，总计 {len(existing_data['episodes'])} 个 episodes")
+    with open(situation_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-def process_qualification_file(qualification_file: Path,
-                               episode_version: str = "v1",
-                               eligibility_version: str = "v1",
-                               force_update: bool = False,
-                               episodes_root: Path = None) -> bool:
-    """处理单个 qualification 文件，生成 eligibility 并保存 situation。"""
-    try:
-        # 加载 qualifications
-        qualification_data = load_qualifications(qualification_file)
-        
-        # 获取 dialogue_id
-        if qualification_data.get("qualifications"):
-            dialogue_id = qualification_data["qualifications"][0].get("dialogue_id", "")
-        else:
-            # 从目录名推断
-            dialogue_id = qualification_file.parent.name
-        
-        # 加载对应 episodes
-        dialogue_dir = qualification_file.parent
-        episode_data = load_episodes(dialogue_dir, episode_version)
-        
-        # 验证 dialogue_id 一致性
-        if episode_data.get("dialogue_id") and episode_data["dialogue_id"] != dialogue_id:
-            logger.warning(f"Dialogue ID mismatch: qualification={dialogue_id}, episode={episode_data['dialogue_id']}")
-            dialogue_id = episode_data["dialogue_id"]
-        
-        # 过滤 qualifications
-        results = filter_qualifications(qualification_data, episode_data)
-        
-        # 保存 eligibility 文件（只有在需要时或强制更新时）
-        eligibility_file = get_eligibility_path(qualification_file, eligibility_version)
-        if force_update or needs_eligibility_filter(qualification_file, eligibility_version):
-            save_eligibility(results, dialogue_id, eligibility_file, eligibility_version)
-            logger.info(f"Generated eligibility for {dialogue_id}: {len(results)} episodes processed")
-        else:
-            logger.info(f"Eligibility file already exists for {dialogue_id}, skipping generation")
-        
-        # 总是保存 episode situation 数据（即使 eligibility 文件已存在）
-        save_episode_situation(results, dialogue_id, episodes_root)
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"处理 qualification 文件 {qualification_file} 失败: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return False
-
-def scan_and_filter_episodes(episode_version: str = "v1",
-                             eligibility_version: str = "v1",
-                             use_tqdm: bool = True,
-                             force_update_situation: bool = True,
-                             episodes_root: Path = None):
-    """
-    Scan qualification files and build or refresh eligibility outputs.
-
-    Args:
-        episode_version: Episode file version to read.
-        eligibility_version: Eligibility file version to generate.
-        use_tqdm: Whether to render a progress bar.
-        force_update_situation: Whether to refresh episode_situation.json even
-            when an eligibility file already exists.
-        episodes_root: Optional episodes root override.
-    """
-    # 确定使用的根目录
-    if episodes_root is None:
-        episodes_root = EPISODES_ROOT
-    
-    # 确保 episodes 根目录存在
-    ensure_directory(episodes_root)
-    
-    # 扫描所有 qualification 文件
-    qualification_files = scan_qualification_files(episodes_root)
-    
-    # 如果强制更新 situation，则处理所有文件；否则只处理需要生成 eligibility 的文件
-    if force_update_situation:
-        files_to_process = qualification_files
-        logger.info(f"强制更新模式：处理所有 {len(files_to_process)} 个 qualification 文件")
-    else:
-        files_to_process = []
-        for file in qualification_files:
-            if needs_eligibility_filter(file, eligibility_version):
-                files_to_process.append(file)
-    
-    if not files_to_process:
-        # 没有需要处理的文件，静默退出
-        logger.info("没有需要处理的 qualification 文件")
-        return
-    
-    # 处理文件
-    if use_tqdm:
-        file_iter = tqdm(files_to_process, desc="过滤 episodes")
-    else:
-        file_iter = files_to_process
-    
-    success_count = 0
-    for qualification_file in file_iter:
-        if process_qualification_file(
-            qualification_file,
-            episode_version,
-            eligibility_version,
-            force_update=force_update_situation,
-            episodes_root=episodes_root
-        ):
-            success_count += 1
-    
-    logger.info(f"成功处理 {success_count}/{len(files_to_process)} 个 qualification 文件")
-
-def clear_all_eligibility(eligibility_version: str = "v1", confirm: bool = False):
-    """
-    Remove generated eligibility files.
-
-    Args:
-        eligibility_version: Eligibility file version to target.
-        confirm: When False, show a preview only.
-    """
-    # 扫描所有 qualification 文件
-    qualification_files = scan_qualification_files()
-    
-    eligibility_files = []
-    for qualification_file in qualification_files:
-        eligibility_file = get_eligibility_path(qualification_file, eligibility_version)
-        if eligibility_file.exists():
-            eligibility_files.append(eligibility_file)
-    
-    if not eligibility_files:
-        print("没有找到 eligibility 文件")
-        return
-    
-    print(f"找到 {len(eligibility_files)} 个 eligibility 文件:")
-    for eligibility_file in eligibility_files:
-        print(f"  - {eligibility_file}")
-    
-    if not confirm:
-        print("\n这只是预览要实际删除这些文件，请运行: clear_all_eligibility(confirm=True)")
-        return
-    
-    # 实际删除文件
-    deleted_count = 0
-    for eligibility_file in eligibility_files:
-        try:
-            eligibility_file.unlink()
-            print(f"已删除 {eligibility_file}")
-            deleted_count += 1
-        except Exception as e:
-            print(f"删除失败 {eligibility_file}: {e}")
-    
-    print(f"\nDeleted {deleted_count}/{len(eligibility_files)} files.")
-
-if __name__ == "__main__":
-    import argparse
-    
-    parser = argparse.ArgumentParser(description="Episode filtering utility")
-    parser.add_argument("--scan", action="store_true", help="scan and generate eligibility files")
-    parser.add_argument("--clear", action="store_true", help="remove generated eligibility files")
-    parser.add_argument("--confirm", action="store_true", help="confirm deletion when used with --clear")
-    parser.add_argument("--episode-version", default="v1", help="episode file version")
-    parser.add_argument("--eligibility-version", default="v1", help="eligibility file version")
-    parser.add_argument("--force-update-situation", action="store_true",
-                       help="refresh episode_situation.json even if eligibility already exists")
-    
-    args = parser.parse_args()
-    
-    if args.clear:
-        clear_all_eligibility(eligibility_version=args.eligibility_version, confirm=args.confirm)
-    elif args.scan:
-        scan_and_filter_episodes(
-            episode_version=args.episode_version,
-            eligibility_version=args.eligibility_version,
-            force_update_situation=args.force_update_situation
-        )
-    else:
-        # 默认行为：扫描并过滤
-        scan_and_filter_episodes(
-            episode_version=args.episode_version,
-            eligibility_version=args.eligibility_version,
-            force_update_situation=args.force_update_situation
-        )

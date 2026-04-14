@@ -9,126 +9,68 @@ logger = logging.getLogger(__name__)
 
 
 class MemoryAgentToolingMixin:
-    def _build_search_details_usage_state(self, scope: str) -> Dict[str, int]:
-        """Build the current usage snapshot for search_details throttling."""
-        return {
-            "scope_used": int(self._search_details_scope_counts.get(scope, 0)),
-            "round_used": int(getattr(self, "_search_details_round_count", 0)),
-            "consecutive_used": self._count_consecutive_search_details_calls(),
-        }
-
-    def _detect_search_details_limit(
-        self,
-        *,
-        scope_used: int,
-        round_used: int,
-        consecutive_used: int,
-    ) -> Tuple[str, str]:
-        """Check whether search_details should be blocked by current limits."""
-        if consecutive_used >= self.max_consecutive_search_details_calls:
-            return (
-                "search_details_consecutive_limit_reached",
-                (
-                    "consecutive search_details calls reached limit "
-                    f"({consecutive_used}/{self.max_consecutive_search_details_calls})"
-                ),
-            )
-        if scope_used >= self.max_search_details_calls_per_scope:
-            return (
-                "search_details_scope_limit_reached",
-                (
-                    "scope search_details calls reached limit "
-                    f"({scope_used}/{self.max_search_details_calls_per_scope})"
-                ),
-            )
-        if round_used >= self.max_search_details_calls_per_round:
-            return (
-                "search_details_round_limit_reached",
-                (
-                    "round search_details calls reached limit "
-                    f"({round_used}/{self.max_search_details_calls_per_round})"
-                ),
-            )
-        return "", ""
-
-    def _build_search_details_blocked_result(
-        self,
-        *,
-        detail: str,
-        topk: int,
-        scope: str,
-        block_error: str,
-        block_reason: str,
-        usage: Dict[str, int],
-    ) -> Dict[str, Any]:
-        """Build the response payload when search_details is throttled."""
-        return {
-            "hit": False,
-            "blocked": True,
-            "error": block_error,
-            "reason": block_reason,
-            "scope": scope,
-            "scope_used": usage.get("scope_used", 0),
-            "scope_limit": self.max_search_details_calls_per_scope,
-            "round_used": usage.get("round_used", 0),
-            "round_limit": self.max_search_details_calls_per_round,
-            "consecutive_used": usage.get("consecutive_used", 0),
-            "consecutive_limit": self.max_consecutive_search_details_calls,
-            "detail": detail,
-            "topk": topk,
-        }
-
     def _search_details_with_trace(self, detail: str, topk: Optional[int] = None) -> Dict[str, Any]:
-        """Run search_details with tracing, limits, and consistent logging."""
+        """Run search_details with tracing and consistent logging."""
         cfg_topk = self._resolve_topk(topk)
-        scope = self._get_active_search_scope()
-        usage = self._build_search_details_usage_state(scope)
-        block_error, block_reason = self._detect_search_details_limit(
-            scope_used=usage["scope_used"],
-            round_used=usage["round_used"],
-            consecutive_used=usage["consecutive_used"],
-        )
-
-        call_entry = self._record_tool_call(
-            "search_details",
-            {"detail": detail, "topk": cfg_topk},
-        )
-        if block_error:
-            blocked_result = self._build_search_details_blocked_result(
-                detail=detail,
-                topk=cfg_topk,
-                scope=scope,
-                block_error=block_error,
-                block_reason=block_reason,
-                usage=usage,
-            )
-            self._finalize_tool_call(call_entry, result=blocked_result)
-            logger.warning("search_details blocked(scope=%s, reason=%s)", scope, block_reason)
-            return blocked_result
-
-        self._search_details_scope_counts[scope] = usage["scope_used"] + 1
-        self._search_details_round_count = usage["round_used"] + 1
-        logger.info("API call: search_details(detail=%s, topk=%s)", detail, cfg_topk)
-        try:
-            result = self.memory_sys.search_details(
+        return self._execute_traced_tool_call(
+            tool_name="search_details",
+            params={"detail": detail, "topk": cfg_topk},
+            call_log="API call: search_details(detail=%s, topk=%s)",
+            call_log_args=(detail, cfg_topk),
+            invoke=lambda: self.memory_sys.search_details(
                 detail_query=detail,
                 topk=cfg_topk,
-            )
-        except Exception as exc:
-            self._finalize_tool_call(call_entry, error=exc)
-            raise
-
-        self._finalize_tool_call(call_entry, result=result)
-        logger.info(
-            "API response: search_details(success=%s, result_count=%s)",
-            result.get("hit") if isinstance(result, dict) else None,
-            (
-                len(result.get("results", []))
-                if isinstance(result, dict) and isinstance(result.get("results"), list)
-                else None
+            ),
+            response_log="API response: search_details(hit=%s, result_count=%s)",
+            response_log_args=lambda result: (
+                self._dict_field(result, "hit"),
+                (
+                    len(result.get("results", []))
+                    if isinstance(result, dict) and isinstance(result.get("results"), list)
+                    else None
+                ),
             ),
         )
-        return result
+
+    def _search_details_multi_route_with_trace(
+        self,
+        detail: str,
+        topk: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        cfg_topk = self._resolve_topk(topk)
+        return self._execute_traced_tool_call(
+            tool_name="search_details_multi_route",
+            params={"detail": detail, "topk": cfg_topk},
+            call_log="API call: search_details_multi_route(detail=%s, topk=%s)",
+            call_log_args=(detail, cfg_topk),
+            invoke=lambda: self.memory_sys.search_details_multi_route(
+                detail_query=detail,
+                topk=cfg_topk,
+            ),
+            response_log="API response: search_details_multi_route(hit=%s, result_count=%s)",
+            response_log_args=lambda result: (
+                self._dict_field(result, "hit"),
+                (
+                    len(result.get("results", []))
+                    if isinstance(result, dict) and isinstance(result.get("results"), list)
+                    else None
+                ),
+            ),
+        )
+
+    def _search_contents_by_episode_refs_with_trace(
+        self,
+        episode_refs: list[dict[str, str]],
+    ) -> list[dict[str, Any]]:
+        return self._execute_traced_tool_call(
+            tool_name="search_contents_by_episode_refs",
+            params={"episode_refs": episode_refs},
+            call_log="API call: search_contents_by_episode_refs(ref_count=%s)",
+            call_log_args=(len(episode_refs),),
+            invoke=lambda: self.memory_sys.search_contents_by_episode_refs(episode_refs),
+            response_log="API response: search_contents_by_episode_refs(result_count=%s)",
+            response_log_args=lambda result: (len(result) if isinstance(result, list) else None,),
+        )
 
     @staticmethod
     def _dict_field(payload: Any, key: str, default: Any = None) -> Any:

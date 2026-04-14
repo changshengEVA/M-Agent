@@ -357,19 +357,22 @@ def build_scene_structure(scene_number: int,
     # 确定语言：默认为中文，但可根据内容判断
     language = "zh-CN"  # 假设对话是中文
     
+    source_episode: Dict[str, Any] = {
+        "episode_id": episode_id,
+        "dialogue_id": dialogue_id,
+        "turn_span": turn_span,
+        "start_time": start_time,
+        "end_time": end_time,
+    }
+    segments = episode_meta.get("segments")
+    if isinstance(segments, list) and segments:
+        source_episode["segments"] = segments
+
     return {
         "scene_id": scene_id,
         "scene_version": scene_version,
         "source": {
-            "episodes": [
-                {
-                    "episode_id": episode_id,
-                    "dialogue_id": dialogue_id,
-                    "turn_span": turn_span,
-                    "start_time": start_time,
-                    "end_time": end_time
-                }
-            ]
+            "episodes": [source_episode]
         },
         "meta": {
             "created_at": datetime.utcnow().isoformat() + "Z",
