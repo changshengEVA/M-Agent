@@ -5,3 +5,6 @@
     path = tools/M-Agent-UI
     url = git@github.com:changshengEVA/M-Agent-UI.git
 
+[submodule "data/LongMemEval"]
+	path = data/LongMemEval
+	url = https://github.com/xiaowu0162/LongMemEval.git
