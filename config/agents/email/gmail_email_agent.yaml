@@ -11,8 +11,8 @@ gmail:
     - "https://www.googleapis.com/auth/gmail.readonly"
     - "https://www.googleapis.com/auth/gmail.send"
   oauth:
-    allow_local_webserver_flow: true
-    allow_console_flow: false
+    allow_local_webserver_flow: false
+    allow_console_flow: true
 
 query_defaults:
   recall_thread_topk: 40
