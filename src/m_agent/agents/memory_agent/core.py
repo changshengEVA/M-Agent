@@ -95,12 +95,20 @@ class MemoryAgent(
     _TRACE_PREFIX_FINAL_PAYLOAD = "FINAL ANSWER PAYLOAD: "
     _CJK_PATTERN = re.compile(r"[\u4e00-\u9fff]")
 
-    def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH):
-        """初始化 MemoryAgent：装配配置、模型、工具与运行参数。"""
+    def __init__(self, config_path: str | Path = DEFAULT_CONFIG_PATH, memory_workflow_id: Optional[str] = None):
+        """初始化 MemoryAgent：装配配置、模型、工具与运行参数。
+
+        memory_workflow_id:
+            When set, overrides ``workflow_id`` in the MemoryCore YAML so one agent config
+            can resolve ``data/memory/<workflow_id>/`` to a dataset-specific subtree (e.g. ``locomo/conv-30``).
+        """
         self.config_path = resolve_config_path(config_path)
         self.config = self._load_config(self.config_path)
         self.memory_core_config_path = self._resolve_related_path(self.config.get("memory_core_config_path"))
         self.memory_core_config = self._load_memory_core_config(self.memory_core_config_path)
+        if memory_workflow_id is not None and str(memory_workflow_id).strip():
+            self.memory_core_config = dict(self.memory_core_config)
+            self.memory_core_config["workflow_id"] = str(memory_workflow_id).strip()
         self.prompt_language = normalize_prompt_language(
             self.config.get("prompt_language", self.memory_core_config.get("prompt_language", "zh"))
         )
@@ -145,6 +153,8 @@ class MemoryAgent(
         self.rerank_enabled = bool(rerank_cfg.get("enable", False))
         self.rerank_score_threshold = float(rerank_cfg.get("score_threshold", 0.2))
         self.rerank_max_documents = max(1, int(rerank_cfg.get("max_documents", 16)))
+        self.rerank_chunk_chars = max(32, int(rerank_cfg.get("chunk_chars", 800)))
+        self.rerank_chunk_batch_size = max(4, int(rerank_cfg.get("chunk_batch_size", 32)))
         self.rerank_func = None
         if self.rerank_enabled:
             rerank_provider = str(rerank_cfg.get("provider", "aliyun")).strip().lower()
@@ -209,6 +219,13 @@ class MemoryAgent(
         else:
             self.tool_registry = None
 
+        if self.action_planner_mode == "llm" and not self.tool_registry:
+            raise ValueError(
+                "workspace.action_planner is 'llm' but tool_registry could not be built. "
+                "Set workspace.enabled_tools (non-empty list) in the agent YAML and ensure "
+                "tool_descriptions.yaml loads with matching tool keys."
+            )
+
         self.model_name = str(self.config.get("model_name", "deepseek-chat"))
         self.agent_temperature = float(self.config.get("agent_temperature", 0.0))
 
@@ -242,9 +259,12 @@ class MemoryAgent(
         return payload
 
 
-def create_memory_agent(config_path: str | Path = DEFAULT_CONFIG_PATH) -> MemoryAgent:
+def create_memory_agent(
+    config_path: str | Path = DEFAULT_CONFIG_PATH,
+    memory_workflow_id: Optional[str] = None,
+) -> MemoryAgent:
     """按配置路径创建 MemoryAgent 实例。"""
-    return MemoryAgent(config_path=config_path)
+    return MemoryAgent(config_path=config_path, memory_workflow_id=memory_workflow_id)
 
 
 def main() -> None:

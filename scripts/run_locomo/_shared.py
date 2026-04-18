@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import copy
+import os
+import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -21,6 +24,7 @@ bootstrap_project()
 
 
 DEFAULT_ENV_CONFIG_PATH = "config/eval/memory_agent/locomo/test_env.yaml"
+DEFAULT_LONGMEMEVAL_ENV_CONFIG_PATH = "config/eval/memory_agent/longmemeval/test_env.yaml"
 
 
 def resolve_project_path(raw_path: str | Path) -> Path:
@@ -131,6 +135,78 @@ def parse_question_selection(payload: Dict[str, Any]) -> Dict[str, List[int]]:
     return parsed
 
 
+def parse_question_ids(payload: Dict[str, Any]) -> List[str]:
+    """LongMemEval: selection.question_ids (list or comma-separated string)."""
+    selection = payload.get("selection", {})
+    if not isinstance(selection, dict):
+        selection = {}
+
+    raw = selection.get("question_ids", [])
+    if isinstance(raw, str):
+        raw_values = [token.strip() for token in raw.split(",") if token.strip()]
+    elif isinstance(raw, list):
+        raw_values = [str(item).strip() for item in raw]
+    else:
+        raw_values = []
+
+    qids: List[str] = []
+    seen = set()
+    for value in raw_values:
+        if not value or value in seen:
+            continue
+        seen.add(value)
+        qids.append(value)
+
+    return qids
+
+
+def resolve_target_question_ids(payload: Dict[str, Any]) -> List[str]:
+    qids = parse_question_ids(payload)
+    if not qids:
+        raise ValueError(
+            "No target question_ids configured. Provide selection.question_ids in the env YAML."
+        )
+    return qids
+
+
+def _safe_memory_path_segment(name: str) -> str:
+    out = re.sub(r"[^A-Za-z0-9._-]+", "_", (name or "").strip())
+    return (out[:200] if out else "q").strip("._-")
+
+
+def resolve_longmemeval_memory_id(payload: Dict[str, Any], cli_workflow_id: str = "") -> str:
+    """
+    Memory root under data/memory/<id>/ — must match import_longmemeval_one process_id.
+
+    Resolution order: CLI --workflow-id, then import.process_id, then
+    ``longmemeval/<data_json_stem>/<question_id_seg>`` when selection.question_ids has exactly one id.
+    """
+    w = str(cli_workflow_id or "").strip()
+    if w:
+        return w
+
+    import_cfg = payload.get("import", {})
+    if not isinstance(import_cfg, dict):
+        import_cfg = {}
+    process_id = str(import_cfg.get("process_id", "") or "").strip()
+    if process_id:
+        return process_id
+
+    qids = parse_question_ids(payload)
+    if len(qids) != 1:
+        raise ValueError(
+            "LongMemEval: pass --workflow-id, or set import.process_id in the env YAML, "
+            "or set selection.question_ids to exactly one id so "
+            "longmemeval/<data_stem>/<question_id> can be derived (same rule as import)."
+        )
+
+    data_cfg = get_data_config(payload)
+    data_path = resolve_project_path(data_cfg["file"])
+    stem = _safe_memory_path_segment(data_path.stem)
+    qid_seg = _safe_memory_path_segment(qids[0])
+    return f"longmemeval/{stem}/{qid_seg}"
+
+
 def resolve_target_conv_ids(payload: Dict[str, Any]) -> List[str]:
     conv_ids = parse_conv_ids(payload)
     question_selection = parse_question_selection(payload)
@@ -167,3 +243,104 @@ def get_data_config(payload: Dict[str, Any]) -> Dict[str, Any]:
         "file": file_path,
         "loader_type": loader_type,
     }
+
+
+def _deep_merge_dict(base: Dict[str, Any], patch: Dict[str, Any]) -> Dict[str, Any]:
+    """Shallow-merge top-level keys; for dict values, update shallowly."""
+    out = copy.deepcopy(base)
+    for k, v in patch.items():
+        if k in out and isinstance(out[k], dict) and isinstance(v, dict):
+            merged = dict(out[k])
+            merged.update(v)
+            out[k] = merged
+        else:
+            out[k] = copy.deepcopy(v)
+    return out
+
+
+def build_env_config_snapshot(
+    payload: Dict[str, Any],
+    overrides: Optional[Dict[str, Any]] = None,
+    pipeline_cli: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Snapshot of test_env-style keys for logging (no prompt/runtime file contents)."""
+    keys = ("name", "description", "data", "selection", "import", "warmup", "eval")
+    snap: Dict[str, Any] = {k: copy.deepcopy(payload[k]) for k in keys if k in payload}
+    if overrides:
+        snap = _deep_merge_dict(snap, overrides)
+    if pipeline_cli:
+        snap["pipeline_cli"] = copy.deepcopy(pipeline_cli)
+    return snap
+
+
+def log_relevant_env_vars(logger: logging.Logger, keys: Optional[Tuple[str, ...]] = None) -> None:
+    """Log selected OS env vars that affect import/warmup (not full environ)."""
+    if keys is None:
+        keys = (
+            "M_AGENT_EPISODE_MAX_WORKERS",
+            "M_AGENT_SCENE_MAX_WORKERS",
+            "M_AGENT_SCENE_FACT_MAX_WORKERS",
+            "EMBED_PROVIDER",
+        )
+    lines = []
+    for k in keys:
+        if k in os.environ:
+            lines.append(f"{k}={os.environ[k]}")
+    if lines:
+        logger.info("relevant env: %s", " | ".join(lines))
+
+
+def should_dump_full_env_config_log() -> bool:
+    """When subprocess is spawned by run_locomo_pipeline.py, skip duplicate full YAML dump."""
+    return os.environ.get("LOCOMO_SKIP_ENV_CONFIG_LOG", "").strip() != "1"
+
+
+def log_env_config_summary(
+    logger: logging.Logger,
+    payload: Dict[str, Any],
+    config_path: Path,
+    *,
+    step: str = "",
+    overrides: Optional[Dict[str, Any]] = None,
+    pipeline_cli: Optional[Dict[str, Any]] = None,
+    footer: Optional[Dict[str, Any]] = None,
+) -> None:
+    """
+    Log data/selection/import/warmup/eval from env YAML (paths and scalars only — no prompt bodies).
+
+    Does not load memory_agent YAML or runtime prompt files; only paths already present in payload.
+    """
+    title = step.strip() or "env config"
+    if not should_dump_full_env_config_log():
+        logger.info(
+            "=== %s | file=%s (full YAML dump suppressed; set by pipeline parent) ===",
+            title,
+            config_path,
+        )
+        if footer:
+            for fk, fv in footer.items():
+                logger.info("  %s: %s", fk, fv)
+        log_relevant_env_vars(logger)
+        logger.info("=== end %s ===", title)
+        return
+
+    snap = build_env_config_snapshot(payload, overrides=overrides, pipeline_cli=pipeline_cli)
+    try:
+        text = yaml.safe_dump(
+            snap,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False,
+        )
+    except Exception:
+        text = str(snap)
+
+    logger.info("=== %s | file=%s ===", title, config_path)
+    for line in text.rstrip().splitlines():
+        logger.info("  %s", line)
+    if footer:
+        logger.info("  --- effective / extra ---")
+        for fk, fv in footer.items():
+            logger.info("  %s: %s", fk, fv)
+    log_relevant_env_vars(logger)
+    logger.info("=== end %s ===", title)

@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, TypedDict
+from typing import Any, Collection, Dict, List, Literal, Optional, TypedDict
 
 
 WorkspaceStatus = Literal["SUFFICIENT", "INSUFFICIENT", "INVALID"]
 
 
-class WorkspaceDocument(TypedDict):
+class WorkspaceDocument(TypedDict, total=False):
+    # ---- Core fields (stable contract across all evidence sources) ----
     evidence_id: str
+    source_type: str
     content: str
     source_action_id: str
     recall_score: float | None
     rerank_score: float | None
+    meta: Dict[str, Any]
 
 
 class WorkspaceState(TypedDict):
@@ -156,6 +159,16 @@ class Workspace:
         if self.kept_evidence_ids:
             self.kept_evidence_ids = [x for x in self.kept_evidence_ids if x != eid]
         return True
+
+    def prune_except(self, keep_ids: Collection[str]) -> int:
+        """Remove all evidences whose id is not in *keep_ids*. Returns removal count."""
+        keep = {str(x).strip() for x in keep_ids if str(x).strip()}
+        removed = 0
+        for eid in list(self._insert_order):
+            if eid not in keep:
+                if self.remove_evidence(eid):
+                    removed += 1
+        return removed
 
     def to_evidence_summary(self, max_items: int = 6) -> str:
         blocks: List[str] = []

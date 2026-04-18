@@ -558,7 +558,11 @@ def create_app(*, default_config_path: str | Path = DEFAULT_CONFIG_PATH) -> Fast
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run Memory-Agent visual API backend.")
-    parser.add_argument("--host", default="0.0.0.0", help="Host to bind.")
+    parser.add_argument(
+        "--host",
+        default="0.0.0.0",
+        help="Host to bind (0.0.0.0 = all interfaces). Open the API in a browser at http://127.0.0.1:PORT, not http://0.0.0.0:PORT.",
+    )
     parser.add_argument("--port", type=int, default=8092, help="Port to bind.")
     parser.add_argument(
         "--config",
@@ -569,8 +573,23 @@ def main() -> None:
 
     import uvicorn
 
+    port = max(1, int(args.port))
+    host = str(args.host)
+    if host in ("0.0.0.0", "::", "::0"):
+        browse_base = f"http://127.0.0.1:{port}"
+    else:
+        browse_base = f"http://{host}:{port}"
+    print(
+        "\nMemory-Agent Visual API\n"
+        f"  Listening on http://{host}:{port}\n"
+        f"  In your browser open: {browse_base}/healthz\n"
+        f"  WebUI (API field): {browse_base}\n"
+        "  Note: http://0.0.0.0:... is invalid in most browsers (use 127.0.0.1 or localhost).\n",
+        flush=True,
+    )
+
     app = create_app(default_config_path=args.config)
-    uvicorn.run(app, host=str(args.host), port=max(1, int(args.port)))
+    uvicorn.run(app, host=host, port=port)
 
 
 if __name__ == "__main__":

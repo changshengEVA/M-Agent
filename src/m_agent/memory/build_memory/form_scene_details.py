@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from calendar import monthrange
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -1008,6 +1009,7 @@ def scan_and_form_scene_facts(
     prompt_language: str = "zh",
     embed_model: Optional[Callable[[Any], Any]] = None,
     llm_model: Optional[Callable[[str], str]] = None,
+    max_workers: int = 1,
 ) -> Dict[str, int]:
     memory_root = get_memory_root(workflow_id)
     scene_root = get_scene_root(memory_root)
@@ -1057,8 +1059,9 @@ def scan_and_form_scene_facts(
         logger.info("No scene files found under %s", scene_root)
         return stats
 
-    file_iter = tqdm(scene_files, desc="Extract scene facts") if use_tqdm else scene_files
-    for scene_file in file_iter:
+    workers = max(1, int(max_workers))
+
+    def _one_scene(scene_file: Path) -> Tuple[str, int]:
         status, fact_count = process_scene_file(
             scene_file=scene_file,
             dialogues_root=dialogues_root,
@@ -1067,21 +1070,57 @@ def scan_and_form_scene_facts(
             embed_model=embed_model,
             llm_model=llm_model,
         )
+        return status, fact_count
 
-        if status == "updated":
-            stats["updated"] += 1
-            if fact_count > 0:
-                stats["with_facts"] += 1
+    if workers == 1:
+        file_iter = tqdm(scene_files, desc="Extract scene facts") if use_tqdm else scene_files
+        for scene_file in file_iter:
+            status, fact_count = process_scene_file(
+                scene_file=scene_file,
+                dialogues_root=dialogues_root,
+                prompt_template=prompt_template,
+                force_update=force_update,
+                embed_model=embed_model,
+                llm_model=llm_model,
+            )
+            if status == "updated":
+                stats["updated"] += 1
+                if fact_count > 0:
+                    stats["with_facts"] += 1
+                else:
+                    stats["empty_facts"] += 1
+            elif status == "skipped":
+                stats["skipped"] += 1
+                if fact_count > 0:
+                    stats["with_facts"] += 1
+                else:
+                    stats["empty_facts"] += 1
             else:
-                stats["empty_facts"] += 1
-        elif status == "skipped":
-            stats["skipped"] += 1
-            if fact_count > 0:
-                stats["with_facts"] += 1
-            else:
-                stats["empty_facts"] += 1
-        else:
-            stats["failed"] += 1
+                stats["failed"] += 1
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(scene_files))) as pool:
+            futures = {
+                pool.submit(_one_scene, sf): sf for sf in scene_files
+            }
+            iterator = as_completed(futures)
+            if use_tqdm:
+                iterator = tqdm(iterator, total=len(futures), desc="Extract scene facts")
+            for fut in iterator:
+                status, fact_count = fut.result()
+                if status == "updated":
+                    stats["updated"] += 1
+                    if fact_count > 0:
+                        stats["with_facts"] += 1
+                    else:
+                        stats["empty_facts"] += 1
+                elif status == "skipped":
+                    stats["skipped"] += 1
+                    if fact_count > 0:
+                        stats["with_facts"] += 1
+                    else:
+                        stats["empty_facts"] += 1
+                else:
+                    stats["failed"] += 1
 
     logger.info(
         "Scene fact extraction complete: scanned=%s updated=%s skipped=%s failed=%s with_facts=%s empty_facts=%s",

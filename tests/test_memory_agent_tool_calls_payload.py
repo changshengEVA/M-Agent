@@ -51,7 +51,7 @@ def test_finalize_recall_payload_keeps_tool_calls_in_result() -> None:
     result = agent._finalize_recall_payload(
         payload,
         question_plan={"goal": "When was Jon in Paris?"},
-        sub_question_results=[],
+        recall_rounds=[],
         tool_calls=tool_calls,
     )
 
@@ -179,7 +179,7 @@ def test_finalize_recall_payload_appends_episode_refs_to_answer_and_evidence() -
     result = agent._finalize_recall_payload(
         payload,
         question_plan={"goal": "Why did Jon shut down his bank account?"},
-        sub_question_results=[],
+        recall_rounds=[],
         tool_calls=tool_calls,
     )
 

@@ -157,6 +157,15 @@ def parse_args() -> argparse.Namespace:
             "'conv-30,conv-48'. Applied before question filtering/sampling."
         ),
     )
+    parser.add_argument(
+        "--workflow-id",
+        type=str,
+        default="",
+        help=(
+            "Override MemoryCore workflow_id so episodes/scene load from "
+            "data/memory/<workflow_id>/ (must match import --process-id)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -1266,7 +1275,10 @@ def _resolve_relative_path(path_value: str, base_path: str) -> Path:
     return (Path(base_path).resolve().parent / candidate).resolve()
 
 
-def _resolve_locomo_episodes_root_from_agent_config(agent_config_path: str) -> Path | None:
+def _resolve_locomo_episodes_root_from_agent_config(
+    agent_config_path: str,
+    workflow_id_override: str = "",
+) -> Path | None:
     try:
         agent_cfg = _load_yaml(agent_config_path)
     except Exception as exc:
@@ -1297,7 +1309,9 @@ def _resolve_locomo_episodes_root_from_agent_config(agent_config_path: str) -> P
         logger.warning("MemoryCore config is not a mapping: %s", memory_core_path)
         return None
 
-    workflow_id = str(memory_core_cfg.get("workflow_id", "") or "").strip()
+    workflow_id = str(workflow_id_override or "").strip()
+    if not workflow_id:
+        workflow_id = str(memory_core_cfg.get("workflow_id", "") or "").strip()
     if not workflow_id:
         logger.warning("workflow_id missing in MemoryCore config: %s", memory_core_path)
         return None
@@ -1324,21 +1338,57 @@ def main() -> int:
 
     setup_logging(log_file)
     logger.info("Start LoCoMo QA evaluation")
-    logger.info("test_id=%s", _sanitize_test_id(args.test_id))
-    logger.info("data_file=%s", data_file)
-    logger.info("config=%s", config_path)
     logger.info("out_file=%s", out_file)
     logger.info("stats_file=%s", stats_file)
     logger.info("log_file=%s", log_file)
     logger.info("trace_file=%s", trace_file)
     logger.info("Skipped QA categories: %s", sorted(SKIPPED_QA_CATEGORIES))
-    episodes_root = _resolve_locomo_episodes_root_from_agent_config(config_path)
+    wf_override = str(args.workflow_id or "").strip()
+    episodes_root = _resolve_locomo_episodes_root_from_agent_config(
+        config_path,
+        workflow_id_override=wf_override,
+    )
     if episodes_root is not None:
         logger.info("episodes_root=%s", episodes_root)
     else:
         logger.warning(
             "episodes_root unavailable; recall will fallback to coarse/session or context matching."
         )
+    if wf_override:
+        logger.info("workflow_id override=%s", wf_override)
+
+    run_params: Dict[str, Any] = {
+        "data_file": data_file,
+        "memory_agent_config": config_path,
+        "test_id": _sanitize_test_id(args.test_id),
+        "workflow_id_override": wf_override or None,
+        "episodes_root_resolved": str(episodes_root) if episodes_root is not None else None,
+        "model_key": args.model_key,
+        "prediction_key": args.prediction_key,
+        "thread_id_prefix": args.thread_id_prefix,
+        "overwrite": bool(args.overwrite),
+        "sample_fraction": args.sample_fraction,
+        "sample_seed": args.sample_seed,
+        "max_samples": args.max_samples,
+        "max_questions": args.max_questions,
+        "save_every": args.save_every,
+        "sleep_seconds": args.sleep_seconds,
+        "conv_ids_cli": args.conv_ids or "",
+        "question_config_cli": str(args.question_config or "").strip(),
+    }
+    try:
+        params_txt = yaml.safe_dump(
+            run_params,
+            allow_unicode=True,
+            default_flow_style=False,
+            sort_keys=False,
+        )
+    except Exception:
+        params_txt = str(run_params)
+    logger.info("=== run_eval_locomo parameters (paths/scalars only; no prompt file contents) ===")
+    for line in params_txt.rstrip().splitlines():
+        logger.info("  %s", line)
+    logger.info("=== end run_eval_locomo parameters ===")
 
     samples = _load_json(data_file)
     if not isinstance(samples, list):
@@ -1436,7 +1486,10 @@ def main() -> int:
     if pending_questions > 0:
         from m_agent.agents.memory_agent import create_memory_agent
 
-        agent = create_memory_agent(config_path)
+        agent = create_memory_agent(
+            config_path,
+            memory_workflow_id=wf_override or None,
+        )
     else:
         logger.info("No pending questions. Skip model inference and recompute metrics only.")
 

@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
 from typing import Any, Callable, List, Optional, Sequence
+
+from m_agent.utils.pipeline_logging import suppress_verbose_pipeline_loggers
 
 try:
     from dotenv import load_dotenv
@@ -27,7 +30,7 @@ except ImportError:
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
-logging.getLogger("httpx").setLevel(logging.WARNING)
+suppress_verbose_pipeline_loggers(debug=False)
 
 from m_agent.load_data import load_dialogues
 from m_agent.memory.utils import build_episodes_with_id, get_output_path, save_dialogue
@@ -145,7 +148,7 @@ def stage1_construct_dialogues_for_id(
     logger.info("loader_type=%s", loader_type)
     logger.info("=" * 50)
 
-    dialogues = load_dialogues(data_source, loader_type)
+    dialogues = load_dialogues(data_source, loader_type, include_conv_ids=include_conv_ids)
     if not dialogues:
         logger.error("No dialogues loaded")
         return False
@@ -184,6 +187,11 @@ def stage2_construct_episodes_for_id(
     logger.info("Stage 2: construct episodes for process_id=%s", process_id)
     logger.info("memory_owner_name=%s", DEFAULT_MEMORY_OWNER_NAME)
     logger.info("prompt_language=%s", prompt_language)
+    try:
+        episode_max_workers = max(1, int(os.environ.get("M_AGENT_EPISODE_MAX_WORKERS", "1")))
+    except ValueError:
+        episode_max_workers = 1
+    logger.info("episode_max_workers=%s (env M_AGENT_EPISODE_MAX_WORKERS)", episode_max_workers)
     logger.info("=" * 50)
 
     if not build_episodes_with_id(
@@ -192,6 +200,7 @@ def stage2_construct_episodes_for_id(
         DEFAULT_MEMORY_OWNER_NAME,
         llm_model=llm_model,
         prompt_language=prompt_language,
+        episode_max_workers=episode_max_workers,
     ):
         logger.error("Build episodes failed")
         return False
@@ -262,7 +271,7 @@ def main() -> None:
         "--loader-type",
         type=str,
         default="auto",
-        choices=["auto", "realtalk", "locomo", "default"],
+        choices=["auto", "realtalk", "locomo", "longmemeval", "default"],
         help="Dialogue loader type",
     )
     parser.add_argument(

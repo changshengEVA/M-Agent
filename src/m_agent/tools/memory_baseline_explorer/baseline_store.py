@@ -3,9 +3,9 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from m_agent.paths import memory_workflow_dir
+from m_agent.paths import DATA_DIR, memory_workflow_dir
 
 _WORKFLOW_ID_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$")
 _SCENE_ID_RE = re.compile(r'"scene_id"\s*:\s*"([^"]*)"')
@@ -34,6 +34,275 @@ def is_safe_scene_stem(stem: str) -> bool:
 
 def resolve_memory_root(*, workflow_id: str) -> Path:
     return memory_workflow_dir(workflow_id).resolve()
+
+
+def memory_data_anchor() -> Path:
+    """Canonical root for all on-disk memory workflows: ``data/memory``."""
+    return (DATA_DIR / "memory").resolve()
+
+
+def resolve_valid_memory_root(
+    raw: str | Path | None,
+    *,
+    anchor: Optional[Path] = None,
+) -> Optional[Path]:
+    """
+    Resolve a directory under ``data/memory`` from an absolute path or a path
+    relative to ``anchor`` (e.g. ``locomo/conv-26``). Returns None if invalid.
+    """
+    if raw is None:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    base = (anchor or memory_data_anchor()).resolve()
+    path = Path(text).expanduser()
+    if not path.is_absolute():
+        path = (base / path).resolve()
+    else:
+        path = path.resolve()
+    try:
+        path.relative_to(base)
+    except ValueError:
+        return None
+    if not path.is_dir():
+        return None
+    return path
+
+
+def _is_memory_workflow_candidate(dir_path: Path) -> bool:
+    """True for a directory that looks like a memory *workflow root* (not ``.../dialogues`` alone)."""
+    if not dir_path.is_dir():
+        return False
+    episodes = dir_path / "episodes"
+    if not episodes.is_dir():
+        return False
+    by_dlg = episodes / "by_dialogue"
+    if by_dlg.is_dir():
+        return True
+    dialogues = dir_path / "dialogues"
+    if dialogues.is_dir():
+        for p in dialogues.rglob("*.json"):
+            if p.is_file():
+                return True
+    return False
+
+
+def discover_memory_workflow_roots(
+    *,
+    anchor: Optional[Path] = None,
+    max_depth: int = 10,
+    max_roots: int = 500,
+) -> List[Dict[str, Any]]:
+    """
+    Find directories under ``data/memory`` that look like a workflow root
+    (has ``dialogues`` with JSON and/or ``episodes/by_dialogue``).
+    """
+    base = (anchor or memory_data_anchor()).resolve()
+    if not base.is_dir():
+        return []
+    out: List[Dict[str, Any]] = []
+    base_parts = len(base.parts)
+
+    def walk(current: Path, depth: int) -> None:
+        if len(out) >= max_roots:
+            return
+        if depth > max_depth:
+            return
+        if not current.is_dir():
+            return
+        try:
+            if current.resolve() != base and _is_memory_workflow_candidate(current):
+                rel = current.resolve().relative_to(base)
+                out.append(
+                    {
+                        "relative_path": str(rel).replace("\\", "/"),
+                        "memory_root": str(current.resolve()),
+                    }
+                )
+                if len(out) >= max_roots:
+                    return
+        except ValueError:
+            return
+        try:
+            for child in sorted(current.iterdir(), key=lambda p: p.name.lower()):
+                if child.name.startswith("."):
+                    continue
+                if len(out) >= max_roots:
+                    return
+                walk(child, depth + 1)
+        except OSError:
+            return
+
+    walk(base, 0)
+    # Prefer deeper roots: drop a path if a more specific child is also listed
+    roots = [str(item["memory_root"]) for item in out]
+    roots_set = set(roots)
+    filtered: List[Dict[str, Any]] = []
+    for item in out:
+        p = Path(item["memory_root"])
+        skip = False
+        for other in roots_set:
+            if other == str(p):
+                continue
+            try:
+                Path(other).resolve().relative_to(p)
+                skip = True
+                break
+            except ValueError:
+                continue
+        if not skip:
+            filtered.append(item)
+    filtered.sort(key=lambda row: str(row.get("relative_path") or ""))
+    return filtered
+
+
+def iter_fact_json_files_deep(facts_dir: Path, *, max_files: int = 8000) -> List[Path]:
+    if not facts_dir.is_dir():
+        return []
+    paths: List[Path] = []
+    for p in sorted(facts_dir.rglob("*.json")):
+        if p.is_file():
+            paths.append(p)
+            if len(paths) >= max_files:
+                break
+    return paths
+
+
+def _normalize_fact_dict(obj: Any) -> Optional[Dict[str, Any]]:
+    if isinstance(obj, dict) and (obj.get("Atomic fact") is not None or obj.get("evidence") is not None):
+        return obj
+    return None
+
+
+def load_facts_for_dialogue_from_files(facts_dir: Path, dialogue_id: str) -> List[Dict[str, Any]]:
+    """Load atomic facts from ``facts/**/*.json`` that belong to ``dialogue_id``."""
+    out: List[Dict[str, Any]] = []
+    seen: Set[Tuple[str, str, str, str]] = set()
+    for path in iter_fact_json_files_deep(facts_dir):
+        try:
+            data = load_json_if_exists(path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            continue
+        candidates: List[Dict[str, Any]] = []
+        if isinstance(data, dict):
+            one = _normalize_fact_dict(data)
+            if one is not None:
+                candidates.append(one)
+        elif isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    one = _normalize_fact_dict(item)
+                    if one is not None:
+                        candidates.append(one)
+        for fact in candidates:
+            ev = fact.get("evidence") if isinstance(fact.get("evidence"), dict) else {}
+            if str(ev.get("dialogue_id") or dialogue_id) != dialogue_id:
+                continue
+            key = (
+                str(fact.get("Atomic fact") or ""),
+                str(ev.get("episode_id") or ""),
+                str(ev.get("segment_id") or ""),
+                str(fact.get("fact_id") or path.name),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(strip_embeddings(dict(fact)))
+    return out
+
+
+def _fact_merge_key(f: Dict[str, Any]) -> Tuple[str, str, str, str]:
+    ev = f.get("evidence") if isinstance(f.get("evidence"), dict) else {}
+    return (
+        str(f.get("Atomic fact") or ""),
+        str(ev.get("episode_id") or ""),
+        str(ev.get("segment_id") or ""),
+        str(ev.get("dialogue_id") or ""),
+    )
+
+
+def merge_file_facts_into_scene_layers(
+    scene_layers: List[Dict[str, Any]],
+    file_facts: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """
+    Copy scene_layers and attach file-based facts to layers with matching ``scene_id``.
+    Facts that cannot be placed are added in a final synthetic layer.
+    """
+    if not file_facts:
+        return [dict(layer) for layer in scene_layers]
+    layers_out: List[Dict[str, Any]] = []
+    existing_keys: Set[Tuple[str, str, str, str]] = set()
+    for layer in scene_layers:
+        if not isinstance(layer, dict):
+            continue
+        dup = dict(layer)
+        facts = dup.get("facts")
+        if not isinstance(facts, list):
+            facts = []
+        else:
+            facts = list(facts)
+        dup["facts"] = facts
+        for f in facts:
+            if isinstance(f, dict):
+                existing_keys.add(_fact_merge_key(f))
+        layers_out.append(dup)
+
+    unmatched: List[Dict[str, Any]] = []
+    for f in file_facts:
+        if not isinstance(f, dict):
+            continue
+        fsid = str(f.get("scene_id") or "").strip()
+        placed = False
+        if fsid:
+            for layer in layers_out:
+                if str(layer.get("scene_id") or "") == fsid:
+                    lst = layer.setdefault("facts", [])
+                    if not isinstance(lst, list):
+                        lst = []
+                        layer["facts"] = lst
+                    k = _fact_merge_key(f)
+                    if k not in existing_keys:
+                        lst.append(f)
+                        existing_keys.add(k)
+                    placed = True
+                    break
+        if not placed:
+            unmatched.append(f)
+
+    if unmatched:
+        lst_u: List[Dict[str, Any]] = []
+        seen_u: Set[Tuple[str, str, str, str]] = set()
+        for f in unmatched:
+            k = _fact_merge_key(f)
+            if k in seen_u:
+                continue
+            seen_u.add(k)
+            if k not in existing_keys:
+                lst_u.append(f)
+        if lst_u:
+            layers_out.append(
+                {
+                    "scene_id": "(facts_files)",
+                    "_file": "facts",
+                    "theme": "",
+                    "diary": "",
+                    "facts": lst_u,
+                }
+            )
+    return layers_out
+
+
+def narrative_sources_used(*, had_scene_layers: bool, file_facts: List[Dict[str, Any]]) -> str:
+    ff = bool(file_facts)
+    if had_scene_layers and ff:
+        return "mixed"
+    if had_scene_layers:
+        return "scene"
+    if ff:
+        return "facts_files"
+    return "none"
 
 
 def strip_embeddings(value: Any) -> Any:

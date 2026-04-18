@@ -66,10 +66,22 @@ def test_execute_actions_passes_dict_refs_to_content_lookup() -> None:
     assert captured_refs == [{"dialogue_id": "dlg_1", "episode_id": "ep_001"}]
     assert len(report["evidences"]) == 1
     ev = report["evidences"][0]
-    assert ev["turn_span"] == [0, 1]
-    assert len(ev["turns"]) == 2
-    assert ev["facts"] == ["Emi likes painting."]
-    assert ev["segment_id"] is None
+    # Core contract (cross-source stable fields)
+    assert ev["evidence_id"] == "dlg_1:ep_001"
+    assert ev["source_type"] == "episode"
+    assert isinstance(ev["content"], str) and ev["content"].strip()
+    assert ev["source_action_id"] == "r1_a1"
+    assert isinstance(ev["recall_score"], float)
+    assert ev.get("rerank_score") is None
+    assert isinstance(ev["meta"], dict)
+
+    meta = ev["meta"]
+    assert meta["dialogue_id"] == "dlg_1"
+    assert meta["episode_id"] == "ep_001"
+    assert meta["segment_id"] is None
+    assert meta["facts"] == ["Emi likes painting."]
+    assert meta["turn_span"] == [0, 1]
+    assert isinstance(meta["turns"], list) and len(meta["turns"]) == 2
 
 
 def test_execute_actions_segment_level_recall() -> None:
@@ -143,7 +155,10 @@ def test_execute_actions_segment_level_recall() -> None:
     assert len(report["evidences"]) == 1
     ev = report["evidences"][0]
     assert ev["evidence_id"] == "dlg_1:ep_001:seg_001"
-    assert ev["segment_id"] == "seg_001"
-    assert ev["turn_span"] == [0, 1]
-    assert len(ev["turns"]) == 2
-    assert ev["facts"] == ["Jon lost his banking job."]
+    assert ev["source_type"] == "episode"
+    assert isinstance(ev["meta"], dict)
+    meta = ev["meta"]
+    assert meta["segment_id"] == "seg_001"
+    assert meta["facts"] == ["Jon lost his banking job."]
+    assert meta["turn_span"] == [0, 1]
+    assert isinstance(meta["turns"], list) and len(meta["turns"]) == 2

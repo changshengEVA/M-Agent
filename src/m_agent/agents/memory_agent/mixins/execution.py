@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..action_executor import execute_actions
 from ..action_planner import (
@@ -19,6 +19,17 @@ from ..workspace import Workspace
 from m_agent.utils.api_error_utils import is_network_api_error
 
 logger = logging.getLogger(__name__)
+
+
+def _chunk_evidence_text(text: str, chunk_chars: int) -> List[str]:
+    """Split long evidence into fixed-size chunks for reranking."""
+    body = str(text or "").strip()
+    if not body:
+        return []
+    cc = max(32, int(chunk_chars))
+    if len(body) <= cc:
+        return [body]
+    return [body[i : i + cc] for i in range(0, len(body), cc)]
 
 
 class MemoryAgentExecutionMixin:
@@ -72,7 +83,7 @@ class MemoryAgentExecutionMixin:
         payload: Dict[str, Any],
         *,
         question_plan: Dict[str, Any],
-        sub_question_results: List[Dict[str, Any]],
+        recall_rounds: List[Dict[str, Any]],
         tool_calls: List[Dict[str, Any]],
         kept_evidence_ids: List[str] | None = None,
     ) -> Dict[str, Any]:
@@ -88,7 +99,7 @@ class MemoryAgentExecutionMixin:
         payload["evidence_episode_ref_count"] = len(episode_refs)
         payload = self._append_episode_refs_to_payload(payload, episode_refs)
         payload["question_plan"] = question_plan
-        payload["sub_question_results"] = sub_question_results
+        payload["recall_rounds"] = recall_rounds
         payload.pop("sub_questions", None)
         payload.pop("plan_summary", None)
         self._log_structured_trace(
@@ -210,6 +221,9 @@ class MemoryAgentExecutionMixin:
     ) -> List[str]:
         """Rerank only the newly added evidence using the current query.
 
+        Long documents are split into chunks; each chunk is scored and the
+        **max** chunk score is stored as the evidence-level ``rerank_score``.
+
         Drops evidences whose rerank score is strictly below ``rerank_score_threshold``
         (config ``workspace.rerank.score_threshold``). Returns ``new_evidence_ids`` with
         removed ids filtered out so downstream judge sees only surviving new docs.
@@ -219,11 +233,12 @@ class MemoryAgentExecutionMixin:
             return list(new_evidence_ids)
 
         max_docs = max(1, int(getattr(self, "rerank_max_documents", 16)))
+        chunk_chars = max(32, int(getattr(self, "rerank_chunk_chars", 800)))
+        chunk_batch = max(4, int(getattr(self, "rerank_chunk_batch_size", 32)))
         ids_to_rank = new_evidence_ids[:max_docs]
 
         all_docs = {doc["evidence_id"]: doc for doc in workspace.all_evidences()}
-        documents: List[str] = []
-        ordered_ids: List[str] = []
+        chunk_rows: List[Tuple[str, str]] = []
         for eid in ids_to_rank:
             doc = all_docs.get(eid)
             if doc is None:
@@ -231,33 +246,47 @@ class MemoryAgentExecutionMixin:
             content = str(doc.get("content", "") or "").strip()
             if not content:
                 continue
-            documents.append(content)
-            ordered_ids.append(eid)
+            for piece in _chunk_evidence_text(content, chunk_chars):
+                chunk_rows.append((eid, piece))
 
-        if not documents:
+        if not chunk_rows:
             return [eid for eid in new_evidence_ids if workspace.has_evidence(eid)]
 
         threshold = float(getattr(self, "rerank_score_threshold", 0.0))
+        best_chunk_score: Dict[str, float] = {}
 
         try:
+            total_chunks = len(chunk_rows)
             logger.info(
-                "API call: rerank(query_len=%d, doc_count=%d)",
+                "API call: rerank(query_len=%d, evidence_docs=%d, chunk_count=%d)",
                 len(cur_query),
-                len(documents),
+                len(ids_to_rank),
+                total_chunks,
             )
-            results = rerank_func(cur_query, documents, len(documents))
-            for item in results:
-                idx = int(item.get("index", -1))
-                score = float(item.get("relevance_score", 0.0))
-                if 0 <= idx < len(ordered_ids):
-                    workspace.set_rerank_score(ordered_ids[idx], score)
+            offset = 0
+            while offset < total_chunks:
+                batch = chunk_rows[offset : offset + chunk_batch]
+                offset += len(batch)
+                documents = [row[1] for row in batch]
+                results = rerank_func(cur_query, documents, len(documents))
+                for item in results:
+                    idx = int(item.get("index", -1))
+                    score = float(item.get("relevance_score", 0.0))
+                    if 0 <= idx < len(batch):
+                        eid = batch[idx][0]
+                        prev = best_chunk_score.get(eid)
+                        if prev is None or score > prev:
+                            best_chunk_score[eid] = score
             logger.info(
-                "API response: rerank(scored=%d)",
-                len(results),
+                "API response: rerank(chunk_batches=%d, evidences_scored=%d)",
+                (total_chunks + chunk_batch - 1) // chunk_batch,
+                len(best_chunk_score),
             )
-            # Drop reranked docs below threshold; unranked (beyond max_docs) keep recall only.
+            for eid, score in best_chunk_score.items():
+                workspace.set_rerank_score(eid, score)
+
             dropped = 0
-            for eid in ordered_ids:
+            for eid in list(best_chunk_score.keys()):
                 doc = workspace.get_document(eid)
                 if doc is None:
                     continue
@@ -330,6 +359,8 @@ class MemoryAgentExecutionMixin:
         workspace.cur_query = question_text
 
         round_traces: List[Dict[str, Any]] = []
+        # Detailed per-round workspace snapshots for eval harness logging.
+        workspace_rounds: List[Dict[str, Any]] = []
         previous_action_signatures: set[str] = set()
         remedy_used = 0
         last_status = "INIT"
@@ -338,9 +369,27 @@ class MemoryAgentExecutionMixin:
         remedy_limit = max(0, int(getattr(self, "workspace_remedy_recall_max_times", 1)))
         detail_defaults = getattr(self, "detail_search_defaults", {"topk": 5})
         default_topk = max(1, int(detail_defaults.get("topk", 5)))
+        prev_useful_frozen: frozenset[str] | None = None
         for round_id in range(1, max(1, int(max_rounds)) + 1):
             workspace.set_round(round_id)
             cur_query = workspace.cur_query
+            round_record: Dict[str, Any] = {
+                "round_id": round_id,
+                "original_question": workspace.original_question,
+                "question": workspace.original_question,
+                "cur_query": cur_query,
+                # Initial workspace evidences at round start (pre-planning / pre-actions).
+                "workspace_before": workspace.snapshot(),
+                # Filled later:
+                "actions": [],
+                "workspace_after_execute": None,
+                "workspace_after_rerank": None,
+                "judge": None,
+                "judge_result": None,
+                "workspace_after_judge": None,
+                "status": None,
+                "workspace_status": None,
+            }
 
             force_remedy = (
                 last_status == "INVALID"
@@ -394,6 +443,21 @@ class MemoryAgentExecutionMixin:
                     "actions": [],
                 }
                 round_traces.append(trace_item)
+                round_record["actions"] = []
+                round_record["judge"] = {
+                    "status": "INVALID",
+                    "gap_type": "no_new_actions",
+                    "reason": "No non-duplicate actions generated.",
+                    "next_query": None,
+                    "useful_evidence_ids": [],
+                }
+                round_record["judge_result"] = round_record["judge"]
+                round_record["workspace_after_execute"] = workspace.snapshot()
+                round_record["workspace_after_rerank"] = workspace.snapshot()
+                round_record["workspace_after_judge"] = workspace.snapshot()
+                round_record["status"] = workspace.status
+                round_record["workspace_status"] = workspace.status
+                workspace_rounds.append(round_record)
                 self._log_structured_trace(
                     self._TRACE_PREFIX_WORKSPACE_STATE,
                     {
@@ -404,6 +468,8 @@ class MemoryAgentExecutionMixin:
                 )
                 break
 
+            # Keep only the planned actions (no tool execution results here).
+            round_record["actions"] = [self._safe_trace_value(action) for action in actions]
             for action in actions:
                 previous_action_signatures.add(action_signature(action))
 
@@ -460,6 +526,8 @@ class MemoryAgentExecutionMixin:
             )
 
             new_evidence_ids = workspace.extend_and_track_new(report["evidences"])
+            # Snapshot right after tool execution adds evidences (before rerank/keep).
+            round_record["workspace_after_execute"] = workspace.snapshot()
             new_evidence_ids = self._rerank_new_evidences(
                 workspace, cur_query, new_evidence_ids
             )
@@ -467,27 +535,55 @@ class MemoryAgentExecutionMixin:
                 max(1, int(getattr(self, "workspace_max_keep", 6))),
                 protected_ids=workspace.kept_evidence_ids,
             )
+            # Snapshot after rerank + keep_top (before judge).
+            round_record["workspace_after_rerank"] = workspace.snapshot()
 
             decision = self._run_llm_judge(workspace, new_evidence_ids)
             workspace.mark(decision["status"], decision.get("gap_type"))
             last_status = decision["status"]
 
-            if decision.get("useful_evidence_ids"):
-                workspace.kept_evidence_ids = decision["useful_evidence_ids"]
+            useful_ids = [
+                str(x).strip()
+                for x in (decision.get("useful_evidence_ids") or [])
+                if str(x).strip()
+            ]
+            useful_frozen = frozenset(useful_ids)
+            stagnant = (
+                decision["status"] == "INSUFFICIENT"
+                and prev_useful_frozen is not None
+                and useful_frozen == prev_useful_frozen
+            )
+            if stagnant:
+                workspace.mark("INSUFFICIENT", "stagnant")
 
-            if decision["status"] == "INSUFFICIENT" and decision.get("next_query"):
+            if decision["status"] == "INSUFFICIENT" and decision.get("next_query") and not stagnant:
                 workspace.cur_query = decision["next_query"]
+
+            keep_pool = set(useful_ids) | set(new_evidence_ids)
+            workspace.prune_except(keep_pool)
+            survivors = [e for e in useful_ids if workspace.has_evidence(e)]
+            if not survivors:
+                survivors = [e for e in new_evidence_ids if workspace.has_evidence(e)]
+            workspace.kept_evidence_ids = survivors
+
+            round_record["judge"] = self._safe_trace_value(decision)
+            round_record["judge_result"] = round_record["judge"]
+            round_record["workspace_after_judge"] = workspace.snapshot()
+            round_record["status"] = workspace.status
+            round_record["workspace_status"] = workspace.status
+            workspace_rounds.append(round_record)
 
             trace_item = {
                 "round_id": round_id,
                 "status": decision["status"],
-                "gap_type": decision.get("gap_type"),
+                "gap_type": workspace.gap_type,
                 "reason": decision.get("reason"),
                 "next_query": decision.get("next_query"),
                 "action_types": [str(action.get("action_type", "")) for action in actions],
                 "episode_ref_count": len(report.get("episode_refs", [])),
                 "kept_evidence_count": len(workspace.kept_evidence_ids),
                 "useful_evidence_count": len(decision.get("useful_evidence_ids", [])),
+                "stagnant": stagnant,
             }
             round_traces.append(trace_item)
             self._log_structured_trace(
@@ -499,7 +595,11 @@ class MemoryAgentExecutionMixin:
                 },
             )
 
+            prev_useful_frozen = useful_frozen
+
             if decision["status"] == "SUFFICIENT":
+                break
+            if stagnant:
                 break
             if decision["status"] == "INVALID" and remedy_used >= remedy_limit:
                 break
@@ -537,13 +637,16 @@ class MemoryAgentExecutionMixin:
         )
 
         tool_calls = self._consume_current_tool_calls()
-        return self._finalize_recall_payload(
+        payload = self._finalize_recall_payload(
             payload,
             question_plan=question_plan,
-            sub_question_results=round_traces,
+            recall_rounds=round_traces,
             tool_calls=tool_calls,
             kept_evidence_ids=list(workspace.kept_evidence_ids),
         )
+        # Extra detailed round-by-round workspace logs for eval harness.
+        payload["workspace_rounds"] = workspace_rounds
+        return payload
 
     def shallow_recall(self, question: str, thread_id: Optional[str] = None) -> Dict[str, Any]:
         """Run single-round state-machine recall."""

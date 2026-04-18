@@ -24,39 +24,16 @@ _VALID_ACTION_TYPES = frozenset({
 })
 
 
-class ToolDescriptor(TypedDict):
+class ToolDescriptor(TypedDict, total=False):
     action_type: str
     description: str
     params: str
+    # When to use this tool: search-entry anchor hints (from YAML), injected into planner prompt.
+    search_entry_anchors: str
 
 
-TOOL_REGISTRY: List[ToolDescriptor] = [
-    {
-        "action_type": ACTION_EVENT_DETAIL_RECALL,
-        "description": "Semantic search over episode facts and dialogue details. Best for general questions about events, topics, or people.",
-        "params": '{"detail_query": "<search query>", "topk": <int, default 10>}',
-    },
-    {
-        "action_type": ACTION_EVENT_TIME_RECALL,
-        "description": "Retrieve events within a specific date/time range. Use when the question mentions dates or time periods.",
-        "params": '{"start_time": "<ISO date>", "end_time": "<ISO date>"}',
-    },
-    {
-        "action_type": ACTION_ENTITY_FEATURE_SEARCH,
-        "description": "Search features, attributes, or traits of a specific person or entity (e.g. hobbies, personality, preferences).",
-        "params": '{"entity_id": "<person/entity name>", "feature_query": "<what to search>", "topk": <int, default 5>}',
-    },
-    {
-        "action_type": ACTION_ENTITY_EVENT_SEARCH,
-        "description": "Search events or activities related to a specific person or entity.",
-        "params": '{"entity_id": "<person/entity name>", "event_query": "<what happened>", "topk": <int, default 5>}',
-    },
-    {
-        "action_type": ACTION_RECALL_REMEDY_MULTI_ROUTE,
-        "description": "Broad multi-route recall as a last resort when previous searches found nothing useful. Searches across multiple indexes simultaneously.",
-        "params": '{"detail_query": "<search query>", "topk": <int, default 10>}',
-    },
-]
+# Tool copy for the LLM planner is loaded only from ``tool_descriptions.yaml`` via
+# ``build_tool_registry_from_config`` (see ``MemoryAgent.tool_registry``).
 
 
 def build_tool_registry_from_config(
@@ -77,11 +54,19 @@ def build_tool_registry_from_config(
         else:
             description = str(desc_node)
         params = str(tool_cfg.get("params", "{}"))
-        registry.append({
+        entry: ToolDescriptor = {
             "action_type": action_type,
             "description": description,
             "params": params,
-        })
+        }
+        anchor_node = tool_cfg.get("search_entry_anchors")
+        if isinstance(anchor_node, dict):
+            anchors = str(anchor_node.get(language) or anchor_node.get("en", "")).strip()
+        else:
+            anchors = str(anchor_node or "").strip()
+        if anchors:
+            entry["search_entry_anchors"] = anchors
+        registry.append(entry)
     return registry
 
 
@@ -91,9 +76,16 @@ def tool_registry_for_prompt(
 ) -> List[ToolDescriptor]:
     """Return the tool registry filtered for the current planning context.
 
-    If *registry* is provided it takes precedence over the built-in TOOL_REGISTRY.
+    *registry* must be built from ``tool_descriptions.yaml`` and ``workspace.enabled_tools``
+    (via ``build_tool_registry_from_config`` on ``MemoryAgent``). There is no in-code default
+    tool list at prompt time.
     """
-    source = registry if registry is not None else TOOL_REGISTRY
+    if not registry:
+        raise ValueError(
+            "MemoryAgent.tool_registry is missing or empty. Configure workspace.enabled_tools "
+            "and ensure tool_descriptions.yaml loads so the LLM action planner receives tool metadata."
+        )
+    source = registry
     if force_remedy:
         return [t for t in source if t["action_type"] == ACTION_RECALL_REMEDY_MULTI_ROUTE]
     return [t for t in source if t["action_type"] != ACTION_RECALL_REMEDY_MULTI_ROUTE]
@@ -101,9 +93,7 @@ def tool_registry_for_prompt(
 
 class QueryIntent(TypedDict):
     original_question: str
-    sub_questions: List[str]
     question_type: str
-    decomposition_reason: str
     constraints: Dict[str, Any]
 
 
@@ -138,26 +128,18 @@ def build_query_intent(question_text: str) -> QueryIntent:
     question_type = _classify_question_type(normalized, constraints)
     return {
         "original_question": normalized,
-        "sub_questions": [],
         "question_type": question_type,
-        "decomposition_reason": "default_no_decomposition",
         "constraints": constraints,
     }
 
 
 def intent_to_question_plan(intent: QueryIntent) -> Dict[str, Any]:
-    sub_questions = intent.get("sub_questions") or []
+    """Lightweight recall context attached to the payload (no sub-question decomposition)."""
+    cons = intent.get("constraints")
     return {
         "goal": intent.get("original_question", ""),
         "question_type": intent.get("question_type", "direct_lookup"),
-        "decomposition_reason": intent.get("decomposition_reason", "default_no_decomposition"),
-        "sub_questions": sub_questions if isinstance(sub_questions, list) else [],
-        "suggested_tool_order": [
-            "search_events_by_time_range",
-            "search_details",
-            "search_content",
-        ],
-        "completion_criteria": "Return answer only when episode evidence supports it.",
+        "constraints": cons if isinstance(cons, dict) else {},
     }
 
 
@@ -178,9 +160,7 @@ def plan_actions_rule_based(
     safe_topk = max(1, int(topk))
     safe_max_actions = max(1, int(max_actions))
     question = str(intent.get("original_question", "") or "").strip()
-    sub_questions = intent.get("sub_questions")
-    if not isinstance(sub_questions, list) or not sub_questions:
-        sub_questions = [question]
+    sub_questions = [question]
 
     constraints = intent.get("constraints") if isinstance(intent.get("constraints"), dict) else {}
     time_range = constraints.get("time_range")
@@ -302,17 +282,68 @@ def _dedup_actions(
     max_actions: int,
     previous_action_signatures: Set[str],
 ) -> List[MemoryAction]:
-    deduped: List[MemoryAction] = []
-    local_signatures: Set[str] = set()
-    for action in sorted(action_candidates, key=lambda item: int(item.get("priority", 0)), reverse=True):
+    """Select up to *max_actions* actions with de-duplication and per-type quotas.
+
+    Phase 1 takes at most one action per ``action_type`` (highest-priority eligible
+    action per type) so semantic + time (+ future tools) can coexist under a small
+    budget. Phase 2 fills remaining slots by global priority.
+    """
+    max_actions = max(1, int(max_actions))
+    best_by_sig: Dict[str, MemoryAction] = {}
+    for action in sorted(
+        action_candidates,
+        key=lambda item: int(item.get("priority", 0)),
+        reverse=True,
+    ):
         sig = action_signature(action)
-        if sig in local_signatures or sig in previous_action_signatures:
+        if sig in previous_action_signatures:
             continue
-        local_signatures.add(sig)
-        deduped.append(action)
-        if len(deduped) >= max_actions:
+        prev = best_by_sig.get(sig)
+        if prev is None or int(action.get("priority", 0)) > int(prev.get("priority", 0)):
+            best_by_sig[sig] = action
+    eligible = list(best_by_sig.values())
+    if not eligible:
+        return []
+
+    by_type: Dict[str, List[MemoryAction]] = {}
+    for act in sorted(eligible, key=lambda x: int(x.get("priority", 0)), reverse=True):
+        atype = str(act.get("action_type", "")).strip()
+        by_type.setdefault(atype, []).append(act)
+
+    type_order = sorted(
+        by_type.keys(),
+        key=lambda t: max(int(x.get("priority", 0)) for x in by_type[t]),
+        reverse=True,
+    )
+
+    picked: List[MemoryAction] = []
+    picked_sigs: Set[str] = set()
+
+    def _take_best_for_type(atype: str) -> bool:
+        for cand in by_type.get(atype, []):
+            sig = action_signature(cand)
+            if sig in picked_sigs:
+                continue
+            picked.append(cand)
+            picked_sigs.add(sig)
+            return True
+        return False
+
+    for atype in type_order:
+        if len(picked) >= max_actions:
             break
-    return deduped
+        _take_best_for_type(atype)
+
+    for cand in sorted(eligible, key=lambda x: int(x.get("priority", 0)), reverse=True):
+        if len(picked) >= max_actions:
+            break
+        sig = action_signature(cand)
+        if sig in picked_sigs:
+            continue
+        picked.append(cand)
+        picked_sigs.add(sig)
+
+    return picked[:max_actions]
 
 
 def action_signature(action: MemoryAction) -> str:

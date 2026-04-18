@@ -117,6 +117,7 @@ def build_episodes_with_id(
     memory_owner_name: str = "changshengEVA",
     llm_model: Optional[Callable[[str], str]] = None,
     prompt_language: str = "en",
+    episode_max_workers: int = 1,
 ) -> bool:
     """Build episodes for a workflow under data/memory/{process_id}/."""
     try:
@@ -134,6 +135,7 @@ def build_episodes_with_id(
         logger.info("episodes_root=%s", episodes_root)
         logger.info("memory_owner_name=%s", memory_owner_name)
         logger.info("prompt_language=%s", prompt_language)
+        logger.info("episode_max_workers=%s", max(1, int(episode_max_workers)))
 
         from m_agent.memory.build_memory.build_episode import scan_and_build_episodes
 
@@ -144,6 +146,7 @@ def build_episodes_with_id(
             memory_owner_name=memory_owner_name,
             llm_model=llm_model,
             prompt_language=prompt_language,
+            max_workers=max(1, int(episode_max_workers)),
         )
 
         logger.info("Mark all episodes as available by default.")
@@ -175,6 +178,7 @@ def build_episodes_custom(
     memory_owner_name: str = "changshengEVA",
     llm_model: Optional[Callable[[str], str]] = None,
     prompt_language: str = "en",
+    episode_max_workers: int = 1,
 ) -> bool:
     """Build episodes using explicit dialogue/episode roots."""
     try:
@@ -183,6 +187,7 @@ def build_episodes_custom(
         logger.info("episodes_root=%s", episodes_root)
         logger.info("memory_owner_name=%s", memory_owner_name)
         logger.info("prompt_language=%s", prompt_language)
+        logger.info("episode_max_workers=%s", max(1, int(episode_max_workers)))
 
         dialogues_root.mkdir(parents=True, exist_ok=True)
         episodes_root.mkdir(parents=True, exist_ok=True)
@@ -196,6 +201,7 @@ def build_episodes_custom(
             memory_owner_name=memory_owner_name,
             llm_model=llm_model,
             prompt_language=prompt_language,
+            max_workers=max(1, int(episode_max_workers)),
         )
 
         logger.info("Mark all episodes as available by default.")

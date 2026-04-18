@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -229,6 +230,10 @@ def load_from_episode_path(
                     "status": "started",
                 },
             )
+            try:
+                scene_max_workers = max(1, int(os.environ.get("M_AGENT_SCENE_MAX_WORKERS", "1")))
+            except ValueError:
+                scene_max_workers = 1
             scan_and_form_scenes(
                 use_tqdm=True,
                 force_update=force_update,
@@ -240,6 +245,7 @@ def load_from_episode_path(
                 prompt_language=prompt_language,
                 embed_model=memory_core.embed_func,
                 llm_model=memory_core.llm_func,
+                max_workers=scene_max_workers,
             )
             scene_file_count = len([p for p in scene_root.glob("*.json") if p.is_file()])
             _emit_progress(
@@ -262,6 +268,10 @@ def load_from_episode_path(
                     "status": "started",
                 },
             )
+            try:
+                fact_max_workers = max(1, int(os.environ.get("M_AGENT_SCENE_FACT_MAX_WORKERS", "1")))
+            except ValueError:
+                fact_max_workers = 1
             fact_stats = scan_and_form_scene_facts(
                 workflow_id=memory_core.workflow_id,
                 prompt_version=fact_prompt_version,
@@ -270,6 +280,7 @@ def load_from_episode_path(
                 prompt_language=prompt_language,
                 embed_model=memory_core.embed_func,
                 llm_model=memory_core.llm_func,
+                max_workers=fact_max_workers,
             )
             _emit_progress(
                 progress_callback,

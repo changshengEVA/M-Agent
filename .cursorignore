@@ -1,0 +1,2 @@
+﻿# Dataset submodule: avoid indexing large / generated files in Cursor
+data/LongMemEval/

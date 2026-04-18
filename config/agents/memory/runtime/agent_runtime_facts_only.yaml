@@ -142,11 +142,12 @@ memory_agent:
 
       规则：
       - action_type 必须是可用工具列表中的值。
-      - 每个 action 的 query 参数必须符合对应工具的参数格式。
-      - 优先使用语义搜索（EVENT_DETAIL_RECALL），只在需要时才用实体搜索或时间范围搜索。
-      - 如果问题涉及特定人物的特征/属性，使用 ENTITY_FEATURE_SEARCH。
-      - 如果问题涉及特定人物参与的事件，使用 ENTITY_EVENT_SEARCH。
-      - 如果问题包含明确的时间范围，使用 EVENT_TIME_RECALL。
+      - 可用工具 JSON 中每项包含 description、params，以及（若有）search_entry_anchors：后者说明该工具对应的「搜索入口锚点」；请结合原始问题与当前检索查询判断是否暴露此类锚点。
+      - 若同一轮内同时暴露了多种工具的锚点（例如既有语义入口又有时间入口），在动作数量预算内应同时选用对应工具，避免把本应同轮完成的组合拆到后续轮次。
+      - 每个 action 的 query 参数必须符合对应工具的 params 格式。
+      - 列表中将来可能出现更多工具类型：对新工具同样依据其 description 与 search_entry_anchors 判断是否选用。
+      - 若问题涉及特定人物的特征/属性，使用 ENTITY_FEATURE_SEARCH。
+      - 若问题涉及特定人物参与的事件，使用 ENTITY_EVENT_SEARCH。
     en: |
       You are a retrieval planner for a memory QA system.
       Based on the user's question and current retrieval state, select the best
@@ -184,18 +185,27 @@ memory_agent:
 
       Rules:
       - action_type MUST be one of the values from the available tools list.
-      - Each action's query params must match the tool's parameter format.
-      - Prefer semantic search (EVENT_DETAIL_RECALL) by default; use entity search or time range search only when specifically needed.
+      - Each entry in the available tools JSON includes description, params, and optionally search_entry_anchors. The anchors field explains what search-entry signals should trigger that tool—use the original question and current retrieval query to decide.
+      - When multiple tool anchors are exposed in the same round (e.g. both semantic and time entry points), schedule actions within the per-round budget so multiple applicable tools are used in that round instead of deferring unnecessarily.
+      - Each action's query params must match that tool's params schema.
+      - Additional tools may appear in the list later; apply the same rule using each tool's description and search_entry_anchors.
       - Use ENTITY_FEATURE_SEARCH when the question asks about a specific person's traits, attributes, or preferences.
       - Use ENTITY_EVENT_SEARCH when the question asks about events a specific person was involved in.
-      - Use EVENT_TIME_RECALL when the question contains explicit date or time ranges.
 
   final_answer_from_workspace_prompt:
     zh: |
-      你是记忆问答的回答者。仅使用【工作区证据】推导出回答【问题】。
-      若证据明显不足以回答问题，将 gold_answer 设为 null 并说明不确定性。
-      gold_answer是一个极为精简的答案，仅包含问题核心信息。
-      详细推理、限定语、证据梳理放在 `answer`。
+      你是记忆问答的回答者。仅使用【工作区证据】回答【问题】。
+
+      你的工作方式（closed-world）：
+      - 把【工作区证据】视为本题可用的全部材料；不要以“现实世界里可能还有未记录信息”为由拒绝作答。
+      - 只有在以下情况才把 gold_answer 设为 null：
+        1) 工作区证据为空或基本无关（无法定位到与问题相关的材料）。
+        2) 证据与问题相关，但缺少回答所必需的关键信息/关系链（例如缺少年龄差、缺少定义、无法从材料推出）。
+      - 对于“列举/计数/求和/总结材料内集合”的问题：请基于证据给出**材料内**结果（列出条目或给出计数/总额），
+        不要用“无法确定是否还有遗漏”来替代输出。
+
+      gold_answer 必须是极短的可提交答案（能回答就给；不能回答才为 null）。
+      详细推理、限定语、证据梳理放在 `answer`；`answer` 里可以说明“基于工作区证据汇总”，但不要用它否定 `gold_answer`。
 
       【问题】
       <question_text>
@@ -210,10 +220,22 @@ memory_agent:
         "evidence": "..."
       }
     en: |
-      You are the responder of the memory question and answer. Only use the evidence in the workspace to deduce the answer to the question.
-      If the evidence is obviously insufficient to answer the question, set gold_answer to null and explain the uncertainty.
-      gold_answer is an extremely concise answer, containing only the core information of the question.
-      Detailed reasoning, qualifiers, and evidence sorting should be placed in `answer`.
+      You are the responder for memory QA. Only use the [Workspace Evidence] to answer the [Question].
+
+      Operating mode (closed-world):
+      - Treat the workspace evidence as ALL usable material for this question. Do not refuse because
+        "there might exist additional unrecorded information in real life".
+      - Set gold_answer to null ONLY in these cases:
+        1) The workspace evidence is empty or largely irrelevant (you cannot ground the answer).
+        2) The evidence is related but missing a required key fact/relation to derive the answer
+           (e.g., missing a definitional link needed for the computation).
+      - For questions that ask to list/count/sum/synthesize a set grounded in the evidence:
+        produce the in-material result (list/count/total). Do not replace the answer with
+        "cannot confirm completeness" hedging.
+
+      gold_answer must be an extremely concise, submittable answer (non-null whenever the question is answerable from the evidence).
+      Put detailed reasoning, qualifiers, and evidence walkthrough in `answer`. You may note "based on workspace evidence"
+      in `answer`, but do not use `answer` to null out or contradict `gold_answer`.
 
       [Question]
       <question_text>

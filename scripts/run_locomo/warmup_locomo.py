@@ -23,8 +23,10 @@ import yaml
 from _shared import (
     DEFAULT_ENV_CONFIG_PATH,
     load_env_config,
+    log_env_config_summary,
     resolve_project_path,
 )
+from m_agent.utils.pipeline_logging import suppress_verbose_pipeline_loggers
 
 logger = logging.getLogger("run_locomo.warmup")
 
@@ -48,6 +50,17 @@ def parse_args() -> argparse.Namespace:
         "--dry-run",
         action="store_true",
         help="Print resolved settings only, do not run warmup.",
+    )
+    parser.add_argument(
+        "--workflow-id",
+        type=str,
+        default="",
+        help="Override workflow_id in MemoryCore config (must match import --process-id).",
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Verbose logging: show HTTP client INFO and per-chunk fact extraction lines.",
     )
     return parser.parse_args()
 
@@ -181,6 +194,30 @@ def main() -> int:
     args = parse_args()
 
     payload, config_path = load_env_config(args.env_config)
+    warmup_cfg = payload.get("warmup", {})
+    if not isinstance(warmup_cfg, dict):
+        warmup_cfg = {}
+    debug = bool(args.debug) or bool(warmup_cfg.get("debug", False))
+    suppress_verbose_pipeline_loggers(debug=debug)
+
+    scene_workers = warmup_cfg.get("scene_max_workers", None)
+    if scene_workers is not None:
+        try:
+            sw = max(1, int(scene_workers))
+            os.environ["M_AGENT_SCENE_MAX_WORKERS"] = str(sw)
+        except (TypeError, ValueError):
+            logger.warning("Invalid warmup.scene_max_workers: %r — ignored.", scene_workers)
+
+    sf_workers = warmup_cfg.get("scene_fact_max_workers", None)
+    if sf_workers is not None:
+        try:
+            sf_i = max(1, int(sf_workers))
+            os.environ["M_AGENT_SCENE_FACT_MAX_WORKERS"] = str(sf_i)
+        except (TypeError, ValueError):
+            logger.warning("Invalid warmup.scene_fact_max_workers: %r — ignored.", sf_workers)
+
+    force_warmup = bool(args.force) or bool(warmup_cfg.get("force", False))
+
     eval_cfg = payload.get("eval", {})
     if not isinstance(eval_cfg, dict):
         eval_cfg = {}
@@ -194,9 +231,12 @@ def main() -> int:
         raise FileNotFoundError(f"MemoryAgent config not found: {agent_config_path}")
 
     mc_cfg, mc_path = resolve_memory_core_config(agent_config_path)
+    if args.workflow_id.strip():
+        mc_cfg = dict(mc_cfg)
+        mc_cfg["workflow_id"] = args.workflow_id.strip()
     workflow_id = str(mc_cfg.get("workflow_id", "")).strip()
     if not workflow_id:
-        raise ValueError("workflow_id must not be empty in MemoryCore config.")
+        raise ValueError("workflow_id must not be empty in MemoryCore config (or pass --workflow-id).")
 
     episodes_dir = resolve_project_path(f"data/memory/{workflow_id}/episodes")
     scene_dir = resolve_project_path(f"data/memory/{workflow_id}/scene")
@@ -214,7 +254,25 @@ def main() -> int:
     logger.info("fact_prompt_version= %s", mc_cfg.get("fact_prompt_version", "v2"))
     logger.info("scene_prompt_version=%s", mc_cfg.get("scene_prompt_version", "v2"))
     logger.info("facts_only_mode    = %s", mc_cfg.get("facts_only_mode", False))
-    logger.info("force              = %s", args.force)
+    logger.info("force              = %s (CLI --force or warmup.force)", force_warmup)
+    logger.info(
+        "scene_max_workers env: M_AGENT_SCENE_MAX_WORKERS=%s | scene_fact_max_workers env: M_AGENT_SCENE_FACT_MAX_WORKERS=%s",
+        os.environ.get("M_AGENT_SCENE_MAX_WORKERS", "(unset → defaults to 1)"),
+        os.environ.get("M_AGENT_SCENE_FACT_MAX_WORKERS", "(unset → defaults to 1)"),
+    )
+
+    log_env_config_summary(
+        logger,
+        payload,
+        config_path,
+        step="LoCoMo warmup",
+        footer={
+            "workflow_id": workflow_id,
+            "episodes_dir": str(episodes_dir),
+            "scene_dir": str(scene_dir),
+            "force": force_warmup,
+        },
+    )
 
     if not episodes_dir.exists():
         logger.error("Episodes directory not found: %s", episodes_dir)
@@ -222,10 +280,10 @@ def main() -> int:
         return 1
 
     existing_scenes = list(scene_dir.glob("*.json")) if scene_dir.exists() else []
-    if existing_scenes and not args.force:
+    if existing_scenes and not force_warmup:
         logger.info(
             "Scene directory already has %d file(s). "
-            "Use --force to regenerate. Skipping warmup.",
+            "Use --force or warmup.force: true to regenerate. Skipping warmup.",
             len(existing_scenes),
         )
         return 0
@@ -234,7 +292,7 @@ def main() -> int:
         logger.info("Dry-run mode, skip warmup execution.")
         return 0
 
-    if existing_scenes and args.force:
+    if existing_scenes and force_warmup:
         logger.info("--force: removing existing scene directory: %s", scene_dir)
         shutil.rmtree(scene_dir)
 

@@ -14,6 +14,7 @@ from .locomo_history_loader import (
     load_locomo_dialogues,
     load_locomo_dialogues_from_directory
 )
+from .longmemeval_history_loader import load_longmemeval_dialogues
 
 __all__ = [
     'load_dialog_history',
@@ -23,5 +24,6 @@ __all__ = [
     'load_realtalk_dialogues_from_directory',
     'load_locomo_history',
     'load_locomo_dialogues',
-    'load_locomo_dialogues_from_directory'
+    'load_locomo_dialogues_from_directory',
+    'load_longmemeval_dialogues',
 ]

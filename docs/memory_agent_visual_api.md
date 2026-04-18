@@ -27,6 +27,7 @@ python -m m_agent.agents.memory_agent.visual_api --host 0.0.0.0 --port 8092 --co
 
 - `--config` 是默认的 Memory-Agent 配置路径
 - 请求里也可以按 run 覆盖 `config_path`
+- 绑定 `0.0.0.0` 时，浏览器请访问 **`http://127.0.0.1:8092`**（或 `localhost`），不要使用 `http://0.0.0.0:8092`（常见报错 `ERR_ADDRESS_INVALID`）。启动时终端会打印可用的浏览器地址。
 
 ## 3. 返回数据约定
 

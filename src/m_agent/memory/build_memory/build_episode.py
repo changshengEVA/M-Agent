@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -600,9 +601,14 @@ def scan_and_build_episodes(
     memory_owner_name: str = "changshengEVA",
     prompt_language: str = "en",
     llm_model: Optional[Callable[[str], str]] = None,
+    max_workers: int = 1,
 ) -> None:
     """
     Scan dialogues and build episodes for files that do not yet have output.
+
+    max_workers:
+        When > 1, process dialogue files in parallel (ThreadPoolExecutor). Default 1 preserves
+        legacy sequential behavior.
     """
     if episodes_root is None:
         episodes_root = EPISODES_ROOT
@@ -622,16 +628,37 @@ def scan_and_build_episodes(
     if not files_to_process:
         return
 
-    file_iter = tqdm(files_to_process, desc="Building episodes") if use_tqdm else files_to_process
+    workers = max(1, int(max_workers))
 
-    for dialogue_file in file_iter:
-        process_dialogue_file(
-            dialogue_file,
-            prompts,
-            episodes_root,
-            memory_owner_name,
-            llm_model=llm_model,
-        )
+    if workers == 1:
+        file_iter = tqdm(files_to_process, desc="Building episodes") if use_tqdm else files_to_process
+        for dialogue_file in file_iter:
+            process_dialogue_file(
+                dialogue_file,
+                prompts,
+                episodes_root,
+                memory_owner_name,
+                llm_model=llm_model,
+            )
+        return
+
+    with ThreadPoolExecutor(max_workers=min(workers, len(files_to_process))) as pool:
+        futures = [
+            pool.submit(
+                process_dialogue_file,
+                dialogue_file,
+                prompts,
+                episodes_root,
+                memory_owner_name,
+                llm_model,
+            )
+            for dialogue_file in files_to_process
+        ]
+        iterator = as_completed(futures)
+        if use_tqdm:
+            iterator = tqdm(iterator, total=len(futures), desc="Building episodes")
+        for fut in iterator:
+            fut.result()
 
 
 if __name__ == "__main__":

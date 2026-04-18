@@ -233,10 +233,16 @@ def execute_actions(
                     content = render_time_scene_content(scene_item)
                     time_documents.append({
                         "evidence_id": eid,
+                        "source_type": "time_scene",
                         "content": content,
                         "source_action_id": action_id,
                         "recall_score": None,
                         "rerank_score": None,
+                        "meta": {
+                            "scene_id": scene_id,
+                            # Keep a small structured payload for downstream debugging.
+                            "scene": scene_item,
+                        },
                     })
             continue
 
@@ -306,18 +312,34 @@ def execute_actions(
     evidences: List[WorkspaceDocument] = []
     for ref in selected_refs:
         content_data = hit_by_ref.get(ref, {})
+        dlg_id, ep_id, seg_id = split_episode_ref(ref)
         facts = _merge_fact_texts(
             ref_facts.get(ref),
             content_data.get("facts"),
         )
         rendered = render_episode_content(ref, content_data, facts)
-        evidences.append({
+        meta: Dict[str, Any] = {
+            "dialogue_id": dlg_id,
+            "episode_id": ep_id,
+            "segment_id": (seg_id.strip() or None),
+        }
+        if facts:
+            meta["facts"] = list(facts)
+        if "turn_span" in content_data:
+            meta["turn_span"] = content_data.get("turn_span")
+        if "turns" in content_data:
+            meta["turns"] = content_data.get("turns")
+
+        doc: WorkspaceDocument = {
             "evidence_id": ref,
+            "source_type": "episode",
             "content": rendered,
             "source_action_id": ref_sources.get(ref, ""),
             "recall_score": float(ref_scores.get(ref, 0.0)),
             "rerank_score": None,
-        })
+            "meta": meta,
+        }
+        evidences.append(doc)
 
     evidences.extend(time_documents)
 

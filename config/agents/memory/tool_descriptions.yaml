@@ -3,27 +3,24 @@ EVENT_DETAIL_RECALL:
     zh: "对记忆片段的事实和对话内容进行语义检索。适用于关于事件、话题或人物的一般性问题。"
     en: "Semantic search over episode facts and dialogue details. Best for general questions about events, topics, or people."
   params: '{"detail_query": "<search query>", "topk": <int, default 10>}'
+  search_entry_anchors:
+    zh: "当原始问题或当前检索查询暴露出语义入口时选用：包括问题本身整句，以及人物/实体、主题、活动、物品、地点、目标或需要从对话与事实中匹配的任何具体表述。"
+    en: "Use when the original question or current retrieval query exposes semantic entry points—including the full question text itself—as well as entities, topics, activities, objects, places, goals, or any concrete wording that should be matched against stored dialogue and facts."
 
 EVENT_TIME_RECALL:
   description:
     zh: "按日期/时间范围检索事件。当问题涉及具体日期或时间段时使用。"
     en: "Retrieve events within a specific date/time range. Use when the question mentions dates or time periods."
   params: '{"start_time": "<ISO date>", "end_time": "<ISO date>"}'
-
-ENTITY_FEATURE_SEARCH:
-  description:
-    zh: "搜索特定人物或实体的特征、属性（如爱好、性格、偏好等）。"
-    en: "Search features, attributes, or traits of a specific person or entity (e.g. hobbies, personality, preferences)."
-  params: '{"entity_id": "<person/entity name>", "feature_query": "<what to search>", "topk": <int, default 5>}'
-
-ENTITY_EVENT_SEARCH:
-  description:
-    zh: "搜索与特定人物或实体相关的事件或活动。"
-    en: "Search events or activities related to a specific person or entity."
-  params: '{"entity_id": "<person/entity name>", "event_query": "<what happened>", "topk": <int, default 5>}'
+  search_entry_anchors:
+    zh: "当问题暴露出时间入口时选用：明确日期、可映射为起止时间的月份/季节/周、相对时间窗，或需要按时间范围过滤事件的表述。"
+    en: "Use when the question exposes a time entry point—explicit dates, month/season/week phrases you can map to start_time/end_time, relative windows, or any need to filter events by a bounded time range."
 
 RECALL_REMEDY_MULTI_ROUTE:
   description:
     zh: "多路召回补救措施，当之前的搜索未找到有用证据时作为最后手段使用。同时搜索多个索引。"
     en: "Broad multi-route recall as a last resort when previous searches found nothing useful. Searches across multiple indexes simultaneously."
   params: '{"detail_query": "<search query>", "topk": <int, default 10>}'
+  search_entry_anchors:
+    zh: "仅在前序工具无效或处于补救模式时使用；不作为首轮默认工具。"
+    en: "Use only after ordinary tools failed or the planner is in remedy mode; not as a default first-round tool."

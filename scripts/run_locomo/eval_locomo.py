@@ -17,6 +17,7 @@ from _shared import (
     PROJECT_ROOT,
     get_data_config,
     load_env_config,
+    log_env_config_summary,
     parse_question_selection,
     resolve_project_path,
     resolve_target_conv_ids,
@@ -47,6 +48,24 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional override for question subset yaml (sample_id + qa_indices).",
     )
+    parser.add_argument(
+        "--workflow-id",
+        type=str,
+        default="",
+        help="Override MemoryCore workflow_id for eval (must match import --process-id). Passed to run_eval_locomo.py.",
+    )
+    parser.add_argument(
+        "--test-id",
+        type=str,
+        default="",
+        help="Override eval.test_id from env config (e.g. per-conv log dirs when batching).",
+    )
+    parser.add_argument(
+        "--conv-ids",
+        type=str,
+        default="",
+        help="Override selection.conv_ids for this eval run (e.g. single conv in batch pipeline).",
+    )
     return parser.parse_args()
 
 
@@ -55,7 +74,12 @@ def main() -> int:
     args = parse_args()
 
     payload, config_path = load_env_config(args.env_config)
-    conv_ids = resolve_target_conv_ids(payload)
+    if args.conv_ids.strip():
+        conv_ids = [x.strip() for x in args.conv_ids.split(",") if x.strip()]
+        if not conv_ids:
+            raise ValueError("--conv-ids must list at least one conv id.")
+    else:
+        conv_ids = resolve_target_conv_ids(payload)
     question_selection = parse_question_selection(payload)
     data_cfg = get_data_config(payload)
 
@@ -67,7 +91,9 @@ def main() -> int:
         eval_cfg.get("memory_agent_config", "config/agents/memory/locomo_eval_memory_agent.yaml")
         or "config/agents/memory/locomo_eval_memory_agent.yaml"
     ).strip()
-    test_id = str(eval_cfg.get("test_id", "locomo_eval_from_env") or "").strip() or "locomo_eval_from_env"
+    test_id = str(args.test_id or "").strip()
+    if not test_id:
+        test_id = str(eval_cfg.get("test_id", "locomo_eval_from_env") or "").strip() or "locomo_eval_from_env"
     model_key = str(eval_cfg.get("model_key", "memory_agent") or "memory_agent").strip()
     prediction_key = str(
         eval_cfg.get("prediction_key", "memory_agent_prediction") or "memory_agent_prediction"
@@ -150,22 +176,34 @@ def main() -> int:
         cmd.append("--overwrite")
     if question_config_path is not None:
         cmd.extend(["--question-config", str(question_config_path)])
+    workflow_id = str(args.workflow_id or "").strip()
+    if workflow_id:
+        cmd.extend(["--workflow-id", workflow_id])
 
-    logger.info("Start LoCoMo eval")
-    logger.info("env_config=%s", config_path)
-    logger.info("data_file=%s", data_file)
-    logger.info("memory_agent_config=%s", agent_config_path)
-    logger.info("conv_ids=%s", conv_ids)
-    if question_selection:
-        logger.info(
-            "question_selection enabled for %d convs (%d total questions)",
-            len(question_selection),
-            sum(len(v) for v in question_selection.values()),
-        )
-    if question_config_path is not None:
-        logger.info("question_config=%s", question_config_path)
-    logger.info("test_id=%s", test_id)
-    logger.info("run command: %s", " ".join(cmd))
+    ev_over: Dict[str, Any] = {}
+    if args.test_id.strip():
+        ev_over["eval"] = {"test_id": test_id}
+    if args.conv_ids.strip():
+        ev_over["selection"] = {"conv_ids": conv_ids}
+    log_env_config_summary(
+        logger,
+        payload,
+        config_path,
+        step="LoCoMo eval (env + resolved paths)",
+        overrides=ev_over or None,
+        footer={
+            "resolved_data_file": str(data_file),
+            "resolved_memory_agent_config": str(agent_config_path),
+            "resolved_workflow_id": workflow_id or "(from MemoryCore YAML)",
+            "conv_ids": conv_ids,
+            "test_id": test_id,
+            "question_config_path": str(question_config_path) if question_config_path else "",
+            "question_selection_convs": len(question_selection),
+            "run_eval_command": " ".join(cmd),
+        },
+    )
+
+    logger.info("Start LoCoMo eval subprocess")
     if args.dry_run:
         logger.info("Dry-run mode, skip eval execution.")
         return 0

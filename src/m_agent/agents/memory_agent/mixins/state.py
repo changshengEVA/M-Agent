@@ -41,7 +41,12 @@ class MemoryAgentStateMixin:
         return any(marker in normalized for marker in markers)
     @classmethod
     def _normalize_output(cls, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """标准化输出字段，并处理 gold_answer 一致性。"""
+        """标准化输出字段，并处理 gold_answer 的基础一致性。
+
+        注意：不要用 answer 的“拒答/不确定”启发式去覆盖一个已经给出的非空 gold_answer。
+        否则会出现 final 已产出短答，但 answer 里附带解释性措辞导致 gold_answer 被清空，
+        进而让上游评测导出回退到长 answer。
+        """
         answer_text = payload.get("answer")
         gold_answer = payload.get("gold_answer")
 
@@ -53,7 +58,15 @@ class MemoryAgentStateMixin:
             gold_answer = cls._absolutize_relative_time(gold_answer).strip() or None
         payload["gold_answer"] = gold_answer
 
-        if cls._is_unanswerable_text(answer_text):
+        ga_is_str = isinstance(gold_answer, str) and bool(gold_answer.strip())
+        ga_unanswerable = cls._is_unanswerable_text(gold_answer) if ga_is_str else False
+        ans_unanswerable = cls._is_unanswerable_text(answer_text)
+
+        # 若 gold_answer 本身也像拒答/不确定，则统一为 null（避免把拒答短语误放进 gold_answer）。
+        if ga_is_str and ga_unanswerable:
+            payload["gold_answer"] = None
+        # 若 gold_answer 已经是非空且不像拒答，则不要因为 answer 的措辞清空 gold_answer。
+        elif not ga_is_str and ans_unanswerable:
             payload["gold_answer"] = None
 
         return payload
@@ -169,7 +182,7 @@ class MemoryAgentStateMixin:
         """返回上一轮工具调用记录。"""
         return [self._safe_trace_value(call) for call in self._last_tool_calls]
     def get_last_question_plan(self) -> Optional[Dict[str, Any]]:
-        """返回上一轮问题规划。"""
+        """返回上一轮 recall 附带的轻量 query 元数据（question_plan，非拆题计划）。"""
         if not isinstance(self._last_question_plan, dict):
             return None
         return {
