@@ -2,7 +2,7 @@
 # Purpose: MemoryCore config backing the chat demo / chat API workflow.
 workflow_id: "middle_test"
 runtime_prompt_config_path: "./runtime/memory_core_runtime.yaml"
-prompt_language: "zh"
+prompt_language: "en"
 
 # MemoryCore init settings
 memory_llm_temperature: 0.0
@@ -14,7 +14,30 @@ memory_use_threshold: true
 scene_prompt_version: "v2"
 fact_prompt_version: "v2"
 memory_owner_name: "Memory Assistant"
+# true: only build to scene facts; skip extract_fact_entities/import_fact_entities
+# and MemoryAgent will expose only search_content/search_events_by_time_range/search_details
+facts_only_mode: false
 entity_statement_force_update: false
 
 # Embedding provider: local/bge/alibaba/aliyun/dashscope
 embed_provider: "aliyun"
+
+# Hybrid detail retrieval tuning (search_details: dense + sparse BM25 + RRF)
+detail_search_hybrid:
+  dense_recall_topn: 30
+  sparse_recall_topn: 30
+  rrf_k: 60
+  dense_weight: 1.0
+  sparse_weight: 1.0
+  bm25_k1: 1.5
+  bm25_b: 0.75
+
+detail_search_multi_route:
+  enable: true
+  route_count: 4
+  query_generator: "llm"
+  route_types: ["entity", "action", "time", "relation", "topic"]
+  per_route_topk: 8
+  fusion: "rrf"
+  max_workers: 4
+  rrf_k: 60

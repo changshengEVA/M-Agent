@@ -1,260 +1,239 @@
-chat_controller:
-  merge_system_with_persona:
-    zh: |
-      <base_prompt>
-
-      [聊天人格]
-      <persona_prompt>
-
-      [重要约束]
-      - 人格只影响对话语气和最终措辞。
-      - 召回工具保持中立并以证据为准，不要突破其事实边界。
-    en: |
-      <base_prompt>
-
-      [Chat Persona]
-      <persona_prompt>
-
-      [Important]
-      - Persona only affects conversational tone and final phrasing.
-      - Keep the original retrieval rules and factual boundaries from the recall pipeline.
-  no_recall_plan_summary:
-    zh: "本轮对话未使用记忆召回工具。"
-    en: "No memory recall tool was used for this chat turn."
-
 memory_agent:
-  decompose_question_prompt:
+  system_prompt:
     zh: |
-      <planner_prompt>
-
-      [用户问题]
-      <question_text>
+      你是记忆问答助手。
+      使用记忆工具来为你的回答提供证据支撑。
+      不得编造事实。
+      如果证据不足，请明确说明。
+      按照请求的结构化格式返回字段。
     en: |
-      <planner_prompt>
+      You are a memory QA assistant.
+      Use memory tools to ground your answer in evidence.
+      Never fabricate facts.
+      If evidence is insufficient, say so clearly.
+      Return structured fields according to the requested schema.
 
-      [User Question]
-      <question_text>
-  sub_question_prompt:
+  workspace_judge_prompt:
     zh: |
-      [原始问题]
-      <question_text>
+      你是记忆问答系统的证据充分性评审。
+      你的任务是评估已收集的工作区证据能否回答用户的原始问题，
+      筛选出真正有用的证据，并在需要时引导下一轮检索。
 
-      [问题计划]
-      <question_plan_json>
+      【原始问题】
+      <original_question>
 
-      [当前子问题]
-      #<sub_index>/<total_sub_questions>: <sub_question>
+      【当前检索查询】
+      <cur_query>
 
-      [任务]
-      - 只回答当前子问题。
-      - 必要时调用工具。
-      - `search_details` 是普通细节问题的默认工具。
-      - 实体档案类工具只用于宏观/粗粒度检索问题。
-      - 如果子问题是宏观实体问题，在使用实体专属工具前先调用 `resolve_entity_id`。
-      - 绝不要把原始名字直接传给 `get_entity_profile`、`search_entity_feature`、`search_entity_event` 或 `search_entity_events_by_time`。
-      - 如果问题除了实体外还有明确语义锚点，优先使用 `search_details`。
-      - 宏观概览用 `get_entity_profile`，宏观特征回忆用 `search_entity_feature`，粗粒度行为用 `search_entity_event`，实体+时间窗问题用 `search_entity_events_by_time`。
-      - 需要原始对话细节、精确时间或最终核验时使用 `search_content`。
-      - 回答要具体，并且基于证据。
-      - 在可能的情况下，`gold_answer` 应该是这个子问题的简洁答案值。
+      【工作区证据（全部保留项）】
+      <workspace_evidence_summary>
+
+      【本轮新增证据 ID】
+      <new_evidence_ids_json>
+
+      指令：
+      1. 对照原始问题审查上述所有证据块。
+      2. 选出哪些证据 ID 对回答问题真正有用。
+         有用的证据是指包含事实、对话或时间信息，
+         能直接支撑回答原始问题任何部分的证据。
+      3. 判定工作区状态：
+         - "SUFFICIENT"：有用证据足以完整回答原始问题。
+         - "INSUFFICIENT"：存在部分有用证据但还需要更多
+           （如多跳推理需要下一步、缺少时间/人物信息）。
+           你必须提供 next_query 来引导下一轮检索。
+         - "INVALID"：本轮未产生任何有用证据
+           （本轮新增 ID 都不在你的有用列表中）。
+      4. 简要说明你的判断理由。
+
+      仅返回 JSON：
+      {
+        "status": "SUFFICIENT" | "INSUFFICIENT" | "INVALID",
+        "useful_evidence_ids": ["ref1", "ref2", ...],
+        "reason": "...",
+        "next_query": "..." 或 null
+      }
+
+      规则：
+      - 当 status 为 "INSUFFICIENT" 时，next_query 为必填项，
+        应是一个针对缺失信息的具体检索查询。
+      - 当 status 为 "SUFFICIENT" 或 "INVALID" 时，next_query 必须为 null。
+      - useful_evidence_ids 可包含之前轮次的证据。
+      - 严格筛选：仅将真正有助于回答问题的证据标为有用，仅间接相关的证据应排除。
     en: |
-      [Original Question]
-      <question_text>
-
-      [Question Plan]
-      <question_plan_json>
-
-      [Current Sub-question]
-      #<sub_index>/<total_sub_questions>: <sub_question>
-
-      [Task]
-      - Answer only the current sub-question.
-      - Use tools if needed.
-      - `search_details` is the default tool for ordinary detail questions.
-      - Use the entity-profile tools only for macro/coarse retrieval questions.
-      - If the sub-question is a macro entity question, resolve_entity_id before using entity-specific tools.
-      - Never pass a raw name directly into `get_entity_profile`, `search_entity_feature`, `search_entity_event`, or `search_entity_events_by_time`.
-      - If the question includes a concrete semantic anchor besides the entity, prefer `search_details`.
-      - Use `get_entity_profile` for overview, `search_entity_feature` for macro profile recall, `search_entity_event` for coarse actions, and `search_entity_events_by_time` for entity + time-window macro questions.
-      - Use `search_content` when you need raw dialogue details, exact timing, or final verification.
-      - Keep the answer concrete and grounded in evidence.
-      - `gold_answer` should be the concise value for this sub-question when possible.
-  final_synthesis_prompt:
-    zh: |
-      你是记忆问答流水线的最终整合阶段。
-      只能使用已解决子问题及其证据。
-      只返回 JSON，字段必须是: answer, gold_answer, evidence。
-      `gold_answer` 必须简洁；如果最终答案未知，请把 `gold_answer` 设为 null。
-
-      [原始问题]
-      <question_text>
-
-      [问题计划]
-      <question_plan_json>
-
-      [已解决子问题]
-      <sub_question_results_json>
-    en: |
-      You are the final synthesis stage of a memory QA pipeline.
-      Use only the provided solved sub-questions and their evidence.
-      Return JSON only with keys: answer, gold_answer, evidence.
-      `gold_answer` must be concise. If the final answer is unknown, set `gold_answer` to null.
+      You are an evidence sufficiency judge for a memory QA system.
+      Your job is to evaluate whether the collected workspace evidence can answer
+      the user's original question, select truly useful evidence, and guide the
+      next retrieval round if needed.
 
       [Original Question]
-      <question_text>
+      <original_question>
 
-      [Question Plan]
-      <question_plan_json>
+      [Current Retrieval Query]
+      <cur_query>
 
-      [Solved Sub-questions]
-      <sub_question_results_json>
-  shallow_recall_prompt:
+      [Workspace Evidence (all kept)]
+      <workspace_evidence_summary>
+
+      [New Evidence IDs This Round]
+      <new_evidence_ids_json>
+
+      Instructions:
+      1. Review ALL evidence blocks above against the original question.
+      2. Select which evidence IDs are genuinely useful for answering the question.
+         An evidence is useful if it contains facts, dialogue, or time information
+         that directly supports answering any part of the original question.
+      3. Determine the workspace status:
+         - "SUFFICIENT": the useful evidence is enough to fully answer the original question.
+         - "INSUFFICIENT": some useful evidence exists but more is needed
+           (e.g. multi-hop reasoning requires another step, missing time/person info).
+           You MUST provide a next_query to guide the next retrieval round.
+         - "INVALID": this round produced NO useful evidence at all
+           (none of the new evidence IDs are in your useful list).
+      4. Provide a brief reason for your decision.
+
+      Return JSON only:
+      {
+        "status": "SUFFICIENT" | "INSUFFICIENT" | "INVALID",
+        "useful_evidence_ids": ["ref1", "ref2", ...],
+        "reason": "...",
+        "next_query": "..." or null
+      }
+
+      Rules:
+      - next_query is REQUIRED when status is "INSUFFICIENT". It should be a
+        specific retrieval query targeting the missing information.
+      - next_query must be null when status is "SUFFICIENT" or "INVALID".
+      - useful_evidence_ids may include evidence from previous rounds.
+      - Be strict: only mark evidence as useful if it genuinely helps answer
+        the question. Tangentially related evidence should be excluded.
+
+  action_plan_prompt:
     zh: |
-      你是记忆召回流水线中的轻量总结阶段。
-      只能使用给定的 `search_details` 结果。
-      只返回 JSON，字段必须是: answer, gold_answer, evidence。
-      如果当前召回细节并不能真正回答问题，请明确说明当前记忆证据不足，并把 `gold_answer` 设为 null。
-      不要编造未在召回数据中出现的事实、名字、链接或时间。
+      你是记忆问答系统的检索规划器。
+      根据用户问题和当前检索状态，选择最合适的检索工具组合来获取证据。
 
-      [用户问题]
-      <question_text>
+      【原始问题】
+      <original_question>
 
-      [search_details 结果]
-      <search_result_json>
+      【当前检索查询】
+      <cur_query>
+
+      【已有证据摘要】
+      <workspace_summary>
+
+      【已执行的检索操作】
+      <previous_actions_json>
+
+      【可用工具】
+      <available_tools_json>
+
+      指令：
+      1. 分析当前问题和已有证据，判断还缺少什么信息。
+      2. 从可用工具中选择 1-3 个最合适的检索操作。
+      3. 避免与已执行操作重复。
+      4. 为每个操作填写具体的查询参数。
+
+      仅返回 JSON：
+      {
+        "actions": [
+          {"action_type": "...", "query": {...}},
+          ...
+        ],
+        "reasoning": "简要说明为什么选择这些操作"
+      }
+
+      规则：
+      - action_type 必须是可用工具列表中的值。
+      - 可用工具 JSON 中每项包含 description、params，以及（若有）search_entry_anchors：后者说明该工具对应的「搜索入口锚点」；请结合原始问题与当前检索查询判断是否暴露此类锚点。
+      - 若同一轮内同时暴露了多种工具的锚点（例如既有语义入口又有时间入口），在动作数量预算内应同时选用对应工具，避免把本应同轮完成的组合拆到后续轮次。
+      - 每个 action 的 query 参数必须符合对应工具的 params 格式。
+      - 列表中将来可能出现更多工具类型：对新工具同样依据其 description 与 search_entry_anchors 判断是否选用。
+      - 若问题涉及特定人物的特征/属性，使用 ENTITY_FEATURE_SEARCH。
+      - 若问题涉及特定人物参与的事件，使用 ENTITY_EVENT_SEARCH。
     en: |
-      You are the lightweight summary stage of a memory recall pipeline.
-      Use only the provided `search_details` results.
-      Return JSON only with keys: answer, gold_answer, evidence.
-      If the recalled details do not actually answer the question, say that the current memory is insufficient and set `gold_answer` to null.
-      Do not invent facts, names, links, or times that are not grounded in the recalled data.
+      You are a retrieval planner for a memory QA system.
+      Based on the user's question and current retrieval state, select the best
+      combination of retrieval tools to gather evidence.
 
-      [User Question]
-      <question_text>
-
-      [search_details Result]
-      <search_result_json>
-  execution_prompt:
-    zh: |
-      [原始问题]
-      <question_text>
-
-      [问题计划]
-      <question_plan_json>
-
-      [执行规则]
-      - 回答原始问题，不要回答计划本身。
-      - 默认按计划顺序执行。
-      - 如果工具证据否定了计划，可以在心里修正后继续。
-      - 对于比较、总结、计数或多跳问题，不要跳过子问题。
-    en: |
       [Original Question]
-      <question_text>
+      <original_question>
 
-      [Question Plan]
-      <question_plan_json>
+      [Current Retrieval Query]
+      <cur_query>
 
-      [Execution Rules]
-      - Answer the original question, not the plan itself.
-      - Use the plan as the default execution order.
-      - If tool evidence invalidates the plan, refine it mentally and continue.
-      - Do not skip the sub-questions for comparison, summary, counting, or multi-hop questions.
-  direct_execution_prompt:
+      [Existing Evidence Summary]
+      <workspace_summary>
+
+      [Previously Executed Actions]
+      <previous_actions_json>
+
+      [Available Tools]
+      <available_tools_json>
+
+      Instructions:
+      1. Analyze the current question and existing evidence to determine what information is still missing.
+      2. Select 1-3 most appropriate retrieval actions from the available tools.
+      3. Avoid duplicating previously executed actions.
+      4. Fill in specific query parameters for each action.
+
+      Return JSON only:
+      {
+        "actions": [
+          {"action_type": "...", "query": {...}},
+          ...
+        ],
+        "reasoning": "Brief explanation of why these actions were chosen"
+      }
+
+      Rules:
+      - action_type MUST be one of the values from the available tools list.
+      - Each entry in the available tools JSON includes description, params, and optionally search_entry_anchors. The anchors field explains what search-entry signals should trigger that tool—use the original question and current retrieval query to decide.
+      - When multiple tool anchors are exposed in the same round (e.g. both semantic and time entry points), schedule actions within the per-round budget so multiple applicable tools are used in that round instead of deferring unnecessarily.
+      - Each action's query params must match that tool's params schema.
+      - Additional tools may appear in the list later; apply the same rule using each tool's description and search_entry_anchors.
+      - Use ENTITY_FEATURE_SEARCH when the question asks about a specific person's traits, attributes, or preferences.
+      - Use ENTITY_EVENT_SEARCH when the question asks about events a specific person was involved in.
+
+  final_answer_from_workspace_prompt:
     zh: |
-      [原始问题]
+      你是记忆问答的回答者。仅使用【工作区证据】回答【问题】；不得编造事实。
+      若证据不足，将 gold_answer 设为 null 并说明不确定性。
+      若问题问及时长、间隔、从何时到何时：只要证据里能排出与问题相关的最早与最晚时间锚（如「对话发生时间」或对白中的日期），
+      应给出基于证据的区间或近似时长，并可用一句说明假设；不要仅因话里没写「开工日」就整题拒答。
+      `gold_answer` 与 `answer` 不要填同一大段：`gold_answer` 只放极简结论（目标约 80 字内）；详细说明放在 `answer`。
+
+      【问题】
       <question_text>
 
-      [执行模式]
-      先直接作答。
+      【工作区证据】
+      <workspace_evidence_summary>
 
-      [任务]
-      - 用尽量少的工具调用直接回答原始问题。
-      - 除非问题明显需要比较、计数、总结、因果解释或其他明显多跳结构，否则不要显式拆成子问题。
-      - `search_details` 是普通细节问题的默认工具。
-      - 实体档案类工具只用于宏观/粗粒度检索问题。
-      - 如果是普通单目标查询，`sub_questions` 保持为空列表。
-      - 如果直接检索仍然不足，请说明仍然未知的部分，不要编造事实。
-      - `gold_answer` 必须是简洁的最终值。
-      - `evidence` 需要简要引用支撑性的工具结果。
+      仅返回 JSON：
+      {
+        "gold_answer": "... 或 null",
+        "answer": "...",
+        "evidence": "..."
+      }
     en: |
-      [Original Question]
+      You are a memory QA responder. Answer using only the [Workspace Evidence]
+      for [Question]. Never fabricate. If evidence is insufficient, set
+      gold_answer to null and explain uncertainty.
+      For how-long / duration / since-when questions: if the evidence provides earliest
+      and latest relevant time anchors (e.g. Dialogue time lines or dated turns), give
+      a bounded estimate or interval plus a brief caveat if needed. Do not answer "no
+      duration possible" only because the dialogue never states a single explicit start date.
+      Do not paste the same long text into both `gold_answer` and `answer`: keep `gold_answer`
+      minimal (aim within ~80 characters); put full explanation only in `answer`.
+
+      [Question]
       <question_text>
 
-      [Execution Mode]
-      Answer directly first.
+      [Workspace Evidence]
+      <workspace_evidence_summary>
 
-      [Task]
-      - Answer the original question directly with the minimum necessary tool calls.
-      - Do not explicitly decompose into sub-questions unless the question clearly requires comparison, counting, summary, causal explanation, or another obvious multi-hop structure.
-      - `search_details` is the default tool for ordinary detail questions.
-      - Use the entity-profile tools only for macro/coarse retrieval questions.
-      - If the question is an ordinary single-goal lookup, keep `sub_questions` as an empty list.
-      - If direct retrieval is insufficient, state what remains unknown instead of inventing facts.
-      - `gold_answer` must be the concise final value only.
-      - `evidence` should briefly cite the supporting tool results.
-  direct_answer_plan_summary:
-    zh: "已直接作答，未显式拆解子问题。"
-    en: "Answered directly without explicit decomposition."
-  heuristic_decomposition_reason:
-    zh: "使用启发式回退拆解。"
-    en: "Fallback heuristic decomposition."
-  heuristic_completion_criteria:
-    zh: "每个核心子问题都需要有基于工具的证据支撑。"
-    en: "Each core sub-question is answered with tool-grounded evidence."
-  direct_lookup_completion_criteria:
-    zh: "基于工具证据直接回答原问题。"
-    en: "Answer the original question directly with tool-grounded evidence."
-  fallback_sub_questions:
-    comparison:
-      first_side:
-        zh: "关于这个问题第一侧的证据是什么：<question_text>"
-        en: "What is the evidence for the first side of: <question_text>"
-      second_side:
-        zh: "关于这个问题第二侧的证据是什么：<question_text>"
-        en: "What is the evidence for the second side of: <question_text>"
-      final_compare:
-        zh: "基于两侧证据，这个问题支持的比较结论是什么：<question_text>"
-        en: "Based on both sides, what is the supported comparison result for: <question_text>"
-    counting:
-      gather:
-        zh: "哪些候选证据与这个问题相关：<question_text>"
-        en: "What candidate evidence items are relevant to: <question_text>"
-      count:
-        zh: "去重之后，这个问题的正确数量是多少：<question_text>"
-        en: "After deduplication, what is the correct count for: <question_text>"
-    summary:
-      gather:
-        zh: "总结这个问题需要哪些关键证据点：<question_text>"
-        en: "What are the key evidence points needed to summarize: <question_text>"
-      summarize:
-        zh: "基于这些证据点，可以支持什么简洁总结：<question_text>"
-        en: "What concise summary is supported by those evidence points for: <question_text>"
-    temporal:
-      anchors:
-        zh: "哪些事件或细节能建立这个问题的时间锚点：<question_text>"
-        en: "What events or details establish the time anchors for: <question_text>"
-      answer:
-        zh: "这个问题能支持的准确时间答案是什么：<question_text>"
-        en: "What exact time answer is supported for: <question_text>"
-    causal:
-      context:
-        zh: "这个目标事件之前或周围发生了什么：<question_text>"
-        en: "What happened before or around the target event in: <question_text>"
-      cause:
-        zh: "有哪些有证据支撑的原因可以回答这个问题：<question_text>"
-        en: "What evidence-supported cause or reason answers: <question_text>"
-  strategy_reasons:
-    obvious_decompose:
-      zh: "这是明显的 <question_type> 类问题；先拆解。"
-      en: "Obvious <question_type> question; decompose first."
-    multi_target:
-      zh: "问题里包含多个明确查询目标；先拆解。"
-      en: "Question contains multiple explicit query targets; decompose first."
-    temporal_chain:
-      zh: "问题串联了多个时间约束；先拆解。"
-      en: "Question chains multiple temporal constraints; decompose first."
-    multi_hop_markers:
-      zh: "问题中有明显多跳协同标记；先拆解。"
-      en: "Question has clear multi-hop coordination markers; decompose first."
-    direct_lookup:
-      zh: "问题看起来是单目标查询；先直接作答。"
-      en: "Question appears to be a single-goal lookup; answer directly first."
+      Return JSON only:
+      {
+        "gold_answer": "... or null",
+        "answer": "...",
+        "evidence": "..."
+      }

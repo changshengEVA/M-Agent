@@ -39,6 +39,10 @@ def _build_email_ask_tool(context: ControllerCapabilityContext, description: str
             "debug": bool(debug),
         }
         call_id = context.start_tool_call("email_ask", params)
+        limit_result = context.check_tool_call_limits("email_ask")
+        if limit_result is not None:
+            context.finish_tool_call(call_id, "email_ask", result=limit_result)
+            return limit_result
         email_agent = context.get_email_agent()
         max_ask_calls = int(getattr(email_agent, "execution_config", {}).get("max_ask_calls_per_turn", 5) or 5)
         ask_count = _controller_tool_count(context, tool_name="email_ask")
@@ -96,6 +100,10 @@ def _build_email_read_tool(context: ControllerCapabilityContext, description: st
             "debug": bool(debug),
         }
         call_id = context.start_tool_call("email_read", params)
+        limit_result = context.check_tool_call_limits("email_read")
+        if limit_result is not None:
+            context.finish_tool_call(call_id, "email_read", result=limit_result)
+            return limit_result
         try:
             result = context.get_email_agent().read(
                 message_id=safe_message_id,
@@ -143,6 +151,10 @@ def _build_email_send_tool(context: ControllerCapabilityContext, description: st
             "content_length": len(safe_content),
         }
         call_id = context.start_tool_call("email_send", params)
+        limit_result = context.check_tool_call_limits("email_send")
+        if limit_result is not None:
+            context.finish_tool_call(call_id, "email_send", result=limit_result)
+            return limit_result
         try:
             result = context.get_email_agent().send(
                 content=safe_content,

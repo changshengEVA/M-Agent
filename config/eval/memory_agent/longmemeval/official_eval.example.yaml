@@ -1,0 +1,40 @@
+# -----------------------------------------------------------------------------
+# 官方 QA 打分（evaluate_qa.py）本地配置 — 复制为 official_eval.yaml 后填写
+#
+#   Windows:  copy official_eval.example.yaml official_eval.yaml
+#   Linux:    cp official_eval.example.yaml official_eval.yaml
+#
+# official_eval.yaml 已列入 .gitignore，请勿把密钥提交到 Git。
+# -----------------------------------------------------------------------------
+
+# 克隆的 LongMemEval 仓库根目录（含 src/evaluation/evaluate_qa.py）
+longmemeval_root: "F:/path/to/LongMemEval"
+
+# 仅用于跑 requirements-lite 的 Python（建议 conda 环境 longmemeval-eval）
+#
+# 如何得到本机路径（先创建并激活该环境后再查）：
+#   conda activate longmemeval-eval
+#   Windows CMD:  where python
+#   PowerShell:   (Get-Command python).Source
+#   Linux/mac:    which python
+# 不激活也可： conda run -n longmemeval-eval where python   （Windows）
+# 常见位置：   %USERPROFILE%\.conda\envs\longmemeval-eval\python.exe
+python: "C:/path/to/conda/envs/longmemeval-eval/python.exe"
+
+# 传给上游 evaluate_qa.py 的第一个参数：裁判 / 打分用模型名（与网关支持的 id 一致）
+judge_model: "gpt-4o"
+
+# 与 eval_longmemeval 共用：从此文件读 eval.test_id、eval.hypothesis_jsonl → 拼出 hypothesis 路径
+m_agent_env_config: "config/eval/memory_agent/longmemeval/test_env.yaml"
+
+# 可选：显式指定 hypothesis（相对 M-Agent 项目根）；不填则只由 m_agent_env_config 解析
+# hypothesis_jsonl: ""
+
+# 可选：oracle 数据（相对项目根）；不填默认为 data/LongMemEval/data/longmemeval_oracle.json
+# oracle_json: ""
+
+# 写入子进程环境（OpenAI Python SDK 1.x）。留空则继承当前终端 / 系统环境变量。
+api:
+  openai_api_key: ""
+  openai_base_url: ""
+  openai_organization: ""

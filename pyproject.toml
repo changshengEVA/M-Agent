@@ -17,3 +17,11 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config --maxfail=1"
+markers = [
+    "unit: pure logic tests",
+    "integration: app-level tests",
+    "contract: api contract tests",
+    "e2e: end-to-end flow tests",
+    "slow: long-running tests",
+]

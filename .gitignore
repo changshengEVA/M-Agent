@@ -19,3 +19,7 @@ log/*
 config/users/users.json
 config/users/*/
 .secrets/
+/tools/
+
+# LongMemEval 官方打分本地密钥（复制自 official_eval.example.yaml）
+config/eval/memory_agent/longmemeval/official_eval.yaml

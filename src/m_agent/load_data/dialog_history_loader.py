@@ -8,7 +8,7 @@ import json
 import os
 import logging
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Sequence
 
 logger = logging.getLogger(__name__)
 
@@ -191,18 +191,25 @@ def load_default_dialogues(file_path: str = None) -> List[Dict[str, Any]]:
     return dialogues
 
 
-def load_dialogues(file_path: str = None, loader_type: str = "auto") -> List[Dict[str, Any]]:
+def load_dialogues(
+    file_path: str = None,
+    loader_type: str = "auto",
+    include_conv_ids: Optional[Sequence[str]] = None,
+) -> List[Dict[str, Any]]:
     """
     统一的 dialogue 加载接口，根据 loader_type 调用不同的加载器
-    
+
     Args:
         file_path: JSON 文件路径，如果为 None 则使用默认路径。
         loader_type: 加载器类型，可选值：
                     - "auto": 自动检测（默认）
                     - "realtalk": 强制使用 realtalk 加载器
                     - "locomo": 强制使用 locomo 加载器
+                    - "longmemeval": LongMemEval haystack JSON
                     - "default": 强制使用默认加载器
-        
+        include_conv_ids: 传给 LongMemEval 等加载器时在 **解析 JSON 时** 按 ``question_id``
+            预过滤（强烈建议对 longmemeval 提供，否则可能加载整文件）。
+
     Returns:
         dialogue 列表，每个元素是构造好的 dialogue 字典
     """
@@ -226,6 +233,8 @@ def load_dialogues(file_path: str = None, loader_type: str = "auto") -> List[Dic
         if path is None:
             return False
         path_lower = path.lower()
+        if "longmemeval" in path_lower:
+            return False
         if "locomo" in path_lower:
             return True
         import os
@@ -233,7 +242,13 @@ def load_dialogues(file_path: str = None, loader_type: str = "auto") -> List[Dic
         if filename == "locomo10.json":
             return True
         return False
-    
+
+    def is_longmemeval_path(path: str) -> bool:
+        if path is None:
+            return False
+        pl = path.lower()
+        return "longmemeval" in pl and pl.endswith(".json")
+
     # 根据 loader_type 决定使用哪个加载器
     if loader_type == "realtalk":
         # 强制使用 realtalk 加载器
@@ -256,7 +271,14 @@ def load_dialogues(file_path: str = None, loader_type: str = "auto") -> List[Dic
             from .locomo_history_loader import load_locomo_dialogues
             logger.info(f"使用 locomo 文件加载器: {file_path}")
             return load_locomo_dialogues(file_path)
-    
+
+    elif loader_type == "longmemeval":
+        from .longmemeval_history_loader import load_longmemeval_dialogues
+
+        qids = list(include_conv_ids) if include_conv_ids else None
+        logger.info("使用 longmemeval 文件加载器: %s", file_path)
+        return load_longmemeval_dialogues(file_path, include_question_ids=qids)
+
     elif loader_type == "default":
         # 强制使用默认加载器
         return load_default_dialogues(file_path)
@@ -276,6 +298,13 @@ def load_dialogues(file_path: str = None, loader_type: str = "auto") -> List[Dic
                 logger.info(f"检测到 realtalk 目录，使用 realtalk 加载器: {file_path}")
                 return load_realtalk_dialogues_from_directory(file_path)
         
+        if is_longmemeval_path(file_path):
+            from .longmemeval_history_loader import load_longmemeval_dialogues
+
+            qids = list(include_conv_ids) if include_conv_ids else None
+            logger.info("检测到 LongMemEval 文件，使用 longmemeval 加载器: %s", file_path)
+            return load_longmemeval_dialogues(file_path, include_question_ids=qids)
+
         if is_locomo_path(file_path):
             from .locomo_history_loader import load_locomo_dialogues
             logger.info(f"检测到 locomo 文件，使用 locomo 加载器: {file_path}")

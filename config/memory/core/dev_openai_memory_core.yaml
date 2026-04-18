@@ -22,7 +22,30 @@ memory_use_threshold: true
 scene_prompt_version: "v2"
 fact_prompt_version: "v2"
 memory_owner_name: "changshengEVA"
+# true: only build to scene facts; skip extract_fact_entities/import_fact_entities
+# and MemoryAgent will expose only search_content/search_events_by_time_range/search_details
+facts_only_mode: false
 # Entity statement build control
 # true: force regenerate all episodes this run
 # false: incremental mode based on episodes/episode_situation.json
 entity_statement_force_update: true
+
+# Hybrid detail retrieval tuning (search_details: dense + sparse BM25 + RRF)
+detail_search_hybrid:
+  dense_recall_topn: 30
+  sparse_recall_topn: 30
+  rrf_k: 60
+  dense_weight: 1.0
+  sparse_weight: 1.0
+  bm25_k1: 1.5
+  bm25_b: 0.75
+
+detail_search_multi_route:
+  enable: true
+  route_count: 4
+  query_generator: "llm"
+  route_types: ["entity", "action", "time", "relation", "topic"]
+  per_route_topk: 8
+  fusion: "rrf"
+  max_workers: 4
+  rrf_k: 60

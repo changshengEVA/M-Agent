@@ -463,7 +463,8 @@ class ScheduleService:
     def serialize_item(self, item: ScheduleItem) -> Dict[str, Any]:
         tz, _, _ = resolve_timezone(item.timezone_name)
         due_local = _parse_utc_iso(item.due_at_utc).astimezone(tz)
-        return {
+        metadata = deepcopy(item.metadata)
+        payload = {
             "schedule_id": item.schedule_id,
             "owner_id": item.owner_id,
             "thread_id": item.thread_id,
@@ -479,8 +480,28 @@ class ScheduleService:
             "created_at": item.created_at,
             "updated_at": item.updated_at,
             "source_text": item.source_text,
-            "metadata": deepcopy(item.metadata),
+            "metadata": metadata,
         }
+        schedule_kind = str(metadata.get("schedule_kind", "") or "").strip() or "time_due"
+        payload["schedule_kind"] = schedule_kind
+        event_at_utc = str(metadata.get("event_at_utc", "") or "").strip()
+        if event_at_utc:
+            try:
+                event_local = _parse_utc_iso(event_at_utc).astimezone(tz)
+                payload["event_at_utc"] = event_at_utc
+                payload["event_at_local"] = event_local.isoformat()
+                payload["event_display"] = event_local.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                payload["event_at_utc"] = event_at_utc
+                payload["event_at_local"] = str(metadata.get("event_at_local", "") or "").strip() or None
+                payload["event_display"] = str(metadata.get("event_display", "") or "").strip() or None
+        else:
+            payload["event_at_utc"] = None
+            payload["event_at_local"] = None
+            payload["event_display"] = None
+        payload["reminder_offset_minutes"] = metadata.get("reminder_offset_minutes")
+        payload["reminder_offset_label"] = str(metadata.get("reminder_offset_label", "") or "").strip() or None
+        return payload
 
     @staticmethod
     def _item_matches_window(item: ScheduleItem, start_utc: str, end_utc: str) -> bool:

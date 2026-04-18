@@ -6,6 +6,7 @@ Episode 状态管理器。
 
 import json
 import os
+import threading
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Any
@@ -27,7 +28,8 @@ class EpisodeStatusManager:
             self.situation_file = memory_stage_dir(workflow_id, "episodes") / "episode_situation.json"
         else:
             self.situation_file = situation_file_path
-        
+
+        self._lock = threading.Lock()
         self._data = None
         self._load_data()
     
@@ -165,6 +167,10 @@ class EpisodeStatusManager:
             episode_key: episode 键，格式为 `dialogue_id:episode_id`。
             updates: 要更新的字段字典
         """
+        with self._lock:
+            self._update_episode_unlocked(episode_key, updates)
+
+    def _update_episode_unlocked(self, episode_key: str, updates: Dict[str, Any]) -> None:
         if "episodes" not in self._data:
             self._data["episodes"] = {}
         
@@ -199,7 +205,7 @@ class EpisodeStatusManager:
         self._data["episodes"][episode_key]["updated_at"] = datetime.utcnow().isoformat() + "Z"
         
         self._save_data()
-    
+
     def _parse_episode_key(self, episode_key: str) -> tuple[str, str]:
         """解析 `episode_key` 中的 `dialogue_id` 和 `episode_id`。"""
         if ":" in episode_key:
@@ -265,33 +271,34 @@ class EpisodeStatusManager:
     
     def update_statistics(self):
         """更新统计信息"""
-        episodes = self.get_all_episodes()
-        
-        # 计算各种统计
-        total_episodes = len(episodes)
-        scene_available_keys = [k for k, v in episodes.items() if v.get("scene_available", False)]
-        kg_available_keys = [k for k, v in episodes.items() if v.get("kg_available", False)]
-        emo_available_keys = [k for k, v in episodes.items() if v.get("emo_available", False)]
-        
-        # 更新 statistics
-        if "statistics" not in self._data:
-            self._data["statistics"] = {}
-        
-        self._data["statistics"]["total_episodes"] = total_episodes
-        self._data["statistics"]["scene_available"] = {
-            "count": len(scene_available_keys),
-            "episode_keys": scene_available_keys
-        }
-        self._data["statistics"]["kg_available"] = {
-            "count": len(kg_available_keys),
-            "episode_keys": kg_available_keys
-        }
-        self._data["statistics"]["emo_available"] = {
-            "count": len(emo_available_keys),
-            "episode_keys": emo_available_keys
-        }
-        
-        self._save_data()
+        with self._lock:
+            episodes = self.get_all_episodes()
+
+            # 计算各种统计
+            total_episodes = len(episodes)
+            scene_available_keys = [k for k, v in episodes.items() if v.get("scene_available", False)]
+            kg_available_keys = [k for k, v in episodes.items() if v.get("kg_available", False)]
+            emo_available_keys = [k for k, v in episodes.items() if v.get("emo_available", False)]
+
+            # 更新 statistics
+            if "statistics" not in self._data:
+                self._data["statistics"] = {}
+
+            self._data["statistics"]["total_episodes"] = total_episodes
+            self._data["statistics"]["scene_available"] = {
+                "count": len(scene_available_keys),
+                "episode_keys": scene_available_keys
+            }
+            self._data["statistics"]["kg_available"] = {
+                "count": len(kg_available_keys),
+                "episode_keys": kg_available_keys
+            }
+            self._data["statistics"]["emo_available"] = {
+                "count": len(emo_available_keys),
+                "episode_keys": emo_available_keys
+            }
+
+            self._save_data()
 
 
 # 全局实例缓存

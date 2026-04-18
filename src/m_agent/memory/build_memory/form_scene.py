@@ -11,6 +11,8 @@ import json
 import yaml
 import logging
 import re
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Any, Callable
@@ -31,6 +33,17 @@ logger = logging.getLogger(__name__)
 DIALOGUES_ROOT = memory_stage_dir("default", "dialogues")
 EPISODES_ROOT = memory_stage_dir("default", "episodes")
 CONFIG_PATH = SCENE_PROMPT_CONFIG_PATH
+
+# Serialize scene file numbering + writes when multiple episode files are processed in parallel.
+_scene_root_write_locks: Dict[str, threading.Lock] = {}
+
+
+def _lock_for_scene_root(scene_root: Path) -> threading.Lock:
+    key = str(scene_root.resolve())
+    if key not in _scene_root_write_locks:
+        _scene_root_write_locks[key] = threading.Lock()
+    return _scene_root_write_locks[key]
+
 
 def load_prompts(memory_owner_name: str = "changshengEVA", prompt_language: str = "zh") -> Dict:
     """Load scene prompts and replace the memory owner placeholder."""
@@ -357,19 +370,22 @@ def build_scene_structure(scene_number: int,
     # 确定语言：默认为中文，但可根据内容判断
     language = "zh-CN"  # 假设对话是中文
     
+    source_episode: Dict[str, Any] = {
+        "episode_id": episode_id,
+        "dialogue_id": dialogue_id,
+        "turn_span": turn_span,
+        "start_time": start_time,
+        "end_time": end_time,
+    }
+    segments = episode_meta.get("segments")
+    if isinstance(segments, list) and segments:
+        source_episode["segments"] = segments
+
     return {
         "scene_id": scene_id,
         "scene_version": scene_version,
         "source": {
-            "episodes": [
-                {
-                    "episode_id": episode_id,
-                    "dialogue_id": dialogue_id,
-                    "turn_span": turn_span,
-                    "start_time": start_time,
-                    "end_time": end_time
-                }
-            ]
+            "episodes": [source_episode]
         },
         "meta": {
             "created_at": datetime.utcnow().isoformat() + "Z",
@@ -408,15 +424,31 @@ def extract_workflow_id_from_path(episodes_root: Path) -> str:
     Extract a workflow id from the episodes path.
     """
     try:
-        # 将路径转换为字符串并标准化
-        parts = episodes_root.parts
-        # 查找 "memory" 的索引
+        # episodes_root is expected to look like:
+        #   <...>/data/memory/<workflow_id>/episodes
+        # where <workflow_id> may include path separators like "locomo/conv-26".
+        parts = list(episodes_root.parts)
+
         if "memory" in parts:
-            idx = parts.index("memory")
-            if idx + 1 < len(parts):
-                return parts[idx + 1]
-        # 如果找不到，尝试从路径名推断
-        # 假设 episodes_root 的父目录是 workflow_id
+            mem_idx = parts.index("memory")
+
+            # Find the terminal "episodes" segment (prefer the last occurrence).
+            try:
+                ep_idx = len(parts) - 1 - list(reversed(parts)).index("episodes")
+            except ValueError:
+                ep_idx = -1
+
+            if ep_idx > mem_idx:
+                workflow_parts = [p for p in parts[mem_idx + 1 : ep_idx] if p]
+                if workflow_parts:
+                    # Use "/" so Path("a/b") becomes nested dirs cross-platform.
+                    return "/".join(workflow_parts)
+
+            # Fallback: return the first segment after "memory" (legacy behavior).
+            if mem_idx + 1 < len(parts) and parts[mem_idx + 1]:
+                return parts[mem_idx + 1]
+
+        # If we can't find ".../memory/.../episodes", infer from parent directory.
         workflow_id = episodes_root.parent.name
         if workflow_id and workflow_id != "episodes":
             return workflow_id
@@ -544,46 +576,47 @@ def process_episode_file(episode_file: Path,
         # 分配 scene 编号并构建最终 scene 结构
         if scene_root is None:
             scene_root = effective_scene_root
-        
-        # 获取下一个起始编号
-        start_number = get_next_scene_number(scene_root)
-        final_scenes = []
-        for i, scene_data in enumerate(scenes):
-            scene_number = start_number + i
-            start_time, end_time = extract_episode_time_range(
-                scene_data["episode_meta"],
-                dialogue_data
-            )
-            final_scene = build_scene_structure(
-                scene_number,
-                scene_data["episode_meta"],
-                scene_data["scene_result"],
-                scene_version=prompt_version,
-                memory_owner_name=memory_owner_name,
-                start_time=start_time,
-                end_time=end_time
-            )
-            final_scenes.append({
-                "scene": final_scene,
-                "episode_key": scene_data["episode_key"]
-            })
-        
-        # 保存 scene 文件
-        saved_scenes = [item["scene"] for item in final_scenes]
-        saved_files = save_scenes_as_individual_files(saved_scenes, scene_root)
-        
-        # 更新状态
-        for i, item in enumerate(final_scenes):
-            episode_key = item["episode_key"]
-            scene_file = saved_files[i].name if i < len(saved_files) else f"unknown_{i}.json"
-            created_at = item["scene"].get("meta", {}).get("created_at")
-            status_manager.mark_scene_generated(episode_key, scene_file, created_at)
-        
+
+        with _lock_for_scene_root(scene_root):
+            # 获取下一个起始编号
+            start_number = get_next_scene_number(scene_root)
+            final_scenes = []
+            for i, scene_data in enumerate(scenes):
+                scene_number = start_number + i
+                start_time, end_time = extract_episode_time_range(
+                    scene_data["episode_meta"],
+                    dialogue_data
+                )
+                final_scene = build_scene_structure(
+                    scene_number,
+                    scene_data["episode_meta"],
+                    scene_data["scene_result"],
+                    scene_version=prompt_version,
+                    memory_owner_name=memory_owner_name,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+                final_scenes.append({
+                    "scene": final_scene,
+                    "episode_key": scene_data["episode_key"]
+                })
+
+            # 保存 scene 文件
+            saved_scenes = [item["scene"] for item in final_scenes]
+            saved_files = save_scenes_as_individual_files(saved_scenes, scene_root)
+
+            # 更新状态
+            for i, item in enumerate(final_scenes):
+                episode_key = item["episode_key"]
+                scene_file = saved_files[i].name if i < len(saved_files) else f"unknown_{i}.json"
+                created_at = item["scene"].get("meta", {}).get("created_at")
+                status_manager.mark_scene_generated(episode_key, scene_file, created_at)
+
         logger.info(
             f"Generated {len(saved_files)} scene files for dialogue {dialogue_id}, "
             f"skipped {skipped_count}, output={scene_root}, prompt_version={prompt_version}"
         )
-        
+
         return True
         
     except Exception as e:
@@ -601,7 +634,8 @@ def scan_and_form_scenes(use_tqdm: bool = True,
                         memory_owner_name: str = "changshengEVA",
                         prompt_language: str = "zh",
                         embed_model: Optional[Callable[[Any], Any]] = None,
-                        llm_model: Optional[Callable[[str], str]] = None):
+                        llm_model: Optional[Callable[[str], str]] = None,
+                        max_workers: int = 1):
     """
     Scan episode files and generate scene outputs.
 
@@ -613,6 +647,7 @@ def scan_and_form_scenes(use_tqdm: bool = True,
         episodes_root: Optional episodes root override.
         scene_root: Optional scene root override.
         memory_owner_name: Placeholder value injected into prompt templates.
+        max_workers: Thread pool size for processing multiple episode files in parallel (default 1).
     """
     # 确定使用的根目录
     if episodes_root is None:
@@ -647,15 +682,10 @@ def scan_and_form_scenes(use_tqdm: bool = True,
         logger.info("没有找到 episode 文件")
         return
     
-    # 处理文件
-    if use_tqdm:
-        file_iter = tqdm(episode_files, desc=f"生成 scenes (prompt: {prompt_version})")
-    else:
-        file_iter = episode_files
-    
-    success_count = 0
-    for episode_file in file_iter:
-        if process_episode_file(
+    workers = max(1, int(max_workers))
+
+    def _one_episode_file(episode_file: Path) -> bool:
+        return process_episode_file(
             episode_file,
             prompts,
             dialogues_root,
@@ -665,10 +695,28 @@ def scan_and_form_scenes(use_tqdm: bool = True,
             prompt_version=prompt_version,
             memory_owner_name=memory_owner_name,
             embed_model=embed_model,
-            llm_model=llm_model
-        ):
-            success_count += 1
-    
+            llm_model=llm_model,
+        )
+
+    success_count = 0
+    if workers == 1:
+        if use_tqdm:
+            file_iter = tqdm(episode_files, desc=f"生成 scenes (prompt: {prompt_version})")
+        else:
+            file_iter = episode_files
+        for episode_file in file_iter:
+            if _one_episode_file(episode_file):
+                success_count += 1
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(episode_files))) as pool:
+            futures = {pool.submit(_one_episode_file, ef): ef for ef in episode_files}
+            iterator = as_completed(futures)
+            if use_tqdm:
+                iterator = tqdm(iterator, total=len(futures), desc=f"生成 scenes (prompt: {prompt_version})")
+            for fut in iterator:
+                if fut.result():
+                    success_count += 1
+
     logger.info(
         f"成功处理 {success_count}/{len(episode_files)} 个 episode 文件，使用 prompt 版本: {prompt_version}"
     )

@@ -1,0 +1,22 @@
+﻿flowchart TD
+    A[User Question] --> B[ask]
+    B --> C[deep_recall]
+    C --> D[Reset Round State]
+    D --> E[Detect Strategy]
+
+    E -->|Direct First| F[Answer Directly scope direct]
+    E -->|Decompose First| H[Decompose Question]
+
+    F --> G{Direct Answer Sufficient}
+    G -->|Yes| Z[Finalize Payload]
+    G -->|No| H
+
+    H --> I[Build Question Plan]
+    I --> J[Solve Sub Questions]
+    J --> K[Synthesize Final Answer]
+    K --> Z
+
+    Z --> Z1[Attach Tool Calls]
+    Z1 --> Z2[Collect Episode Refs]
+    Z2 --> Z3[Append Refs to Answer and Evidence]
+    Z3 --> O[Return Result]

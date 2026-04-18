@@ -73,30 +73,29 @@ EMBED_PROVIDER=aliyun
 LLM_PROVIDER=deepseek
 ```
 
-4. Run LoCoMo preprocessing first (`memory_pre`, now only builds dialogues + episodes)
+4. Run LoCoMo preprocessing first (config-driven, conv_id aligned)
 
-> `run_eval_locomo.py` uses `config/agents/memory/locomo_eval_memory_agent.yaml` by default.
-> In that file, `memory_core_config_path` points to `config/memory/core/locomo_eval_memory_core.yaml`,
-> where `workflow_id` is configured. Keep preprocessing `--id` consistent with that `workflow_id`.
+Edit `config/eval/memory_agent/locomo/test_env.yaml` first:
+- `selection.conv_ids` (which conversations to build/test)
+- `import.process_id` (workflow id)
+- `eval.test_id`
+
+Then run:
 
 ```bash
-python scripts/memory_pre.py --id testlocomo --data-source data/locomo/data/locomo10.json --loader-type locomo
+python scripts/run_locomo/import_locomo.py --env-config config/eval/memory_agent/locomo/test_env.yaml
 ```
 
-After preprocessing, these folders will be generated/updated under `data/memory/testlocomo/`:
+After preprocessing, these folders will be generated/updated under `data/memory/<process_id>/`:
 
 - `dialogues/`
 - `episodes/`
 - `scene/` (generated later by MemoryCore import from `episodes/`)
 
-5. Run LoCoMo evaluation
+5. Run LoCoMo evaluation (same env config)
 
 ```bash
-# Quick check: sampled run
-python scripts/run_eval_locomo.py --test-id quickstart --sample-fraction 0.1
-
-# Full run: 10/10 samples
-# python scripts/run_eval_locomo.py --test-id quickstart-full --sample-fraction 1.0
+python scripts/run_locomo/eval_locomo.py --env-config config/eval/memory_agent/locomo/test_env.yaml
 ```
 
 6. Check outputs
@@ -106,7 +105,5 @@ python scripts/run_eval_locomo.py --test-id quickstart --sample-fraction 0.1
 - `log/<test-id>/locomo10_agent_qa_run.log`
 - `log/<test-id>/locomo10_agent_qa_qa_trace.jsonl`
 
-Each QA item now also stores intermediate decomposition fields such as
-`memory_agent_prediction_plan`, `memory_agent_prediction_sub_questions`, and
-`memory_agent_prediction_plan_summary`, so you can inspect whether the agent
-actually decomposed the question before retrieving evidence.
+Each QA item may also store `memory_agent_prediction_plan` (the internal
+question-plan metadata) alongside predictions and evidence fields.

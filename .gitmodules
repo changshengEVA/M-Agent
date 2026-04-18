@@ -1,6 +1,3 @@
-[submodule "data/REALTALK"]
-    path = data/REALTALK
-    url = git@github.com:danny911kr/REALTALK.git
 [submodule "data/locomo"]
 	path = data/locomo
 	url = git@github.com:snap-research/locomo.git
@@ -8,3 +5,7 @@
     path = tools/M-Agent-UI
     url = git@github.com:changshengEVA/M-Agent-UI.git
 
+[submodule "data/LongMemEval"]
+	path = data/LongMemEval
+	url = https://github.com/xiaowu0162/LongMemEval.git
+	ignore = all

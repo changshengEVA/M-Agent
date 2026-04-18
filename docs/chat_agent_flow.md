@@ -10,7 +10,6 @@
 
 相关代码入口：
 
-- `scripts/run_test_agent_web.py`
 - `src/m_agent/chat/web_ui.py`
 - `src/m_agent/chat/simple_chat_agent.py`
 - `src/m_agent/agents/memory_agent.py`

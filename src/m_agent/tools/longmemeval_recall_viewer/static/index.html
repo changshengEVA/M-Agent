@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LongMemEval Recall Viewer</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="title">
+        <h1>LongMemEval Recall Viewer</h1>
+        <div class="meta" id="meta-line"></div>
+      </div>
+      <div class="search">
+        <input id="search" type="search" placeholder="搜索 question_id / round / evidence..." autocomplete="off" />
+      </div>
+    </header>
+
+    <main class="layout">
+      <aside class="panel list-panel">
+        <div class="panel-head">
+          <h2>Questions</h2>
+          <div class="subtle" id="qid-count"></div>
+        </div>
+        <div class="panel-body scroll" id="qid-list"></div>
+      </aside>
+
+      <aside class="panel list-panel">
+        <div class="panel-head">
+          <h2>Rounds</h2>
+          <div class="subtle" id="round-count"></div>
+        </div>
+        <div class="panel-body scroll" id="round-list"></div>
+      </aside>
+
+      <section class="panel detail-panel">
+        <div class="panel-head">
+          <h2 id="detail-title">Detail</h2>
+          <div class="chips" id="detail-chips"></div>
+        </div>
+        <div class="tabs">
+          <button type="button" class="tab active" data-tab="round">Round JSON</button>
+          <button type="button" class="tab" data-tab="actions">Actions</button>
+          <button type="button" class="tab" data-tab="judge">Judge</button>
+          <button type="button" class="tab" data-tab="evidence">Evidences</button>
+          <button type="button" class="tab" data-tab="recall">Recall JSON</button>
+        </div>
+        <div class="panel-body scroll tab-panes">
+          <div class="tab-pane active" id="pane-round">
+            <pre id="round-json" class="json-block"></pre>
+          </div>
+          <div class="tab-pane" id="pane-actions">
+            <pre id="actions-json" class="json-block"></pre>
+          </div>
+          <div class="tab-pane" id="pane-judge">
+            <pre id="judge-json" class="json-block"></pre>
+          </div>
+          <div class="tab-pane" id="pane-evidence">
+            <div class="evidence-layout">
+              <div class="evidence-list" id="evidence-list"></div>
+              <pre class="json-block" id="evidence-detail"></pre>
+            </div>
+          </div>
+          <div class="tab-pane" id="pane-recall">
+            <pre id="recall-json" class="json-block"></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>
+

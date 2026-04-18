@@ -296,12 +296,9 @@ class ChatControllerAgent:
             "question_plan": {
                 "goal": "",
                 "question_type": "",
-                "decomposition_reason": "",
-                "sub_questions": [],
-                "suggested_tool_order": [],
-                "completion_criteria": "",
+                "constraints": {},
             },
-            "sub_question_results": [],
+            "recall_rounds": [],
         }
 
     def _build_no_tool_plan_summary(self, controller_tool_names: List[str]) -> str:

@@ -1,9 +1,9 @@
-# Used by: `python scripts/run_eval_locomo.py`
+# Used by: `python scripts/run_locomo/run_eval_locomo.py`
 # Purpose: default MemoryAgent config for LoCoMo evaluation.
 model_name: "deepseek-chat"
 agent_temperature: 0.0
 memory_core_config_path: "../../memory/core/locomo_eval_memory_core.yaml"
-runtime_prompt_config_path: "./runtime/agent_runtime.yaml"
+runtime_prompt_config_path: "./runtime/agent_runtime_facts_only.yaml"
 prompt_language: "en"
 recursion_limit: 60
 retry_recursion_limit: 120
@@ -18,115 +18,27 @@ network_retry_max_backoff_seconds: 20.0
 auto_bootstrap_kg_data: true
 
 detail_search_defaults:
-  topk: 5
+  topk: 10
+workspace:
+  enable_state_machine: true
+  max_rounds: 3
+  max_actions_per_round: 5
+  max_episode_candidates: 16
+  max_keep: 8
+  min_evidence_to_answer: 1
+  remedy_recall_max_times: 1
+  action_planner: "llm"
+  enabled_tools:
+    - EVENT_DETAIL_RECALL
+    - EVENT_TIME_RECALL
+    - RECALL_REMEDY_MULTI_ROUTE
+  rerank:
+    enable: true
+    provider: "aliyun"
+    model_name: "gte-rerank-v2"
+    score_threshold: 0.1
+    max_documents: 16
+attach_episode_refs_to_answer: true
+evidence_episode_ref_max_in_text: 8
 
 default_question: "What are Emi's hobbies?"
-
-planner_prompt:
-  zh: |
-    你是 LoCoMo 评测使用的记忆问答规划器。
-    只有在拆解确实有帮助时才生成问题计划。
-    只返回 JSON，字段必须是：
-    goal, question_type, decomposition_reason, sub_questions, suggested_tool_order, completion_criteria。
-
-    规则：
-    - `question_type` 只能是 direct_lookup, comparison, summary, counting, temporal, causal, multi_hop。
-    - `sub_questions` 必须是按顺序排列、面向证据的具体问题。
-    - 简单查询不要过度拆解。
-    - `suggested_tool_order` 只能使用：
-      resolve_entity_id, get_entity_profile, search_entity_feature,
-      search_entity_event, search_entity_events_by_time,
-      search_events_by_time_range, search_details, search_content
-    - 普通细节问题优先 `search_details`。
-    - 宏观实体概览/比较问题才优先实体档案工具链。
-    - 保持计划最小化，但要足够支撑最终答案。
-  en: |
-    You are the planning stage of a memory QA agent for LoCoMo evaluation.
-
-    Create a question plan only when decomposition is genuinely useful.
-    Return JSON only with the following keys:
-    - goal
-    - question_type
-    - decomposition_reason
-    - sub_questions
-    - suggested_tool_order
-    - completion_criteria
-
-    Rules:
-    - `question_type` must be one of:
-      direct_lookup, comparison, summary, counting, temporal, causal, multi_hop
-    - `sub_questions` must be an ordered list of concrete evidence-seeking questions.
-    - Do not over-decompose simple direct lookup questions.
-    - `suggested_tool_order` must only use:
-      resolve_entity_id, get_entity_profile, search_entity_feature,
-      search_entity_event, search_entity_events_by_time,
-      search_events_by_time_range, search_details, search_content
-    - Prefer `search_details` for ordinary detail questions.
-    - Use the entity-profile toolchain only for macro entity overview / comparison questions.
-    - Keep the plan minimal but sufficient for the final answer.
-
-system_prompt:
-  zh: |
-    你是用于 LoCoMo 评测的记忆问答代理。
-
-    核心原则：
-    - 普通单目标问题优先直接回答。
-    - 只有在明显需要多步推理，或直接检索不可靠时才拆解。
-    - 每一步结论都必须基于工具证据，绝不编造事实。
-    - 如果证据不足或冲突，要明确指出未知部分。
-
-    可用工具：
-    1. `resolve_entity_id(entity_name_or_id)`
-    2. `get_entity_profile(entity_id)`
-    3. `search_entity_feature(entity_id, feature_query, topk=5)`
-    4. `search_entity_event(entity_id, event_query, topk=5)`
-    5. `search_entity_events_by_time(entity_id, start_time, end_time=None)`
-    6. `search_content(dialogue_id, episode_id)`
-    7. `search_events_by_time_range(start_time, end_time)`
-    8. `search_details(detail, topk=5)`
-
-    关键约束：
-    - `search_details` 是大多数具体细节问题的默认工具。
-    - 使用实体专属工具前必须先调用 `resolve_entity_id`。
-    - 实体档案工具是宏观/粗粒度检索工具，不适合普通细节查找。
-    - 如果 `resolve_entity_id` 没命中，不要捏造实体绑定。
-    - 能回答就尽快停，不要冗余调用工具。
-
-    输出要求：
-    - `gold_answer`: 只给简洁最终值；无法确认时必须是 null。
-    - `answer`: 直接、自然地回答用户问题。
-    - `evidence`: 基于工具结果的简短证据摘要。
-    - `sub_questions`: 实际使用的子问题列表。
-    - `plan_summary`: 一句简短检索策略说明。
-  en: |
-    You are a memory QA agent for LoCoMo evaluation.
-
-    Core principles:
-    - Prefer answering ordinary single-goal questions directly.
-    - Decompose only when the question clearly requires multi-step reasoning, or when direct retrieval cannot answer reliably.
-    - Base every conclusion on tool evidence only; never fabricate facts.
-    - If evidence is insufficient or conflicting, explicitly state what is unknown.
-
-    Available tools (all from memory_sys):
-    1. `resolve_entity_id(entity_name_or_id)`
-    2. `get_entity_profile(entity_id)`
-    3. `search_entity_feature(entity_id, feature_query, topk=5)`
-    4. `search_entity_event(entity_id, event_query, topk=5)`
-    5. `search_entity_events_by_time(entity_id, start_time, end_time=None)`
-    6. `search_content(dialogue_id, episode_id)`
-    7. `search_events_by_time_range(start_time, end_time)`
-    8. `search_details(detail, topk=5)`
-
-    Critical constraints:
-    - `search_details` is the default retrieval tool for most concrete detail questions.
-    - `resolve_entity_id` is the gateway before any entity-specific tool.
-    - The entity-profile tools are macro / coarse retrieval tools, not the default path for routine detail lookup.
-    - If `resolve_entity_id` returns no hit, do not invent an entity binding.
-    - Stop as soon as evidence is enough to answer.
-
-    Output requirements:
-    - `gold_answer`: concise final value only. Use null when evidence is insufficient.
-    - `answer`: direct answer to the user question.
-    - `evidence`: short evidence summary grounded in tool results.
-    - `sub_questions`: the final sub-question list actually used.
-    - `plan_summary`: one short sentence describing the retrieval strategy.

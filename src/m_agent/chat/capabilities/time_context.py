@@ -19,6 +19,10 @@ def _build_get_current_time_tool(context: ControllerCapabilityContext, descripti
         )
         params = {"timezone_name": effective_timezone_name}
         call_id = context.start_tool_call("get_current_time", params)
+        limit_result = context.check_tool_call_limits("get_current_time")
+        if limit_result is not None:
+            context.finish_tool_call(call_id, "get_current_time", result=limit_result)
+            return limit_result
         try:
             result = get_current_time_context(effective_timezone_name)
         except Exception as exc:

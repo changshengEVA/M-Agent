@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Baseline 记忆数据观察</title>
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <h1>Baseline 记忆数据观察</h1>
+      <div class="meta" id="header-meta"></div>
+    </header>
+    <main class="layout">
+      <aside class="panel dialogues-panel">
+        <div class="panel-head">
+          <h2>对话</h2>
+          <input type="search" id="dlg-filter" placeholder="按 dialogue_id 过滤…" autocomplete="off" />
+        </div>
+        <div class="panel-body scroll" id="dlg-list"></div>
+      </aside>
+      <section class="panel main-panel">
+        <div class="tabs">
+          <button type="button" class="tab active" data-tab="turns">轮次</button>
+          <button type="button" class="tab" data-tab="narrative">分集 / Segment / Facts</button>
+          <button type="button" class="tab" data-tab="episodes">Episodes JSON</button>
+          <button type="button" class="tab" data-tab="eligibility">Eligibility</button>
+          <button type="button" class="tab" data-tab="scenes">关联 Scenes</button>
+          <button type="button" class="tab" data-tab="overview">概览</button>
+        </div>
+        <div class="panel-body scroll tab-panes">
+          <div class="tab-pane active" id="pane-turns">
+            <div id="dlg-meta" class="subtle"></div>
+            <div id="turns" class="turns"></div>
+          </div>
+          <div class="tab-pane" id="pane-narrative">
+            <div id="narrative-root"></div>
+          </div>
+          <div class="tab-pane" id="pane-episodes">
+            <div id="episodes-tree"></div>
+          </div>
+          <div class="tab-pane" id="pane-eligibility">
+            <div id="eligibility-table"></div>
+          </div>
+          <div class="tab-pane" id="pane-scenes">
+            <div id="related-scenes"></div>
+            <div id="scene-json" class="json-block"></div>
+          </div>
+          <div class="tab-pane" id="pane-overview">
+            <div id="overview-stats" class="stats-grid"></div>
+            <pre id="overview-json" class="json-block"></pre>
+          </div>
+        </div>
+      </section>
+    </main>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

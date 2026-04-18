@@ -26,6 +26,10 @@ def _build_schedule_manage_tool(context: ControllerCapabilityContext, descriptio
             "timezone_name": effective_timezone_name,
         }
         call_id = context.start_tool_call("schedule_manage", params)
+        limit_result = context.check_tool_call_limits("schedule_manage")
+        if limit_result is not None:
+            context.finish_tool_call(call_id, "schedule_manage", result=limit_result)
+            return limit_result
         try:
             result = context.get_schedule_agent().handle_manage_command(
                 thread_id=context.active_thread_id,
@@ -68,6 +72,10 @@ def _build_schedule_query_tool(context: ControllerCapabilityContext, description
             "limit": safe_limit,
         }
         call_id = context.start_tool_call("schedule_query", params)
+        limit_result = context.check_tool_call_limits("schedule_query")
+        if limit_result is not None:
+            context.finish_tool_call(call_id, "schedule_query", result=limit_result)
+            return limit_result
         try:
             result = context.get_schedule_agent().handle_query_command(
                 thread_id=context.active_thread_id,

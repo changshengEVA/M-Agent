@@ -1,0 +1,186 @@
+@baseUrl = http://127.0.0.1:8777
+@username = demo_user
+@password = password123
+@accessToken = paste_access_token_here
+@threadId = demo-thread
+@runId = run_xxx
+@dialogueId = chat_xxx
+@scheduleId = sch_xxx
+
+### Health
+GET {{baseUrl}}/healthz
+
+### Auth
+### Skip this group when the server runs with --disable-auth.
+
+POST {{baseUrl}}/v1/auth/register
+Content-Type: application/json
+
+{
+  "username": "{{username}}",
+  "password": "{{password}}",
+  "role": "basic",
+  "display_name": "Demo User",
+  "assistant_name": "Memory Assistant",
+  "persona_prompt": "Be concise and helpful."
+}
+
+###
+
+POST {{baseUrl}}/v1/auth/login
+Content-Type: application/json
+
+{
+  "username": "{{username}}",
+  "password": "{{password}}"
+}
+
+###
+
+GET {{baseUrl}}/v1/auth/me
+Authorization: Bearer {{accessToken}}
+
+###
+
+POST {{baseUrl}}/v1/auth/logout
+Authorization: Bearer {{accessToken}}
+
+### User config
+
+GET {{baseUrl}}/v1/users/me/config/schema
+Authorization: Bearer {{accessToken}}
+
+###
+
+PATCH {{baseUrl}}/v1/users/me/config
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "chat": {
+    "chat_assistant_name": "Memory Assistant",
+    "chat_persona_prompt": "Please answer in concise Chinese."
+  }
+}
+
+### Chat run
+
+POST {{baseUrl}}/v1/chat/runs
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "thread_id": "{{threadId}}",
+  "message": "Please summarize the main points we discussed before."
+}
+
+###
+
+GET {{baseUrl}}/v1/chat/runs/{{runId}}
+Authorization: Bearer {{accessToken}}
+
+### SSE note
+### Open in browser, curl, or an SSE client.
+### curl -N -H "Authorization: Bearer <token>" "{{baseUrl}}/v1/chat/runs/{{runId}}/events"
+
+GET {{baseUrl}}/v1/chat/runs/{{runId}}/events
+Authorization: Bearer {{accessToken}}
+
+### Thread events
+### This stream is for memory flush and schedule lifecycle events.
+### curl -N -H "Authorization: Bearer <token>" "{{baseUrl}}/v1/chat/threads/{{threadId}}/events?after_seq=0"
+
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/events?after_seq=0
+Authorization: Bearer {{accessToken}}
+
+### Thread memory
+
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/memory/state
+Authorization: Bearer {{accessToken}}
+
+###
+
+POST {{baseUrl}}/v1/chat/threads/{{threadId}}/memory/mode
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "mode": "manual",
+  "discard_pending": false
+}
+
+###
+
+POST {{baseUrl}}/v1/chat/threads/{{threadId}}/memory/flush
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "reason": "manual_test"
+}
+
+### Dialogues
+
+GET {{baseUrl}}/v1/chat/dialogues?thread_id={{threadId}}&limit=20&offset=0
+Authorization: Bearer {{accessToken}}
+
+###
+
+GET {{baseUrl}}/v1/chat/dialogues/{{dialogueId}}
+Authorization: Bearer {{accessToken}}
+
+### Schedules
+
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules
+Authorization: Bearer {{accessToken}}
+
+###
+
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules?include_completed=true&limit=20&keyword=&statuses=
+Authorization: Bearer {{accessToken}}
+
+###
+
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules/heartbeat
+Authorization: Bearer {{accessToken}}
+
+###
+
+POST {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "title": "Weekly report",
+  "prompt": "Remind me to submit the weekly report",
+  "due_at": "2026-04-06T09:30",
+  "timezone_name": "Asia/Shanghai",
+  "source_text": "manual testing create"
+}
+
+###
+
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules/{{scheduleId}}
+Authorization: Bearer {{accessToken}}
+
+###
+
+PATCH {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules/{{scheduleId}}
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "title": "Project weekly report",
+  "prompt": "Remind me to submit the project weekly report",
+  "due_at": "2026-04-06T10:15",
+  "timezone_name": "Asia/Shanghai",
+  "source_text": "manual testing update",
+  "metadata": {
+    "updated_by": "testing.http"
+  }
+}
+
+###
+
+DELETE {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules/{{scheduleId}}
+Authorization: Bearer {{accessToken}}

@@ -34,6 +34,16 @@ logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = DEFAULT_PROJECT_ROOT
 
+_OPTIONAL_FACT_FIELDS = (
+    "evidence_sentence",
+    "fact_type",
+    "keywords",
+    "entities",
+    "time_norm",
+    "relation",
+    "event_tags",
+)
+
 
 def get_memory_root(workflow_id: str) -> Path:
     return Path(PROJECT_ROOT) / "data" / "memory" / str(workflow_id)
@@ -199,6 +209,27 @@ def normalize_entity_uid(raw_value: Any) -> str:
     return str(raw_value or "").strip()
 
 
+def _normalize_optional_fact_fields(raw_payload: Dict[str, Any]) -> Dict[str, Any]:
+    normalized: Dict[str, Any] = {}
+    for key in _OPTIONAL_FACT_FIELDS:
+        if key not in raw_payload:
+            continue
+        value = raw_payload.get(key)
+        if isinstance(value, str):
+            clean = value.strip()
+            if clean:
+                normalized[key] = clean
+            continue
+        if isinstance(value, list):
+            values = [str(v).strip() for v in value if str(v).strip()]
+            if values:
+                normalized[key] = values
+            continue
+        if isinstance(value, dict) and value:
+            normalized[key] = value
+    return normalized
+
+
 def normalize_fact_output_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     raw_payload = payload if isinstance(payload, dict) else {}
     evidence = raw_payload.get("evidence", {})
@@ -211,7 +242,7 @@ def normalize_fact_output_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         raw_payload.get("main_entity"),
         raw_payload.get("other_entities"),
     )
-    return {
+    normalized_output = {
         "scene_id": str(raw_payload.get("scene_id", "") or "").strip(),
         "fact_id": str(raw_payload.get("fact_id", "") or "").strip(),
         "Atomic fact": extract_atomic_fact(raw_payload),
@@ -221,6 +252,8 @@ def normalize_fact_output_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         "other_entities": other_entities,
         "entity_UID": normalize_entity_uid(raw_payload.get("entity_UID")),
     }
+    normalized_output.update(_normalize_optional_fact_fields(raw_payload))
+    return normalized_output
 
 
 def should_write_fact_file(path: Path, output_payload: Dict[str, Any]) -> bool:
@@ -454,6 +487,7 @@ def scan_and_extract_fact_entities(
                 "other_entities": other_entities,
                 "entity_UID": entity_uid,
             }
+            output_payload.update(_normalize_optional_fact_fields(fact_item))
 
             fact_output_path = facts_root / fact_file_name
             if should_write_fact_file(fact_output_path, output_payload):

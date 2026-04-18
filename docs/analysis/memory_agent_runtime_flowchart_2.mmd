@@ -1,0 +1,7 @@
+﻿flowchart TD
+    A[Iterate Sub Questions] --> B[Set Scope subq i]
+    B --> C[Build Sub Question Prompt]
+    C --> D[Agent Invoke with Tools]
+    D --> E[Parse Structured Output]
+    E --> F[Record Sub Question Result]
+    F --> G[Restore Previous Scope]

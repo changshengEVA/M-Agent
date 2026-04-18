@@ -21,14 +21,17 @@ def search_content(
     scene_dir: Path,
     dialogues_dir: Path,
     episodes_dir: Path,
+    segment_id: str | None = None,
 ) -> Dict[str, Any]:
     """
-    Search concrete dialogue content by dialogue_id + episode_id.
+    Search concrete dialogue content by dialogue_id + episode_id,
+    optionally narrowed to a specific segment within the episode.
     """
     result: Dict[str, Any] = {
         "hit": False,
         "dialogue_id": dialogue_id,
         "episode_id": episode_id,
+        "segment_id": segment_id or None,
         "turn_span": None,
         "event_time": {"start_time": "", "end_time": ""},
         "event_info": {},
@@ -48,8 +51,10 @@ def search_content(
 
     dialogue_id = dialogue_id.strip()
     episode_id = episode_id.strip()
+    safe_segment_id = str(segment_id or "").strip() or None
     result["dialogue_id"] = dialogue_id
     result["episode_id"] = episode_id
+    result["segment_id"] = safe_segment_id
 
     span_info = _find_turn_span_from_scene(
         scene_dir=scene_dir,
@@ -67,10 +72,24 @@ def search_content(
         result["error"] = "episode_not_found"
         return result
 
+    # When a segment_id is requested, try to narrow turn_span to that segment.
+    effective_turn_span = span_info.get("turn_span")
+    if safe_segment_id:
+        seg_span = _find_segment_turn_span(span_info, safe_segment_id)
+        if seg_span is None:
+            seg_span = _find_segment_turn_span_from_episode_file(
+                episodes_dir=episodes_dir,
+                dialogue_id=dialogue_id,
+                episode_id=episode_id,
+                segment_id=safe_segment_id,
+            )
+        if seg_span is not None:
+            effective_turn_span = seg_span
+
     dialogue_file = _find_dialogue_file(dialogues_dir=dialogues_dir, dialogue_id=dialogue_id)
     if dialogue_file is None:
         result["error"] = "dialogue_file_not_found"
-        result["turn_span"] = span_info.get("turn_span")
+        result["turn_span"] = effective_turn_span
         result["event_time"] = span_info.get("event_time", {"start_time": "", "end_time": ""})
         result["event_info"] = span_info.get("event_info", {})
         result["source"] = span_info.get("source", {})
@@ -79,18 +98,17 @@ def search_content(
     dialogue_data = _load_json(dialogue_file)
     if dialogue_data is None:
         result["error"] = "dialogue_file_load_failed"
-        result["turn_span"] = span_info.get("turn_span")
+        result["turn_span"] = effective_turn_span
         result["event_time"] = span_info.get("event_time", {"start_time": "", "end_time": ""})
         result["event_info"] = span_info.get("event_info", {})
         result["source"] = span_info.get("source", {})
         return result
 
     turns = dialogue_data.get("turns", [])
-    turn_span = span_info.get("turn_span")
-    selected_turns = _slice_turns(turns=turns, turn_span=turn_span)
+    selected_turns = _slice_turns(turns=turns, turn_span=effective_turn_span)
 
     result["hit"] = True
-    result["turn_span"] = turn_span
+    result["turn_span"] = effective_turn_span
     result["event_time"] = span_info.get("event_time", {"start_time": "", "end_time": ""})
     result["event_info"] = span_info.get("event_info", {})
     result["source"] = span_info.get("source", {})
@@ -200,6 +218,68 @@ def _find_turn_span_from_episode_file(
                 },
             }
 
+    return None
+
+
+def _find_segment_turn_span(
+    span_info: Dict[str, Any],
+    segment_id: str,
+) -> Optional[List[int]]:
+    """Extract a segment's turn_span from the episode-level span_info if
+    the span_info carries inline segment metadata (currently not stored in
+    scene source, so this is a future-proof hook)."""
+    segments = span_info.get("segments")
+    if not isinstance(segments, list):
+        return None
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        if str(seg.get("segment_id", "")).strip() == segment_id:
+            ts = seg.get("turn_span")
+            if isinstance(ts, list) and len(ts) == 2 and all(isinstance(x, int) for x in ts):
+                return ts
+    return None
+
+
+def _find_segment_turn_span_from_episode_file(
+    episodes_dir: Path,
+    dialogue_id: str,
+    episode_id: str,
+    segment_id: str,
+) -> Optional[List[int]]:
+    """Look up a segment's turn_span from the episode JSON files."""
+    dialogue_episode_dir = episodes_dir / "by_dialogue" / dialogue_id
+    if not dialogue_episode_dir.exists() or not dialogue_episode_dir.is_dir():
+        return None
+
+    episode_files = sorted(dialogue_episode_dir.glob("episodes_*.json"))
+    if not episode_files:
+        episode_files = sorted(dialogue_episode_dir.glob("*.json"))
+
+    for episode_file in reversed(episode_files):
+        data = _load_json(episode_file)
+        if not isinstance(data, dict):
+            continue
+        episodes = data.get("episodes", [])
+        if not isinstance(episodes, list):
+            continue
+        for ep in episodes:
+            if not isinstance(ep, dict):
+                continue
+            if ep.get("dialogue_id") != dialogue_id:
+                continue
+            if ep.get("episode_id") != episode_id:
+                continue
+            segments = ep.get("segments")
+            if not isinstance(segments, list):
+                continue
+            for seg in segments:
+                if not isinstance(seg, dict):
+                    continue
+                if str(seg.get("segment_id", "")).strip() == segment_id:
+                    ts = seg.get("turn_span")
+                    if isinstance(ts, list) and len(ts) == 2 and all(isinstance(x, int) for x in ts):
+                        return ts
     return None
 
 
