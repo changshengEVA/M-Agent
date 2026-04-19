@@ -315,16 +315,80 @@ def _fallback_topic(buffer: List[Dict[str, Any]]) -> str:
     return "empty interaction"
 
 
-def _generate_segment_topic(
+def _extract_turn_timestamp_for_segment(turn: Dict[str, Any]) -> str:
+    for key in ("timestamp", "time", "created_at", "datetime"):
+        val = turn.get(key)
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+    meta = turn.get("meta", {})
+    if isinstance(meta, dict):
+        for key in ("timestamp", "time", "created_at", "datetime"):
+            val = meta.get(key)
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+    return ""
+
+
+def _segment_conversation_start_time(segment_buffer: List[Dict[str, Any]]) -> str:
+    if not segment_buffer:
+        return ""
+    ts = _extract_turn_timestamp_for_segment(segment_buffer[0])
+    return ts or ""
+
+
+def _format_segment_conversation_text(segment_buffer: List[Dict[str, Any]]) -> str:
+    lines: List[str] = []
+    for turn in segment_buffer:
+        if not isinstance(turn, dict):
+            continue
+        speaker = str(turn.get("speaker", "User") or "User").strip()
+        text = str(turn.get("text", "") or "").strip()
+        if not text:
+            continue
+        lines.append(f"{speaker}: {text}")
+    return "\n".join(lines).strip()
+
+
+def _compose_judge_view(*, title: str, narrative: str) -> str:
+    title = str(title or "").strip()
+    narrative = str(narrative or "").strip()
+    if title and narrative:
+        return f"{title}\n\n{narrative}".strip()
+    return title or narrative
+
+
+def _generate_segment_memory(
     dialogue_context: Dict[str, Any],
     segment_buffer: List[Dict[str, Any]],
     prompts: Dict[str, Any],
     llm_model: Callable[[str], str],
-) -> str:
-    system_prompt = str(prompts.get("system_prompt", ""))
-    topic_prompt = str(prompts.get("segment_topic_prompt", "") or prompts.get("topic_prompt", ""))
-    if not topic_prompt.strip():
-        return _fallback_topic(segment_buffer)
+) -> Dict[str, str]:
+    """LLM: scenario memory (title + narrative) + short topic label for this segment.
+
+    Returns keys: topic, segment_memory_title, segment_memory_content, judge_view
+    (empty strings when generation is skipped or fails).
+    """
+    empty = {
+        "topic": "",
+        "segment_memory_title": "",
+        "segment_memory_content": "",
+        "judge_view": "",
+    }
+    topic_prompt = str(prompts.get("segment_topic_prompt", "") or "").strip()
+    if not topic_prompt:
+        fb = _fallback_topic(segment_buffer)
+        empty["topic"] = fb
+        return empty
+
+    memory_system = str(prompts.get("segment_memory_system_prompt", "") or "").strip()
+    # Do not reuse the dialogue-segmentation role prompt as system text for memory generation.
+    system_prompt = memory_system
+
+    convo_start = _segment_conversation_start_time(segment_buffer)
+    convo_text = _format_segment_conversation_text(segment_buffer)
+    custom_instructions = str(prompts.get("segment_memory_custom_instructions", "") or "").strip()
+    if not custom_instructions:
+        custom_instructions = "-"
 
     try:
         result = _call_llm_json(
@@ -333,18 +397,37 @@ def _generate_segment_topic(
             replacements={
                 "<DIALOGUE_CONTEXT_JSON>": _serialize_json(dialogue_context),
                 "<SEGMENT_BUFFER_JSON>": _serialize_json(segment_buffer),
-                # backward compat placeholder used by the shared topic_prompt
                 "<EPISODE_BUFFER_JSON>": _serialize_json(segment_buffer),
+                "<CONVERSATION_START_TIME>": convo_start or "(unknown)",
+                "<SEGMENT_CONVERSATION_TEXT>": convo_text or "(empty segment)",
+                "<CUSTOM_INSTRUCTIONS>": custom_instructions,
             },
             llm_model=llm_model,
         )
-        topic = str(result.get("topic", "")).strip()
-        if topic:
-            return topic
+        title = str(result.get("title", "") or "").strip()
+        if not title:
+            title = str(result.get("topic", "") or "").strip()
+        narrative = str(result.get("content", "") or result.get("memory_content", "") or "").strip()
+        if not title and not narrative:
+            raise ValueError("Empty segment memory from model")
+        topic_label = title if title else (narrative.split("\n")[0][:200] if narrative else _fallback_topic(segment_buffer))
+        judge_view = _compose_judge_view(title=title, narrative=narrative).strip() or topic_label
+        return {
+            "topic": topic_label.strip(),
+            "segment_memory_title": title,
+            "segment_memory_content": narrative,
+            "judge_view": judge_view,
+        }
     except Exception as exc:
-        logger.warning("Segment topic generation failed, use fallback: %s", exc)
+        logger.warning("Segment memory generation failed, use fallback topic: %s", exc)
 
-    return _fallback_topic(segment_buffer)
+    fb = _fallback_topic(segment_buffer)
+    return {
+        "topic": fb,
+        "segment_memory_title": "",
+        "segment_memory_content": "",
+        "judge_view": "",
+    }
 
 
 def _build_segment_entry(
@@ -354,20 +437,27 @@ def _build_segment_entry(
     prompts: Dict[str, Any],
     llm_model: Callable[[str], str],
 ) -> Dict[str, Any]:
-    topic = _generate_segment_topic(
+    memory = _generate_segment_memory(
         dialogue_context=dialogue_context,
         segment_buffer=segment_buffer,
         prompts=prompts,
         llm_model=llm_model,
     )
-    return {
+    entry: Dict[str, Any] = {
         "segment_id": f"seg_{segment_index:03d}",
         "turn_span": [
             segment_buffer[0]["turn_id"],
             segment_buffer[-1]["turn_id"],
         ],
-        "topic": topic,
+        "topic": memory.get("topic") or _fallback_topic(segment_buffer),
     }
+    if memory.get("segment_memory_title"):
+        entry["segment_memory_title"] = memory["segment_memory_title"]
+    if memory.get("segment_memory_content"):
+        entry["segment_memory_content"] = memory["segment_memory_content"]
+    if memory.get("judge_view"):
+        entry["judge_view"] = memory["judge_view"]
+    return entry
 
 
 # ---------------------------------------------------------------------------

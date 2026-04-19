@@ -40,6 +40,10 @@ def search_content(
         "participants": [],
         "dialogue_meta": {},
         "turns": [],
+        # Precomputed at episode build time (segment metadata); used as Judge short view.
+        "judge_view": "",
+        "segment_memory_title": "",
+        "segment_memory_content": "",
     }
 
     if not isinstance(dialogue_id, str) or not dialogue_id.strip():
@@ -119,6 +123,24 @@ def search_content(
 
     if not result["event_time"].get("start_time") and not result["event_time"].get("end_time"):
         result["event_time"] = result["turn_time_span"]
+
+    if safe_segment_id and result.get("hit"):
+        seg_record = _lookup_segment_record_from_episode_file(
+            episodes_dir=episodes_dir,
+            dialogue_id=dialogue_id,
+            episode_id=episode_id,
+            segment_id=safe_segment_id,
+        )
+        if isinstance(seg_record, dict):
+            jv = _segment_judge_view_from_record(seg_record)
+            if jv:
+                result["judge_view"] = jv
+            st = str(seg_record.get("segment_memory_title", "") or "").strip()
+            if st:
+                result["segment_memory_title"] = st
+            sc = str(seg_record.get("segment_memory_content", "") or "").strip()
+            if sc:
+                result["segment_memory_content"] = sc
 
     return result
 
@@ -238,6 +260,66 @@ def _find_segment_turn_span(
             ts = seg.get("turn_span")
             if isinstance(ts, list) and len(ts) == 2 and all(isinstance(x, int) for x in ts):
                 return ts
+    return None
+
+
+def _segment_judge_view_from_record(seg: Dict[str, Any]) -> str:
+    """Build judge-facing short text from a segment record on disk."""
+    raw = str(seg.get("judge_view", "") or "").strip()
+    if raw:
+        return raw
+    title = str(
+        seg.get("segment_memory_title", "")
+        or seg.get("title", "")
+        or "",
+    ).strip()
+    body = str(
+        seg.get("segment_memory_content", "")
+        or seg.get("memory_content", "")
+        or "",
+    ).strip()
+    if title and body:
+        return f"{title}\n\n{body}".strip()
+    return title or body
+
+
+def _lookup_segment_record_from_episode_file(
+    episodes_dir: Path,
+    dialogue_id: str,
+    episode_id: str,
+    segment_id: str,
+) -> Optional[Dict[str, Any]]:
+    """Return the segment dict from episodes JSON, if found."""
+    dialogue_episode_dir = episodes_dir / "by_dialogue" / dialogue_id
+    if not dialogue_episode_dir.exists() or not dialogue_episode_dir.is_dir():
+        return None
+
+    episode_files = sorted(dialogue_episode_dir.glob("episodes_*.json"))
+    if not episode_files:
+        episode_files = sorted(dialogue_episode_dir.glob("*.json"))
+
+    for episode_file in reversed(episode_files):
+        data = _load_json(episode_file)
+        if not isinstance(data, dict):
+            continue
+        episodes = data.get("episodes", [])
+        if not isinstance(episodes, list):
+            continue
+        for ep in episodes:
+            if not isinstance(ep, dict):
+                continue
+            if ep.get("dialogue_id") != dialogue_id:
+                continue
+            if ep.get("episode_id") != episode_id:
+                continue
+            segments = ep.get("segments")
+            if not isinstance(segments, list):
+                continue
+            for seg in segments:
+                if not isinstance(seg, dict):
+                    continue
+                if str(seg.get("segment_id", "")).strip() == segment_id:
+                    return seg
     return None
 
 

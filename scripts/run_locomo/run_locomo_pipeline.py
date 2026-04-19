@@ -13,6 +13,10 @@ Examples::
 
     # All conv_ids listed in env config
     python scripts/run_locomo/run_locomo_pipeline.py --env-config config/eval/memory_agent/locomo/test_env.yaml --batch
+
+Post-eval (manual; API cost for judge): see ``scripts/run_locomo/README.md`` for
+``evaluate_agent_qa_llm_judge.py --export-eval-jsonl``, ``trace_locomo_evidence.py``,
+and ``scripts/run_longmemeval/gen_round_tables_md.py`` with ``--title-prefix LOCOMO``.
 """
 
 from __future__ import annotations

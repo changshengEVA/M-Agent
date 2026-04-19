@@ -142,6 +142,12 @@ class MemoryAgent(
             int(workspace_cfg.get("remedy_recall_max_times", 1)),
         )
         self.action_planner_mode = str(workspace_cfg.get("action_planner", "rule")).strip().lower()
+        # When action_planner is ``llm``, MemoryAgentExecutionMixin retries the LLM planner up to
+        # this many attempts (including the first), then raises instead of falling back to rules.
+        self.workspace_action_planner_max_attempts = max(
+            1,
+            int(workspace_cfg.get("action_planner_max_attempts", 3)),
+        )
         enabled_tools_cfg = workspace_cfg.get("enabled_tools")
         if isinstance(enabled_tools_cfg, list):
             self._enabled_tools = [str(t).strip() for t in enabled_tools_cfg if str(t).strip()]

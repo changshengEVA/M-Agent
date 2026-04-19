@@ -27,9 +27,11 @@ workspace:
   min_evidence_to_answer: 1
   remedy_recall_max_times: 1
   action_planner: "llm"
+  # LLM planner only: retry then RuntimeError (no rule-based fallback).
+  action_planner_max_attempts: 3
   enabled_tools:
     - EVENT_DETAIL_RECALL
-    - EVENT_TIME_RECALL
+    # - EVENT_TIME_RECALL
     - RECALL_REMEDY_MULTI_ROUTE
   rerank:
     enable: true

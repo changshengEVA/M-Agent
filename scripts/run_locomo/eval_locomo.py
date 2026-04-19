@@ -106,6 +106,7 @@ def main() -> int:
     max_questions = int(eval_cfg.get("max_questions", 0))
     save_every = int(eval_cfg.get("save_every", 1))
     sleep_seconds = float(eval_cfg.get("sleep_seconds", 0.0))
+    recall_dir = str(eval_cfg.get("recall_dir", "recall") or "recall").strip() or "recall"
     question_config_raw = str(eval_cfg.get("question_config", "") or "").strip()
     if args.question_config:
         question_config_raw = str(args.question_config).strip()
@@ -171,6 +172,8 @@ def main() -> int:
         str(save_every),
         "--sleep-seconds",
         str(sleep_seconds),
+        "--recall-dir",
+        recall_dir,
     ]
     if overwrite:
         cmd.append("--overwrite")
@@ -197,6 +200,7 @@ def main() -> int:
             "resolved_workflow_id": workflow_id or "(from MemoryCore YAML)",
             "conv_ids": conv_ids,
             "test_id": test_id,
+            "recall_dir": recall_dir,
             "question_config_path": str(question_config_path) if question_config_path else "",
             "question_selection_convs": len(question_selection),
             "run_eval_command": " ".join(cmd),

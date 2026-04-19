@@ -27,8 +27,12 @@ from typing import Any
 
 from _bootstrap import bootstrap_project
 
+LOCOMO_SOURCE_QA_INDEX_KEY = "_locomo_source_qa_index"
+
 
 bootstrap_project()
+
+from _shared import load_env_config
 
 from m_agent.config_paths import QA_LLM_JUDGE_PROMPT_CONFIG_PATH
 from m_agent.paths import ENV_PATH, resolve_project_path
@@ -134,7 +138,18 @@ def parse_args() -> argparse.Namespace:
         "--exclude-categories",
         nargs="*",
         default=[],
-        help="Optional categories to skip, e.g. --exclude-categories 5",
+        help=(
+            "Extra categories to skip (strings). Category 5 is also skipped by default "
+            "(same as run_eval_locomo); use eval.llm_judge_exclude_category_5: false in --env-config to include it."
+        ),
+    )
+    parser.add_argument(
+        "--env-config",
+        default="",
+        help=(
+            "Optional LoCoMo env YAML. When set, reads eval.llm_judge_exclude_category_5 "
+            "(default true) to align judge skips with run_eval_locomo."
+        ),
     )
     parser.add_argument(
         "--num-runs",
@@ -152,6 +167,14 @@ def parse_args() -> argparse.Namespace:
         "--overwrite",
         action="store_true",
         help="If set, re-run items that already contain judge scores.",
+    )
+    parser.add_argument(
+        "--export-eval-jsonl",
+        default="",
+        help=(
+            "Optional output path for LongMemEval-style jsonl "
+            "(question_id, hypothesis, autoeval_label) consumed by gen_round_tables_md.py."
+        ),
     )
     parser.add_argument(
         "--max-retries",
@@ -189,6 +212,47 @@ def parse_args() -> argparse.Namespace:
         help="Prompt config path for judge instructions.",
     )
     return parser.parse_args()
+
+
+def _coerce_bool_yaml(value: Any, *, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and value == value:
+        return bool(int(value))
+    s = str(value).strip().lower()
+    if not s:
+        return default
+    if s in ("false", "0", "no", "off"):
+        return False
+    if s in ("true", "1", "yes", "on"):
+        return True
+    return default
+
+
+def resolve_llm_judge_exclude_category_5(env_config: str) -> bool:
+    """Whether to skip category 5: default True (match run_eval_locomo); YAML can set eval.llm_judge_exclude_category_5: false."""
+    raw = str(env_config or "").strip()
+    if not raw:
+        return True
+    try:
+        payload, _ = load_env_config(raw)
+    except Exception:
+        return True
+    eval_cfg = payload.get("eval", {})
+    if not isinstance(eval_cfg, dict):
+        return True
+    if "llm_judge_exclude_category_5" not in eval_cfg:
+        return True
+    return _coerce_bool_yaml(eval_cfg.get("llm_judge_exclude_category_5"), default=True)
+
+
+def resolve_excluded_categories(cli_exclude: list[str], env_config: str) -> set[str]:
+    out = {str(x).strip() for x in cli_exclude if str(x).strip()}
+    if resolve_llm_judge_exclude_category_5(env_config):
+        out.add("5")
+    return out
 
 
 def _extract_json(content: str) -> str:
@@ -513,6 +577,61 @@ def build_tasks(
     return tasks, stats
 
 
+def write_locomo_eval_results_jsonl(
+    samples: list[dict[str, Any]],
+    export_path: Path,
+    *,
+    judge_prefix: str,
+    primary_field: str,
+    fallback_field: str,
+    excluded_categories: set[str],
+    judge_model: str,
+) -> None:
+    """One line per QA (sample JSON order), trace_id = sample_id__q<source_idx> (matches run_eval_locomo)."""
+    export_path.parent.mkdir(parents=True, exist_ok=True)
+    with export_path.open("w", encoding="utf-8") as fp:
+        for sample_idx, sample in enumerate(samples):
+            if not isinstance(sample, dict):
+                continue
+            sample_id = sample.get("sample_id", f"sample_{sample_idx}")
+            qa_items = sample.get("qa", [])
+            if not isinstance(qa_items, list):
+                continue
+            for qa_idx, qa_item in enumerate(qa_items):
+                if not isinstance(qa_item, dict):
+                    continue
+                category = _normalize_category(qa_item.get("category"))
+                if category in excluded_categories:
+                    continue
+                gold_answer = _pick_gold_answer(qa_item)
+                if not gold_answer:
+                    continue
+                generated_answer, _pred_used = _pick_generated_answer(
+                    qa_item,
+                    primary_field,
+                    fallback_field,
+                )
+                source_raw = qa_item.get(LOCOMO_SOURCE_QA_INDEX_KEY, qa_idx)
+                try:
+                    source_q_idx = int(source_raw)
+                except Exception:
+                    source_q_idx = qa_idx
+                trace_id = f"{str(sample_id).strip()}__q{source_q_idx}"
+                hyp = str(generated_answer or "").strip()
+                meta = qa_item.get(judge_prefix)
+                label: bool | None = None
+                if isinstance(meta, dict) and meta.get("status") == "evaluated":
+                    v = meta.get("label")
+                    if isinstance(v, bool):
+                        label = v
+                row = {
+                    "question_id": trace_id,
+                    "hypothesis": hyp,
+                    "autoeval_label": {"label": label, "model": judge_model},
+                }
+                fp.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 async def judge_once(
     llm: Any,
     question: str,
@@ -803,7 +922,10 @@ async def main() -> None:
         else f"{model_key}_llm_judge"
     )
     metric_key = judge_prefix + "_score"
-    excluded_categories = {str(item) for item in args.exclude_categories}
+    excluded_categories = resolve_excluded_categories(
+        list(args.exclude_categories or []),
+        str(args.env_config or ""),
+    )
 
     samples = load_samples(input_path)
     tasks, prep_stats = build_tasks(
@@ -822,6 +944,7 @@ async def main() -> None:
     print("Judge field prefix:", judge_prefix)
     print("Prompt language:", prompt_language)
     print("Prompt config:", resolve_project_path(args.prompt_config))
+    print("Excluded categories:", sorted(excluded_categories))
     print("Questions loaded:", prep_stats["total_qa"])
     print("Questions queued:", prep_stats["queued_qa"])
     print("Questions reused:", prep_stats["scored_existing"])
@@ -925,6 +1048,19 @@ async def main() -> None:
         metadata=metadata,
         data_file=str(resolve_project_path(args.data_file)),
     )
+
+    export_raw = str(args.export_eval_jsonl or "").strip()
+    if export_raw:
+        write_locomo_eval_results_jsonl(
+            samples,
+            resolve_project_path(export_raw),
+            judge_prefix=judge_prefix,
+            primary_field=args.prediction_field,
+            fallback_field=args.fallback_prediction_field,
+            excluded_categories=excluded_categories,
+            judge_model=str(args.model or "").strip() or "unknown",
+        )
+        print("Wrote eval jsonl:", resolve_project_path(export_raw))
 
     summary = summarize_metric_by_category(samples, metric_key)
     print("Saved QA file:", output_path)

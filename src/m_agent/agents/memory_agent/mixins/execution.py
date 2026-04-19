@@ -319,7 +319,7 @@ class MemoryAgentExecutionMixin:
             replacements={
                 "<original_question>": workspace.original_question,
                 "<cur_query>": workspace.cur_query,
-                "<workspace_evidence_summary>": workspace.to_evidence_summary(),
+                "<workspace_evidence_summary>": workspace.to_evidence_summary(prefer_judge_view=True),
                 "<new_evidence_ids_json>": json.dumps(new_evidence_ids, ensure_ascii=False),
             },
         )
@@ -410,20 +410,49 @@ class MemoryAgentExecutionMixin:
             )
 
             use_llm_planner = str(getattr(self, "action_planner_mode", "rule")).strip().lower() == "llm"
-            actions = None
+            actions: Optional[List[Dict[str, Any]]] = None
             if use_llm_planner:
-                try:
-                    actions = self._plan_actions_with_llm(
-                        workspace,
-                        round_id=round_id,
-                        max_actions=max_actions_per_round,
-                        force_remedy=force_remedy,
-                        previous_action_signatures=previous_action_signatures,
+                max_attempts = max(1, int(getattr(self, "workspace_action_planner_max_attempts", 3)))
+                last_exc: Optional[Exception] = None
+                for attempt in range(max_attempts):
+                    try:
+                        actions = self._plan_actions_with_llm(
+                            workspace,
+                            round_id=round_id,
+                            max_actions=max_actions_per_round,
+                            force_remedy=force_remedy,
+                            previous_action_signatures=previous_action_signatures,
+                        )
+                    except Exception as exc:
+                        last_exc = exc
+                        actions = None
+                        logger.warning(
+                            "LLM action planner raised (attempt %s/%s, round_id=%s): %s",
+                            attempt + 1,
+                            max_attempts,
+                            round_id,
+                            exc,
+                        )
+                    else:
+                        if not actions:
+                            logger.warning(
+                                "LLM action planner returned empty actions (attempt %s/%s, round_id=%s)",
+                                attempt + 1,
+                                max_attempts,
+                                round_id,
+                            )
+                    if actions:
+                        break
+                if not actions:
+                    msg = (
+                        f"LLM action planner produced no usable actions after {max_attempts} attempt(s) "
+                        f"(round_id={round_id}); rule-based fallback is disabled when "
+                        f"workspace.action_planner is 'llm'."
                     )
-                except Exception as exc:
-                    logger.warning("LLM action planner failed, falling back to rules: %s", exc)
-                    actions = None
-            if not actions:
+                    if last_exc is not None:
+                        raise RuntimeError(msg) from last_exc
+                    raise RuntimeError(msg)
+            else:
                 round_intent = build_query_intent(cur_query)
                 actions = plan_actions_rule_based(
                     round_intent,

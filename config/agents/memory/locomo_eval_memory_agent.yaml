@@ -28,9 +28,11 @@ workspace:
   min_evidence_to_answer: 1
   remedy_recall_max_times: 1
   action_planner: "llm"
+  # LLM planner only: retry then RuntimeError (no rule-based fallback).
+  action_planner_max_attempts: 3
   enabled_tools:
     - EVENT_DETAIL_RECALL
-    - EVENT_TIME_RECALL
+    # - EVENT_TIME_RECALL
     - RECALL_REMEDY_MULTI_ROUTE
   rerank:
     enable: true
@@ -38,6 +40,8 @@ workspace:
     model_name: "gte-rerank-v2"
     score_threshold: 0.1
     max_documents: 16
+    chunk_chars: 800
+    chunk_batch_size: 32
 attach_episode_refs_to_answer: true
 evidence_episode_ref_max_in_text: 8
 
