@@ -24,7 +24,21 @@ logger = logging.getLogger(__name__)
 _RERANK_API_URL = (
     "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
 )
+# qwen3-rerank uses OpenAI-compatible rerank API (flat body); see Alibaba Model Studio docs.
+_QWEN3_TEXT_RERANK_COMPAT_URL_DEFAULT = (
+    "https://dashscope.aliyuncs.com/compatible-api/v1/reranks"
+)
 _DEFAULT_MODEL = "gte-rerank-v2"
+
+
+def _is_qwen3_text_rerank(model: str) -> bool:
+    return model.strip().lower() == "qwen3-rerank"
+
+
+def _qwen3_text_rerank_compat_url() -> str:
+    return (
+        os.getenv("ALIBABA_RERANK_COMPAT_URL", "").strip() or _QWEN3_TEXT_RERANK_COMPAT_URL_DEFAULT
+    )
 
 
 def _load_env_file(path: Path) -> None:
@@ -89,14 +103,24 @@ def _rerank_via_http(
 ) -> List[RerankResult]:
     import urllib.request
 
-    payload = {
-        "model": model,
-        "input": {"query": query, "documents": documents},
-        "parameters": {"return_documents": False, "top_n": top_n},
-    }
+    if _is_qwen3_text_rerank(model):
+        url = _qwen3_text_rerank_compat_url()
+        payload: Dict[str, Any] = {
+            "model": model.strip(),
+            "query": query,
+            "documents": documents,
+            "top_n": top_n,
+        }
+    else:
+        url = _RERANK_API_URL
+        payload = {
+            "model": model,
+            "input": {"query": query, "documents": documents},
+            "parameters": {"return_documents": False, "top_n": top_n},
+        }
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
-        _RERANK_API_URL,
+        url,
         data=body,
         headers={
             "Authorization": f"Bearer {api_key}",

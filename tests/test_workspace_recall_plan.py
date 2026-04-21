@@ -189,6 +189,28 @@ def test_state_machine_stagnation_stops_when_useful_set_unchanged(monkeypatch) -
     assert out["recall_rounds"][-1].get("stagnant") is True
 
 
+def test_llm_judge_workspace_normalizes_ref_prefix() -> None:
+    from m_agent.agents.memory_agent.answerability import llm_judge_workspace
+
+    ws = Workspace(max_keep=4)
+    ws.kept_evidence_ids = ["ev_stable"]
+    ws.upsert({"evidence_id": "ev_stable", "content": "body", "source_type": "episode"})
+
+    def _fake_llm(_prompt: str) -> str:
+        # Simulate the model copying `ref:` from the workspace evidence header.
+        return """
+        {"status":"INSUFFICIENT","useful_evidence_ids":["ref:ev_stable"],"reason":"x","next_query":"q"}
+        """
+
+    decision = llm_judge_workspace(
+        workspace=ws,
+        new_evidence_ids=[],
+        llm_func=_fake_llm,
+        prompt_text="ignored",
+    )
+    assert decision["useful_evidence_ids"] == ["ev_stable"]
+
+
 def test_to_evidence_summary_appends_facts_when_prefer_judge_view() -> None:
     ws = Workspace(max_keep=4)
     ws.kept_evidence_ids = ["e1"]

@@ -34,6 +34,7 @@ from _shared import (
 from m_agent.paths import LOG_DIR
 
 from sample_longmemeval import parse_sampling_config, sample_question_ids
+from m_agent.utils.pipeline_logging import suppress_verbose_pipeline_loggers
 
 logger = logging.getLogger("run_longmemeval.eval")
 
@@ -89,6 +90,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    suppress_verbose_pipeline_loggers(debug=False)
     args = parse_args()
 
     payload, config_path = load_env_config(args.env_config)

@@ -21,6 +21,7 @@ from .workspace import Workspace, WorkspaceDocument, WorkspaceStatus
 logger = logging.getLogger(__name__)
 
 _JSON_BLOCK_RE = re.compile(r"\{[\s\S]*\}")
+_EVIDENCE_REF_PREFIX_RE = re.compile(r"^\s*ref\s*[:：]\s*", flags=re.IGNORECASE)
 
 
 class JudgeDecision(TypedDict):
@@ -95,7 +96,8 @@ def llm_judge_workspace(
     useful_ids = parsed.get("useful_evidence_ids", [])
     if not isinstance(useful_ids, list):
         useful_ids = []
-    useful_ids = [str(eid).strip() for eid in useful_ids if str(eid).strip()]
+    useful_ids = [_normalize_evidence_id(eid) for eid in useful_ids]
+    useful_ids = [eid for eid in useful_ids if eid]
 
     reason = str(parsed.get("reason", "") or "").strip() or "LLM judge decision."
     next_query = parsed.get("next_query")
@@ -152,3 +154,20 @@ def _parse_judge_response(text: str) -> Dict[str, Any]:
 
 def _has_any_useful_content(doc: WorkspaceDocument) -> bool:
     return bool(str(doc.get("content", "") or "").strip())
+
+
+def _normalize_evidence_id(raw: Any) -> str:
+    """Normalize evidence ids returned by the LLM judge.
+
+    The workspace prompt labels evidences as ``ref: <evidence_id>``. Some models
+    copy the ``ref:`` prefix back into ``useful_evidence_ids``; downstream
+    workspace pruning expects the bare ``evidence_id``.
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    text = _EVIDENCE_REF_PREFIX_RE.sub("", text).strip()
+    # Defensive stripping for common wrappers the judge might emit.
+    if (text.startswith("`") and text.endswith("`")) or (text.startswith('"') and text.endswith('"')):
+        text = text[1:-1].strip()
+    return text

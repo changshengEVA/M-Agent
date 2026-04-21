@@ -58,13 +58,14 @@ API_SECRET_KEY=YOUR_OPENAI_COMPATIBLE_KEY
 OPENAI_API_KEY=
 BASE_URL=https://api.openai.com/v1
 
-# Agent model key: model_name=deepseek-chat (config/agents/memory/locomo_eval_memory_agent.yaml)
+# Agent model: LoCoMo 默认 `gpt-4o-mini`（见 locomo_eval_memory_agent.yaml）。OpenAI 兼容对话：优先 API_SECRET_KEY，否则 OPENAI_API_KEY；配 BASE_URL 时会同步给 LangChain（OPENAI_BASE_URL）。仍用 DeepSeek 作 agent 模型时改 model_name 并配 DEEPSEEK 与 BASE_URL。
 DEEPSEEK_API_KEY=YOUR_DEEPSEEK_KEY
 
 # Embedding key: embed_provider（在 config/memory/core/*.yaml 中配置）
 ALIBABA_API_KEY=YOUR_ALIBABA_KEY
 ALIBABA_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
 ALIBABA_EMBED_MODEL=text-embedding-v4
+# Rerank：`qwen3-rerank` 在无 dashscope SDK 时走 HTTP `compatible-api/v1/reranks`；国际区可设 ALIBABA_RERANK_COMPAT_URL 为 `https://dashscope-intl.aliyuncs.com/compatible-api/v1/reranks`。
 
 # Optional switches (keep consistent with current repo defaults)
 LANGUAGE=zh

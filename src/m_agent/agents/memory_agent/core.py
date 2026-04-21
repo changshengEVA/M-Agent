@@ -66,6 +66,36 @@ logger = logging.getLogger(__name__)
 DEFAULT_CONFIG_PATH = DEFAULT_MEMORY_AGENT_CONFIG_PATH
 
 
+def _resolve_langchain_chat_model_id(model_name: str) -> str:
+    """Map bare OpenAI-style ids to LangChain universal init form ``openai:...``.
+
+    If the config already uses ``provider:model`` (contains ``:``), return unchanged.
+    """
+    raw = str(model_name or "").strip()
+    if not raw or ":" in raw:
+        return raw
+    lower = raw.lower()
+    if lower.startswith("gpt-"):
+        return f"openai:{raw}"
+    if lower.startswith("o1") or lower.startswith("o3") or lower.startswith("o4"):
+        return f"openai:{raw}"
+    return raw
+
+
+def _sync_openai_env_for_langchain() -> None:
+    """Mirror ``OpenAIcall.py`` so LangChain ``openai:`` uses the same key and base URL.
+
+    LangChain / langchain-openai read ``OPENAI_API_KEY`` and ``OPENAI_BASE_URL`` by default.
+    This repo historically uses ``API_SECRET_KEY`` and ``BASE_URL`` for OpenAI-compatible calls.
+    """
+    key = (os.getenv("API_SECRET_KEY") or os.getenv("OPENAI_API_KEY") or "").strip()
+    if key:
+        os.environ["OPENAI_API_KEY"] = key
+    base = (os.getenv("BASE_URL") or os.getenv("OPENAI_BASE_URL") or "").strip()
+    if base:
+        os.environ["OPENAI_BASE_URL"] = base.rstrip("/")
+
+
 @dataclass
 class AgentResponse:
     """Structured output schema of memory QA agent."""
@@ -234,9 +264,14 @@ class MemoryAgent(
 
         self.model_name = str(self.config.get("model_name", "deepseek-chat"))
         self.agent_temperature = float(self.config.get("agent_temperature", 0.0))
+        resolved_chat_model = _resolve_langchain_chat_model_id(self.model_name)
+        if resolved_chat_model != self.model_name:
+            logger.info("LangChain chat model id resolved: %s -> %s", self.model_name, resolved_chat_model)
+        if resolved_chat_model.startswith("openai:"):
+            _sync_openai_env_for_langchain()
 
         self.model = init_chat_model(
-            self.model_name,
+            resolved_chat_model,
             temperature=self.agent_temperature,
             max_tokens=None,
             timeout=self.model_timeout,

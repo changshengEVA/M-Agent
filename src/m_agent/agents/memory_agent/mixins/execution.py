@@ -133,7 +133,7 @@ class MemoryAgentExecutionMixin:
             "final_answer_from_workspace_prompt",
             replacements={
                 "<question_text>": question_text,
-                "<workspace_evidence_summary>": workspace.to_evidence_summary(),
+                "<workspace_evidence_summary>": workspace.to_evidence_summary(prefer_judge_view=True),
             },
         )
 
@@ -444,14 +444,17 @@ class MemoryAgentExecutionMixin:
                     if actions:
                         break
                 if not actions:
+                    # Treat planner failure as "no new actions" and let the existing INVALID branch
+                    # write per-round artifacts instead of aborting the whole ask().
                     msg = (
                         f"LLM action planner produced no usable actions after {max_attempts} attempt(s) "
-                        f"(round_id={round_id}); rule-based fallback is disabled when "
-                        f"workspace.action_planner is 'llm'."
+                        f"(round_id={round_id}); continue as no_new_actions."
                     )
                     if last_exc is not None:
-                        raise RuntimeError(msg) from last_exc
-                    raise RuntimeError(msg)
+                        logger.error("%s last_error=%s", msg, last_exc)
+                    else:
+                        logger.error("%s", msg)
+                    actions = []
             else:
                 round_intent = build_query_intent(cur_query)
                 actions = plan_actions_rule_based(

@@ -1,6 +1,10 @@
 # Used by: `python scripts/run_longmemeval/run_eval_longmemeval.py` / `eval_longmemeval.py`
 # Purpose: default MemoryAgent config for LongMemEval evaluation (parallel to locomo_eval_memory_agent.yaml).
-model_name: "deepseek-chat"
+#
+# model_name (可选示例): 同 locomo_eval_memory_agent.yaml — gpt-* / o1* / o3* / o4* → openai:...；
+#   密钥/代理与 OpenAIcall 一致：优先 API_SECRET_KEY，否则 OPENAI_API_KEY；BASE_URL 会同步给 LangChain（OPENAI_BASE_URL）。
+model_name: "gpt-4.1-mini"
+# model_name: "deepseek-chat"
 agent_temperature: 0.0
 memory_core_config_path: "../../memory/core/longmemeval_eval_memory_core.yaml"
 runtime_prompt_config_path: "./runtime/agent_runtime_facts_only.yaml"
@@ -34,9 +38,11 @@ workspace:
     # - EVENT_TIME_RECALL
     - RECALL_REMEDY_MULTI_ROUTE
   rerank:
+    # enable: false 可关闭重排。
+    # model_name 可选 qwen3-rerank / gte-rerank-v2 等；qwen3 无 SDK 时见 ALIBABA_RERANK_COMPAT_URL。
     enable: true
     provider: "aliyun"
-    model_name: "gte-rerank-v2"
+    model_name: "qwen3-rerank"
     score_threshold: 0.1
     max_documents: 16
     chunk_chars: 800

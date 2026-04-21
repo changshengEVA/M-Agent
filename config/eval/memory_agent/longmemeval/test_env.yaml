@@ -14,7 +14,7 @@ data:
 
 selection:
   question_ids:
-    - gpt4_15e38248
+    - 0100672e
 
   # 与 question_ids 二选一语义：question_ids 非空时只跑列表，忽略 sampling。
   # 仅当 question_ids 为空时，才使用 sampling 对 data.file 全量分层抽样：
@@ -41,7 +41,7 @@ warmup:
   force: true
 
 eval:
-  test_id: longmemeval_run_test_gpt4_15e38248
+  test_id: longmemeval_run_test_0100672e
   memory_agent_config: config/agents/memory/longmemeval_eval_memory_agent.yaml
   model_key: memory_agent
   prediction_key: memory_agent_prediction
