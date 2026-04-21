@@ -16,7 +16,7 @@ from m_agent.config_paths import (
 )
 from m_agent.load_model.AlibabaEmbeddingCall import get_embed_model as get_alibaba_embed_model
 from m_agent.load_model.BGEcall import get_embed_model as get_local_embed_model
-from m_agent.load_model.OpenAIcall import get_llm
+from m_agent.load_model.OpenAIcall import get_chat_llm, get_llm
 from m_agent.memory.memory_core.memory_system import MemoryCore
 from m_agent.prompt_utils import (
     load_resolved_prompt_config,
@@ -168,6 +168,14 @@ class MemoryAgentConfigMixin:
             multi_route_config = {}
         facts_only_mode = bool(config.get("facts_only_mode", False))
 
+        llm_provider = str(config.get("llm_provider", os.getenv("LLM_PROVIDER", "openai"))).strip().lower()
+        llm_model_name = str(config.get("llm_model_name", "") or "").strip() or None
+        if llm_provider not in {"openai", "openai_compatible"}:
+            raise ValueError(
+                f"Unsupported llm_provider: {llm_provider}. "
+                "Currently supported: openai (OpenAI-compatible via .env BASE_URL/API_SECRET_KEY)."
+            )
+
         embed_provider = str(
             config.get("embed_provider", os.getenv("EMBED_PROVIDER", "local"))
         ).strip().lower()
@@ -183,9 +191,16 @@ class MemoryAgentConfigMixin:
                 "Use one of: local, bge, alibaba, aliyun, dashscope."
             )
 
+        # LLM connection (base_url/api_key) is still sourced from .env; this config only selects provider + model id.
+        llm_func = (
+            get_chat_llm(model_temperature=llm_temperature, model_name=llm_model_name)
+            if llm_model_name
+            else get_llm(llm_temperature)
+        )
+
         return MemoryCore(
             workflow_id=workflow_id,
-            llm_func=get_llm(llm_temperature),
+            llm_func=llm_func,
             embed_func=embed_func,
             llm_temperature=llm_temperature,
             similarity_threshold=similarity_threshold,

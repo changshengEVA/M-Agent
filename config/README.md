@@ -65,3 +65,16 @@ MemoryAgent runtime knobs:
   - `enable_state_machine`, `max_rounds`, `max_actions_per_round`
   - `max_episode_candidates`, `max_keep`, `min_evidence_to_answer`
   - `remedy_recall_max_times`, `enable_detail_search_multi_route`
+
+Memory build LLM selection:
+
+- `config/memory/core/*.yaml` can specify which OpenAI-compatible chat model id is used during:
+  - Dialogue → Episodes segmentation (memory pre pipeline)
+  - MemoryCore import/build (episodes → scene/facts/KG)
+
+Supported keys (connection still from `.env`: `BASE_URL`, `API_SECRET_KEY`, `OPENAI_MODEL`):
+
+- `llm_provider`: currently supports `openai` (OpenAI-compatible).
+- `llm_model_name`: model id for MemoryCore build-time LLM usage. If empty, defaults to `OPENAI_MODEL`.
+- `episode_llm_provider`: optional override for episode segmentation stage (defaults to `llm_provider`).
+- `episode_llm_model_name`: optional override for episode segmentation stage (defaults to `llm_model_name` / `OPENAI_MODEL`).
