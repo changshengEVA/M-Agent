@@ -126,7 +126,7 @@ python scripts/run_longmemeval/eval_longmemeval.py --env-config config/eval/memo
 可以在评测跑完后执行：
 
 ```bash
-python scripts/run_longmemeval/trace_longmemeval_evidence.py --test-id longmemeval_run_try_each_2_plus --oracle-json data/LongMemEval/data/longmemeval_oracle.json
+python scripts/run_longmemeval/trace_longmemeval_evidence.py --test-id longmemeval_run_test_0100672e --oracle-json data/LongMemEval/data/longmemeval_oracle.json
 ```
 
 输出：
@@ -138,6 +138,33 @@ python scripts/run_longmemeval/trace_longmemeval_evidence.py --test-id longmemev
 - `--recall-dir <folder>`：当你的 recall 不在默认 `recall/` 下时
 - `--memory-root <dir>`：当你的 memory 根不在默认 `data/memory/longmemeval/*/<question_id>/` 结构下时
 - `--overwrite`：覆盖已有 trace 输出
+
+**5.5）逐轮 Markdown 表（execute / rerank / Judge / 金段 hit·miss）**
+
+在仓库根目录执行，**仅需 `test_id`**（与 `log/<test_id>/` 目录名一致，通常来自环境配置里的 `eval.test_id`）：
+
+```bash
+python scripts/run_longmemeval/gen_round_tables_md.py longmemeval_run_try_each_4_without_time_recall
+```
+
+（PowerShell 同理，路径用反斜杠即可。）
+
+**输入**（均在 `log/<test_id>/` 下）：
+
+- `recall_trace/<question_id>.json`
+- `longmemeval_hypothesis.jsonl.eval-results-gpt-4o`（题目顺序、`hypothesis`、gpt-4o `autoeval_label.label`）
+
+**LOCOMO：** 同一脚本可用 `--eval-file log/<test_id>/locomo10_agent_qa.eval-results-<model>.jsonl` 与 `--title-prefix LOCOMO`；eval jsonl 由 `scripts/run_locomo/evaluate_agent_qa_llm_judge.py --export-eval-jsonl` 生成，`recall_trace` 由 `scripts/run_locomo/trace_locomo_evidence.py` 生成。详见 `scripts/run_locomo/README.md`。
+
+**输出**（写入同一 `log/<test_id>/`）：
+
+| 文件 | 内容 |
+|------|------|
+| `phase_60_questions_round_tables.md` | **混合**：eval 行顺序下的全部题目；文首有 **绿/红/灰图例**，每题标题为 **绿色条（正确）** / **红色条（错误）** + 浅色底（HTML 预览） |
+| `phase_60_questions_round_tables_correct.md` | **仅正确**：`autoeval_label.label == true` |
+| `phase_60_questions_round_tables_wrong.md` | **仅错误**：`label == false` |
+
+无 gpt-4o 标签的题目只出现在混合文件中；正确/错误拆分时若一侧为空，仍会生成带说明的短文件。
 
 也可直接调用底层脚本：
 

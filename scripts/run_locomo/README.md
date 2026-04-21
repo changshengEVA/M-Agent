@@ -42,7 +42,7 @@ python scripts/run_locomo/run_locomo_pipeline.py --env-config config/eval/memory
 | `selection` | `conv_ids` 以及可选的 `questions`（问答子集）。 |
 | `import` | `process_id`、`clean_output`、**`episode_max_workers`**。 |
 | `warmup` | **`scene_fact_max_workers`**，可选 **`force`**（与 CLI `--force` 相同）。 |
-| `eval` | `test_id`、`memory_agent_config`、采样、`overwrite` 等。 |
+| `eval` | `test_id`、`memory_agent_config`、采样、`overwrite`、`recall_dir`、`llm_judge_exclude_category_5` 等。 |
 
 常见修改项：
 
@@ -82,6 +82,36 @@ python scripts/run_locomo/eval_locomo.py --env-config config/eval/memory_agent/l
 
 当配置了 `selection.questions` 时，`eval_locomo.py` 会在 `log/<test_id>/_env_question_selection.yaml` 下自动生成临时选题文件，并只跑这些题目。
 
+**评测产物（与 LongMemEval 对齐的链路）：**
+
+- `log/<test_id>/locomo10_agent_qa.json`：聚合预测与指标（与此前相同）。
+- `log/<test_id>/locomo10_agent_qa_qa_trace.jsonl`：逐题断点恢复用 trace（每行含 `trace_id`、`recall_json` 等）。
+- `log/<test_id>/<recall_dir>/`：默认 `recall/`，每题 `sample_id__q<源下标>.json` + 可选 `.../<stem>/Workspace/round_XXX.json`（与 `run_eval_longmemeval.py` 同构）。
+
+在 **完成一次 eval** 且已有 `data/memory/<workflow_id>/` 后，可生成 **recall_trace** 与 **逐轮 Markdown**（需先跑 LLM judge 并导出 eval jsonl，以便与 `gen_round_tables_md.py` 对接）：
+
+```bash
+# 1) 可选：LLM 裁判并导出 LongMemEval 风格的 eval jsonl（与下方 gen_round_tables 的 --eval-file 一致即可）
+python scripts/run_locomo/evaluate_agent_qa_llm_judge.py \
+  --env-config config/eval/memory_agent/locomo/test_env.yaml \
+  --input log/<test_id>/locomo10_agent_qa.json \
+  --export-eval-jsonl log/<test_id>/locomo10_agent_qa.eval-results-gpt-4o.jsonl
+
+# 2) 由 recall + 标注 + memory 生成 recall_trace/（--workflow-id 须与 import 的 process_id 一致）
+python scripts/run_locomo/trace_locomo_evidence.py \
+  --test-id <test_id> \
+  --workflow-id locomo/conv-50 \
+  --data-file data/locomo/data/locomo10.json \
+  --overwrite
+
+# 3) 生成与 LongMemEval 相同版式的 phase_60_questions_round_tables*.md
+python scripts/run_longmemeval/gen_round_tables_md.py <test_id> \
+  --eval-file log/<test_id>/locomo10_agent_qa.eval-results-gpt-4o.jsonl \
+  --title-prefix LOCOMO
+```
+
+LongMemEval 侧说明见 [`scripts/run_longmemeval/README.md`](../run_longmemeval/README.md)（`recall_trace`、`gen_round_tables_md.py`）。
+
 ## 可选工具
 
 ```bash
@@ -91,6 +121,6 @@ python scripts/run_locomo/sweep_locomo_hybrid_params.py --help
 # 根据 log/<test-id>/locomo10_agent_qa_stats.json 绘制分数图
 python scripts/run_locomo/plot_locomo_scores.py --help
 
-# 对 locomo10_agent_qa.json 做 LLM 裁判评测
+# 对 locomo10_agent_qa.json 做 LLM 裁判评测（建议加 --env-config 以读取 eval.llm_judge_exclude_category_5，与 run_eval 一致跳过 category 5）
 python scripts/run_locomo/evaluate_agent_qa_llm_judge.py --help
 ```

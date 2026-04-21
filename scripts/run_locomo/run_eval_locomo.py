@@ -10,12 +10,13 @@ import math
 import os
 import random
 import re
+import shutil
 import string
 import time
 from collections import Counter, defaultdict
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
 
@@ -166,6 +167,15 @@ def parse_args() -> argparse.Namespace:
             "data/memory/<workflow_id>/ (must match import --process-id)."
         ),
     )
+    parser.add_argument(
+        "--recall-dir",
+        type=str,
+        default="recall",
+        help=(
+            "Subfolder under log/<test-id>/ for per-question recall JSON "
+            "(same layout idea as LongMemEval run_eval_longmemeval)."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -177,6 +187,75 @@ def _sanitize_test_id(test_id: str) -> str:
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", cleaned)
     cleaned = cleaned.strip("._-")
     return cleaned or DEFAULT_TEST_ID
+
+
+def _sanitize_filename(name: str) -> str:
+    cleaned = str(name or "").strip()
+    if not cleaned:
+        return "unknown"
+    cleaned = re.sub(r'[\\/:*?"<>|]+', "_", cleaned)
+    cleaned = re.sub(r"\s+", "_", cleaned)
+    return cleaned.strip("._-") or "unknown"
+
+
+def _sanitize_recall_dir_segment(name: str) -> str:
+    s = str(name or "").strip() or "recall"
+    s = s.replace("\\", "/").split("/")[-1]
+    s = re.sub(r"[^A-Za-z0-9._-]+", "_", s).strip("._-") or "recall"
+    return s[:120]
+
+
+def locomo_trace_id(sample_id: str, source_qa_index: int) -> str:
+    """Stable id for recall / recall_trace (matches plan: sample_id__q{index})."""
+    return f"{str(sample_id).strip()}__q{int(source_qa_index)}"
+
+
+def _write_locomo_recall_artifacts(
+    recall_root: Path,
+    trace_id: str,
+    thread_id: str,
+    question: str,
+    result: Optional[Dict[str, Any]],
+    error: Optional[str],
+) -> str:
+    """Write log/<test_id>/<recall>/<stem>.json and optional Workspace/round_*.json. Returns absolute path."""
+    safe = _sanitize_filename(trace_id)
+    recall_root.mkdir(parents=True, exist_ok=True)
+    per_question: Dict[str, Any] = {
+        "question_id": trace_id,
+        "trace_id": trace_id,
+        "thread_id": thread_id,
+        "question": question,
+        "result": result,
+        "error": error,
+    }
+    path = recall_root / f"{safe}.json"
+    with open(path, "w", encoding="utf-8") as f_one:
+        json.dump(per_question, f_one, ensure_ascii=False, indent=2, default=str)
+
+    if isinstance(result, dict):
+        rounds = result.get("workspace_rounds")
+        if isinstance(rounds, list) and rounds:
+            q_folder = recall_root / safe
+            ws_dir = q_folder / "Workspace"
+            ws_dir.mkdir(parents=True, exist_ok=True)
+            for item in rounds:
+                if not isinstance(item, dict):
+                    continue
+                rid_raw = item.get("round_id")
+                try:
+                    rid = int(rid_raw)
+                except Exception:
+                    rid = 0
+                name = (
+                    f"round_{rid:03d}.json"
+                    if rid > 0
+                    else f"round_{_sanitize_filename(str(rid_raw))}.json"
+                )
+                with open(ws_dir / name, "w", encoding="utf-8") as f_round:
+                    json.dump(item, f_round, ensure_ascii=False, indent=2, default=str)
+
+    return str(path.resolve())
 
 
 def _load_yaml(path: str) -> Any:
@@ -1333,6 +1412,9 @@ def main() -> int:
     stats_file = output_paths["stats_file"]
     log_file = output_paths["log_file"]
     trace_file = output_paths["trace_file"]
+    recall_root = LOG_DIR / _sanitize_test_id(args.test_id) / _sanitize_recall_dir_segment(
+        args.recall_dir
+    )
     f1_metric_key = f"{args.model_key}_f1"
     b1_metric_key = f"{args.model_key}_b1"
 
@@ -1342,6 +1424,9 @@ def main() -> int:
     logger.info("stats_file=%s", stats_file)
     logger.info("log_file=%s", log_file)
     logger.info("trace_file=%s", trace_file)
+    logger.info("recall_root=%s", recall_root)
+    if args.overwrite and recall_root.exists():
+        shutil.rmtree(recall_root, ignore_errors=True)
     logger.info("Skipped QA categories: %s", sorted(SKIPPED_QA_CATEGORIES))
     wf_override = str(args.workflow_id or "").strip()
     episodes_root = _resolve_locomo_episodes_root_from_agent_config(
@@ -1373,6 +1458,7 @@ def main() -> int:
         "max_questions": args.max_questions,
         "save_every": args.save_every,
         "sleep_seconds": args.sleep_seconds,
+        "recall_dir": str(args.recall_dir or "").strip() or "recall",
         "conv_ids_cli": args.conv_ids or "",
         "question_config_cli": str(args.question_config or "").strip(),
     }
@@ -1526,7 +1612,9 @@ def main() -> int:
                 except Exception:
                     source_q_idx = q_idx
                 thread_id = f"{args.thread_id_prefix}:{sid}:{source_q_idx}"
+                trace_id = locomo_trace_id(sid, source_q_idx)
                 error_text = None
+                ask_result: Dict[str, Any] | None = None
                 pred = ""
                 answer = ""
                 evidence = None
@@ -1544,16 +1632,16 @@ def main() -> int:
                     try:
                         if agent is None:
                             raise RuntimeError("MemoryAgent is not initialized for pending question.")
-                        result = agent.ask(question, thread_id=thread_id)
-                        answer = str(result.get("answer", "") or "")
-                        pred = str(result.get("gold_answer", "") or "")
-                        evidence = result.get("evidence")
-                        tool_calls = result.get("tool_calls", [])
-                        question_plan = result.get("question_plan")
+                        ask_result = agent.ask(question, thread_id=thread_id)
+                        answer = str(ask_result.get("answer", "") or "")
+                        pred = str(ask_result.get("gold_answer", "") or "")
+                        evidence = ask_result.get("evidence")
+                        tool_calls = ask_result.get("tool_calls", [])
+                        question_plan = ask_result.get("question_plan")
                         evidence_episode_refs = _extract_episode_refs(
-                            result.get("evidence_episode_refs")
+                            ask_result.get("evidence_episode_refs")
                         )
-                        raw_ref_count = result.get("evidence_episode_ref_count")
+                        raw_ref_count = ask_result.get("evidence_episode_ref_count")
                         try:
                             evidence_episode_ref_count = int(raw_ref_count)
                         except Exception:
@@ -1613,9 +1701,19 @@ def main() -> int:
 
                     changed = True
 
+                recall_json_path = _write_locomo_recall_artifacts(
+                    recall_root,
+                    trace_id,
+                    thread_id,
+                    question,
+                    ask_result,
+                    error_text,
+                )
                 trace_record = {
                     "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
                     "prediction_key": args.prediction_key,
+                    "trace_id": trace_id,
+                    "recall_json": recall_json_path,
                     "sample_id": sid,
                     "qa_index": q_idx,
                     "source_qa_index": source_q_idx,
@@ -1717,6 +1815,7 @@ def main() -> int:
     logger.info("Saved predictions: %s", out_file)
     logger.info("Saved stats: %s", stats_file)
     logger.info("Saved trace: %s", trace_file)
+    logger.info("Recall artifacts under: %s", recall_root)
     logger.info("Evaluated new questions this run: %d", asked_count)
     logger.info("Overall accuracy (%s): %.3f", args.model_key, stats["overall_accuracy"])
     logger.info("Overall B1 (%s): %.3f", args.model_key, stats["overall_b1"])

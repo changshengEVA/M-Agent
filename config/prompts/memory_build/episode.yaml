@@ -199,51 +199,108 @@ dialogue_segmentation:
       {
         "topic": "<short topic label>"
       }
+  # System prompt for segment-level "scenario memory" (NOT the segmentation role).
+  segment_memory_system_prompt:
+    zh: |
+      你是一位出色的事件记录与提炼专家，擅长将复杂的对话转化为清晰、连贯的“情景记忆”。
+      你只根据用户消息中的对话材料进行提炼，不扮演对话分段器。
+    en: |
+      You are an expert at turning messy dialogue into clear, coherent scenario memory.
+      You only distill the conversation provided in the user message; you are not a dialogue segmentation module.
   segment_topic_prompt:
     zh: |
-      脚本刚刚完成了一个 segment（Episode 内的子话题片段）。
+      你的任务：提炼以下对话的核心内容，生成一段可读性强、信息量大的情景记忆。这份记忆应该像一个完整的故事，不仅记录了“发生了什么”，还清晰地展示了讨论的脉络和“结果如何”。
+
+      对话开始时间：
+      <CONVERSATION_START_TIME>
+
+      对话内容：
+      <SEGMENT_CONVERSATION_TEXT>
+
+      自定义指令：
+      <CUSTOM_INSTRUCTIONS>
+
+      请遵循以下指导原则：
+
+      1. **叙事性与连贯性**：
+          * 以第三人称视角，像讲故事一样，流畅地叙述整个事件的来龙去脉。
+          * 从讨论的起点开始，描述关键的观点和转折点，最后总结出结论或当前状态。
+
+      2. **关键信息提炼**：
+          * 精准地识别出对话中的核心议题、关键决策、重要信息、各方观点和最终共识。
+          * 将这些关键信息自然地融入到叙事中，而不是简单地罗列。
+
+      3. **客观且忠于原文**：
+          * 保持中立，客观地反映对话内容。
+          * 可以进行总结和归纳，但不能添加原文未提及的主观评价或进行过度推断。
+          * **严格禁止任何形式的评价或引申**。例如，不能出现“这体现了...”、“这表明...”等带有总结、评价性质的语句。只需客观叙述事实。
+
+      4. **为检索优化**：
+          * 在叙述中保留关键的实体名词、项目名、技术术语、URL、文件路径等，方便未来检索。
+
+      请生成结构化情节记忆，仅返回包含以下两个字段的 JSON 对象（不要输出 JSON 之外的任何文字）：
+      {
+          "title": "（精炼、概括性的标题，尽量包含日期 YYYY-MM-DD 或对话中的明确时间）",
+          "content": "（一段连贯的叙事性文本。关键的结论或待办事项应自然地融入文本中。）"
+      }
+
+      自检清单（生成前必须逐项通过）：
+      - 返回的是否为严格的 JSON 格式？
+      - `title` 是否精炼地概括了事件核心并尽量包含日期或时间线索？
+      - `content` 是否是一段流畅连贯的叙事性文字，而非生硬的列表？
+      - 关键信息（如决策、待办、金额、数量）是否已自然地融入叙述中？
+
+      以下为脚本提供的结构化上下文（仅供理解对话所属对话与参与者，不要复述占位符名称）：
 
       Dialogue context:
       <DIALOGUE_CONTEXT_JSON>
 
-      Completed segment buffer:
+      Segment turns（JSON，含 speaker / text / timestamp 等）:
       <SEGMENT_BUFFER_JSON>
-
-      请为这个 segment 写一个简短的子话题标签。
-
-      要求：
-      1. 概括 segment 的具体讨论焦点，必须体现"在聊什么具体的事"
-         好例子："Jon 丢了银行工作决定创业"、"约下周五一起上舞蹈课"
-         坏例子："支持与鼓励"、"追求梦想"
-      2. 尽量简洁（3-10 个词）
-      3. 不要提到 "segment""buffer" 或 turn id
-
-      输出 JSON：
-      {
-        "topic": "<short sub-topic label>"
-      }
     en: |
-      A segment (sub-topic span within an episode) has been finalized.
+      Your task: distill the following dialogue into readable, information-dense scenario memory.
+      It should read like a short story: what happened, how the discussion evolved, and where things landed.
+
+      Conversation start time:
+      <CONVERSATION_START_TIME>
+
+      Conversation:
+      <SEGMENT_CONVERSATION_TEXT>
+
+      Custom instructions:
+      <CUSTOM_INSTRUCTIONS>
+
+      Guidelines:
+
+      1. **Narrative and coherence**:
+          * Third person, fluent retelling from start to finish, including key turns and outcomes.
+
+      2. **Key information**:
+          * Capture core issues, decisions, important facts, positions, and consensus, woven into the narrative (not a bullet dump).
+
+      3. **Faithful and neutral**:
+          * Stay objective; do not add opinions not present in the source.
+          * **No evaluative meta-commentary** (avoid phrases like "this shows that…", "this reflects…"). State facts only.
+
+      4. **Retrieval-friendly**:
+          * Keep concrete entities: names, products, URLs, paths, numbers, currencies, quantities.
+
+      Return **only** a JSON object with exactly these keys (no extra text):
+      {
+          "title": "(Concise headline; include YYYY-MM-DD or an explicit time from the dialogue when available.)",
+          "content": "(One coherent narrative paragraph or short multi-paragraph text; decisions and todos should appear naturally.)"
+      }
+
+      Self-check before you answer:
+      - Strict JSON only?
+      - Title captures the core event and time clues?
+      - Content is narrative, not a stiff outline?
+      - Numbers / amounts / counts embedded naturally?
+
+      Script-provided context (do not echo placeholder names):
 
       Dialogue context:
       <DIALOGUE_CONTEXT_JSON>
 
-      Completed segment buffer:
+      Segment turns (JSON):
       <SEGMENT_BUFFER_JSON>
-
-      Write one short sub-topic label for this segment.
-
-      Requirements:
-      1. Capture the SPECIFIC discussion focus — what concrete thing was
-         being talked about.
-         Good: "Jon lost banking job, decides to start a business"
-         Good: "Planning a dance session next Friday"
-         Bad:  "Support and encouragement"
-         Bad:  "Pursuing dreams"
-      2. Keep it concise (3-10 words).
-      3. Do not mention "segment", "buffer", or turn ids.
-
-      Output JSON:
-      {
-        "topic": "<short sub-topic label>"
-      }

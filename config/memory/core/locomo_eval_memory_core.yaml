@@ -44,3 +44,9 @@ detail_search_multi_route:
   fusion: "rrf"
   max_workers: 5
   rrf_k: 50
+
+llm_provider: "openai"
+llm_model_name: "gpt-4o-mini"          # 或你想用的模型 id
+episode_llm_provider: "openai"
+episode_llm_model_name: "gpt-4o-mini"
+embed_model_name: "text-embedding-v4"

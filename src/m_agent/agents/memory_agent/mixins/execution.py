@@ -133,7 +133,7 @@ class MemoryAgentExecutionMixin:
             "final_answer_from_workspace_prompt",
             replacements={
                 "<question_text>": question_text,
-                "<workspace_evidence_summary>": workspace.to_evidence_summary(),
+                "<workspace_evidence_summary>": workspace.to_evidence_summary(prefer_judge_view=True),
             },
         )
 
@@ -319,7 +319,7 @@ class MemoryAgentExecutionMixin:
             replacements={
                 "<original_question>": workspace.original_question,
                 "<cur_query>": workspace.cur_query,
-                "<workspace_evidence_summary>": workspace.to_evidence_summary(),
+                "<workspace_evidence_summary>": workspace.to_evidence_summary(prefer_judge_view=True),
                 "<new_evidence_ids_json>": json.dumps(new_evidence_ids, ensure_ascii=False),
             },
         )
@@ -410,20 +410,52 @@ class MemoryAgentExecutionMixin:
             )
 
             use_llm_planner = str(getattr(self, "action_planner_mode", "rule")).strip().lower() == "llm"
-            actions = None
+            actions: Optional[List[Dict[str, Any]]] = None
             if use_llm_planner:
-                try:
-                    actions = self._plan_actions_with_llm(
-                        workspace,
-                        round_id=round_id,
-                        max_actions=max_actions_per_round,
-                        force_remedy=force_remedy,
-                        previous_action_signatures=previous_action_signatures,
+                max_attempts = max(1, int(getattr(self, "workspace_action_planner_max_attempts", 3)))
+                last_exc: Optional[Exception] = None
+                for attempt in range(max_attempts):
+                    try:
+                        actions = self._plan_actions_with_llm(
+                            workspace,
+                            round_id=round_id,
+                            max_actions=max_actions_per_round,
+                            force_remedy=force_remedy,
+                            previous_action_signatures=previous_action_signatures,
+                        )
+                    except Exception as exc:
+                        last_exc = exc
+                        actions = None
+                        logger.warning(
+                            "LLM action planner raised (attempt %s/%s, round_id=%s): %s",
+                            attempt + 1,
+                            max_attempts,
+                            round_id,
+                            exc,
+                        )
+                    else:
+                        if not actions:
+                            logger.warning(
+                                "LLM action planner returned empty actions (attempt %s/%s, round_id=%s)",
+                                attempt + 1,
+                                max_attempts,
+                                round_id,
+                            )
+                    if actions:
+                        break
+                if not actions:
+                    # Treat planner failure as "no new actions" and let the existing INVALID branch
+                    # write per-round artifacts instead of aborting the whole ask().
+                    msg = (
+                        f"LLM action planner produced no usable actions after {max_attempts} attempt(s) "
+                        f"(round_id={round_id}); continue as no_new_actions."
                     )
-                except Exception as exc:
-                    logger.warning("LLM action planner failed, falling back to rules: %s", exc)
-                    actions = None
-            if not actions:
+                    if last_exc is not None:
+                        logger.error("%s last_error=%s", msg, last_exc)
+                    else:
+                        logger.error("%s", msg)
+                    actions = []
+            else:
                 round_intent = build_query_intent(cur_query)
                 actions = plan_actions_rule_based(
                     round_intent,

@@ -187,3 +187,67 @@ def test_state_machine_stagnation_stops_when_useful_set_unchanged(monkeypatch) -
     snap = rounds[-1].get("workspace_after_judge") or {}
     assert snap.get("gap_type") == "stagnant"
     assert out["recall_rounds"][-1].get("stagnant") is True
+
+
+def test_llm_judge_workspace_normalizes_ref_prefix() -> None:
+    from m_agent.agents.memory_agent.answerability import llm_judge_workspace
+
+    ws = Workspace(max_keep=4)
+    ws.kept_evidence_ids = ["ev_stable"]
+    ws.upsert({"evidence_id": "ev_stable", "content": "body", "source_type": "episode"})
+
+    def _fake_llm(_prompt: str) -> str:
+        # Simulate the model copying `ref:` from the workspace evidence header.
+        return """
+        {"status":"INSUFFICIENT","useful_evidence_ids":["ref:ev_stable"],"reason":"x","next_query":"q"}
+        """
+
+    decision = llm_judge_workspace(
+        workspace=ws,
+        new_evidence_ids=[],
+        llm_func=_fake_llm,
+        prompt_text="ignored",
+    )
+    assert decision["useful_evidence_ids"] == ["ev_stable"]
+
+
+def test_to_evidence_summary_appends_facts_when_prefer_judge_view() -> None:
+    ws = Workspace(max_keep=4)
+    ws.kept_evidence_ids = ["e1"]
+    ws.upsert(
+        {
+            "evidence_id": "e1",
+            "content": "FULL CONTENT WITH FACTS BLOCK",
+            "judge_view": "Short narrative without the number five.",
+            "source_type": "episode",
+            "meta": {
+                "facts": [
+                    "User purchased 5 coffee mugs.",
+                    "User purchased 5 coffee mugs.",
+                    "",
+                ],
+            },
+        }
+    )
+    summary = ws.to_evidence_summary(prefer_judge_view=True)
+    assert "Short narrative" in summary
+    assert "【相关事实 Related facts】" in summary
+    assert "  - User purchased 5 coffee mugs." in summary
+    assert summary.count("User purchased 5 coffee mugs.") == 1
+
+
+def test_to_evidence_summary_no_duplicate_facts_when_content_fallback() -> None:
+    """Empty judge_view falls back to full content; do not append meta facts again."""
+    ws = Workspace(max_keep=2)
+    ws.kept_evidence_ids = ["e1"]
+    ws.upsert(
+        {
+            "evidence_id": "e1",
+            "content": "【相关事实 Related facts】\n  - Already inlined.\n【对话内容 Dialogue】\n  User: hi",
+            "judge_view": "",
+            "source_type": "episode",
+            "meta": {"facts": ["Already inlined."], "judge_view": ""},
+        }
+    )
+    summary = ws.to_evidence_summary(prefer_judge_view=True)
+    assert summary.count("Already inlined.") == 1

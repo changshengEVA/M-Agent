@@ -330,6 +330,16 @@ def execute_actions(
         if "turns" in content_data:
             meta["turns"] = content_data.get("turns")
 
+        judge_view = str(content_data.get("judge_view") or "").strip()
+        if judge_view:
+            meta["judge_view"] = judge_view
+        stm = str(content_data.get("segment_memory_title") or "").strip()
+        if stm:
+            meta["segment_memory_title"] = stm
+        smc = str(content_data.get("segment_memory_content") or "").strip()
+        if smc:
+            meta["segment_memory_content"] = smc
+
         doc: WorkspaceDocument = {
             "evidence_id": ref,
             "source_type": "episode",
@@ -339,6 +349,8 @@ def execute_actions(
             "rerank_score": None,
             "meta": meta,
         }
+        if judge_view:
+            doc["judge_view"] = judge_view
         evidences.append(doc)
 
     evidences.extend(time_documents)

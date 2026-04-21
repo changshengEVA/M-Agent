@@ -10,6 +10,9 @@ embed_provider: "aliyun"
 
 # optional model names (empty = loader defaults / env defaults)
 llm_model_name: "gpt-4o-mini"
+# Episode build LLM (Dialogue -> Episodes). If omitted, falls back to llm_provider/llm_model_name.
+episode_llm_provider: "openai"
+episode_llm_model_name: "gpt-4o-mini"
 embed_model_name: "text-embedding-v4"
 
 # MemoryCore init settings

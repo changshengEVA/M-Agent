@@ -18,7 +18,7 @@ import os
 import re
 import shutil
 from pathlib import Path
-from typing import Any, Callable, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from m_agent.utils.pipeline_logging import suppress_verbose_pipeline_loggers
 
@@ -35,6 +35,7 @@ suppress_verbose_pipeline_loggers(debug=False)
 from m_agent.load_data import load_dialogues
 from m_agent.memory.utils import build_episodes_with_id, get_output_path, save_dialogue
 from m_agent.paths import ENV_PATH, PROJECT_ROOT
+from m_agent.config_paths import DEFAULT_MEMORY_CORE_CONFIG_PATH, resolve_config_path
 
 
 load_dotenv(ENV_PATH)
@@ -127,13 +128,49 @@ def cleanup_pre_outputs(
 
 def init_llm_model() -> Optional[Callable[[str], str]]:
     try:
-        from m_agent.load_model.OpenAIcall import get_llm
+        from m_agent.load_model.OpenAIcall import get_chat_llm, get_llm
 
         logger.info("Pre-initialize LLM model (temperature=%s)", DEFAULT_LLM_TEMPERATURE)
         return get_llm(model_temperature=DEFAULT_LLM_TEMPERATURE)
     except Exception as exc:
         logger.warning("LLM pre-init failed, fallback to lazy init: %s", exc)
         return None
+
+
+def init_llm_model_from_memory_core_config(
+    memory_core_config: Dict[str, Any] | None,
+) -> Optional[Callable[[str], str]]:
+    """Init the episode-building LLM from MemoryCore config (provider/model only).
+
+    Connection settings (API key / base URL) are still sourced from .env.
+    """
+    if not isinstance(memory_core_config, dict):
+        return init_llm_model()
+
+    provider = str(memory_core_config.get("episode_llm_provider") or memory_core_config.get("llm_provider") or "openai").strip().lower()
+    model_name = str(memory_core_config.get("episode_llm_model_name") or memory_core_config.get("llm_model_name") or "").strip() or None
+    temperature_raw = memory_core_config.get("episode_llm_temperature", memory_core_config.get("memory_llm_temperature", DEFAULT_LLM_TEMPERATURE))
+    try:
+        temperature = float(temperature_raw)
+    except Exception:
+        temperature = float(DEFAULT_LLM_TEMPERATURE)
+
+    if provider not in {"openai", "openai_compatible"}:
+        raise ValueError(
+            f"Unsupported episode_llm_provider: {provider}. "
+            "Currently supported: openai (OpenAI-compatible via .env BASE_URL/API_SECRET_KEY)."
+        )
+
+    try:
+        from m_agent.load_model.OpenAIcall import get_chat_llm, get_llm
+        if model_name:
+            logger.info("Episode LLM from memory_core config: provider=%s model=%s temp=%s", provider, model_name, temperature)
+            return get_chat_llm(model_temperature=temperature, model_name=model_name)
+        logger.info("Episode LLM from memory_core config: provider=%s model=(default env) temp=%s", provider, temperature)
+        return get_llm(model_temperature=temperature)
+    except Exception as exc:
+        logger.warning("Episode LLM init from memory_core config failed, fallback to default: %s", exc)
+        return init_llm_model()
 
 
 def stage1_construct_dialogues_for_id(
@@ -230,6 +267,7 @@ def run_full_pipeline_for_id(
     loader_type: str = "auto",
     include_conv_ids: Optional[Sequence[str]] = None,
     clean_output: bool = False,
+    memory_core_config_path: Optional[str] = None,
 ) -> bool:
     logger.info("Run simplified pipeline for process_id=%s", process_id)
     logger.info("data_source=%s loader_type=%s", data_source if data_source else "default", loader_type)
@@ -240,7 +278,21 @@ def run_full_pipeline_for_id(
     if clean_output:
         cleanup_pre_outputs(process_id=process_id, stages=("dialogues", "episodes"))
 
-    llm_model = init_llm_model()
+    memory_core_config: Dict[str, Any] | None = None
+    if memory_core_config_path:
+        try:
+            import yaml
+            mc_path = resolve_config_path(memory_core_config_path)
+            with open(mc_path, "r", encoding="utf-8") as f:
+                payload = yaml.safe_load(f) or {}
+            if isinstance(payload, dict):
+                memory_core_config = payload
+                logger.info("Loaded memory_core_config for episode build: %s", mc_path)
+        except Exception as exc:
+            logger.warning("Failed to load memory_core_config_path=%s: %s", memory_core_config_path, exc)
+            memory_core_config = None
+
+    llm_model = init_llm_model_from_memory_core_config(memory_core_config)
 
     if not stage1_construct_dialogues_for_id(
         process_id,
@@ -285,6 +337,13 @@ def main() -> None:
         action="store_true",
         help="Delete existing data/memory/<id>/dialogues and episodes before rebuild.",
     )
+    parser.add_argument(
+        "--memory-core-config",
+        type=str,
+        default="",
+        help="Optional MemoryCore config path to pick episode LLM provider/model (connection still from .env). "
+             f"Default is none; for a default core config use {DEFAULT_MEMORY_CORE_CONFIG_PATH}.",
+    )
 
     args = parser.parse_args()
     include_conv_ids = [
@@ -297,6 +356,7 @@ def main() -> None:
         loader_type=args.loader_type,
         include_conv_ids=include_conv_ids,
         clean_output=args.clean_output,
+        memory_core_config_path=(str(args.memory_core_config or "").strip() or None),
     )
 
     if success:

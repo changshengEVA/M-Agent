@@ -1,6 +1,11 @@
 # Used by: `python scripts/run_locomo/run_eval_locomo.py`
 # Purpose: default MemoryAgent config for LoCoMo evaluation.
-model_name: "deepseek-chat"
+#
+# model_name (可选示例):
+#   - gpt-4o-mini / gpt-4o 等：解析为 openai:...；密钥优先 API_SECRET_KEY 否则 OPENAI_API_KEY；BASE_URL 同步给 LangChain。
+#   - deepseek-chat：保持原名；需对应服务商的 KEY 与 BASE_URL。
+#   - 已含 provider 前缀时原样传入，例如 openai:gpt-4o-mini。
+model_name: "gpt-4.1-mini"
 agent_temperature: 0.0
 memory_core_config_path: "../../memory/core/locomo_eval_memory_core.yaml"
 runtime_prompt_config_path: "./runtime/agent_runtime_facts_only.yaml"
@@ -28,16 +33,23 @@ workspace:
   min_evidence_to_answer: 1
   remedy_recall_max_times: 1
   action_planner: "llm"
+  # LLM planner only: retry then RuntimeError (no rule-based fallback).
+  action_planner_max_attempts: 3
   enabled_tools:
     - EVENT_DETAIL_RECALL
-    - EVENT_TIME_RECALL
+    # - EVENT_TIME_RECALL
     - RECALL_REMEDY_MULTI_ROUTE
   rerank:
+    # enable: false 可关闭重排（仅召回顺序）。
     enable: true
     provider: "aliyun"
-    model_name: "gte-rerank-v2"
+    # model_name（可选）: qwen3-rerank（无 dashscope SDK 时走 HTTP compatible-api/v1/reranks；国际区可设环境变量 ALIBABA_RERANK_COMPAT_URL）；
+    #   或 gte-rerank-v2 等百炼支持的模型名。
+    model_name: "qwen3-rerank"
     score_threshold: 0.1
     max_documents: 16
+    chunk_chars: 800
+    chunk_batch_size: 32
 attach_episode_refs_to_answer: true
 evidence_episode_ref_max_in_text: 8
 

@@ -12,6 +12,7 @@ class WorkspaceDocument(TypedDict, total=False):
     evidence_id: str
     source_type: str
     content: str
+    judge_view: str
     source_action_id: str
     recall_score: float | None
     rerank_score: float | None
@@ -34,6 +35,32 @@ def build_episode_ref(dialogue_id: str, episode_id: str, segment_id: str | None 
     if seg and base:
         return f"{base}:{seg}"
     return base
+
+
+def _dedupe_fact_strings(items: List[Any] | None) -> List[str]:
+    if not items:
+        return []
+    seen: set[str] = set()
+    out: List[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if text and text not in seen:
+            seen.add(text)
+            out.append(text)
+    return out
+
+
+def _facts_appendix_from_meta(meta: Any) -> str:
+    """Format structured facts for prompts (matches action_executor episode header style)."""
+    if not isinstance(meta, dict):
+        return ""
+    raw = meta.get("facts")
+    facts = _dedupe_fact_strings(raw if isinstance(raw, list) else None)
+    if not facts:
+        return ""
+    lines = ["【相关事实 Related facts】"]
+    lines.extend(f"  - {f}" for f in facts)
+    return "\n".join(lines)
 
 
 def split_episode_ref(ref: str) -> tuple[str, str, str]:
@@ -170,14 +197,46 @@ class Workspace:
                     removed += 1
         return removed
 
-    def to_evidence_summary(self, max_items: int = 6) -> str:
+    def to_evidence_summary(
+        self, max_items: Optional[int] = None, *, prefer_judge_view: bool = False
+    ) -> str:
+        """Summarize kept evidences for LLM prompts.
+
+        By default includes up to ``self.max_keep`` items (same cap as ``keep_top``),
+        so the judge / planner see the same pool ordering as ``kept_evidence_ids``.
+        Pass a positive ``max_items`` to override (e.g. token budgeting).
+        """
+        if max_items is None:
+            limit = max(1, int(self.max_keep))
+        else:
+            limit = max(1, int(max_items))
         blocks: List[str] = []
-        for idx, doc in enumerate(self.kept_evidences()[: max(1, int(max_items))], start=1):
+        for idx, doc in enumerate(self.kept_evidences()[:limit], start=1):
             eid = doc.get("evidence_id", "")
-            content = str(doc.get("content", "")).strip()
-            if not content:
-                content = "(no content)"
-            blocks.append(f"=== Evidence [{idx}]  ref: {eid} ===\n{content}")
+            body = ""
+            used_judge_view = False
+            if prefer_judge_view:
+                body = str(doc.get("judge_view") or "").strip()
+                if body:
+                    used_judge_view = True
+                if not body:
+                    meta = doc.get("meta") or {}
+                    if isinstance(meta, dict):
+                        body = str(meta.get("judge_view") or "").strip()
+                        if body:
+                            used_judge_view = True
+                if not body:
+                    body = str(doc.get("content", "")).strip()
+                    used_judge_view = False
+            else:
+                body = str(doc.get("content", "")).strip()
+            if not body:
+                body = "(no content)"
+            elif prefer_judge_view and used_judge_view:
+                appendix = _facts_appendix_from_meta(doc.get("meta"))
+                if appendix:
+                    body = f"{body}\n\n{appendix}"
+            blocks.append(f"=== Evidence [{idx}]  ref: {eid} ===\n{body}")
         return "\n\n".join(blocks).strip()
 
 

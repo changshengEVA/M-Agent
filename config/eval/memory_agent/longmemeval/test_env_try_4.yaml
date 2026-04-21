@@ -2,8 +2,8 @@
 # 用于：
 #   python scripts/run_longmemeval/import_longmemeval_one.py --env-config ...
 #   python scripts/run_longmemeval/warmup_longmemeval.py --env-config ...
-#   python scripts/run_longmemeval/eval_longmemeval.py --env-config config/eval/memory_agent/longmemeval/test_env.yaml
-#   python scripts/run_longmemeval/run_longmemeval_pipeline.py --env-config config/eval/memory_agent/longmemeval/test_env.yaml
+#   python scripts/run_longmemeval/eval_longmemeval.py --env-config config/eval/memory_agent/longmemeval/test_env_try_4.yaml
+#   python scripts/run_longmemeval/run_longmemeval_pipeline.py --env-config config/eval/memory_agent/longmemeval/test_env_try_4.yaml
 
 name: longmemeval_test_env
 description: Import/warmup/eval per question_id; hypothesis jsonl for upstream evaluate_qa.py.
@@ -14,36 +14,36 @@ data:
 
 selection:
   question_ids:
-    - 0100672e
-
+    # - gpt4_d6585ce9
   # 与 question_ids 二选一语义：question_ids 非空时只跑列表，忽略 sampling。
   # 仅当 question_ids 为空时，才使用 sampling 对 data.file 全量分层抽样：
   sampling:
-    seed: 42
+    seed: 373
     default_per_type: 0
     per_question_type:
-      single-session-preference: 2
-      single-session-user: 2
-      single-session-assistant: 2
-      temporal-reasoning: 2
-      knowledge-update: 2
-      multi-session: 2
+      single-session-preference: 10
+      single-session-user: 10
+      single-session-assistant: 10
+      temporal-reasoning: 10
+      knowledge-update: 10
+      multi-session: 10
 
 import:
   process_id: ""
-  clean_output: true
-  episode_max_workers: 3
+  clean_output: false
+  episode_max_workers: 8
 
 warmup:
   # Parallel scene generation: multiple episode JSON files (by_dialogue) in parallel.
-  scene_max_workers: 3
-  scene_fact_max_workers: 3
-  force: true
+  scene_max_workers: 8
+  scene_fact_max_workers: 8
+  force: false
 
 eval:
-  test_id: longmemeval_run_test_0100672e
+  test_id: longmemeval_run_try_each_4_with_judge_view
   memory_agent_config: config/agents/memory/longmemeval_eval_memory_agent.yaml
   model_key: memory_agent
+  prediction_key: memory_agent_prediction
   prediction_key: memory_agent_prediction
   thread_id_prefix: longmemeval-eval
   overwrite: true

@@ -29,6 +29,7 @@ from _bootstrap import bootstrap_project
 bootstrap_project()
 
 from m_agent.paths import LOG_DIR, resolve_project_path
+from m_agent.utils.pipeline_logging import suppress_verbose_pipeline_loggers
 
 logger = logging.getLogger("run_eval_longmemeval")
 
@@ -188,6 +189,7 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+    suppress_verbose_pipeline_loggers(debug=False)
     args = parse_args()
 
     data_path = Path(resolve_project_path(args.data_file))
