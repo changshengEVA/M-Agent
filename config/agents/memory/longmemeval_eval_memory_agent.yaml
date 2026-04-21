@@ -51,9 +51,3 @@ attach_episode_refs_to_answer: true
 evidence_episode_ref_max_in_text: 8
 
 default_question: "What did the user discuss in the conversation?"
-
-llm_provider: "openai"
-llm_model_name: "gpt-4o-mini"          # 或你想用的模型 id
-episode_llm_provider: "openai"
-episode_llm_model_name: "gpt-4o-mini"
-embed_model_name: "text-embedding-v4"
