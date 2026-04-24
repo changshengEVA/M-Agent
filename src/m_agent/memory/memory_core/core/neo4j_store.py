@@ -183,6 +183,8 @@ class Neo4jStore:
         constraints = [
             "DROP CONSTRAINT entity_workflow_id_unique IF EXISTS",
             "CREATE CONSTRAINT entity_id_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.id IS UNIQUE",
+            # Optional: may fail on older Neo4j / duplicate uid data; caller logs warning.
+            "CREATE CONSTRAINT entity_uid_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.uid IS UNIQUE",
         ]
         session_kwargs: Dict[str, Any] = {}
         db = self._sanitize_db_name(database or "")

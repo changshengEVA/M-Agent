@@ -306,6 +306,105 @@ class EntityProfileService(BaseService):
             "summary": str(profile.summary or "").strip(),
         }
 
+    def search_entity_profile(self, entity_uid: str, optional_query: Optional[str] = None) -> Dict[str, Any]:
+        """Hard match summary → optional embedding threshold → LLM USE/REJECT."""
+        uid = str(entity_uid or "").strip()
+        q = str(optional_query or "").strip()
+        hard = self.get_entity_profile(uid)
+        stages: Dict[str, Any] = {"hard_match": bool(hard.get("hit")), "threshold": None, "llm_confirm": None}
+        if not hard.get("hit"):
+            return {"hit": False, "entity_id": uid, "summary": "", "stages": stages}
+        summary = str(hard.get("summary") or "").strip()
+        if not q:
+            stages["threshold"] = True
+            stages["llm_confirm"] = None
+            return {"hit": True, "entity_id": uid, "summary": summary, "stages": stages}
+
+        profile = self.entity_profile_library.get_entity(uid)
+        blob_parts = [summary]
+        if profile:
+            for item in profile.attributes or []:
+                t = str(item.text or "").strip() or self.merge_strategy.build_attribute_text(item.field, item.content)
+                if t:
+                    blob_parts.append(t)
+        blob = "\n".join(blob_parts).strip()
+        qe = self._safe_embed(q)
+        be = self._safe_embed(blob)
+        score = 0.0
+        if qe and be:
+            score = float(self._cosine_similarity(qe, be))
+        elif q.lower() in blob.lower():
+            score = 0.9
+        stages["threshold_score"] = round(score, 6)
+        thr = max(0.35, float(self.similarity_threshold) - 0.15)
+        if score < thr:
+            stages["threshold"] = False
+            return {"hit": False, "entity_id": uid, "summary": "", "stages": stages}
+        stages["threshold"] = True
+
+        cfg = load_resolved_prompt_config(self.runtime_prompt_config_path, self.prompt_language)
+        pr = cfg.get("entity_profile_retrieval")
+        if not isinstance(pr, dict):
+            stages["llm_confirm"] = "skipped_missing_prompt"
+            return {"hit": True, "entity_id": uid, "summary": summary, "stages": stages}
+        tmpl = pr.get("summary_confirm_prompt")
+        if not isinstance(tmpl, str) or not tmpl.strip():
+            stages["llm_confirm"] = "skipped_missing_prompt"
+            return {"hit": True, "entity_id": uid, "summary": summary, "stages": stages}
+        prompt = render_prompt_template(tmpl, {"<query>": q, "<summary_text>": summary})
+        raw = self.llm_func(prompt)
+        from m_agent.memory.memory_core.workflow.build.entity_segment_llm import extract_json_object
+
+        d = extract_json_object(raw or "")
+        decision = str((d or {}).get("decision") or "").upper()
+        stages["llm_confirm"] = decision == "USE"
+        if decision != "USE":
+            return {"hit": False, "entity_id": uid, "summary": "", "stages": stages}
+        return {"hit": True, "entity_id": uid, "summary": summary, "stages": stages}
+
+    def search_entity_status_answer(
+        self,
+        entity_uid: str,
+        field_yield: str,
+        user_question: str,
+        topk: int = 3,
+    ) -> Dict[str, Any]:
+        """Top-k attribute recall + one LLM answer grounded on rows."""
+        recall = self.query_entity_feature(
+            str(entity_uid or "").strip(),
+            str(field_yield or "").strip(),
+            topk=max(1, int(topk)),
+        )
+        if not recall.get("hit"):
+            return {
+                "hit": False,
+                "entity_id": str(entity_uid or "").strip(),
+                "answer": "",
+                "recall": recall,
+            }
+        cfg = load_resolved_prompt_config(self.runtime_prompt_config_path, self.prompt_language)
+        pr = cfg.get("entity_profile_retrieval")
+        if not isinstance(pr, dict):
+            return {"hit": True, "entity_id": recall.get("entity_id"), "answer": "", "recall": recall}
+        tmpl = pr.get("status_answer_prompt")
+        if not isinstance(tmpl, str) or not tmpl.strip():
+            return {"hit": True, "entity_id": recall.get("entity_id"), "answer": "", "recall": recall}
+        recall_json = json.dumps(recall.get("results") or [], ensure_ascii=False, indent=2)
+        prompt = render_prompt_template(
+            tmpl,
+            {
+                "<user_question>": str(user_question or "").strip(),
+                "<recall_json>": recall_json,
+            },
+        )
+        answer = str(self.llm_func(prompt) or "").strip()
+        return {
+            "hit": True,
+            "entity_id": recall.get("entity_id"),
+            "answer": answer,
+            "recall": recall,
+        }
+
     def reset_alignment_state(
         self,
         confirm_token: str,
@@ -2206,6 +2305,7 @@ class EntityProfileService(BaseService):
                 {
                     "dialogue_id": src.dialogue_id,
                     "episode_id": src.episode_id,
+                    "segment_id": str(src.scene_id or "").strip(),
                     "fact_id": src.fact_id,
                     "fact_file": src.fact_file,
                     "scene_id": src.scene_id,

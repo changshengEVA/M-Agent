@@ -1,0 +1,150 @@
+# 在升级成可以检索的字段之前，设计的功能段
+Entity_profile:
+    #-------------------------#
+    #         Meta信息         #
+    #-------------------------#
+    "entity_UID": "xxx" # 实体的唯一标识
+    "_meta": {
+      "schema_version": "v1",
+      "updated_at": "xxxx-xx-xx"
+    }
+    #------------------------------#
+    #           基本信息            #
+    #------------------------------#
+    # 实体名称，主要使用名称
+    "name": {
+        "value": "xxx", # 实体的名称
+        "embedding": {
+          "vector": null, # 实体的嵌入向量
+          "model": "xxx", # 实体的嵌入模型名称
+          "dim": 1024, # 实体的嵌入向量维度
+        }
+    }
+    # 其他名称，包括指代、别名、小名、社交账号名等一系列表示身份信息
+    "Other names": [
+        {
+          "name": "ZQR's sister",
+          "type": "relational_reference",
+          "embedding": {
+            "vector": null, # name字段的嵌入向量
+            "model": "xxx",
+            "dim": 1024,
+          }
+        },
+        {
+          "name": "Cherry",
+          "type": "nickname",
+          "embedding": {
+            "vector": null,
+            "model": "xxx",
+            "dim": 1024,
+          }
+        },
+        ..., # 可以添加多个其他名称
+    ]
+    # 实体类型，目前只支持person、organization、location、product、event、other
+    "entity_type":
+        - "person" 
+        - "organization"
+        - "location"
+        - "product"
+        - "event"
+        - "other"
+    "Statuses": [
+        # 状态信息的统一语义表述，没有固定的槽位，其中的每个元素为{"field": "xxx", "value": "xxx"}的键值对
+        {
+            "field": "age",
+            "update_mode": "replace", # replace: 替换，append: 添加
+            "field_canonical": ["age", "age_group", "age_range"],
+            "value": ["18", "15-25"],
+            "evidence_refs": ["xxx", "xxx"],
+            "embedding": {
+              "vector": null, # field字段的嵌入向量
+              "model": "xxx", # field字段的嵌入模型名称
+              "dim": 1024, # field字段的嵌入向量维度
+            }
+        },
+        {
+            "field": "hobby",
+            "update_mode": "append",
+            "field_canonical": ["hobby", "interests", "likes"],
+            "value": ["reading", "shopping"],
+            "evidence_refs": ["xxx", "xxx"],
+            "embedding": {
+              "vector": null, # field字段的嵌入向量
+              "model": "xxx", # field字段的嵌入模型名称
+              "dim": 1024, # field字段的嵌入向量维度
+            }
+        },
+        ..., # 可以添加多个属性
+    ]
+
+    #------------------------------#
+    #           关系信息            #
+    #------------------------------#
+    "Relations": [
+        {
+            "relation_id": "rel_001",
+            "target_entity_id": "ent_zqr",
+            "relation_type": "sibling_of",
+            "status": "active", #预留字段，现在没有任何作用
+            "evidence_refs": ["evi_004", "evi_005"],
+            "embedding": {
+              "vector": null, # relation字段的嵌入向量
+              "model": "xxx", # relation字段的嵌入模型名称
+              "dim": 1024, # relation字段的嵌入向量维度
+            }
+        },
+        ..., # 可以添加多个关系
+    ]
+
+    #------------------------------#
+    #           事件信息            #
+    #------------------------------#
+    # # 当前版本只有基本的事件信息，并没有涉及到主题簇的收集和使用
+    "Events": [
+        {
+          "event_id": "evt_001",
+          "summary": "Cherry went shopping with Jon and he bought a dress for his sister.", #围绕实体进行的事件简短描述
+          "segment_refs": "dlg_001:ep_003:seg_002",
+          "time":{
+            "start_time": "xxxx-xx-xx",
+            "end_time": "xxxx-xx-xx",
+          },
+          "embedding": {
+            "vector": null, # summary字段的嵌入向量
+            "model": "xxx", # summary字段的嵌入模型名称
+            "dim": 1024, # summary字段的嵌入向量维度
+          }
+        },
+        ..., # 可以添加多个事件
+    ]
+
+    #------------------------------#
+    #           摘要信息            #
+    #------------------------------#
+    "Summary": {
+      "value": "xxx", # 实体档案的摘要信息
+      "embedding": {
+        "vector": null, # summary字段的嵌入向量
+        "model": "xxx", # summary字段的嵌入模型名称
+        "dim": 1024, # summary字段的嵌入向量维度
+      } # 摘要信息的嵌入向量，暂时没有用处，可以生成但是不要用
+    }
+    
+#tips：Events暂时不参与任何功能化设计。
+
+# 实体档案生成的流程简述
+# 1. 以segment为情景字段为原料，先生成每个segment所对应的实体（N个实体，1次LLM调用）。
+# 2.1 然后再根据segment和实体生成（分别各自）生成该实体的状态属性信息，以及围绕该实体写该实体在情景信息中经历总结（N个实体，N次LLM调用）。
+# 2.2.1 生成的属性信息属于状态信息, 状态信息的更新，首先就是要定位到field是否存在，存在在field里面进行更新，还要检测field中是否存在冲突:对单值字段，新值覆盖旧值；对多值字段，新值与旧值做并集融合
+# 2.2.2 生成的经历总结信息属于事件信息, 事件信息直接添加进Events字段。
+# 3. 在整个流程结束的时候，生成实体档案的摘要信息【实体档案的结构化描述文本Summary.value（不描述Events中的内容）】（0次LLM调用）。
+
+# 实体档案所能提供的功能（分为系统功能与调用功能）：
+# 系统功能：
+# 1. 解析实体名称： RESOLVE_ENTITY_NAME : 输入实体名称，输出实体的唯一标识entity_UID，这个功能在facts_only_mode为false的情况下需要对问题进行预处理：对问题中的涉及实体进行解析，对于解析成功的实体，需要将entity_UID写入到问题中，对于解析失败的实体，则不需要处理。
+
+# 调用功能：
+# 1. 查实体档案： SEARCH_ENTITY_PROFILE : 输入实体UID，输出实体档案的结构化文本（Summary.value）【三段式：硬匹配->阈值过滤->LLM确认(这个模型好像在实体管理系统里面是有的)】
+# 2. 查实体状态： SEARCH_ENTITY_STATUS : 输入实体UID与所查询的yield字段，直接向量相似度检索在有阈值的情况下取top3，根据问题与召回内容进行回答，返回为回答文本（1次LLM调用）

@@ -257,6 +257,157 @@ entity_profile_service:
 
       Return plain text only.
 
+entity_segment:
+  step1_entities_prompt:
+    zh: |
+      你是实体识别器。给定一段「情景记忆文本」（segment 生成内容），列出其中出现的**不同现实世界对象**。
+      每个对象只输出规范名称与类型；不要输出别名列表。
+
+      允许的 entity_type 枚举（必须小写）：
+      person, organization, location, product, event, other
+
+      情景文本：
+      <situation_text>
+
+      只输出 JSON：
+      {"entities":[{"canonical_name":"...","entity_type":"person"}]}
+
+      规则：
+      - 同一对象只出现一次；不要用代词作为 canonical_name。
+      - 若没有实体，返回 {"entities":[]}。
+    en: |
+      You list distinct real-world objects mentioned in the situation memory text.
+      For each object output only canonical_name and entity_type (no alias lists).
+
+      Allowed entity_type values (lowercase):
+      person, organization, location, product, event, other
+
+      Situation text:
+      <situation_text>
+
+      Output JSON only:
+      {"entities":[{"canonical_name":"...","entity_type":"person"}]}
+
+      Rules:
+      - Each real-world object appears once; canonical_name must not be a pronoun.
+      - If none, return {"entities":[]}.
+  step2_status_event_prompt:
+    zh: |
+      你是信息抽取器。给定情景文本与锚定实体，抽取**稳定状态**与**一条事件摘要**。
+
+      情景文本：
+      <situation_text>
+
+      锚定实体 canonical_name=<entity_name> entity_type=<entity_type>
+
+      只输出 JSON：
+      {
+        "statuses":[{"field":"hobby","update_mode":"append","value":["reading"]}],
+        "event_summary":"一句中文事件摘要，没有则空字符串"
+      }
+
+      规则：
+      - statuses 为列表；每项仅含 field、update_mode（replace 或 append）、value（字符串数组）。
+      - 不要输出 evidence、时间、field_canonical、relation 等其它字段。
+    en: |
+      Extract stable statuses and one short event summary for the anchored entity.
+
+      Situation text:
+      <situation_text>
+
+      Anchored entity canonical_name=<entity_name> entity_type=<entity_type>
+
+      Output JSON only:
+      {
+        "statuses":[{"field":"hobby","update_mode":"append","value":["reading"]}],
+        "event_summary":"one-sentence summary or empty string"
+      }
+
+      Rules:
+      - statuses entries contain only field, update_mode (replace|append), value (array of strings).
+      - Do not output evidence, time, field_canonical, relations, etc.
+  step_relations_prompt:
+    zh: |
+      你是关系抽取器。给定情景文本与实体列表（含 id），输出实体之间有依据的关系。
+
+      情景文本：
+      <situation_text>
+
+      实体列表（每行 id | name | type）：
+      <entity_lines>
+
+      只输出 JSON：
+      {"relations":[{"subject_id":"...","relation_type":"friend_of","object_id":"..."}]}
+
+      规则：
+      - subject_id / object_id 必须来自上表 id。
+      - 没有关系则 {"relations":[]}。
+      - relation_type 用小写 snake_case。
+    en: |
+      Extract supported binary relations between listed entities.
+
+      Situation text:
+      <situation_text>
+
+      Entities (id | name | type per line):
+      <entity_lines>
+
+      Output JSON only:
+      {"relations":[{"subject_id":"...","relation_type":"friend_of","object_id":"..."}]}
+
+      Rules:
+      - subject_id and object_id must be ids from the list.
+      - relation_type in lower snake_case.
+      - If none: {"relations":[]}.
+
+entity_profile_retrieval:
+  summary_confirm_prompt:
+    zh: |
+      你是检索确认器。判断是否应采用给定的实体档案摘要来回答查询。
+
+      QUERY:
+      <query>
+
+      SUMMARY:
+      <summary_text>
+
+      只输出 JSON：{"decision":"USE"|"REJECT","reason":"..."}
+      不确定则 REJECT。
+    en: |
+      Decide whether the provided entity profile summary is appropriate for the query.
+
+      QUERY:
+      <query>
+
+      SUMMARY:
+      <summary_text>
+
+      Output JSON only: {"decision":"USE"|"REJECT","reason":"..."}
+      If uncertain, REJECT.
+  status_answer_prompt:
+    zh: |
+      你是问答助手。仅根据「召回的状态条目」回答问题；不要编造未出现的事实。
+      在答案末尾用一行列出引用的 segment_ref 或 evidence（若有）。
+
+      用户问题：
+      <user_question>
+
+      召回条目（JSON）：
+      <recall_json>
+
+      只输出简洁回答正文。
+    en: |
+      Answer using ONLY the recalled status rows; do not invent facts.
+      End with one line citing segment_ref or evidence when present.
+
+      User question:
+      <user_question>
+
+      Recalled rows (JSON):
+      <recall_json>
+
+      Output a concise plain-text answer.
+
 entity_resolution:
   alias_then_embedding_llm_judge_prompt:
     zh: |

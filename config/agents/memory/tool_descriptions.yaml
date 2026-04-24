@@ -16,6 +16,24 @@ EVENT_TIME_RECALL:
     zh: "当问题暴露出时间入口时选用：明确日期、可映射为起止时间的月份/季节/周、相对时间窗，或需要按时间范围过滤事件的表述。"
     en: "Use when the question exposes a time entry point—explicit dates, month/season/week phrases you can map to start_time/end_time, relative windows, or any need to filter events by a bounded time range."
 
+ENTITY_PROFILE_SEARCH:
+  description:
+    zh: "按实体 UID 获取档案摘要；可选查询句用于相似度过滤与 LLM 确认。"
+    en: "Fetch entity profile summary by UID; optional query triggers similarity filter + LLM confirmation."
+  params: '{"entity_uid":"<id>","optional_query":"<optional semantic check>"}'
+  search_entry_anchors:
+    zh: "当问题已绑定具体实体 UID 或需要从结构化档案摘要核对事实时。"
+    en: "When the question is anchored to a concrete entity UID or needs checking against a structured profile summary."
+
+ENTITY_STATUS_QA:
+  description:
+    zh: "给定实体 UID 与字段语义（yield），对状态槽位做向量召回并由模型生成简短回答。"
+    en: "Vector recall over status slots for an entity plus a short grounded answer."
+  params: '{"entity_uid":"<id>","field_yield":"<field or paraphrase>","user_question":"<question>","topk":3}'
+  search_entry_anchors:
+    zh: "当问题询问某实体的具体属性/偏好/状态且已知 UID 时。"
+    en: "When the question asks for a specific attribute/preference/state of a known entity UID."
+
 RECALL_REMEDY_MULTI_ROUTE:
   description:
     zh: "多路召回补救措施，当之前的搜索未找到有用证据时作为最后手段使用。同时搜索多个索引。"

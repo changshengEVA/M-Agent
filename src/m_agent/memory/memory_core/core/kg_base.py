@@ -321,6 +321,12 @@ class KGBase:
             target["sources"] = self._merge_sources(target.get("sources"), [source_info])
         if not target.get("type") and source.get("type"):
             target["type"] = source.get("type")
+        target["metadata"] = self._merge_entity_metadata_for_merge(
+            target.get("metadata"),
+            source.get("metadata"),
+            target_name=str(target.get("name") or ""),
+            source_name=str(source.get("name") or ""),
+        )
 
         update_query = """
         MATCH (e:Entity {id: $id})
@@ -773,6 +779,111 @@ class KGBase:
             "workflow_id": self.workflow_id,
             "neo4j_database": self.database or "default",
         }
+
+    @staticmethod
+    def _merge_entity_metadata_for_merge(
+        target_meta: Any,
+        source_meta: Any,
+        *,
+        target_name: str,
+        source_name: str,
+    ) -> Dict[str, Any]:
+        """Merge metadata dicts; maintain other_names for Entity.yaml-style aliases."""
+        out: Dict[str, Any] = dict(target_meta) if isinstance(target_meta, dict) else {}
+        sm = dict(source_meta) if isinstance(source_meta, dict) else {}
+        for k, v in sm.items():
+            if k not in out:
+                out[k] = v
+        names: List[Dict[str, Any]] = []
+        seen = set()
+        for bucket in (
+            out.get("other_names"),
+            sm.get("other_names"),
+        ):
+            if not isinstance(bucket, list):
+                continue
+            for item in bucket:
+                if not isinstance(item, dict):
+                    continue
+                n = str(item.get("name") or "").strip()
+                if not n:
+                    continue
+                key = n.lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                names.append(
+                    {
+                        "name": n,
+                        "type": str(item.get("type") or "alias"),
+                    }
+                )
+        tn = str(target_name or "").strip()
+        sn = str(source_name or "").strip()
+        if sn and sn.lower() != tn.lower():
+            key = sn.lower()
+            if key not in seen:
+                seen.add(key)
+                names.append({"name": sn, "type": "merged_surface"})
+        if names:
+            out["other_names"] = names
+        return out
+
+    def set_entity_document(
+        self,
+        entity_id: str,
+        *,
+        attributes: Optional[List[Dict[str, Any]]] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        features: Optional[List[Dict[str, Any]]] = None,
+    ) -> CoreResult:
+        """Replace attributes/features/metadata JSON fields on an existing entity."""
+        if not self.store.available:
+            return self._disabled_result("set_entity_document")
+        entity_id = str(entity_id or "").strip()
+        if not entity_id or not self._entity_exists(entity_id):
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "set_entity_document", "error": "entity not found"},
+            }
+        ok, current = self.get_entity(entity_id)
+        if not ok or current is None:
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "set_entity_document", "error": "load failed"},
+            }
+        next_attrs = attributes if isinstance(attributes, list) else current.get("attributes", [])
+        next_features = features if isinstance(features, list) else current.get("features", [])
+        next_meta = metadata if isinstance(metadata, dict) else current.get("metadata", {})
+        try:
+            self._run_write(
+                """
+                MATCH (e:Entity {id: $id})
+                SET e.attributes_json = $attributes_json,
+                    e.features_json = $features_json,
+                    e.metadata_json = $metadata_json
+                """,
+                {
+                    "id": entity_id,
+                    "attributes_json": _safe_json_dumps(next_attrs, []),
+                    "features_json": _safe_json_dumps(next_features, []),
+                    "metadata_json": _safe_json_dumps(next_meta, {}),
+                },
+            )
+            self._publish_event("ENTITY_UPDATED", {"entity_id": entity_id})
+            return {
+                "success": True,
+                "changed": True,
+                "details": {"operation": "set_entity_document", "entity_id": entity_id},
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "set_entity_document", "error": str(exc)},
+            }
 
     @staticmethod
     def _merge_sources(a: Any, b: Any) -> List[Dict[str, Any]]:

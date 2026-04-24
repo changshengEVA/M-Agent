@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Collection, Dict, List, Literal, Optional, TypedDict
+from typing import Any, Collection, Dict, List, Literal, Optional, Tuple, TypedDict
 
 
 WorkspaceStatus = Literal["SUFFICIENT", "INSUFFICIENT", "INVALID"]
@@ -238,6 +238,59 @@ class Workspace:
                     body = f"{body}\n\n{appendix}"
             blocks.append(f"=== Evidence [{idx}]  ref: {eid} ===\n{body}")
         return "\n\n".join(blocks).strip()
+
+    def to_evidence_summary_with_ref_ids(
+        self,
+        max_items: Optional[int] = None,
+        *,
+        prefer_judge_view: bool = False,
+        ref_prefix: str = "E",
+    ) -> Tuple[str, Dict[str, str]]:
+        """Return evidence summary annotated with short ref ids.
+
+        The returned mapping is ``{ref_id: evidence_id}`` for all included blocks.
+        """
+        if max_items is None:
+            limit = max(1, int(self.max_keep))
+        else:
+            limit = max(1, int(max_items))
+
+        blocks: List[str] = []
+        ref_map: Dict[str, str] = {}
+        for idx, doc in enumerate(self.kept_evidences()[:limit], start=1):
+            eid = str(doc.get("evidence_id", "") or "").strip()
+            ref_id = f"{ref_prefix}{idx}"
+            if eid:
+                ref_map[ref_id] = eid
+
+            body = ""
+            used_judge_view = False
+            if prefer_judge_view:
+                body = str(doc.get("judge_view") or "").strip()
+                if body:
+                    used_judge_view = True
+                if not body:
+                    meta = doc.get("meta") or {}
+                    if isinstance(meta, dict):
+                        body = str(meta.get("judge_view") or "").strip()
+                        if body:
+                            used_judge_view = True
+                if not body:
+                    body = str(doc.get("content", "")).strip()
+                    used_judge_view = False
+            else:
+                body = str(doc.get("content", "")).strip()
+
+            if not body:
+                body = "(no content)"
+            elif prefer_judge_view and used_judge_view:
+                appendix = _facts_appendix_from_meta(doc.get("meta"))
+                if appendix:
+                    body = f"{body}\n\n{appendix}"
+
+            blocks.append(f"=== Evidence [{idx}]  id: {ref_id}  ref: {eid} ===\n{body}")
+
+        return "\n\n".join(blocks).strip(), ref_map
 
 
 def _best_score(doc: WorkspaceDocument) -> float | None:

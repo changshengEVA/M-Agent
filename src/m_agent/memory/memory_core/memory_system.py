@@ -9,7 +9,7 @@ Memory Core 系统
 import logging
 import json
 from pathlib import Path
-from typing import Dict, Any, Optional, Callable, List
+from typing import Dict, Any, Optional, Callable, List, Set, Tuple
 
 from m_agent.config_paths import MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH
 from m_agent.memory.memory_core.core.kg_base import KGBase
@@ -716,6 +716,62 @@ class MemoryCore:
         获取实体档案摘要（summary）。
         """
         return self.entity_profile_service.get_entity_profile(entity_id)
+
+    def search_entity_profile(self, entity_uid: str, optional_query: Optional[str] = None) -> Dict[str, Any]:
+        """三段式档案摘要检索（硬匹配 / 阈值 / LLM 确认）。"""
+        return self.entity_profile_service.search_entity_profile(
+            entity_uid=entity_uid,
+            optional_query=optional_query,
+        )
+
+    def search_entity_status_answer(
+        self,
+        entity_uid: str,
+        field_yield: str,
+        user_question: str,
+        topk: int = 3,
+    ) -> Dict[str, Any]:
+        """状态向量召回 top-k + 单次 LLM 作答。"""
+        return self.entity_profile_service.search_entity_status_answer(
+            entity_uid=entity_uid,
+            field_yield=field_yield,
+            user_question=user_question,
+            topk=topk,
+        )
+
+    def augment_question_with_resolved_entities(self, question: str) -> str:
+        """
+        facts_only_mode=false：在问题末尾附加 [ENTITY_RESOLUTION] 名称 -> entity id 映射。
+        facts_only_mode=true：原样返回（不在问题中注入）。
+        """
+        if bool(self.facts_only_mode):
+            return str(question or "")
+        q = str(question or "").strip()
+        if not q:
+            return q
+        lib = self.entity_resolution_service.entity_library
+        name_to_entity = getattr(lib, "name_to_entity", {}) or {}
+        resolutions: List[Tuple[str, str]] = []
+        seen_ids: Set[str] = set()
+        for name_key, eid in name_to_entity.items():
+            nk = str(name_key or "").strip()
+            eid_s = str(eid or "").strip()
+            if len(nk) < 2 or not eid_s:
+                continue
+            if nk.lower() not in q.lower():
+                continue
+            res = self.resolve_entity_id(nk)
+            if not res.get("hit") or not str(res.get("entity_id") or "").strip():
+                continue
+            rid = str(res["entity_id"]).strip()
+            if rid in seen_ids:
+                continue
+            seen_ids.add(rid)
+            resolutions.append((nk, rid))
+        if not resolutions:
+            return q
+        lines = [f"- {n} -> entity_id:{uid}" for n, uid in resolutions[:24]]
+        return q + "\n\n[ENTITY_RESOLUTION]\n" + "\n".join(lines)
 
     # ============================================================================
     # 服务注册

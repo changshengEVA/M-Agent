@@ -314,8 +314,36 @@ def load_from_episode_path(
                         "reason": "facts_only_mode=true",
                     },
                 )
+                _emit_progress(
+                    progress_callback,
+                    "flush_stage",
+                    {
+                        "stage": "build_entity_profiles_from_segments",
+                        "stage_label": "Build entity profiles from segments",
+                        "status": "started",
+                    },
+                )
+                from m_agent.memory.memory_core.workflow.build.build_entity_profiles_from_segments import (
+                    build_entity_profiles_from_segments,
+                )
+
+                entity_segment_stats = build_entity_profiles_from_segments(
+                    memory_core,
+                    force_update=force_update,
+                    progress_callback=progress_callback,
+                )
+                _emit_progress(
+                    progress_callback,
+                    "flush_stage",
+                    {
+                        "stage": "build_entity_profiles_from_segments",
+                        "stage_label": "Build entity profiles from segments",
+                        "status": "completed" if entity_segment_stats.get("success") else "failed",
+                        "result": entity_segment_stats,
+                    },
+                )
                 build_result = {
-                    "success": True,
+                    "success": bool(entity_segment_stats.get("success", False)),
                     "scene_file_count": scene_file_count,
                     "fact_stats": fact_stats,
                     "fact_entity_stats": {
@@ -328,6 +356,7 @@ def load_from_episode_path(
                         "skipped": True,
                         "reason": "facts_only_mode=true",
                     },
+                    "entity_segment_build": entity_segment_stats,
                     "episodes_root": str(episodes_root_for_build),
                     "scene_root": str(scene_root),
                     "facts_root": str(getattr(memory_core, "facts_dir", memory_core.memory_root / "facts")),
@@ -341,6 +370,8 @@ def load_from_episode_path(
                     "force_update": force_update,
                     "facts_only_mode": True,
                 }
+                if not build_result["success"]:
+                    build_result["error"] = "entity_segment_build_failed"
             else:
                 _emit_progress(
                     progress_callback,
@@ -454,8 +485,22 @@ def load_from_episode_path(
         results["success"] = False
         results["error"] = str(exc)
 
-    results["resolution_note"] = (
-        "Resolution pass skipped: KG candidate generation is disabled, current mode keeps 0 entities/relations."
-    )
+    br = results.get("scene_build_result") or {}
+    esb = br.get("entity_segment_build") if isinstance(br, dict) else None
+    if bool(getattr(memory_core, "facts_only_mode", False)) and isinstance(esb, dict):
+        if esb.get("success"):
+            results["resolution_note"] = (
+                "facts_only_mode: segment-based entity pipeline completed; "
+                "Neo4j entities/profiles updated (see entity_segment_build)."
+            )
+        else:
+            results["resolution_note"] = (
+                "facts_only_mode: segment-based entity pipeline did not fully succeed "
+                "(see scene_build_result.entity_segment_build)."
+            )
+    else:
+        results["resolution_note"] = (
+            "Import pipeline finished; see scene_build_result for scene/facts and KG import status."
+        )
     return results
 

@@ -26,12 +26,15 @@ memory_agent:
       【工作区证据（全部保留项）】
       <workspace_evidence_summary>
 
-      【本轮新增证据 ID】
+      【证据短编号映射（短编号 -> 真实证据 ID）】
+      <evidence_ref_map_json>
+
+      【本轮新增证据短编号】
       <new_evidence_ids_json>
 
       指令：
       1. 对照原始问题审查上述所有证据块。
-      2. 选出哪些证据 ID 对回答问题真正有用。
+      2. 选出哪些证据短编号（如 E1/E2/...）对回答问题真正有用。
          有用的证据是指包含事实、对话或时间信息，
          能直接支撑回答原始问题任何部分的证据。
       3. 判定工作区状态：
@@ -47,7 +50,7 @@ memory_agent:
       {
         "reason": "...",
         "status": "SUFFICIENT" | "INSUFFICIENT" | "INVALID",
-        "useful_evidence_ids": ["ref1", "ref2", ...],
+        "useful_evidence_ids": ["E1", "E2", ...],
         "next_query": "..." 或 null
       }
 
@@ -72,12 +75,15 @@ memory_agent:
       [Workspace Evidence (all kept)]
       <workspace_evidence_summary>
 
-      [New Evidence IDs This Round]
+      [Evidence Ref Map (short ref -> real evidence_id)]
+      <evidence_ref_map_json>
+
+      [New Evidence Refs This Round]
       <new_evidence_ids_json>
 
       Instructions:
       1. Review ALL evidence blocks above against the original question.
-      2. Select which evidence IDs are genuinely useful for answering the question.
+      2. Select which short evidence refs (e.g. E1/E2/...) are genuinely useful for answering the question.
          An evidence is useful if it contains facts, dialogue, or time information
          that directly supports answering any part of the original question.
       3. Determine the workspace status:
@@ -94,7 +100,7 @@ memory_agent:
       {
         "reason": "...",
         "status": "SUFFICIENT" | "INSUFFICIENT" | "INVALID",
-        "useful_evidence_ids": ["ref1", "ref2", ...],
+        "useful_evidence_ids": ["E1", "E2", ...],
         "next_query": "..." or null
       }
 
@@ -147,9 +153,6 @@ memory_agent:
       - 可用工具 JSON 中每项包含 description、params，以及（若有）search_entry_anchors：后者说明该工具对应的「搜索入口锚点」；请结合原始问题与当前检索查询判断是否暴露此类锚点。
       - 若同一轮内同时暴露了多种工具的锚点（例如既有语义入口又有时间入口），在动作数量预算内应同时选用对应工具，避免把本应同轮完成的组合拆到后续轮次。
       - 每个 action 的 query 参数必须符合对应工具的 params 格式。
-      - 列表中将来可能出现更多工具类型：对新工具同样依据其 description 与 search_entry_anchors 判断是否选用。
-      - 若问题涉及特定人物的特征/属性，使用 ENTITY_FEATURE_SEARCH。
-      - 若问题涉及特定人物参与的事件，使用 ENTITY_EVENT_SEARCH。
     en: |
       You are a retrieval planner for a memory QA system.
       Based on the user's question and current retrieval state, select the best
@@ -187,9 +190,6 @@ memory_agent:
       - Each entry in the available tools JSON includes description, params, and optionally search_entry_anchors. The anchors field explains what search-entry signals should trigger that tool—use the original question and current retrieval query to decide.
       - When multiple tool anchors are exposed in the same round (e.g. both semantic and time entry points), schedule actions within the per-round budget so multiple applicable tools are used in that round instead of deferring unnecessarily.
       - Each action's query params must match that tool's params schema.
-      - Additional tools may appear in the list later; apply the same rule using each tool's description and search_entry_anchors.
-      - Use ENTITY_FEATURE_SEARCH when the question asks about a specific person's traits, attributes, or preferences.
-      - Use ENTITY_EVENT_SEARCH when the question asks about events a specific person was involved in.
 
   final_answer_from_workspace_prompt:
     zh: |

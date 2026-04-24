@@ -1,0 +1,52 @@
+# Used by: `config/agents/memory/locomo_eval_memory_agent.yaml`
+# Purpose: MemoryCore config for LoCoMo evaluation data/workflow.
+workflow_id: "baseline"
+runtime_prompt_config_path: "./runtime/memory_core_runtime.yaml"
+prompt_language: "en"
+
+# MemoryCore init settings
+memory_llm_temperature: 0.0
+memory_similarity_threshold: 0.88
+memory_top_k: 3
+memory_use_threshold: true
+
+# Build/import settings
+scene_prompt_version: "v3"
+fact_prompt_version: "v4"
+memory_owner_name: "changshengEVA"
+# true: only build to scene facts; skip extract_fact_entities/import_fact_entities
+# and MemoryAgent will expose only search_content/search_events_by_time_range/search_details
+facts_only_mode: false
+# Entity statement build control
+# true: force regenerate all episodes this run
+# false: incremental mode based on episodes/episode_situation.json
+entity_statement_force_update: true
+
+# Embedding provider: local/bge/alibaba/aliyun/dashscope
+embed_provider: "aliyun"
+
+# Hybrid detail retrieval tuning (search_details: dense + sparse BM25 + RRF)
+detail_search_hybrid:
+  dense_recall_topn: 20
+  sparse_recall_topn: 20
+  rrf_k: 20
+  dense_weight: 0.5
+  sparse_weight: 0.5
+  bm25_k1: 1.2
+  bm25_b: 0.25
+
+detail_search_multi_route:
+  enable: true
+  route_count: 5
+  query_generator: "llm"
+  route_types: ["entity", "action", "time", "relation", "topic"]
+  per_route_topk: 12
+  fusion: "rrf"
+  max_workers: 5
+  rrf_k: 50
+
+llm_provider: "openai"
+llm_model_name: "gpt-4o-mini"          # 或你想用的模型 id
+episode_llm_provider: "openai"
+episode_llm_model_name: "gpt-4o-mini"
+embed_model_name: "text-embedding-v4"

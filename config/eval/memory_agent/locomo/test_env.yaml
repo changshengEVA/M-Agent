@@ -18,15 +18,15 @@ selection:
   # Option A: full QA set inside these conversations (import filters; eval filters samples).
   conv_ids:
     - conv-50
-    - conv-26
-    - conv-30
-    - conv-41
-    - conv-42
-    - conv-43
-    - conv-44
-    - conv-47
-    - conv-48
-    - conv-49
+    # - conv-26
+    # - conv-30
+    # - conv-41
+    # - conv-42
+    # - conv-43
+    # - conv-44
+    # - conv-47
+    # - conv-48
+    # - conv-49
   # Option B: only specific questions. If set, sample_id values are auto-merged into conv scope.
   # questions:
   #   - sample_id: conv-30
@@ -53,7 +53,7 @@ warmup:
 # --- eval: run_eval_locomo / MemoryAgent QA ---
 eval:
   test_id: new_baseline
-  memory_agent_config: config/agents/memory/locomo_eval_memory_agent.yaml
+  memory_agent_config: config/agents/memory/locomo_eval_memory_agent_full_mode.yaml
   model_key: memory_agent
   prediction_key: memory_agent_prediction
   thread_id_prefix: locomo-eval

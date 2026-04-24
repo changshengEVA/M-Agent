@@ -163,6 +163,52 @@ class MemoryAgentToolingMixin:
             )
 
         @tool(description=tool_entry_doc)
+        def search_entity_profile(
+            entity_uid: str,
+            optional_query: Optional[str] = None,
+        ) -> Dict[str, Any]:
+            return self._execute_traced_tool_call(
+                tool_name="search_entity_profile",
+                params={"entity_uid": entity_uid, "optional_query": optional_query},
+                call_log="API call: search_entity_profile(entity_uid=%s, optional_query=%s)",
+                call_log_args=(entity_uid, optional_query),
+                invoke=lambda: self.memory_sys.search_entity_profile(
+                    entity_uid=entity_uid,
+                    optional_query=optional_query,
+                ),
+                response_log="API response: search_entity_profile(hit=%s)",
+                response_log_args=lambda result: (self._dict_field(result, "hit"),),
+            )
+
+        @tool(description=tool_entry_doc)
+        def search_entity_status(
+            entity_uid: str,
+            field_yield: str,
+            user_question: str,
+            topk: Optional[int] = None,
+        ) -> Dict[str, Any]:
+            cfg_topk = self._resolve_topk(topk)
+            return self._execute_traced_tool_call(
+                tool_name="search_entity_status",
+                params={
+                    "entity_uid": entity_uid,
+                    "field_yield": field_yield,
+                    "user_question": user_question,
+                    "topk": cfg_topk,
+                },
+                call_log="API call: search_entity_status(entity_uid=%s, field_yield=%s, topk=%s)",
+                call_log_args=(entity_uid, field_yield, cfg_topk),
+                invoke=lambda: self.memory_sys.search_entity_status_answer(
+                    entity_uid=entity_uid,
+                    field_yield=field_yield,
+                    user_question=user_question,
+                    topk=cfg_topk,
+                ),
+                response_log="API response: search_entity_status(hit=%s)",
+                response_log_args=lambda result: (self._dict_field(result, "hit"),),
+            )
+
+        @tool(description=tool_entry_doc)
         def search_entity_feature(
             entity_id: str,
             feature_query: str,
@@ -270,6 +316,8 @@ class MemoryAgentToolingMixin:
         all_tools = {
             "resolve_entity_id": resolve_entity_id,
             "get_entity_profile": get_entity_profile,
+            "search_entity_profile": search_entity_profile,
+            "search_entity_status": search_entity_status,
             "search_entity_feature": search_entity_feature,
             "search_entity_event": search_entity_event,
             "search_entity_events_by_time": search_entity_events_by_time,
@@ -280,6 +328,8 @@ class MemoryAgentToolingMixin:
         default_order = [
             "resolve_entity_id",
             "get_entity_profile",
+            "search_entity_profile",
+            "search_entity_status",
             "search_entity_feature",
             "search_entity_event",
             "search_entity_events_by_time",
@@ -290,9 +340,9 @@ class MemoryAgentToolingMixin:
         facts_only_mode = bool(getattr(self.memory_sys, "facts_only_mode", False))
         if facts_only_mode:
             enabled_order = [
-                "search_content",
-                "search_events_by_time_range",
                 "search_details",
+                # Note: RECALL_REMEDY_MULTI_ROUTE uses the internal multi-route
+                # details workflow (not exposed as a direct tool here).
             ]
             logger.info(
                 "facts_only_mode=true, restrict memory agent tools to: %s",

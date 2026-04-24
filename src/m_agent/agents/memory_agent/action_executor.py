@@ -5,6 +5,8 @@ from typing import Any, Callable, Dict, List, Tuple, TypedDict
 from .action_planner import (
     ACTION_ENTITY_EVENT_SEARCH,
     ACTION_ENTITY_FEATURE_SEARCH,
+    ACTION_ENTITY_PROFILE_SEARCH,
+    ACTION_ENTITY_STATUS_QA,
     ACTION_EVENT_DETAIL_MULTI_ROUTE_RECALL,
     ACTION_EVENT_DETAIL_RECALL,
     ACTION_EVENT_TIME_RECALL,
@@ -174,6 +176,8 @@ def execute_actions(
     search_contents_by_episode_refs: Callable[[List[Dict[str, str]]], List[Dict[str, Any]]],
     search_entity_feature: Callable[[str, str, int], Dict[str, Any]] | None = None,
     search_entity_event: Callable[[str, str, int], Dict[str, Any]] | None = None,
+    search_entity_profile: Callable[..., Dict[str, Any]] | None = None,
+    search_entity_status: Callable[..., Dict[str, Any]] | None = None,
     max_episode_candidates: int,
 ) -> ActionExecutionReport:
     action_results: List[Dict[str, Any]] = []
@@ -270,6 +274,31 @@ def execute_actions(
             )
             continue
 
+        if action_type == ACTION_ENTITY_PROFILE_SEARCH and search_entity_profile is not None:
+            entity_uid = str(query.get("entity_uid", "") or query.get("entity_id", "")).strip()
+            optional_query = str(query.get("optional_query", "") or "").strip() or None
+            result = search_entity_profile(entity_uid, optional_query)
+            action_results.append({"action_id": action_id, "action_type": action_type, "result": result})
+            continue
+
+        if action_type == ACTION_ENTITY_STATUS_QA and search_entity_status is not None:
+            entity_uid = str(query.get("entity_uid", "") or query.get("entity_id", "")).strip()
+            field_yield = str(query.get("field_yield", "") or "").strip()
+            user_question = str(query.get("user_question", "") or "").strip()
+            topk = max(1, int(query.get("topk", 3)))
+            result = search_entity_status(entity_uid, field_yield, user_question, topk)
+            action_results.append({"action_id": action_id, "action_type": action_type, "result": result})
+            recall = result.get("recall") if isinstance(result, dict) else None
+            if isinstance(recall, dict):
+                _merge_ref_scores(
+                    ref_scores,
+                    ref_sources,
+                    ref_facts,
+                    action_id,
+                    _extract_refs_from_detail_result(recall),
+                )
+            continue
+
         action_results.append(
             {
                 "action_id": action_id,
@@ -353,6 +382,46 @@ def execute_actions(
             doc["judge_view"] = judge_view
         evidences.append(doc)
 
+    entity_aux_docs: List[WorkspaceDocument] = []
+    for ar in action_results:
+        if not isinstance(ar, dict):
+            continue
+        at = str(ar.get("action_type", "") or "").strip()
+        res = ar.get("result")
+        if not isinstance(res, dict):
+            continue
+        aid = str(ar.get("action_id", "") or "")
+        if at == ACTION_ENTITY_PROFILE_SEARCH and res.get("hit"):
+            summary = str(res.get("summary") or "").strip()
+            if summary:
+                eid = str(res.get("entity_id", "") or "").strip()
+                entity_aux_docs.append(
+                    {
+                        "evidence_id": f"entity_profile:{eid}",
+                        "source_type": "entity_profile",
+                        "content": summary,
+                        "source_action_id": aid,
+                        "recall_score": None,
+                        "rerank_score": None,
+                        "meta": {"entity_id": eid},
+                    }
+                )
+        if at == ACTION_ENTITY_STATUS_QA and res.get("hit"):
+            answer = str(res.get("answer") or "").strip()
+            if answer:
+                eid = str(res.get("entity_id", "") or "").strip()
+                entity_aux_docs.append(
+                    {
+                        "evidence_id": f"entity_status:{eid}",
+                        "source_type": "entity_status",
+                        "content": answer,
+                        "source_action_id": aid,
+                        "recall_score": None,
+                        "rerank_score": None,
+                        "meta": {"entity_id": eid},
+                    }
+                )
+    evidences.extend(entity_aux_docs)
     evidences.extend(time_documents)
 
     return {
@@ -388,6 +457,8 @@ def _extract_refs_from_detail_result(payload: Dict[str, Any]) -> List[Tuple[str,
         if not ref:
             continue
         score_raw = item.get("similarity")
+        if score_raw is None:
+            score_raw = item.get("score")
         try:
             score = float(score_raw)
         except Exception:
@@ -425,11 +496,24 @@ def _extract_fact_text(item: Dict[str, Any], evidence: Dict[str, Any]) -> str:
         "snippet",
         "text",
         "evidence_sentence",
+        "content",
     )
     for key in item_keys:
         value = item.get(key)
         if isinstance(value, str) and value.strip():
             return value.strip()
+        if key == "content" and isinstance(value, list) and value:
+            joined = ", ".join(str(x).strip() for x in value if str(x).strip())
+            if joined:
+                return joined
+
+    fld = str(item.get("field", "") or "").strip()
+    if fld:
+        parts = item.get("content")
+        if isinstance(parts, list) and parts:
+            joined = ", ".join(str(x).strip() for x in parts if str(x).strip())
+            if joined:
+                return f"{fld}: {joined}"
 
     evidence_keys = ("fact", "fact_text", "snippet", "text")
     for key in evidence_keys:

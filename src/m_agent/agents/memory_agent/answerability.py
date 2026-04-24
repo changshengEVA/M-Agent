@@ -72,6 +72,7 @@ def llm_judge_workspace(
     workspace: Workspace,
     new_evidence_ids: List[str],
     *,
+    ref_id_to_evidence_id: Dict[str, str] | None = None,
     llm_func: Callable[[str], Any],
     prompt_text: str,
 ) -> JudgeDecision:
@@ -98,6 +99,14 @@ def llm_judge_workspace(
         useful_ids = []
     useful_ids = [_normalize_evidence_id(eid) for eid in useful_ids]
     useful_ids = [eid for eid in useful_ids if eid]
+    if ref_id_to_evidence_id:
+        # The judge may return short ref ids (e.g. E1/E2). Map them back to workspace evidence_id.
+        mapped: List[str] = []
+        for rid in useful_ids:
+            eid = ref_id_to_evidence_id.get(rid)
+            if eid:
+                mapped.append(eid)
+        useful_ids = mapped
 
     reason = str(parsed.get("reason", "") or "").strip() or "LLM judge decision."
     next_query = parsed.get("next_query")

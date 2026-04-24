@@ -314,13 +314,18 @@ class MemoryAgentExecutionMixin:
         workspace: Workspace,
         new_evidence_ids: List[str],
     ) -> str:
+        summary, ref_map = workspace.to_evidence_summary_with_ref_ids(prefer_judge_view=True)
+        evidence_id_to_ref_id = {eid: rid for rid, eid in ref_map.items()}
+        new_ref_ids = [evidence_id_to_ref_id.get(eid) for eid in new_evidence_ids]
+        new_ref_ids = [rid for rid in new_ref_ids if rid]
         return self._render_runtime_prompt(
             "workspace_judge_prompt",
             replacements={
                 "<original_question>": workspace.original_question,
                 "<cur_query>": workspace.cur_query,
-                "<workspace_evidence_summary>": workspace.to_evidence_summary(prefer_judge_view=True),
-                "<new_evidence_ids_json>": json.dumps(new_evidence_ids, ensure_ascii=False),
+                "<workspace_evidence_summary>": summary,
+                "<evidence_ref_map_json>": json.dumps(ref_map, ensure_ascii=False),
+                "<new_evidence_ids_json>": json.dumps(new_ref_ids, ensure_ascii=False),
             },
         )
 
@@ -329,10 +334,12 @@ class MemoryAgentExecutionMixin:
         workspace: Workspace,
         new_evidence_ids: List[str],
     ) -> "JudgeDecision":
+        _, ref_map = workspace.to_evidence_summary_with_ref_ids(prefer_judge_view=True)
         prompt_text = self._build_workspace_judge_prompt(workspace, new_evidence_ids)
         return llm_judge_workspace(
             workspace=workspace,
             new_evidence_ids=new_evidence_ids,
+            ref_id_to_evidence_id=ref_map,
             llm_func=lambda text: self._invoke_model_with_network_retry(
                 prompt_text=text,
                 call_name="workspace_judge",
@@ -355,8 +362,12 @@ class MemoryAgentExecutionMixin:
         self._last_question_plan = question_plan
 
         workspace = Workspace(max_keep=max(1, int(getattr(self, "workspace_max_keep", 6))))
-        workspace.original_question = question_text
-        workspace.cur_query = question_text
+        augmented = question_text
+        memory_sys = getattr(self, "memory_sys", None)
+        if memory_sys is not None and hasattr(memory_sys, "augment_question_with_resolved_entities"):
+            augmented = memory_sys.augment_question_with_resolved_entities(question_text)
+        workspace.original_question = augmented
+        workspace.cur_query = augmented
 
         round_traces: List[Dict[str, Any]] = []
         # Detailed per-round workspace snapshots for eval harness logging.
@@ -554,6 +565,36 @@ class MemoryAgentExecutionMixin:
                         self._dict_field(result, "matched_count"),
                     ),
                 ) if hasattr(self.memory_sys, "search_entity_event") else None,
+                search_entity_profile=lambda uid, oq: self._execute_traced_tool_call(
+                    tool_name="search_entity_profile",
+                    params={"entity_uid": uid, "optional_query": oq},
+                    call_log="API call: search_entity_profile(entity_uid=%s, optional_query=%s)",
+                    call_log_args=(uid, oq),
+                    invoke=lambda: self.memory_sys.search_entity_profile(
+                        entity_uid=uid,
+                        optional_query=oq,
+                    ),
+                    response_log="API response: search_entity_profile(hit=%s)",
+                    response_log_args=lambda result: (self._dict_field(result, "hit"),),
+                )
+                if hasattr(self.memory_sys, "search_entity_profile")
+                else None,
+                search_entity_status=lambda uid, fy, uq, tk: self._execute_traced_tool_call(
+                    tool_name="search_entity_status",
+                    params={"entity_uid": uid, "field_yield": fy, "user_question": uq, "topk": tk},
+                    call_log="API call: search_entity_status(entity_uid=%s, field_yield=%s, topk=%s)",
+                    call_log_args=(uid, fy, tk),
+                    invoke=lambda: self.memory_sys.search_entity_status_answer(
+                        entity_uid=uid,
+                        field_yield=fy,
+                        user_question=uq,
+                        topk=tk,
+                    ),
+                    response_log="API response: search_entity_status(hit=%s)",
+                    response_log_args=lambda result: (self._dict_field(result, "hit"),),
+                )
+                if hasattr(self.memory_sys, "search_entity_status_answer")
+                else None,
                 max_episode_candidates=max_episode_candidates,
             )
 
