@@ -302,13 +302,35 @@ entity_segment:
 
       只输出 JSON：
       {
-        "statuses":[{"field":"hobby","update_mode":"append","value":["reading"]}],
-        "event_summary":"一句中文事件摘要，没有则空字符串"
+        "statuses":[],
+        "event_summary":"一句中文摘要：描述锚定实体在本段记忆中扮演的角色/经历/被提及方式"
       }
 
       规则：
+      - 只抽取**情景文本中明确提到**且与锚定实体直接相关的稳定信息；不要为了“凑字段”而臆造内容。
+      - 若文本中没有可抽取的稳定状态，statuses 必须为空列表 []。
       - statuses 为列表；每项仅含 field、update_mode（replace 或 append）、value（字符串数组）。
-      - 不要输出 evidence、时间、field_canonical、relation 等其它字段。
+      - field 应简短、语义明确，优先使用通用字段名（如 occupation, location, age, relation, preference, skill 等）。
+      - event_summary 必须写“锚定实体在本段情景记忆中的角色/经历/被提及方式”，哪怕只是被提到也要说明（例如“Japan 在讨论旅行计划时被提及”）。
+      - 根据 entity_type 约束输出：
+        - person：可输出 hobby/occupation/age/location/preference/skill 等（但仍需文本证据）。
+        - location/organization/product/event/other：不要输出 hobby/age 等“人物属性”字段；仅输出与该类型匹配的客观属性（如 location 的 city/country，organization 的 industry/size，product 的 category/brand，event 的 date/place 等），且必须有文本证据。
+      - 不要输出 evidence、时间戳、field_canonical、relation 列表等其它字段。
+
+      输出样例（仅供格式参考；实际输出必须来自文本证据）：
+      - 若锚定实体是 person 且文本明确提到其职业/偏好：
+        {
+          "statuses":[
+            {"field":"occupation","update_mode":"replace","value":["software engineer"]},
+            {"field":"preference","update_mode":"append","value":["likes hiking"]}
+          ],
+          "event_summary":"该人物在本段对话中介绍了自己的职业，并提到喜欢徒步。"
+        }
+      - 若锚定实体是 location（如 Japan）且文本只提到它被访问/提及但无稳定属性：
+        {
+          "statuses":[],
+          "event_summary":"Japan 在本段关于旅行/地点的讨论中被提及。"
+        }
     en: |
       Extract stable statuses and one short event summary for the anchored entity.
 
@@ -319,13 +341,35 @@ entity_segment:
 
       Output JSON only:
       {
-        "statuses":[{"field":"hobby","update_mode":"append","value":["reading"]}],
-        "event_summary":"one-sentence summary or empty string"
+        "statuses":[],
+        "event_summary":"One sentence describing the anchored entity's role/experience/how it is mentioned in this segment"
       }
 
       Rules:
-      - statuses entries contain only field, update_mode (replace|append), value (array of strings).
-      - Do not output evidence, time, field_canonical, relations, etc.
+      - Only extract stable information that is explicitly supported by the situation text and directly about the anchored entity. Do not fabricate fields/values just to fill slots.
+      - If there is no stable status to extract, statuses must be an empty list [].
+      - Each statuses entry contains only: field, update_mode (replace|append), value (array of strings).
+      - Keep field short and semantically clear (e.g., occupation, location, age, relation, preference, skill).
+      - event_summary must describe the anchored entity's role/experience/how it is mentioned in this segment; even if it is only mentioned, say so (e.g., \"Japan is mentioned in the travel discussion\"). Use empty string only if the entity truly does not appear in the text (rare).
+      - Constrain by entity_type:
+        - person: hobby/occupation/age/location/preference/skill are allowed (still require evidence).
+        - location/organization/product/event/other: do NOT output person-only fields like hobby/age. Only output type-appropriate factual attributes (e.g., location: city/country; organization: industry; product: category/brand; event: date/place) with explicit evidence in text.
+      - Do not output evidence, timestamps, field_canonical, relations, etc.
+
+      Output examples (format only; must be supported by text evidence):
+      - Person with explicit occupation/preference in text:
+        {
+          "statuses":[
+            {"field":"occupation","update_mode":"replace","value":["software engineer"]},
+            {"field":"preference","update_mode":"append","value":["likes hiking"]}
+          ],
+          "event_summary":"The person states their occupation and mentions enjoying hiking in this segment."
+        }
+      - Location mentioned without stable attributes:
+        {
+          "statuses":[],
+          "event_summary":"Japan is mentioned in the travel/location discussion in this segment."
+        }
   step_relations_prompt:
     zh: |
       你是关系抽取器。给定情景文本与实体列表（含 id），输出实体之间有依据的关系。

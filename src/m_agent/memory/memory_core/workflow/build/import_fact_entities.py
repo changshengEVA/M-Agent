@@ -7,7 +7,7 @@ Responsibilities:
 1. Scan `data/memory/{workflow_id}/facts/*.json`.
 2. Ensure each fact has `entity_UID` (bound to `main_entity`).
 3. Import minimal entity info into KG (`UID`, `name`).
-4. Write `facts_situation.json` under workflow root to track import status.
+4. Write `fact_entity_import_state.json` under workflow root to track import status.
 """
 
 from __future__ import annotations
@@ -38,8 +38,8 @@ def get_scene_root(memory_root: Path) -> Path:
     return memory_root / "scene"
 
 
-def get_facts_situation_file(memory_root: Path) -> Path:
-    return memory_root / "facts_situation.json"
+def get_fact_entity_import_state_file(memory_root: Path) -> Path:
+    return memory_root / "fact_entity_import_state.json"
 
 
 def load_json(path: Path) -> Dict[str, Any]:
@@ -97,7 +97,7 @@ def _load_facts_situation(path: Path, workflow_id: str) -> Dict[str, Any]:
                     loaded["metadata"] = {}
                 return loaded
         except Exception as exc:
-            logger.warning("Load facts_situation failed (%s): %s", path, exc)
+            logger.warning("Load fact_entity_import_state failed (%s): %s", path, exc)
 
     return {
         "workflow_id": workflow_id,
@@ -170,14 +170,14 @@ def scan_and_import_fact_entities(
     memory_root = get_memory_root(workflow_id)
     facts_root = get_facts_root(memory_root)
     scene_root = get_scene_root(memory_root)
-    facts_situation_file = get_facts_situation_file(memory_root)
+    facts_situation_file = get_fact_entity_import_state_file(memory_root)
 
     stats: Dict[str, Any] = {
         "workflow_id": workflow_id,
         "success": False,
         "facts_root": str(facts_root),
         "scene_root": str(scene_root),
-        "facts_situation_file": str(facts_situation_file),
+        "fact_entity_import_state_file": str(facts_situation_file),
         "facts_scanned": 0,
         "facts_updated": 0,
         "facts_failed": 0,
@@ -227,6 +227,7 @@ def scan_and_import_fact_entities(
         save_json(facts_situation_file, empty_payload)
         stats["success"] = True
         return stats
+
 
     file_iter = tqdm(fact_files, desc="Import fact entities") if use_tqdm else fact_files
     for fact_file in file_iter:

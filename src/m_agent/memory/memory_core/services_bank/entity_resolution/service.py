@@ -147,7 +147,8 @@ class EntityResolutionService(BaseService):
         elif event_type == EventType.ENTITY_ADDED:
             entity_id = payload.get("entity_id")
             if entity_id:
-                self.on_entity_added(entity_id)
+                entity_name = payload.get("entity_name")
+                self.on_entity_added(entity_id, entity_name=entity_name)
         elif event_type == EventType.ENTITY_RENAMED:
             old_id = payload.get("old_id")
             new_id = payload.get("new_id")
@@ -267,7 +268,7 @@ class EntityResolutionService(BaseService):
         except Exception as e:
             logger.error(f"Error while handling entity merge event: {e}")
     
-    def on_entity_added(self, entity_id: str) -> None:
+    def on_entity_added(self, entity_id: str, entity_name: Optional[str] = None) -> None:
         """
         监听实体添加事件
         
@@ -275,16 +276,18 @@ class EntityResolutionService(BaseService):
         
         Args:
             entity_id: 新添加的实体ID
+            entity_name: KG 中的展示名（与 MemoryCore 签名对齐；缺省则回退为 entity_id）
         """
         logger.info(f"收到实体添加事件，同步到 EntityLibrary: {entity_id}")
         
         try:
+            canonical = str(entity_name or "").strip() or str(entity_id).strip()
             # 检查实体是否已在 EntityLibrary 中
             if not self.entity_library.entity_exists(entity_id):
                 # 添加实体到 EntityLibrary
                 success = self.entity_library.add_entity(
                     entity_id=entity_id,
-                    canonical_name=entity_id,
+                    canonical_name=canonical,
                     metadata={
                         "added_via": "entity_added_event",
                         "timestamp": time.time()

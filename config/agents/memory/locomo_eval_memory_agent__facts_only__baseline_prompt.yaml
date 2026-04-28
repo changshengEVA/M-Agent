@@ -1,0 +1,47 @@
+﻿# conv-50 control run (facts_only_mode) pinned to baseline prompt file.
+# - MemoryCore: facts_only_mode=true (build model gpt-4o-mini)
+# - Agent/workspace: gpt-4.1-mini
+
+model_name: "gpt-4.1-mini"
+agent_temperature: 0.0
+memory_core_config_path: "../../memory/core/locomo_eval_memory_core.yaml"
+runtime_prompt_config_path: "./runtime/agent_runtime_facts_only__baseline.yaml"
+prompt_language: "en"
+recursion_limit: 60
+retry_recursion_limit: 120
+model_timeout_seconds: 180
+model_max_retries: 2
+network_retry_attempts: 4
+network_retry_backoff_seconds: 2.0
+network_retry_backoff_multiplier: 2.0
+network_retry_max_backoff_seconds: 20.0
+
+auto_bootstrap_kg_data: true
+
+detail_search_defaults:
+  topk: 10
+workspace:
+  enable_state_machine: true
+  max_rounds: 3
+  max_actions_per_round: 5
+  max_episode_candidates: 16
+  max_keep: 8
+  min_evidence_to_answer: 1
+  remedy_recall_max_times: 1
+  action_planner: "llm"
+  action_planner_max_attempts: 3
+  enabled_tools:
+    - EVENT_DETAIL_RECALL
+    - RECALL_REMEDY_MULTI_ROUTE
+  rerank:
+    enable: true
+    provider: "aliyun"
+    model_name: "qwen3-rerank"
+    score_threshold: 0.1
+    max_documents: 16
+    chunk_chars: 800
+    chunk_batch_size: 32
+attach_episode_refs_to_answer: true
+evidence_episode_ref_max_in_text: 8
+
+default_question: "What are Emi's hobbies?"

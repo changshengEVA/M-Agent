@@ -166,6 +166,20 @@ class MemoryAgent(
         self.workspace_max_actions_per_round = max(1, int(workspace_cfg.get("max_actions_per_round", 4)))
         self.workspace_max_episode_candidates = max(1, int(workspace_cfg.get("max_episode_candidates", 12)))
         self.workspace_max_keep = max(1, int(workspace_cfg.get("max_keep", 6)))
+        # "default" | "eplus" — tighter entity→workspace gating (see action_executor.execute_actions).
+        _ewm = str(workspace_cfg.get("entity_workspace_mode", "default") or "default").strip().lower()
+        self.workspace_entity_workspace_mode = _ewm if _ewm in {"default", "eplus"} else "default"
+        self.workspace_entity_eplus_min_slot_score = float(workspace_cfg.get("entity_eplus_min_slot_score", 0.44))
+        self.workspace_entity_eplus_suppress_empty_profile_query = bool(
+            workspace_cfg.get("entity_eplus_suppress_empty_profile_query", True)
+        )
+        _defer_keep = workspace_cfg.get("defer_keep_source_types")
+        if isinstance(_defer_keep, list):
+            self.workspace_defer_keep_source_types = frozenset(
+                str(x).strip() for x in _defer_keep if str(x).strip()
+            )
+        else:
+            self.workspace_defer_keep_source_types = frozenset()
         self.workspace_min_evidence_to_answer = max(1, int(workspace_cfg.get("min_evidence_to_answer", 1)))
         self.workspace_remedy_recall_max_times = max(
             0,

@@ -179,12 +179,17 @@ def execute_actions(
     search_entity_profile: Callable[..., Dict[str, Any]] | None = None,
     search_entity_status: Callable[..., Dict[str, Any]] | None = None,
     max_episode_candidates: int,
+    entity_workspace_mode: str = "default",
+    entity_eplus_min_slot_score: float = 0.44,
+    entity_eplus_suppress_empty_profile_query: bool = True,
 ) -> ActionExecutionReport:
     action_results: List[Dict[str, Any]] = []
     ref_scores: Dict[str, float] = {}
     ref_sources: Dict[str, str] = {}
     ref_facts: Dict[str, List[str]] = {}
     time_documents: List[WorkspaceDocument] = []
+    eplus = str(entity_workspace_mode or "default").strip().lower() == "eplus"
+    eplus_slot_min = float(entity_eplus_min_slot_score or 0.44)
 
     for action in actions:
         action_type = str(action.get("action_type", "")).strip()
@@ -278,7 +283,22 @@ def execute_actions(
             entity_uid = str(query.get("entity_uid", "") or query.get("entity_id", "")).strip()
             optional_query = str(query.get("optional_query", "") or "").strip() or None
             result = search_entity_profile(entity_uid, optional_query)
-            action_results.append({"action_id": action_id, "action_type": action_type, "result": result})
+            if eplus and entity_eplus_suppress_empty_profile_query and not (optional_query or "").strip():
+                if isinstance(result, dict) and result.get("hit"):
+                    result = {
+                        **result,
+                        "hit": False,
+                        "summary": "",
+                        "eplus_workspace_suppressed": True,
+                    }
+            action_results.append(
+                {
+                    "action_id": action_id,
+                    "action_type": action_type,
+                    "result": result,
+                    "profile_optional_query": optional_query or "",
+                }
+            )
             continue
 
         if action_type == ACTION_ENTITY_STATUS_QA and search_entity_status is not None:
@@ -287,16 +307,45 @@ def execute_actions(
             user_question = str(query.get("user_question", "") or "").strip()
             topk = max(1, int(query.get("topk", 3)))
             result = search_entity_status(entity_uid, field_yield, user_question, topk)
+            if eplus and isinstance(result, dict) and result.get("hit"):
+                recall0 = result.get("recall")
+                top_slot = 0.0
+                if isinstance(recall0, dict):
+                    rs0 = recall0.get("results")
+                    if isinstance(rs0, list) and rs0 and isinstance(rs0[0], dict):
+                        try:
+                            top_slot = float(rs0[0].get("score", 0.0) or 0.0)
+                        except Exception:
+                            top_slot = 0.0
+                if top_slot < eplus_slot_min:
+                    result = {
+                        **result,
+                        "hit": False,
+                        "answer": "",
+                        "eplus_workspace_suppressed_low_slot_score": True,
+                    }
             action_results.append({"action_id": action_id, "action_type": action_type, "result": result})
             recall = result.get("recall") if isinstance(result, dict) else None
             if isinstance(recall, dict):
-                _merge_ref_scores(
-                    ref_scores,
-                    ref_sources,
-                    ref_facts,
-                    action_id,
-                    _extract_refs_from_detail_result(recall),
-                )
+                merge_ok = True
+                if eplus:
+                    merge_ok = bool(recall.get("hit"))
+                    rs = recall.get("results")
+                    top = 0.0
+                    if isinstance(rs, list) and rs and isinstance(rs[0], dict):
+                        try:
+                            top = float(rs[0].get("score", 0.0) or 0.0)
+                        except Exception:
+                            top = 0.0
+                    merge_ok = merge_ok and top >= eplus_slot_min
+                if merge_ok:
+                    _merge_ref_scores(
+                        ref_scores,
+                        ref_sources,
+                        ref_facts,
+                        action_id,
+                        _extract_refs_from_detail_result(recall),
+                    )
             continue
 
         action_results.append(
@@ -395,32 +444,34 @@ def execute_actions(
             summary = str(res.get("summary") or "").strip()
             if summary:
                 eid = str(res.get("entity_id", "") or "").strip()
-                entity_aux_docs.append(
-                    {
-                        "evidence_id": f"entity_profile:{eid}",
-                        "source_type": "entity_profile",
-                        "content": summary,
-                        "source_action_id": aid,
-                        "recall_score": None,
-                        "rerank_score": None,
-                        "meta": {"entity_id": eid},
-                    }
-                )
+                if not eplus:
+                    entity_aux_docs.append(
+                        {
+                            "evidence_id": f"entity_profile:{eid}",
+                            "source_type": "entity_profile",
+                            "content": summary,
+                            "source_action_id": aid,
+                            "recall_score": None,
+                            "rerank_score": None,
+                            "meta": {"entity_id": eid},
+                        }
+                    )
         if at == ACTION_ENTITY_STATUS_QA and res.get("hit"):
             answer = str(res.get("answer") or "").strip()
             if answer:
                 eid = str(res.get("entity_id", "") or "").strip()
-                entity_aux_docs.append(
-                    {
-                        "evidence_id": f"entity_status:{eid}",
-                        "source_type": "entity_status",
-                        "content": answer,
-                        "source_action_id": aid,
-                        "recall_score": None,
-                        "rerank_score": None,
-                        "meta": {"entity_id": eid},
-                    }
-                )
+                if not eplus:
+                    entity_aux_docs.append(
+                        {
+                            "evidence_id": f"entity_status:{eid}",
+                            "source_type": "entity_status",
+                            "content": answer,
+                            "source_action_id": aid,
+                            "recall_score": None,
+                            "rerank_score": None,
+                            "meta": {"entity_id": eid},
+                        }
+                    )
     evidences.extend(entity_aux_docs)
     evidences.extend(time_documents)
 

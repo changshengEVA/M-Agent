@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Dict
 
 import yaml
 
@@ -216,108 +216,14 @@ class MemoryAgentConfigMixin:
             facts_only_mode=facts_only_mode,
         )
     @staticmethod
-    def _load_facts_situation(memory_core: MemoryCore) -> Dict[str, Any]:
-        """读取 facts_situation 缓存数据。"""
-        facts_situation_path = getattr(memory_core, "facts_situation_file", None)
-        if not facts_situation_path:
-            return {}
-        facts_situation_file = Path(facts_situation_path)
-        if not facts_situation_file.exists():
-            return {}
-        try:
-            with open(facts_situation_file, "r", encoding="utf-8") as f:
-                payload = json.load(f)
-        except Exception as exc:
-            logger.warning("Failed to load facts_situation for bootstrap repair (%s): %s", facts_situation_file, exc)
-            return {}
-        return payload if isinstance(payload, dict) else {}
-    @staticmethod
-    def _should_repair_fact_entity_import(memory_core: MemoryCore) -> Tuple[bool, str]:
-        """判断是否需要修复 fact-entity 导入。"""
-        kg_base = getattr(memory_core, "kg_base", None)
-        kg_store = getattr(kg_base, "store", None)
-        if kg_base is None or not bool(getattr(kg_store, "available", False)):
-            return False, "kg unavailable"
-
-        facts_root_path = getattr(memory_core, "facts_dir", None)
-        if not facts_root_path:
-            return False, "facts dir unavailable"
-        facts_root = Path(facts_root_path)
-        fact_files = [p for p in facts_root.glob("*.json") if p.is_file()] if facts_root.exists() else []
-        if not fact_files:
-            return False, "no fact files"
-
-        facts_situation = MemoryAgentConfigMixin._load_facts_situation(memory_core)
-        expected_uids = set()
-        fact_nodes = facts_situation.get("facts", {}) if isinstance(facts_situation.get("facts"), dict) else {}
-        if isinstance(fact_nodes, dict):
-            pending_facts = 0
-            for node in fact_nodes.values():
-                if not isinstance(node, dict):
-                    continue
-                entity_uid = str(node.get("entity_UID", "") or "").strip()
-                if not entity_uid:
-                    continue
-                expected_uids.add(entity_uid)
-                if not bool(node.get("kg_imported", False)):
-                    pending_facts += 1
-            if pending_facts > 0:
-                return True, f"{pending_facts} fact(s) still marked kg_imported=false"
-
-        entities = facts_situation.get("entities", []) if isinstance(facts_situation.get("entities"), list) else []
-        for item in entities:
-            if not isinstance(item, dict):
-                continue
-            entity_uid = str(item.get("UID", "") or "").strip()
-            if entity_uid:
-                expected_uids.add(entity_uid)
-
-        actual_uids = set()
-        try:
-            actual_uids = set(str(x or "").strip() for x in kg_base.list_entity_ids())
-            actual_uids.discard("")
-        except Exception as exc:
-            logger.warning("Failed to inspect KG entity ids for bootstrap repair: %s", exc)
-
-        missing_uids = expected_uids - actual_uids
-        if missing_uids:
-            return True, f"{len(missing_uids)} expected fact entity uid(s) missing in KG"
-
-        if not expected_uids and not actual_uids and fact_files:
-            return True, "KG is empty while fact files already exist"
-
-        return False, "KG fact entities already aligned"
-    @staticmethod
     def _ensure_kg_data_initialized(memory_core: MemoryCore) -> None:
         """确保 KG 数据已完成初始化或修复。"""
-        facts_only_mode = bool(getattr(memory_core, "facts_only_mode", False))
         scene_files = [p for p in memory_core.scene_dir.glob("*.json") if p.is_file()]
         if scene_files:
-            if facts_only_mode:
-                logger.info(
-                    "scene already has %d file(s), facts_only_mode=true so skip fact-entity import repair.",
-                    len(scene_files),
-                )
-                return
-            should_repair, reason = MemoryAgentConfigMixin._should_repair_fact_entity_import(memory_core)
-            if not should_repair:
-                logger.info("scene already has %d file(s), skip bootstrap import.", len(scene_files))
-                return
-
             logger.info(
-                "scene already has %d file(s); run fact-entity import repair because %s.",
+                "scene already has %d file(s); skip legacy fact→KG import repair "
+                "(entities/profiles come from segment pipeline during episode load).",
                 len(scene_files),
-                reason,
-            )
-            import_result = memory_core.import_fact_entities(force_update=False, use_tqdm=True)
-            if not import_result.get("success", False):
-                raise RuntimeError(f"Failed to repair fact entity import: {import_result}")
-            logger.info(
-                "Fact entity import repair completed: scanned=%s created=%s updated=%s failed=%s",
-                import_result.get("facts_scanned", 0),
-                import_result.get("kg_entities_created", 0),
-                import_result.get("kg_entities_updated", 0),
-                import_result.get("kg_entities_failed", 0),
             )
             return
 

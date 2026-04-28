@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..action_executor import execute_actions
 from ..action_planner import (
+    ACTION_ENTITY_PROFILE_SEARCH,
+    ACTION_ENTITY_STATUS_QA,
     action_signature,
     build_query_intent,
     intent_to_question_plan,
@@ -19,6 +21,83 @@ from ..workspace import Workspace
 from m_agent.utils.api_error_utils import is_network_api_error
 
 logger = logging.getLogger(__name__)
+
+
+_EPLUS_ENTITY_AUX_LAST_TYPES = frozenset(
+    {ACTION_ENTITY_PROFILE_SEARCH, ACTION_ENTITY_STATUS_QA}
+)
+
+
+def _eplus_should_suppress_entity_aux_round1(question: str) -> bool:
+    """Heuristic: in E+ round-1, avoid entity tools for episodic questions.
+
+    This targets recurring regressions where entity tools (profile/status) fire early for
+    when/where/country/how-many-times/how-long questions and steer the workspace away from
+    dialogue-grounded evidence.
+    """
+    q = str(question or "").strip().lower()
+    if not q:
+        return False
+    # Temporal / location / counting / duration patterns (broad, not tied to a single question).
+    triggers = (
+        "when ",
+        " when",
+        "where ",
+        " where",
+        "which country",
+        "which city",
+        "which location",
+        "which locations",
+        "how many times",
+        "how long",
+        "duration",
+        "last week",
+        "in august",
+        "in september",
+        "in october",
+    )
+    return any(t in q for t in triggers)
+
+
+def _eplus_filter_entity_aux_round1(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Drop entity aux actions in round-1; keep episodic recall actions."""
+    if not actions:
+        return actions
+    out: List[Dict[str, Any]] = []
+    dropped = 0
+    for item in actions:
+        if not isinstance(item, dict):
+            out.append(item)
+            continue
+        at = str(item.get("action_type", "") or "").strip()
+        if at in _EPLUS_ENTITY_AUX_LAST_TYPES:
+            dropped += 1
+            continue
+        out.append(item)
+    # Ensure we don't end up with an empty plan due to over-filtering.
+    return out or actions
+
+
+def _eplus_reorder_actions_entity_aux_last(actions: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Run episodic / routing tools before entity profile & status in the same round.
+
+    The LLM planner sometimes opens with ENTITY_STATUS_QA, which can starve the
+    workspace of dialogue evidence on the first round (see conv-48 regressions).
+    """
+    if not actions:
+        return actions
+    head: List[Dict[str, Any]] = []
+    tail: List[Dict[str, Any]] = []
+    for item in actions:
+        if not isinstance(item, dict):
+            head.append(item)
+            continue
+        at = str(item.get("action_type", "") or "").strip()
+        if at in _EPLUS_ENTITY_AUX_LAST_TYPES:
+            tail.append(item)
+        else:
+            head.append(item)
+    return head + tail
 
 
 def _chunk_evidence_text(text: str, chunk_chars: int) -> List[str]:
@@ -183,6 +262,9 @@ class MemoryAgentExecutionMixin:
                 "<workspace_summary>": workspace_summary,
                 "<previous_actions_json>": json.dumps(prev_actions, ensure_ascii=False),
                 "<available_tools_json>": json.dumps(tools, ensure_ascii=False, indent=2),
+                "<max_actions_per_round>": str(
+                    max(1, int(getattr(self, "workspace_max_actions_per_round", 5)))
+                ),
             },
         )
 
@@ -239,9 +321,14 @@ class MemoryAgentExecutionMixin:
 
         all_docs = {doc["evidence_id"]: doc for doc in workspace.all_evidences()}
         chunk_rows: List[Tuple[str, str]] = []
+        defer_types = frozenset(
+            getattr(self, "workspace_defer_keep_source_types", frozenset()) or frozenset()
+        )
         for eid in ids_to_rank:
             doc = all_docs.get(eid)
             if doc is None:
+                continue
+            if defer_types and str(doc.get("source_type", "") or "").strip() in defer_types:
                 continue
             content = str(doc.get("content", "") or "").strip()
             if not content:
@@ -512,6 +599,11 @@ class MemoryAgentExecutionMixin:
                 break
 
             # Keep only the planned actions (no tool execution results here).
+            if str(getattr(self, "workspace_entity_workspace_mode", "") or "").strip().lower() == "eplus":
+                # Round-1 structural gate: for episodic-style questions, don't let entity tools dominate early.
+                if round_id == 1 and _eplus_should_suppress_entity_aux_round1(workspace.original_question):
+                    actions = _eplus_filter_entity_aux_round1(actions)
+                actions = _eplus_reorder_actions_entity_aux_last(actions)
             round_record["actions"] = [self._safe_trace_value(action) for action in actions]
             for action in actions:
                 previous_action_signatures.add(action_signature(action))
@@ -596,6 +688,15 @@ class MemoryAgentExecutionMixin:
                 if hasattr(self.memory_sys, "search_entity_status_answer")
                 else None,
                 max_episode_candidates=max_episode_candidates,
+                entity_workspace_mode=str(
+                    getattr(self, "workspace_entity_workspace_mode", "default") or "default"
+                ).strip().lower(),
+                entity_eplus_min_slot_score=float(
+                    getattr(self, "workspace_entity_eplus_min_slot_score", 0.44) or 0.44
+                ),
+                entity_eplus_suppress_empty_profile_query=bool(
+                    getattr(self, "workspace_entity_eplus_suppress_empty_profile_query", True)
+                ),
             )
 
             new_evidence_ids = workspace.extend_and_track_new(report["evidences"])
@@ -604,9 +705,11 @@ class MemoryAgentExecutionMixin:
             new_evidence_ids = self._rerank_new_evidences(
                 workspace, cur_query, new_evidence_ids
             )
+            defer_keep = getattr(self, "workspace_defer_keep_source_types", frozenset()) or frozenset()
             workspace.keep_top(
                 max(1, int(getattr(self, "workspace_max_keep", 6))),
                 protected_ids=workspace.kept_evidence_ids,
+                defer_source_types=sorted(defer_keep) if defer_keep else None,
             )
             # Snapshot after rerank + keep_top (before judge).
             round_record["workspace_after_rerank"] = workspace.snapshot()

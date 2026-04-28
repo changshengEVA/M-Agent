@@ -115,14 +115,6 @@ memory_agent:
         cite an explicit unit price). If a matching divisor or total is missing, use
         INSUFFICIENT with a targeted next_query. If one purchase is split across snippets, do
         not drop the snippet that only states the count or only the total.
-      - Time-question lenience: For "when did X happen" / "in what year/month was X" /
-        "how long did X" questions, an evidence block that contains an explicit date phrase
-        AND a verb/object semantically matching X is SUFFICIENT even if the noun lexicon
-        differs (e.g. evidence says "engineering project" while the question says "robotics
-        project"); do NOT mark INSUFFICIENT solely because the noun is not a verbatim match.
-      - When you DO need a next_query for a time question, instruct the next round to drop
-        the modifier and try synonyms (e.g. "When did Jolene finish her project?" or "When
-        did Jolene wrap up the engineering project?") rather than repeating the same noun.
 
   action_plan_prompt:
     zh: |
@@ -143,7 +135,7 @@ memory_agent:
 
       指令：
       1. 分析当前问题与当前检索查询，判断还缺少什么信息。
-      2. 从可用工具中选择 1-3 个最合适的检索操作。
+      2. 从可用工具中选择至多 <max_actions_per_round> 个最合适的检索操作。
       3. 避免与已执行操作重复。
       4. 为每个操作填写具体的查询参数。
 
@@ -160,6 +152,7 @@ memory_agent:
       - action_type 必须是可用工具列表中的值。
       - 可用工具 JSON 中每项包含 description、params，以及（若有）search_entry_anchors：后者说明该工具对应的「搜索入口锚点」；请结合原始问题与当前检索查询判断是否暴露此类锚点。
       - 若同一轮内同时暴露了多种工具的锚点（例如既有语义入口又有时间入口），在动作数量预算内应同时选用对应工具，避免把本应同轮完成的组合拆到后续轮次。
+      - 若问题涉及地点/国家/城市/何时/在哪、或可从对话直接定位的事实：在 ENTITY_STATUS_QA / ENTITY_PROFILE_SEARCH 之前，优先安排多条不同措辞的 EVENT_DETAIL_RECALL（或 RECALL_REMEDY_MULTI_ROUTE），以占满预算为优先。
       - 每个 action 的 query 参数必须符合对应工具的 params 格式。
     en: |
       You are a retrieval planner for a memory QA system.
@@ -180,7 +173,7 @@ memory_agent:
 
       Instructions:
       1. Analyze the current question and current retrieval query to determine what information is still missing.
-      2. Select 1-3 most appropriate retrieval actions from the available tools.
+      2. Select up to <max_actions_per_round> appropriate retrieval actions from the available tools.
       3. Avoid duplicating previously executed actions.
       4. Fill in specific query parameters for each action.
 
@@ -197,10 +190,8 @@ memory_agent:
       - action_type MUST be one of the values from the available tools list.
       - Each entry in the available tools JSON includes description, params, and optionally search_entry_anchors. The anchors field explains what search-entry signals should trigger that tool—use the original question and current retrieval query to decide.
       - When multiple tool anchors are exposed in the same round (e.g. both semantic and time entry points), schedule actions within the per-round budget so multiple applicable tools are used in that round instead of deferring unnecessarily.
+      - For fact-grounded questions that ask WHEN/WHERE/WHICH COUNTRY/CITY, HOW MANY TIMES, or HOW LONG (duration): do NOT use ENTITY_STATUS_QA or ENTITY_PROFILE_SEARCH in the first round. Prefer scheduling multiple EVENT_DETAIL_RECALL (or RECALL_REMEDY_MULTI_ROUTE) actions with different phrasings until the per-round action budget is used; only consider entity tools if the workspace judge remains INSUFFICIENT after exhausting episodic recall.
       - Each action's query params must match that tool's params schema.
-      - LEXICAL VARIATION ON RETRY: If a previous round called EVENT_DETAIL_RECALL with the same key noun (e.g. the entity name from [ENTITY_RESOLUTION] or the question's main topic) and the workspace was judged INSUFFICIENT, MUST rewrite the next detail_query using SYNONYMS or RELATED CONCEPTS for that key noun. Examples: "robotics project" → "engineering project" / "tech project"; "yoga class" → "exercise class" / "session"; "surfing trip" → "beach outing" / "ocean activity". Do not just rephrase the verb; vary the noun the model is searching for.
-      - REMEDY ESCALATION: If two prior rounds both called EVENT_DETAIL_RECALL and the workspace is still INSUFFICIENT, the current round SHOULD include RECALL_REMEDY_MULTI_ROUTE (if it is in the available tools list) as one of the actions to broaden the search. Treat the [ENTITY_RESOLUTION] block as a hint, not a constraint—it lists candidate entities but does not force the lexical surface form of your query.
-      - For "when did X happen" / "in what year/month was X" questions, ALWAYS try at least one query variant that drops the modifier and keeps only the head noun (e.g. "when did Jolene finish her project") because the dialogue may use a more general phrasing than the question.
 
   final_answer_from_workspace_prompt:
     zh: |
@@ -246,25 +237,6 @@ memory_agent:
       gold_answer must be an extremely concise, submittable answer (non-null whenever the question is answerable from the evidence).
       Put detailed reasoning, qualifiers, and evidence walkthrough in `answer`. You may note "based on workspace evidence"
       in `answer`, but do not use `answer` to null out or contradict `gold_answer`.
-
-      Time/date question rules:
-      - For "when did X happen" / "in what year/month was X" / "how long did X" questions, prefer extracting an
-        explicit date phrase verbatim from the evidence (e.g. "May 2023", "last week of July 2023", "April 9, 2023").
-        Inferable date phrases are valid: if a dialogue dated 2023-06-06 says "I wrapped that up last month",
-        gold_answer MUST be "May 2023" (not null). Do not require the dialogue itself to spell out the absolute date.
-      - If multiple events relating to X are present, prefer the dated phrase that semantically matches the
-        question's predicate (e.g. "finish/wrap up" matches "wrapped up", "start" matches "just started"). If the
-        question lexicon (e.g. "robotics") doesn't appear verbatim but a synonymous noun does (e.g. "engineering
-        project"), still treat that as the answer if no other candidate fits and the action verb matches.
-      - Do NOT output null just because the question's exact noun is not in the evidence. Only return null when
-        every dated event in evidence is clearly about a different topic.
-
-      Attribute / preference question rules:
-      - For "what is X's favorite Y" / "what does X prefer" questions, prefer evidence that names the specific
-        item in dialogue context, even when the entity profile would suggest a different default. Joint activities
-        ("with her partner", "with her mom") override generic preference statements.
-      - For "what activity / what kind of project / what does X do" questions, prefer concrete dialogue mentions
-        (recent actions, named items) over generic profile-style descriptions.
 
       [Question]
       <question_text>

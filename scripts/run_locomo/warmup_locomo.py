@@ -26,6 +26,7 @@ from _shared import (
     log_env_config_summary,
     resolve_project_path,
 )
+from m_agent.paths import memory_workflow_dir
 from m_agent.utils.pipeline_logging import suppress_verbose_pipeline_loggers
 
 logger = logging.getLogger("run_locomo.warmup")
@@ -44,12 +45,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Delete existing scene directory and regenerate from scratch.",
+        help=(
+            "Delete existing scene directory and regenerate from scratch; also passes "
+            "force_rebuild into episode load (clears isolated Neo4j workflow DB when "
+            "configured, removes segment build state, re-runs segment entity pipeline)."
+        ),
     )
+    parser.add_argument("--force-scene", action="store_true", help="Force rebuild scene outputs.")
+    parser.add_argument("--force-facts", action="store_true", help="Force rebuild atomic facts outputs.")
+    parser.add_argument("--force-kg", action="store_true", help="Force rebuild KG/segment entity pipeline.")
     parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print resolved settings only, do not run warmup.",
+    )
+    parser.add_argument(
+        "--memory-root",
+        type=str,
+        default="",
+        help=(
+            "Override MemoryCore storage root directory. If set, workflow data is read/written under "
+            "<memory_root>/<workflow_id> (workflow_id may contain slashes like locomo/conv-48). "
+            "This sets env var M_AGENT_MEMORY_ROOT for the process."
+        ),
     )
     parser.add_argument(
         "--workflow-id",
@@ -129,7 +147,7 @@ def resolve_memory_core_config(agent_config_path: Path) -> tuple[Dict[str, Any],
     return mc_cfg, mc_path
 
 
-def init_memory_core(mc_cfg: Dict[str, Any], mc_path: Path) -> Any:
+def init_memory_core(mc_cfg: Dict[str, Any], mc_path: Path, *, skip_entity_library_align_on_init: bool = False) -> Any:
     """Initialize MemoryCore with the same parameters as
     MemoryAgentConfigMixin._init_memory_sys."""
     from m_agent.config_paths import MEMORY_CORE_RUNTIME_PROMPT_CONFIG_PATH, resolve_related_config_path
@@ -182,6 +200,7 @@ def init_memory_core(mc_cfg: Dict[str, Any], mc_path: Path) -> Any:
         detail_search_hybrid_config=hybrid_config,
         detail_search_multi_route_config=multi_route_config,
         facts_only_mode=bool(mc_cfg.get("facts_only_mode", False)),
+        skip_entity_library_align_on_init=bool(skip_entity_library_align_on_init),
     )
 
 
@@ -216,7 +235,13 @@ def main() -> int:
         except (TypeError, ValueError):
             logger.warning("Invalid warmup.scene_fact_max_workers: %r — ignored.", sf_workers)
 
-    force_warmup = bool(args.force) or bool(warmup_cfg.get("force", False))
+    legacy_force_all = bool(args.force) or bool(warmup_cfg.get("force", False))
+    force_scene = bool(args.force_scene) or bool(warmup_cfg.get("force_scene", False)) or legacy_force_all
+    force_facts = bool(args.force_facts) or bool(warmup_cfg.get("force_facts", False)) or legacy_force_all
+    force_kg = bool(args.force_kg) or bool(warmup_cfg.get("force_KG", False)) or legacy_force_all
+
+    if str(args.memory_root or "").strip():
+        os.environ["M_AGENT_MEMORY_ROOT"] = str(args.memory_root).strip()
 
     eval_cfg = payload.get("eval", {})
     if not isinstance(eval_cfg, dict):
@@ -238,8 +263,24 @@ def main() -> int:
     if not workflow_id:
         raise ValueError("workflow_id must not be empty in MemoryCore config (or pass --workflow-id).")
 
-    episodes_dir = resolve_project_path(f"data/memory/{workflow_id}/episodes")
-    scene_dir = resolve_project_path(f"data/memory/{workflow_id}/scene")
+    # --force should mean "from scratch" for local derived artifacts too.
+    # Keep episodes/ and dialogues/ (import outputs), but wipe local_store so profiles/libraries do not
+    # start from previously saved files.
+    if force_kg:
+        from m_agent.paths import memory_workflow_dir
+
+        wf_root = memory_workflow_dir(workflow_id)
+        local_store = wf_root / "local_store"
+        if local_store.exists() and local_store.is_dir():
+            try:
+                logger.info("--force-kg: removing existing local_store directory: %s", local_store)
+                shutil.rmtree(local_store)
+            except Exception as exc:
+                logger.warning("--force: failed to remove local_store %s: %s", local_store, exc)
+
+    workflow_root = memory_workflow_dir(workflow_id)
+    episodes_dir = workflow_root / "episodes"
+    scene_dir = workflow_root / "scene"
 
     logger.info("=" * 60)
     logger.info("Warmup: generate scenes + atomic facts")
@@ -254,7 +295,10 @@ def main() -> int:
     logger.info("fact_prompt_version= %s", mc_cfg.get("fact_prompt_version", "v2"))
     logger.info("scene_prompt_version=%s", mc_cfg.get("scene_prompt_version", "v2"))
     logger.info("facts_only_mode    = %s", mc_cfg.get("facts_only_mode", False))
-    logger.info("force              = %s (CLI --force or warmup.force)", force_warmup)
+    logger.info("force_scene        = %s", force_scene)
+    logger.info("force_facts        = %s", force_facts)
+    logger.info("force_KG           = %s", force_kg)
+    logger.info("force(all legacy)  = %s (CLI --force or warmup.force)", legacy_force_all)
     logger.info(
         "scene_max_workers env: M_AGENT_SCENE_MAX_WORKERS=%s | scene_fact_max_workers env: M_AGENT_SCENE_FACT_MAX_WORKERS=%s",
         os.environ.get("M_AGENT_SCENE_MAX_WORKERS", "(unset → defaults to 1)"),
@@ -270,7 +314,9 @@ def main() -> int:
             "workflow_id": workflow_id,
             "episodes_dir": str(episodes_dir),
             "scene_dir": str(scene_dir),
-            "force": force_warmup,
+            "force_scene": force_scene,
+            "force_facts": force_facts,
+            "force_KG": force_kg,
         },
     )
 
@@ -280,27 +326,47 @@ def main() -> int:
         return 1
 
     existing_scenes = list(scene_dir.glob("*.json")) if scene_dir.exists() else []
-    if existing_scenes and not force_warmup:
-        logger.info(
-            "Scene directory already has %d file(s). "
-            "Use --force or warmup.force: true to regenerate. Skipping warmup.",
-            len(existing_scenes),
-        )
+    facts_dir = workflow_root / "facts"
+    existing_facts = list(facts_dir.glob("*.json")) if facts_dir.exists() else []
+
+    # Decide whether to build scenes/facts this run.
+    # - If force_scene/force_facts is explicitly set, rebuild those stages.
+    # - If the user only forces KG (segment entity pipeline), do NOT auto-rebuild scene/facts
+    #   even when they are missing — KG can be rebuilt directly from episodes.
+    # - Otherwise (normal warmup), build missing stages.
+    build_scenes = bool(force_scene or ((not force_kg) and (not existing_scenes)))
+    build_facts = bool(force_facts or ((not force_kg) and (not existing_facts)))
+
+    should_run = bool(force_scene or force_facts or force_kg or build_scenes or build_facts)
+    if (existing_scenes or existing_facts) and not should_run:
+        logger.info("Nothing to do (no force flags set). Skipping warmup.")
         return 0
 
     if args.dry_run:
         logger.info("Dry-run mode, skip warmup execution.")
         return 0
 
-    if existing_scenes and force_warmup:
-        logger.info("--force: removing existing scene directory: %s", scene_dir)
+    if existing_scenes and force_scene:
+        logger.info("--force-scene: removing existing scene directory: %s", scene_dir)
         shutil.rmtree(scene_dir)
 
-    memory_core = init_memory_core(mc_cfg, mc_path)
+    # When forcing rebuild, avoid aligning EntityLibrary from the old KG during MemoryCore init.
+    memory_core = init_memory_core(
+        mc_cfg,
+        mc_path,
+        skip_entity_library_align_on_init=force_kg,
+    )
     logger.info("MemoryCore initialized (workflow_id=%s)", workflow_id)
 
     logger.info("Loading episodes from: %s", episodes_dir)
-    result = memory_core.load_from_episode_path(Path(episodes_dir))
+    result = memory_core.load_from_episode_path(
+        Path(episodes_dir),
+        force_rebuild=force_kg,
+        build_scenes=build_scenes,
+        build_facts=build_facts,
+        force_scene=force_scene,
+        force_facts=force_facts,
+    )
 
     if not result.get("success", False):
         logger.error("Warmup failed: %s", result.get("error", "unknown"))

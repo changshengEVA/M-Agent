@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Collection, Dict, List, Literal, Optional, Tuple, TypedDict
+from typing import Any, Collection, Dict, FrozenSet, List, Literal, Optional, Tuple, TypedDict
 
 
 WorkspaceStatus = Literal["SUFFICIENT", "INSUFFICIENT", "INVALID"]
@@ -117,23 +117,50 @@ class Workspace:
     def all_evidences(self) -> List[WorkspaceDocument]:
         return [self._documents[eid] for eid in self._insert_order if eid in self._documents]
 
-    def keep_top(self, max_keep: Optional[int] = None, protected_ids: Optional[List[str]] = None) -> List[str]:
+    def keep_top(
+        self,
+        max_keep: Optional[int] = None,
+        protected_ids: Optional[List[str]] = None,
+        defer_source_types: Optional[Collection[str]] = None,
+    ) -> List[str]:
+        """Select up to *limit* evidence ids by score.
+
+        When *defer_source_types* is non-empty, documents whose ``source_type`` is in
+        that set compete only for slots **after** all non-deferred candidates have been
+        considered: high-scoring episodes are not displaced by short entity blurbs that
+        may receive spurious rerank scores.
+        """
         limit = self.max_keep if max_keep is None else max(1, int(max_keep))
         protected = set(protected_ids or [])
+        defer: FrozenSet[str] = frozenset(
+            str(x).strip() for x in (defer_source_types or []) if str(x).strip()
+        )
         kept = [eid for eid in self._insert_order
                 if eid in protected and eid in self._documents]
         remaining_slots = limit - len(kept)
         if remaining_slots > 0:
-            candidates = []
+            primary: List[Tuple[str, float, int]] = []
+            deferred: List[Tuple[str, float, int]] = []
             for index, eid in enumerate(self._insert_order):
                 if eid in protected or eid not in self._documents:
                     continue
-                score = _best_score(self._documents[eid])
+                doc = self._documents[eid]
+                st = str(doc.get("source_type", "") or "").strip()
+                score = _best_score(doc)
                 if score is None:
                     score = 0.0
-                candidates.append((eid, float(score), -index))
-            candidates.sort(key=lambda x: (x[1], x[2]), reverse=True)
-            kept.extend(eid for eid, _, _ in candidates[:remaining_slots])
+                row = (eid, float(score), -index)
+                if defer and st in defer:
+                    deferred.append(row)
+                else:
+                    primary.append(row)
+            primary.sort(key=lambda x: (x[1], x[2]), reverse=True)
+            deferred.sort(key=lambda x: x[2], reverse=True)  # stable insert order (smaller index first)
+            chosen_primary = [eid for eid, _, _ in primary[:remaining_slots]]
+            kept.extend(chosen_primary)
+            remaining_slots = limit - len(kept)
+            if remaining_slots > 0 and deferred:
+                kept.extend(eid for eid, _, _ in deferred[:remaining_slots])
         self.kept_evidence_ids = kept
         return list(self.kept_evidence_ids)
 

@@ -36,9 +36,9 @@ ENTITY_STATUS_QA:
 
 RECALL_REMEDY_MULTI_ROUTE:
   description:
-    zh: "多路召回补救措施，当之前的搜索未找到有用证据时作为最后手段使用。同时搜索多个索引。"
-    en: "Broad multi-route recall as a last resort when previous searches found nothing useful. Searches across multiple indexes simultaneously."
+    zh: "多路召回补救措施。当 EVENT_DETAIL_RECALL 已经被调用过一次但工作区仍 INSUFFICIENT 时，应立即使用此工具进行多路扩展召回（按 entity / action / time / relation / topic 五个路由并行检索并融合结果）。"
+    en: "Broad multi-route recall (parallel queries via entity/action/time/relation/topic routes, RRF-fused). Use whenever EVENT_DETAIL_RECALL has already been called once and the workspace is still INSUFFICIENT — escalate aggressively rather than repeating EVENT_DETAIL_RECALL with paraphrased queries."
   params: '{"detail_query": "<search query>", "topk": <int, default 10>}'
   search_entry_anchors:
-    zh: "仅在前序工具无效或处于补救模式时使用；不作为首轮默认工具。"
-    en: "Use only after ordinary tools failed or the planner is in remedy mode; not as a default first-round tool."
+    zh: "用于第二轮及以后；当前一轮 EVENT_DETAIL_RECALL 命中不足或工作区被判 INSUFFICIENT 时优先选用，避免重复同义改写仍然检索失败。"
+    en: "Use from round 2 onward whenever EVENT_DETAIL_RECALL underperformed (low hits, or workspace judged INSUFFICIENT). Preferred over yet another paraphrase of EVENT_DETAIL_RECALL — multi-route already covers synonym/relation expansions."
