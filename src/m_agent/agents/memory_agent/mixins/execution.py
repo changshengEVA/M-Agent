@@ -12,6 +12,7 @@ from ..action_planner import (
     action_signature,
     build_query_intent,
     intent_to_question_plan,
+    apply_tool_quota_policy,
     plan_actions_llm,
     plan_actions_rule_based,
     tool_registry_for_prompt,
@@ -353,9 +354,34 @@ class MemoryAgentExecutionMixin:
             offset = 0
             while offset < total_chunks:
                 batch = chunk_rows[offset : offset + chunk_batch]
-                offset += len(batch)
                 documents = [row[1] for row in batch]
-                results = rerank_func(cur_query, documents, len(documents))
+                max_attempts = max(1, int(getattr(self, "rerank_retry_attempts", 4)))
+                backoff = max(0.0, float(getattr(self, "rerank_retry_backoff_seconds", 2.0)))
+                mult = max(1.0, float(getattr(self, "rerank_retry_backoff_multiplier", 2.0)))
+                last_exc: Optional[Exception] = None
+                results = None
+                for attempt in range(max_attempts):
+                    try:
+                        results = rerank_func(cur_query, documents, len(documents))
+                        last_exc = None
+                        break
+                    except Exception as exc:
+                        last_exc = exc
+                        if attempt + 1 >= max_attempts or not is_network_api_error(exc):
+                            raise
+                        logger.warning(
+                            "Rerank batch failed (attempt %s/%s, chunks=%s..%s): %s",
+                            attempt + 1,
+                            max_attempts,
+                            offset,
+                            offset + len(batch) - 1,
+                            exc,
+                        )
+                        if backoff > 0:
+                            time.sleep(backoff)
+                            backoff *= mult
+                if results is None:
+                    raise last_exc or RuntimeError("rerank returned no results")
                 for item in results:
                     idx = int(item.get("index", -1))
                     score = float(item.get("relevance_score", 0.0))
@@ -364,6 +390,7 @@ class MemoryAgentExecutionMixin:
                         prev = best_chunk_score.get(eid)
                         if prev is None or score > prev:
                             best_chunk_score[eid] = score
+                offset += len(batch)
             logger.info(
                 "API response: rerank(chunk_batches=%d, evidences_scored=%d)",
                 (total_chunks + chunk_batch - 1) // chunk_batch,
@@ -599,6 +626,19 @@ class MemoryAgentExecutionMixin:
                 break
 
             # Keep only the planned actions (no tool execution results here).
+            # Enforce per-tool quota (min/max) to prevent cross-tool starvation.
+            try:
+                actions = apply_tool_quota_policy(
+                    actions,
+                    tool_descriptions=getattr(self, "tool_descriptions", {}) or {},
+                    round_id=round_id,
+                    max_actions=max_actions_per_round,
+                    original_question=workspace.original_question,
+                    cur_query=workspace.cur_query,
+                )
+            except Exception as exc:
+                logger.warning("apply_tool_quota_policy failed (round_id=%s): %s", round_id, exc)
+
             if str(getattr(self, "workspace_entity_workspace_mode", "") or "").strip().lower() == "eplus":
                 # Round-1 structural gate: for episodic-style questions, don't let entity tools dominate early.
                 if round_id == 1 and _eplus_should_suppress_entity_aux_round1(workspace.original_question):

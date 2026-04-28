@@ -205,13 +205,29 @@ class MemoryAgent(
         self.rerank_max_documents = max(1, int(rerank_cfg.get("max_documents", 16)))
         self.rerank_chunk_chars = max(32, int(rerank_cfg.get("chunk_chars", 800)))
         self.rerank_chunk_batch_size = max(4, int(rerank_cfg.get("chunk_batch_size", 32)))
+        # Rerank network resilience (mirrors MemoryAgent network retry knobs, but scoped to rerank only).
+        self.rerank_retry_attempts = max(1, int(rerank_cfg.get("retry_attempts", 4)))
+        self.rerank_retry_backoff_seconds = max(
+            0.0,
+            float(rerank_cfg.get("retry_backoff_seconds", 2.0)),
+        )
+        self.rerank_retry_backoff_multiplier = max(
+            1.0,
+            float(rerank_cfg.get("retry_backoff_multiplier", 2.0)),
+        )
+        self.rerank_request_timeout_seconds = float(rerank_cfg.get("request_timeout_seconds", 60.0))
+        if self.rerank_request_timeout_seconds <= 0:
+            self.rerank_request_timeout_seconds = 60.0
         self.rerank_func = None
         if self.rerank_enabled:
             rerank_provider = str(rerank_cfg.get("provider", "aliyun")).strip().lower()
             rerank_model = str(rerank_cfg.get("model_name", "")).strip()
             if rerank_provider in {"alibaba", "aliyun", "dashscope"}:
                 from m_agent.load_model.AlibabaRerankCall import get_rerank_func
-                self.rerank_func = get_rerank_func(model_name=rerank_model)
+                self.rerank_func = get_rerank_func(
+                    model_name=rerank_model,
+                    http_timeout_seconds=float(self.rerank_request_timeout_seconds),
+                )
                 logger.info("Workspace rerank enabled: provider=%s, model=%s", rerank_provider, rerank_model or "(default)")
             else:
                 logger.warning("Unsupported rerank provider: %s, rerank disabled", rerank_provider)
@@ -259,6 +275,8 @@ class MemoryAgent(
             path_desc=f"{self.runtime_prompt_config_path}.memory_agent.system_prompt",
         )
         tool_descriptions = self._load_tool_descriptions()
+        # Keep a copy for planner/runtime quota enforcement.
+        self.tool_descriptions = tool_descriptions or {}
         if tool_descriptions and self._enabled_tools:
             from .action_planner import build_tool_registry_from_config
             self.tool_registry = build_tool_registry_from_config(

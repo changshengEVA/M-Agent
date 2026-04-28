@@ -100,6 +100,8 @@ def _rerank_via_http(
     top_n: int,
     model: str,
     api_key: str,
+    *,
+    timeout_seconds: float,
 ) -> List[RerankResult]:
     import urllib.request
 
@@ -128,7 +130,7 @@ def _rerank_via_http(
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=30) as resp:
+    with urllib.request.urlopen(req, timeout=float(timeout_seconds)) as resp:
         data = json.loads(resp.read().decode("utf-8"))
 
     output = data.get("output", {})
@@ -142,7 +144,7 @@ def _rerank_via_http(
     ]
 
 
-def get_rerank_func(model_name: str = "") -> RerankFunc:
+def get_rerank_func(model_name: str = "", *, http_timeout_seconds: float | None = None) -> RerankFunc:
     """Return a rerank callable backed by Alibaba DashScope.
 
     Tries the ``dashscope`` SDK first; falls back to raw HTTP if the SDK is
@@ -155,6 +157,16 @@ def get_rerank_func(model_name: str = "") -> RerankFunc:
     api_key = os.getenv("ALIBABA_API_KEY", "").strip()
     if not api_key:
         raise ValueError("ALIBABA_API_KEY is not set. Please configure it in .env")
+
+    resolved_http_timeout = float(http_timeout_seconds) if http_timeout_seconds is not None else 0.0
+    if resolved_http_timeout <= 0:
+        env_timeout = os.getenv("ALIBABA_RERANK_HTTP_TIMEOUT", "").strip()
+        try:
+            resolved_http_timeout = float(env_timeout) if env_timeout else 60.0
+        except Exception:
+            resolved_http_timeout = 60.0
+    if resolved_http_timeout <= 0:
+        resolved_http_timeout = 60.0
 
     use_sdk: Optional[bool] = None
     try:
@@ -173,6 +185,13 @@ def get_rerank_func(model_name: str = "") -> RerankFunc:
         safe_top_n = min(max(1, top_n), len(documents))
         if use_sdk:
             return _rerank_via_dashscope_sdk(query, documents, safe_top_n, resolved_model)
-        return _rerank_via_http(query, documents, safe_top_n, resolved_model, api_key)
+        return _rerank_via_http(
+            query,
+            documents,
+            safe_top_n,
+            resolved_model,
+            api_key,
+            timeout_seconds=resolved_http_timeout,
+        )
 
     return rerank_func

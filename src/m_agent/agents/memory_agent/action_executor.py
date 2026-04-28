@@ -444,34 +444,32 @@ def execute_actions(
             summary = str(res.get("summary") or "").strip()
             if summary:
                 eid = str(res.get("entity_id", "") or "").strip()
-                if not eplus:
-                    entity_aux_docs.append(
-                        {
-                            "evidence_id": f"entity_profile:{eid}",
-                            "source_type": "entity_profile",
-                            "content": summary,
-                            "source_action_id": aid,
-                            "recall_score": None,
-                            "rerank_score": None,
-                            "meta": {"entity_id": eid},
-                        }
-                    )
+                entity_aux_docs.append(
+                    {
+                        "evidence_id": f"entity_profile:{eid}",
+                        "source_type": "entity_profile",
+                        "content": summary,
+                        "source_action_id": aid,
+                        "recall_score": None,
+                        "rerank_score": None,
+                        "meta": {"entity_id": eid},
+                    }
+                )
         if at == ACTION_ENTITY_STATUS_QA and res.get("hit"):
             answer = str(res.get("answer") or "").strip()
             if answer:
                 eid = str(res.get("entity_id", "") or "").strip()
-                if not eplus:
-                    entity_aux_docs.append(
-                        {
-                            "evidence_id": f"entity_status:{eid}",
-                            "source_type": "entity_status",
-                            "content": answer,
-                            "source_action_id": aid,
-                            "recall_score": None,
-                            "rerank_score": None,
-                            "meta": {"entity_id": eid},
-                        }
-                    )
+                entity_aux_docs.append(
+                    {
+                        "evidence_id": f"entity_status:{eid}",
+                        "source_type": "entity_status",
+                        "content": answer,
+                        "source_action_id": aid,
+                        "recall_score": None,
+                        "rerank_score": None,
+                        "meta": {"entity_id": eid},
+                    }
+                )
     evidences.extend(entity_aux_docs)
     evidences.extend(time_documents)
 

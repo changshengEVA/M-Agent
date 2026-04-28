@@ -5,7 +5,8 @@
 # - ENTITY_PROFILE_SEARCH: if optional_query is empty, do not inject profile summary into workspace.
 # - ENTITY_STATUS_QA: require top attribute slot score >= 0.44 to merge episodic refs / inject status answer.
 # - Execution: ENTITY_PROFILE / ENTITY_STATUS run after episodic tools in the same round.
-# - Workspace: no entity_profile / entity_status text cards (refs still merge when gated); avoids KB vs dialogue conflicts.
+# - Workspace: entity_profile / entity_status text cards compete with episodic evidence in keep_top
+#   like any other source (defer_keep_source_types empty).
 
 model_name: "gpt-4.1-mini"
 agent_temperature: 0.0
@@ -38,6 +39,8 @@ workspace:
   entity_workspace_mode: "eplus"
   entity_eplus_min_slot_score: 0.44
   entity_eplus_suppress_empty_profile_query: true
+  # Empty: entity cards are not deferred in keep_top (same rerank/recall ordering as other types).
+  defer_keep_source_types: []
   enabled_tools:
     - EVENT_DETAIL_RECALL
     - RECALL_REMEDY_MULTI_ROUTE
@@ -51,6 +54,11 @@ workspace:
     max_documents: 16
     chunk_chars: 800
     chunk_batch_size: 32
+    # Network resilience for DashScope rerank (esp. HTTP fallback via urllib).
+    retry_attempts: 6
+    retry_backoff_seconds: 2.0
+    retry_backoff_multiplier: 2.0
+    request_timeout_seconds: 90.0
 attach_episode_refs_to_answer: true
 evidence_episode_ref_max_in_text: 8
 

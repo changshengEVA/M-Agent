@@ -45,6 +45,10 @@ workspace:
     max_documents: 16
     chunk_chars: 800
     chunk_batch_size: 32
+    retry_attempts: 6
+    retry_backoff_seconds: 2.0
+    retry_backoff_multiplier: 2.0
+    request_timeout_seconds: 90.0
 attach_episode_refs_to_answer: true
 evidence_episode_ref_max_in_text: 8
 
