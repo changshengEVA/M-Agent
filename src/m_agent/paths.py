@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 
@@ -24,8 +25,31 @@ def resolve_project_path(path: str | Path) -> Path:
     return PROJECT_ROOT / candidate
 
 
+def memory_root_dir() -> Path:
+    """
+    Resolve the base directory for MemoryCore workflow storage.
+
+    Priority:
+    1) M_AGENT_MEMORY_ROOT: full path to the directory that contains workflow subdirs
+       (e.g. ".../full_model/GPT-4o-mini" so workflow_id "locomo/conv-48" becomes
+       ".../full_model/GPT-4o-mini/locomo/conv-48").
+    2) M_AGENT_DATA_DIR: full path to a data dir; memory root becomes "<data_dir>/memory".
+    3) default: "<PROJECT_ROOT>/data/memory"
+    """
+    raw = str(os.getenv("M_AGENT_MEMORY_ROOT", "")).strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    raw_data = str(os.getenv("M_AGENT_DATA_DIR", "")).strip()
+    if raw_data:
+        return (Path(raw_data).expanduser().resolve() / "memory")
+    return DATA_DIR / "memory"
+
+
 def memory_workflow_dir(workflow_id: str) -> Path:
-    return DATA_DIR / "memory" / str(workflow_id)
+    wid = str(workflow_id or "").strip()
+    # Allow hierarchical workflow ids like "locomo/conv-48".
+    wid = wid.strip("/\\")
+    return memory_root_dir() / Path(wid)
 
 
 def memory_stage_dir(workflow_id: str, stage_name: str) -> Path:

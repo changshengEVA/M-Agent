@@ -57,6 +57,7 @@ class MemoryCore:
         detail_search_hybrid_config: Optional[Dict[str, Any]] = None,
         detail_search_multi_route_config: Optional[Dict[str, Any]] = None,
         facts_only_mode: bool = False,
+        skip_entity_library_align_on_init: bool = False,
     ):
         """
         初始化 MemoryCore
@@ -96,16 +97,19 @@ class MemoryCore:
             else {}
         )
         self.facts_only_mode = bool(facts_only_mode)
+        self.skip_entity_library_align_on_init = bool(skip_entity_library_align_on_init)
         
         # 1. 构建数据路径（极简化：不再使用 kg_data/entity/relation 文件结构）
         self.memory_root = memory_workflow_dir(workflow_id)
         self.local_store_dir = self.memory_root / "local_store"
         self.entity_library_path = self.local_store_dir / "entity_library"
         self.entity_profile_data_path = self.local_store_dir / "entity_profile"
-        self.entity_profile_facts_situation_file = self.local_store_dir / "facts_situation.json"
+        # EntityProfileService local state (historically named facts_situation.json).
+        self.entity_profile_facts_situation_file = self.local_store_dir / "entity_profile_state.json"
         self.scene_dir = self.memory_root / "scene"
         self.facts_dir = self.memory_root / "facts"
-        self.facts_situation_file = self.memory_root / "facts_situation.json"
+        # Legacy: fact→entity import state file (no longer part of the default segment pipeline).
+        self.facts_situation_file = self.memory_root / "fact_entity_import_state.json"
         self.entity_statement_dir = self.memory_root / "entity_statement"
         self.dialogues_dir = self.memory_root / "dialogues"
         self.episodes_dir = self.memory_root / "episodes"
@@ -125,10 +129,10 @@ class MemoryCore:
         logger.info(f"LocalStore目录: {self.local_store_dir}")
         logger.info(f"实体库路径: {self.entity_library_path}")
         logger.info(f"实体档案库路径: {self.entity_profile_data_path}")
-        logger.info(f"实体档案facts状态文件: {self.entity_profile_facts_situation_file}")
+        logger.info(f"实体档案状态文件: {self.entity_profile_facts_situation_file}")
         logger.info(f"Scene目录: {self.scene_dir}")
         logger.info(f"Facts目录: {self.facts_dir}")
-        logger.info(f"Facts状态文件: {self.facts_situation_file}")
+        logger.info(f"Fact-entity import state file: {self.facts_situation_file}")
         logger.info(f"Entity statement目录: {self.entity_statement_dir}")
         logger.info(f"Dialogues目录: {self.dialogues_dir}")
         logger.info(f"Episodes目录: {self.episodes_dir}")
@@ -214,8 +218,9 @@ class MemoryCore:
             runtime_prompt_config_path=str(self.runtime_prompt_config_path),
         )
         
-        # 对齐实体库与 KG 中的实体
-        self._align_entity_library_with_kg(service)
+        # 对齐实体库与 KG 中的实体（force_rebuild 场景可跳过，避免在清 KG 之前白做全量 embed）
+        if not self.skip_entity_library_align_on_init:
+            self._align_entity_library_with_kg(service)
         
         return service
     
@@ -330,19 +335,43 @@ class MemoryCore:
         self,
         path: Path,
         progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        *,
+        force_rebuild: bool = False,
+        build_scenes: bool = True,
+        build_facts: bool = True,
+        force_scene: bool = False,
+        force_facts: bool = False,
     ) -> Dict[str, Any]:
         """
         新的数据导入接口：从 episodes 路径导入并在系统内部构建 scene + atomic facts。
+
+        Args:
+            force_rebuild: 为 True 时清空本 workflow 的 Neo4j 图（仅独立库）、删除 segment
+                构建状态、按空 KG 重对齐本地实体库，并对 scene/facts/segment 全程使用
+                force_update（与 warmup ``--force`` 对齐）。
         """
         from .workflow.build.load_from_episode import (
             load_from_episode_path as workflow_load_from_episode_path,
         )
 
-        logger.info(f"调用 load_from_episode_path 接口，路径: {path}")
+        logger.info(
+            "调用 load_from_episode_path 接口，路径: %s, force_rebuild=%s build_scenes=%s build_facts=%s force_scene=%s force_facts=%s",
+            path,
+            force_rebuild,
+            build_scenes,
+            build_facts,
+            force_scene,
+            force_facts,
+        )
         return workflow_load_from_episode_path(
             path=path,
             memory_core=self,
             progress_callback=progress_callback,
+            force_rebuild=force_rebuild,
+            build_scenes=build_scenes,
+            build_facts=build_facts,
+            force_scene=force_scene,
+            force_facts=force_facts,
         )
 
     def make_entity_statement(self, path: Path, force_update: bool = False) -> Dict[str, Any]:
@@ -384,6 +413,9 @@ class MemoryCore:
     ) -> Dict[str, Any]:
         """
         导入 facts 的实体信息（UID + name）到 KG，并更新 facts_situation.json。
+
+        注意：默认 episode 加载已改为 segment 管线生成实体档案；本接口保留供迁移 /
+        调试，不再触发基于 fact 的 EntityProfile align。
         """
         from .workflow.build.import_fact_entities import (
             import_fact_entities as workflow_import_fact_entities,
@@ -406,56 +438,13 @@ class MemoryCore:
         except Exception as exc:
             logger.warning("import_fact_entities 后同步 EntityLibrary 失败: %s", exc)
 
-        # 对齐实体档案系统与最新 facts 状态
-        align_result = None
-        try:
-            if progress_callback is not None:
-                try:
-                    progress_callback(
-                        "flush_stage",
-                        {
-                            "stage": "entity_profile_align",
-                            "stage_label": "EntityProfile align",
-                            "status": "started",
-                        },
-                    )
-                except Exception:
-                    logger.exception("EntityProfile align start callback failed")
-            align_result = self.entity_profile_service.align_with_master_facts(force_rebuild=False)
-            if progress_callback is not None:
-                try:
-                    progress_callback(
-                        "flush_stage",
-                        {
-                            "stage": "entity_profile_align",
-                            "stage_label": "EntityProfile align",
-                            "status": "completed",
-                            "result": align_result,
-                        },
-                    )
-                except Exception:
-                    logger.exception("EntityProfile align complete callback failed")
-        except Exception as exc:
-            if progress_callback is not None:
-                try:
-                    progress_callback(
-                        "flush_stage",
-                        {
-                            "stage": "entity_profile_align",
-                            "stage_label": "EntityProfile align",
-                            "status": "failed",
-                            "error": str(exc),
-                        },
-                    )
-                except Exception:
-                    logger.exception("EntityProfile align failure callback failed")
-            logger.warning("import_fact_entities 后同步 EntityProfileService 失败: %s", exc)
-            align_result = {
-                "success": False,
-                "error": str(exc),
-            }
+        # 实体档案由 episode load 的 segment 管线维护；不再从 fact 触发 EntityProfile align。
         if isinstance(result, dict):
-            result["entity_profile_align_result"] = align_result
+            result["entity_profile_align_result"] = {
+                "success": True,
+                "skipped": True,
+                "reason": "entity_profiles_from_segments",
+            }
         return result
 
     def sync_entity_profile(
@@ -466,7 +455,7 @@ class MemoryCore:
         sample_output_tag: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        手动触发实体档案与 facts 对齐。
+        手动触发基于原子 fact 的实体档案对齐（legacy）；默认构建已由 segment 管线完成。
         """
         if sample_ratio is not None:
             return self.entity_profile_service.rebuild_from_sampled_facts(

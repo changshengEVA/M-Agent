@@ -94,6 +94,10 @@ def test_eval_recall_prefers_episode_refs_with_turn_span_mapping(tmp_path: Path)
                     {
                         "episode_id": "ep_001",
                         "turn_span": [2, 4],
+                        "segments": [
+                            {"segment_id": "seg_001", "turn_span": [2, 4]},
+                            {"segment_id": "seg_002", "turn_span": [5, 7]},
+                        ],
                     }
                 ],
             },
@@ -109,11 +113,11 @@ def test_eval_recall_prefers_episode_refs_with_turn_span_mapping(tmp_path: Path)
             "category": 2,
             "evidence": ["D2:3", "D2:6"],
             "pred": "A",
-            "pred_evidence_episode_refs": ["dlg_locomo10_conv-1_2:ep_001"],
+            "pred_evidence_segment_refs": ["dlg_locomo10_conv-1_2:ep_001:seg_001"],
         }
     ]
 
-    _, _, recalls = module.eval_question_answering_locomo(
+    _, _, recalls, _ = module.eval_question_answering_locomo(
         qas,
         "pred",
         episodes_root=tmp_path,
@@ -133,6 +137,9 @@ def test_eval_recall_can_recover_episode_refs_from_tool_calls(tmp_path: Path) ->
                     {
                         "episode_id": "ep_001",
                         "turn_span": [0, 2],
+                        "segments": [
+                            {"segment_id": "seg_001", "turn_span": [0, 2]},
+                        ],
                     }
                 ],
             },
@@ -154,6 +161,7 @@ def test_eval_recall_can_recover_episode_refs_from_tool_calls(tmp_path: Path) ->
                     "params": {
                         "dialogue_id": "dlg_locomo10_conv-1_2",
                         "episode_id": "ep_001",
+                        "segment_id": "seg_001",
                     },
                     "result": {"success": True},
                 }
@@ -161,7 +169,7 @@ def test_eval_recall_can_recover_episode_refs_from_tool_calls(tmp_path: Path) ->
         }
     ]
 
-    _, _, recalls = module.eval_question_answering_locomo(
+    _, _, recalls, _ = module.eval_question_answering_locomo(
         qas,
         "pred",
         episodes_root=tmp_path,
@@ -181,7 +189,7 @@ def test_eval_recall_is_zero_when_no_evidence_ids_available() -> None:
         }
     ]
 
-    _, _, recalls = module.eval_question_answering_locomo(qas, "pred", episodes_root=None)
+    _, _, recalls, _ = module.eval_question_answering_locomo(qas, "pred", episodes_root=None)
     assert recalls == [0.0]
 
 

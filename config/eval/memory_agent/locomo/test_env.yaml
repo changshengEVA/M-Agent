@@ -17,7 +17,7 @@ data:
 selection:
   # Option A: full QA set inside these conversations (import filters; eval filters samples).
   conv_ids:
-    - conv-50
+    - conv-48
     # - conv-26
     # - conv-30
     # - conv-41
@@ -34,26 +34,26 @@ selection:
 
 # --- import: build dialogues + episodes under data/memory/<process_id>/ ---
 import:
-  process_id: baseline
+  process_id: "locomo/conv-48"
   # Remove existing dialogues/ + episodes/ under this process_id before rebuild.
   clean_output: true
   # Parallel episode segmentation: multiple dialogue files in parallel (ThreadPoolExecutor).
   # 1 = same as legacy sequential. Raise with care (LLM / API rate limits).
-  episode_max_workers: 3
+  episode_max_workers: 6
 
 # --- warmup: scene + atomic facts from episodes (reads paths via eval.memory_agent_config → MemoryCore workflow_id) ---
 warmup:
   # Parallel scene generation: multiple episode JSON files (by_dialogue) in parallel.
-  scene_max_workers: 3
+  scene_max_workers: 6
   # Parallel scene fact extraction: multiple scene JSON files in parallel.
-  scene_fact_max_workers: 3
+  scene_fact_max_workers: 6
   # If true, same as CLI --force (delete existing scene dir when regenerating).
   force: true
 
 # --- eval: run_eval_locomo / MemoryAgent QA ---
 eval:
   test_id: new_baseline
-  memory_agent_config: config/agents/memory/locomo_eval_memory_agent_full_mode.yaml
+  memory_agent_config: config/agents/memory/locomo_eval_memory_agent_full_mode_Eplus.yaml
   model_key: memory_agent
   prediction_key: memory_agent_prediction
   thread_id_prefix: locomo-eval

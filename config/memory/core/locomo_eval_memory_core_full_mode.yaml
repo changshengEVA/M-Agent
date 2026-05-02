@@ -1,6 +1,6 @@
 # Used by: `config/agents/memory/locomo_eval_memory_agent.yaml`
 # Purpose: MemoryCore config for LoCoMo evaluation data/workflow.
-workflow_id: "baseline"
+workflow_id: "locomo/conv-48"
 runtime_prompt_config_path: "./runtime/memory_core_runtime.yaml"
 prompt_language: "en"
 
@@ -14,8 +14,9 @@ memory_use_threshold: true
 scene_prompt_version: "v3"
 fact_prompt_version: "v4"
 memory_owner_name: "changshengEVA"
-# true: only build to scene facts; skip extract_fact_entities/import_fact_entities
-# and MemoryAgent will expose only search_content/search_events_by_time_range/search_details
+# Episode load always builds entities from segments (Neo4j + profiles) after atomic facts.
+# When true: MemoryAgent exposes only search_content/search_events_by_time_range/search_details.
+# When false: entity tools / resolution hooks enabled per agent yaml.
 facts_only_mode: false
 # Entity statement build control
 # true: force regenerate all episodes this run

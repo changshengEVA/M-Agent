@@ -1,0 +1,40 @@
+# LoCoMo env config for conv-26 only
+# Typical usage:
+#   python scripts/run_locomo/eval_locomo.py --env-config config/eval/memory_agent/locomo/conv-26_env.yaml
+
+name: locomo_conv26_env
+description: Evaluate conv-26 with isolated memory store and fixed test_id.
+
+data:
+  file: data/locomo/data/locomo10.json
+  loader_type: locomo
+
+selection:
+  conv_ids:
+    - conv-26
+
+import:
+  process_id: "locomo/conv-26"
+  clean_output: false
+  episode_max_workers: 6
+
+warmup:
+  scene_max_workers: 6
+  scene_fact_max_workers: 6
+  force: false
+
+eval:
+  test_id: new_baseline__conv-26
+  memory_agent_config: config/agents/memory/locomo_eval_memory_agent_full_mode_E2.yaml
+  model_key: memory_agent
+  prediction_key: memory_agent_prediction
+  thread_id_prefix: locomo-eval
+  overwrite: true
+  sample_fraction: 1.0
+  sample_seed: 42
+  max_samples: 0
+  max_questions: 0
+  save_every: 1
+  sleep_seconds: 0.0
+  recall_dir: recall
+  llm_judge_exclude_category_5: true

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """Entity profile service: build per-entity attributes/events from facts."""
 
@@ -139,10 +139,15 @@ class EntityProfileService(BaseService):
         )
         self.rebuild_checkpoint_every = max(1, int(rebuild_checkpoint_every or 100))
 
+        # NOTE: Historically this file was named "facts_situation.json" because profiles were
+        # aligned from atomic facts. The segment-based pipeline still needs a persistent local
+        # state file (checkpoint/drift/merge bookkeeping), but it is not "facts" specific anymore.
         self.local_facts_situation_file = (
-            Path(facts_situation_path) if facts_situation_path else self.local_store_dir / "facts_situation.json"
+            Path(facts_situation_path) if facts_situation_path else self.local_store_dir / "entity_profile_state.json"
         )
-        self.master_facts_situation_file = self.memory_root / "facts_situation.json"
+        # Master state for the optional facts-alignment workflow. Segment-based profile build does
+        # not require this file; keep it only for align/rebuild flows when explicitly invoked.
+        self.master_facts_situation_file = self.memory_root / "entity_profile_master_state.json"
         self.facts_dir = self.memory_root / "facts"
         self.scene_dir = self.memory_root / "scene"
 

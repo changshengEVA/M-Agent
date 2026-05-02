@@ -166,6 +166,20 @@ class MemoryAgent(
         self.workspace_max_actions_per_round = max(1, int(workspace_cfg.get("max_actions_per_round", 4)))
         self.workspace_max_episode_candidates = max(1, int(workspace_cfg.get("max_episode_candidates", 12)))
         self.workspace_max_keep = max(1, int(workspace_cfg.get("max_keep", 6)))
+        # "default" | "eplus" — tighter entity→workspace gating (see action_executor.execute_actions).
+        _ewm = str(workspace_cfg.get("entity_workspace_mode", "default") or "default").strip().lower()
+        self.workspace_entity_workspace_mode = _ewm if _ewm in {"default", "eplus"} else "default"
+        self.workspace_entity_eplus_min_slot_score = float(workspace_cfg.get("entity_eplus_min_slot_score", 0.44))
+        self.workspace_entity_eplus_suppress_empty_profile_query = bool(
+            workspace_cfg.get("entity_eplus_suppress_empty_profile_query", True)
+        )
+        _defer_keep = workspace_cfg.get("defer_keep_source_types")
+        if isinstance(_defer_keep, list):
+            self.workspace_defer_keep_source_types = frozenset(
+                str(x).strip() for x in _defer_keep if str(x).strip()
+            )
+        else:
+            self.workspace_defer_keep_source_types = frozenset()
         self.workspace_min_evidence_to_answer = max(1, int(workspace_cfg.get("min_evidence_to_answer", 1)))
         self.workspace_remedy_recall_max_times = max(
             0,
@@ -191,13 +205,29 @@ class MemoryAgent(
         self.rerank_max_documents = max(1, int(rerank_cfg.get("max_documents", 16)))
         self.rerank_chunk_chars = max(32, int(rerank_cfg.get("chunk_chars", 800)))
         self.rerank_chunk_batch_size = max(4, int(rerank_cfg.get("chunk_batch_size", 32)))
+        # Rerank network resilience (mirrors MemoryAgent network retry knobs, but scoped to rerank only).
+        self.rerank_retry_attempts = max(1, int(rerank_cfg.get("retry_attempts", 4)))
+        self.rerank_retry_backoff_seconds = max(
+            0.0,
+            float(rerank_cfg.get("retry_backoff_seconds", 2.0)),
+        )
+        self.rerank_retry_backoff_multiplier = max(
+            1.0,
+            float(rerank_cfg.get("retry_backoff_multiplier", 2.0)),
+        )
+        self.rerank_request_timeout_seconds = float(rerank_cfg.get("request_timeout_seconds", 60.0))
+        if self.rerank_request_timeout_seconds <= 0:
+            self.rerank_request_timeout_seconds = 60.0
         self.rerank_func = None
         if self.rerank_enabled:
             rerank_provider = str(rerank_cfg.get("provider", "aliyun")).strip().lower()
             rerank_model = str(rerank_cfg.get("model_name", "")).strip()
             if rerank_provider in {"alibaba", "aliyun", "dashscope"}:
                 from m_agent.load_model.AlibabaRerankCall import get_rerank_func
-                self.rerank_func = get_rerank_func(model_name=rerank_model)
+                self.rerank_func = get_rerank_func(
+                    model_name=rerank_model,
+                    http_timeout_seconds=float(self.rerank_request_timeout_seconds),
+                )
                 logger.info("Workspace rerank enabled: provider=%s, model=%s", rerank_provider, rerank_model or "(default)")
             else:
                 logger.warning("Unsupported rerank provider: %s, rerank disabled", rerank_provider)
@@ -245,6 +275,8 @@ class MemoryAgent(
             path_desc=f"{self.runtime_prompt_config_path}.memory_agent.system_prompt",
         )
         tool_descriptions = self._load_tool_descriptions()
+        # Keep a copy for planner/runtime quota enforcement.
+        self.tool_descriptions = tool_descriptions or {}
         if tool_descriptions and self._enabled_tools:
             from .action_planner import build_tool_registry_from_config
             self.tool_registry = build_tool_registry_from_config(

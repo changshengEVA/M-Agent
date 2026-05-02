@@ -14,8 +14,8 @@ memory_use_threshold: true
 scene_prompt_version: "v3"
 fact_prompt_version: "v4"
 memory_owner_name: "changshengEVA"
-# true: only build to scene facts; skip extract_fact_entities/import_fact_entities
-# and MemoryAgent will expose only search_content/search_events_by_time_range/search_details
+# Episode load always uses segment entity pipeline after atomic facts (same as full_mode).
+# When true: MemoryAgent tool surface is facts-only (no entity profile tools).
 facts_only_mode: true
 # Entity statement build control
 # true: force regenerate all episodes this run

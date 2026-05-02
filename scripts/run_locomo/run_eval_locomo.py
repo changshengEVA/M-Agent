@@ -16,7 +16,7 @@ import time
 from collections import Counter, defaultdict
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import yaml
 
@@ -49,11 +49,15 @@ PREDICTION_FILE_NAME = "locomo10_agent_qa.json"
 STATS_FILE_NAME = "locomo10_agent_qa_stats.json"
 RUN_LOG_FILE_NAME = "locomo10_agent_qa_run.log"
 TRACE_FILE_NAME = "locomo10_agent_qa_qa_trace.jsonl"
+SIMPLE_TRACE_FILE_NAME = "locomo10_agent_qa_simple_trace.jsonl"
 SKIPPED_QA_CATEGORIES = {5}
 EVAL_CATEGORY_ORDER = [4, 1, 2, 3]
 LOCOMO_SOURCE_QA_INDEX_KEY = "_locomo_source_qa_index"
 EVIDENCE_DIALOG_REF_PATTERN = re.compile(r"D\d+:\d+")
 EPISODE_REF_PATTERN = re.compile(r"dlg_[A-Za-z0-9._-]+:ep_[A-Za-z0-9._-]+")
+SEGMENT_REF_PATTERN = re.compile(
+    r"dlg_[A-Za-z0-9._-]+:ep_[A-Za-z0-9._-]+:seg_[A-Za-z0-9._-]+"
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -437,6 +441,7 @@ def _build_output_paths(test_id: str) -> Dict[str, str]:
         "stats_file": str(out_dir / STATS_FILE_NAME),
         "log_file": str(out_dir / RUN_LOG_FILE_NAME),
         "trace_file": str(out_dir / TRACE_FILE_NAME),
+        "simple_trace_file": str(out_dir / SIMPLE_TRACE_FILE_NAME),
     }
 
 
@@ -506,6 +511,11 @@ def append_trace(trace_fp, record: Dict[str, Any]) -> None:
     trace_fp.flush()
 
 
+def append_simple_trace(simple_trace_fp, record: Dict[str, Any]) -> None:
+    simple_trace_fp.write(json.dumps(record, ensure_ascii=False) + "\n")
+    simple_trace_fp.flush()
+
+
 def _apply_trace_record_to_qa(
     qa: Dict[str, Any], record: Dict[str, Any], prediction_key: str
 ) -> bool:
@@ -539,6 +549,13 @@ def _apply_trace_record_to_qa(
         episode_ref_count = record.get("evidence_episode_ref_count")
     if episode_ref_count is not None:
         qa[prediction_key + "_evidence_episode_ref_count"] = episode_ref_count
+        applied = True
+
+    workspace_execute_refs = record.get("prediction_workspace_execute_segment_refs")
+    if workspace_execute_refs is None:
+        workspace_execute_refs = record.get("prediction_workspace_execute_episode_refs")
+    if workspace_execute_refs is not None:
+        qa[prediction_key + "_workspace_execute_segment_refs"] = workspace_execute_refs
         applied = True
 
     if record.get("prediction_tool_calls") is not None:
@@ -750,6 +767,50 @@ def _extract_episode_refs(value: Any) -> List[str]:
     return _dedupe_keep_order(refs)
 
 
+def _extract_segment_refs(value: Any) -> List[str]:
+    refs: List[str] = []
+
+    def _collect(item: Any) -> None:
+        if item is None:
+            return
+        if isinstance(item, str):
+            refs.extend(SEGMENT_REF_PATTERN.findall(item))
+            return
+        if isinstance(item, (list, tuple, set)):
+            for child in item:
+                _collect(child)
+            return
+        refs.extend(SEGMENT_REF_PATTERN.findall(str(item)))
+
+    _collect(value)
+    return _dedupe_keep_order(refs)
+
+
+def _extract_workspace_execute_segment_refs(result: Dict[str, Any] | None) -> List[str]:
+    if not isinstance(result, dict):
+        return []
+
+    rounds = result.get("workspace_rounds")
+    if not isinstance(rounds, list):
+        return []
+
+    refs: List[str] = []
+    for item in rounds:
+        if not isinstance(item, dict):
+            continue
+        workspace_state = item.get("workspace_after_execute")
+        if not isinstance(workspace_state, dict):
+            continue
+        evidences = workspace_state.get("evidences")
+        if not isinstance(evidences, list):
+            continue
+        for evidence in evidences:
+            if not isinstance(evidence, dict):
+                continue
+            refs.extend(_extract_segment_refs(evidence.get("evidence_id")))
+    return _dedupe_keep_order(refs)
+
+
 def _is_successful_tool_call_for_eval(call: Dict[str, Any]) -> bool:
     status = str(call.get("status", "") or "").strip().lower()
     if status and status != "completed":
@@ -781,6 +842,22 @@ def _collect_episode_refs_from_value(value: Any, refs: set[str]) -> None:
             _collect_episode_refs_from_value(item, refs)
 
 
+def _collect_segment_refs_from_value(value: Any, refs: set[str]) -> None:
+    if isinstance(value, dict):
+        dialogue_id = str(value.get("dialogue_id", "") or "").strip()
+        episode_id = str(value.get("episode_id", "") or "").strip()
+        segment_id = str(value.get("segment_id", "") or "").strip()
+        if dialogue_id and episode_id and segment_id:
+            refs.add(f"{dialogue_id}:{episode_id}:{segment_id}")
+        for child in value.values():
+            _collect_segment_refs_from_value(child, refs)
+        return
+
+    if isinstance(value, (list, tuple, set)):
+        for item in value:
+            _collect_segment_refs_from_value(item, refs)
+
+
 def _extract_episode_refs_from_tool_calls(tool_calls: Any) -> List[str]:
     if not isinstance(tool_calls, list):
         return []
@@ -793,6 +870,22 @@ def _extract_episode_refs_from_tool_calls(tool_calls: Any) -> List[str]:
             continue
         _collect_episode_refs_from_value(call.get("result"), refs)
         _collect_episode_refs_from_value(call.get("params"), refs)
+
+    return sorted(refs)
+
+
+def _extract_segment_refs_from_tool_calls(tool_calls: Any) -> List[str]:
+    if not isinstance(tool_calls, list):
+        return []
+
+    refs: set[str] = set()
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            continue
+        if not _is_successful_tool_call_for_eval(call):
+            continue
+        _collect_segment_refs_from_value(call.get("result"), refs)
+        _collect_segment_refs_from_value(call.get("params"), refs)
 
     return sorted(refs)
 
@@ -811,6 +904,22 @@ def _get_prediction_episode_refs(qa: Dict[str, Any], prediction_key: str) -> Lis
         return refs
 
     return _extract_episode_refs(qa.get(prediction_key + "_answer"))
+
+
+def _get_prediction_segment_refs(qa: Dict[str, Any], prediction_key: str) -> List[str]:
+    refs = _extract_segment_refs(qa.get(prediction_key + "_evidence_segment_refs"))
+    if refs:
+        return refs
+
+    refs = _extract_segment_refs_from_tool_calls(qa.get(prediction_key + "_tool_calls"))
+    if refs:
+        return refs
+
+    refs = _extract_segment_refs(qa.get(prediction_key + "_evidence"))
+    if refs:
+        return refs
+
+    return _extract_segment_refs(qa.get(prediction_key + "_answer"))
 
 
 def _parse_episode_ref(ref: str) -> Tuple[str | None, str | None]:
@@ -840,6 +949,200 @@ def _parse_session_from_dialogue_ref(dialogue_ref: str) -> str | None:
     if not match:
         return None
     return match.group(1)
+
+
+def _parse_dialogue_ref(dialogue_ref: str) -> Tuple[int, int] | None:
+    match = re.fullmatch(r"D(\d+):(\d+)", str(dialogue_ref or "").strip())
+    if not match:
+        return None
+    try:
+        return int(match.group(1)), int(match.group(2))
+    except Exception:
+        return None
+
+
+def _build_sample_session_dialogue_map(
+    episodes_root: Path | None,
+    sample_id: str,
+    sample_session_dialogue_cache: Dict[str, Dict[int, str]],
+) -> Dict[int, str]:
+    sample_key = str(sample_id or "").strip()
+    cached = sample_session_dialogue_cache.get(sample_key)
+    if cached is not None:
+        return cached
+
+    mapping: Dict[int, str] = {}
+    if episodes_root is None:
+        sample_session_dialogue_cache[sample_key] = mapping
+        return mapping
+
+    by_dialogue = episodes_root / "by_dialogue"
+    if not by_dialogue.exists():
+        sample_session_dialogue_cache[sample_key] = mapping
+        return mapping
+
+    for entry in by_dialogue.iterdir():
+        if not entry.is_dir():
+            continue
+        dialogue_id = entry.name
+        if sample_key and sample_key not in dialogue_id:
+            continue
+        session_num = _parse_session_from_dialogue_id(dialogue_id)
+        if session_num is None:
+            continue
+        mapping.setdefault(session_num, dialogue_id)
+
+    sample_session_dialogue_cache[sample_key] = mapping
+    return mapping
+
+
+def _load_dialogue_episode_segment_spans(
+    dialogue_id: str,
+    episodes_root: Path | None,
+    dialogue_segment_spans_cache: Dict[str, List[Tuple[str, str, int, int]]],
+) -> List[Tuple[str, str, int, int]]:
+    cached = dialogue_segment_spans_cache.get(dialogue_id)
+    if cached is not None:
+        return cached
+
+    rows: List[Tuple[str, str, int, int]] = []
+    if episodes_root is None:
+        dialogue_segment_spans_cache[dialogue_id] = rows
+        return rows
+
+    episode_file = episodes_root / "by_dialogue" / dialogue_id / "episodes_v1.json"
+    if not episode_file.exists():
+        dialogue_segment_spans_cache[dialogue_id] = rows
+        return rows
+
+    try:
+        payload = _load_json(str(episode_file))
+    except Exception as exc:
+        logger.debug("Failed to load episode segments for %s: %s", dialogue_id, exc)
+        dialogue_segment_spans_cache[dialogue_id] = rows
+        return rows
+
+    episodes = payload.get("episodes", []) if isinstance(payload, dict) else []
+    if isinstance(episodes, list):
+        for episode in episodes:
+            if not isinstance(episode, dict):
+                continue
+            episode_id = str(episode.get("episode_id", "") or "").strip()
+            segments = episode.get("segments")
+            if not episode_id or not isinstance(segments, list):
+                continue
+            for segment in segments:
+                if not isinstance(segment, dict):
+                    continue
+                segment_id = str(segment.get("segment_id", "") or "").strip()
+                turn_span = segment.get("turn_span")
+                if not segment_id or not isinstance(turn_span, list) or len(turn_span) != 2:
+                    continue
+                try:
+                    start = int(turn_span[0])
+                    end = int(turn_span[1])
+                except Exception:
+                    continue
+                if end < start:
+                    start, end = end, start
+                rows.append((episode_id, segment_id, start, end))
+
+    dialogue_segment_spans_cache[dialogue_id] = rows
+    return rows
+
+
+def _dialogue_ref_to_segment_ref(
+    dialogue_ref: str,
+    sample_id: str,
+    episodes_root: Path | None,
+    sample_session_dialogue_cache: Dict[str, Dict[int, str]],
+    dialogue_segment_spans_cache: Dict[str, List[Tuple[str, str, int, int]]],
+    dialogue_ref_segment_cache: Dict[Tuple[str, str], str | None],
+) -> str | None:
+    cache_key = (str(sample_id or "").strip(), str(dialogue_ref or "").strip())
+    if cache_key in dialogue_ref_segment_cache:
+        return dialogue_ref_segment_cache[cache_key]
+
+    parsed = _parse_dialogue_ref(dialogue_ref)
+    if not parsed:
+        dialogue_ref_segment_cache[cache_key] = None
+        return None
+    session_num, turn_one_based = parsed
+    turn_idx = turn_one_based - 1
+    if turn_idx < 0:
+        dialogue_ref_segment_cache[cache_key] = None
+        return None
+
+    sample_map = _build_sample_session_dialogue_map(
+        episodes_root=episodes_root,
+        sample_id=sample_id,
+        sample_session_dialogue_cache=sample_session_dialogue_cache,
+    )
+    dialogue_id = sample_map.get(session_num)
+    if not dialogue_id:
+        dialogue_ref_segment_cache[cache_key] = None
+        return None
+
+    segment_rows = _load_dialogue_episode_segment_spans(
+        dialogue_id=dialogue_id,
+        episodes_root=episodes_root,
+        dialogue_segment_spans_cache=dialogue_segment_spans_cache,
+    )
+    for episode_id, segment_id, start, end in segment_rows:
+        if start <= turn_idx <= end:
+            segment_ref = f"{dialogue_id}:{episode_id}:{segment_id}"
+            dialogue_ref_segment_cache[cache_key] = segment_ref
+            return segment_ref
+
+    dialogue_ref_segment_cache[cache_key] = None
+    return None
+
+
+def _dialogue_ref_to_episode_ref(
+    dialogue_ref: str,
+    sample_id: str,
+    episodes_root: Path | None,
+    sample_session_dialogue_cache: Dict[str, Dict[int, str]],
+    dialogue_episode_spans_cache: Dict[str, Dict[str, Tuple[int, int]]],
+    dialogue_ref_episode_cache: Dict[Tuple[str, str], str | None],
+) -> str | None:
+    cache_key = (str(sample_id or "").strip(), str(dialogue_ref or "").strip())
+    if cache_key in dialogue_ref_episode_cache:
+        return dialogue_ref_episode_cache[cache_key]
+
+    parsed = _parse_dialogue_ref(dialogue_ref)
+    if not parsed:
+        dialogue_ref_episode_cache[cache_key] = None
+        return None
+    session_num, turn_one_based = parsed
+    turn_idx = turn_one_based - 1
+    if turn_idx < 0:
+        dialogue_ref_episode_cache[cache_key] = None
+        return None
+
+    sample_map = _build_sample_session_dialogue_map(
+        episodes_root=episodes_root,
+        sample_id=sample_id,
+        sample_session_dialogue_cache=sample_session_dialogue_cache,
+    )
+    dialogue_id = sample_map.get(session_num)
+    if not dialogue_id:
+        dialogue_ref_episode_cache[cache_key] = None
+        return None
+
+    episode_spans = _load_dialogue_episode_turn_spans(
+        dialogue_id=dialogue_id,
+        episodes_root=episodes_root,
+        dialogue_episode_spans_cache=dialogue_episode_spans_cache,
+    )
+    for episode_id, (start, end) in episode_spans.items():
+        if start <= turn_idx <= end:
+            episode_ref = f"{dialogue_id}:{episode_id}"
+            dialogue_ref_episode_cache[cache_key] = episode_ref
+            return episode_ref
+
+    dialogue_ref_episode_cache[cache_key] = None
+    return None
 
 
 def _load_dialogue_episode_turn_spans(
@@ -925,52 +1228,27 @@ def _episode_ref_to_dialogue_refs(
     return resolved
 
 
-def _compute_recall_from_episode_refs(
+def _compute_recall_from_segment_refs(
     qa: Dict[str, Any],
     prediction_key: str,
-    evidence_refs: List[str],
-    episodes_root: Path | None,
-    episode_ref_cache: Dict[str, List[str]],
-    dialogue_episode_spans_cache: Dict[str, Dict[str, Tuple[int, int]]],
+    gold_segment_refs: Sequence[str],
 ) -> float | None:
-    if not evidence_refs:
+    if not gold_segment_refs:
         return 1.0
 
-    episode_refs = _get_prediction_episode_refs(qa, prediction_key)
-    if not episode_refs:
+    segment_refs = _get_prediction_segment_refs(qa, prediction_key)
+    if not segment_refs:
         return None
 
-    pred_dialogue_refs: set[str] = set()
-    pred_session_refs: set[str] = set()
-    for episode_ref in episode_refs:
-        resolved_refs = _episode_ref_to_dialogue_refs(
-            episode_ref=episode_ref,
-            episodes_root=episodes_root,
-            episode_ref_cache=episode_ref_cache,
-            dialogue_episode_spans_cache=dialogue_episode_spans_cache,
-        )
-        for ref in resolved_refs:
-            if ref.startswith("D"):
-                pred_dialogue_refs.add(ref)
-            elif ref.startswith("S"):
-                pred_session_refs.add(ref)
-
-    hit_count = 0
-    for gt_ref in evidence_refs:
-        if gt_ref in pred_dialogue_refs:
-            hit_count += 1
-            continue
-        session_id = _parse_session_from_dialogue_ref(gt_ref)
-        if session_id and f"S{session_id}" in pred_session_refs:
-            hit_count += 1
-
-    return float(hit_count) / len(evidence_refs)
+    pred_segment_refs = set(segment_refs)
+    hit_count = sum(1 for gt_ref in gold_segment_refs if gt_ref in pred_segment_refs)
+    return float(hit_count) / len(gold_segment_refs)
 
 
-def _compute_recall_from_context(
-    qa: Dict[str, Any], prediction_key: str, evidence_refs: List[str]
+def _compute_recall_from_context_segment(
+    qa: Dict[str, Any], prediction_key: str, gold_segment_refs: Sequence[str]
 ) -> float | None:
-    if not evidence_refs:
+    if not gold_segment_refs:
         return 1.0
 
     context_key = prediction_key + "_context"
@@ -985,40 +1263,83 @@ def _compute_recall_from_context(
     if not ctx_values:
         return 0.0
 
-    if ctx_values[0].startswith("S"):
-        sessions = {value[1:] for value in ctx_values if value.startswith("S") and len(value) > 1}
-        hit_count = 0
-        for gt_ref in evidence_refs:
-            session_id = _parse_session_from_dialogue_ref(gt_ref)
-            if session_id and session_id in sessions:
-                hit_count += 1
-        return float(hit_count) / len(evidence_refs)
+    context_segment_refs = _extract_segment_refs(ctx_values)
+    if not context_segment_refs:
+        return 0.0
 
-    ctx_set = set(ctx_values)
-    return float(sum(gt_ref in ctx_set for gt_ref in evidence_refs)) / len(evidence_refs)
+    ctx_set = set(context_segment_refs)
+    hit_count = sum(1 for gt_ref in gold_segment_refs if gt_ref in ctx_set)
+    return float(hit_count) / len(gold_segment_refs)
+
+
+def _get_gold_segment_refs(
+    qa: Dict[str, Any],
+    sample_id: str,
+    episodes_root: Path | None,
+    sample_session_dialogue_cache: Dict[str, Dict[int, str]],
+    dialogue_segment_spans_cache: Dict[str, List[Tuple[str, str, int, int]]],
+    dialogue_ref_segment_cache: Dict[Tuple[str, str], str | None],
+) -> List[str]:
+    dialogue_refs = _extract_dialogue_refs_from_evidence(qa.get("evidence", []))
+    refs: List[str] = []
+    for dialogue_ref in dialogue_refs:
+        segment_ref = _dialogue_ref_to_segment_ref(
+            dialogue_ref=dialogue_ref,
+            sample_id=sample_id,
+            episodes_root=episodes_root,
+            sample_session_dialogue_cache=sample_session_dialogue_cache,
+            dialogue_segment_spans_cache=dialogue_segment_spans_cache,
+            dialogue_ref_segment_cache=dialogue_ref_segment_cache,
+        )
+        if segment_ref:
+            refs.append(segment_ref)
+    return _dedupe_keep_order(refs)
+
+
+def _compute_workspace_execute_recall(
+    qa: Dict[str, Any],
+    prediction_key: str,
+    gold_segment_refs: Sequence[str],
+) -> float:
+    if not gold_segment_refs:
+        return 1.0
+
+    execute_refs = _extract_segment_refs(qa.get(prediction_key + "_workspace_execute_segment_refs"))
+    if not execute_refs:
+        return 0.0
+
+    execute_ref_set = set(execute_refs)
+    hit_count = sum(1 for segment_ref in gold_segment_refs if segment_ref in execute_ref_set)
+    return float(hit_count) / len(gold_segment_refs)
 
 
 def eval_question_answering_locomo(
     qas: List[Dict[str, Any]],
     prediction_key: str,
     episodes_root: Path | None = None,
+    sample_id: str = "",
     *,
-    episode_ref_cache: Dict[str, List[str]] | None = None,
-    dialogue_episode_spans_cache: Dict[str, Dict[str, Tuple[int, int]]] | None = None,
-) -> Tuple[List[float], List[float], List[float]]:
+    sample_session_dialogue_cache: Dict[str, Dict[int, str]] | None = None,
+    dialogue_segment_spans_cache: Dict[str, List[Tuple[str, str, int, int]]] | None = None,
+    dialogue_ref_segment_cache: Dict[Tuple[str, str], str | None] | None = None,
+) -> Tuple[List[float], List[float], List[float], List[float]]:
     all_scores: List[float] = []
     all_b1_scores: List[float] = []
     all_recall: List[float] = []
-    if episode_ref_cache is None:
-        episode_ref_cache = {}
-    if dialogue_episode_spans_cache is None:
-        dialogue_episode_spans_cache = {}
+    all_workspace_execute_recall: List[float] = []
+    if sample_session_dialogue_cache is None:
+        sample_session_dialogue_cache = {}
+    if dialogue_segment_spans_cache is None:
+        dialogue_segment_spans_cache = {}
+    if dialogue_ref_segment_cache is None:
+        dialogue_ref_segment_cache = {}
 
     for qa in qas:
         if not should_evaluate_qa(qa):
             all_scores.append(0.0)
             all_b1_scores.append(0.0)
             all_recall.append(1.0)
+            all_workspace_execute_recall.append(1.0)
             continue
 
         category = int(qa.get("category", -1))
@@ -1040,27 +1361,43 @@ def eval_question_answering_locomo(
         all_scores.append(score)
         all_b1_scores.append(b1)
 
-        evidence_refs = _extract_dialogue_refs_from_evidence(qa.get("evidence", []))
-        recall_acc = _compute_recall_from_episode_refs(
+        gold_dialogue_refs = _extract_dialogue_refs_from_evidence(qa.get("evidence", []))
+        gold_segment_refs = _get_gold_segment_refs(
             qa=qa,
-            prediction_key=prediction_key,
-            evidence_refs=evidence_refs,
+            sample_id=sample_id,
             episodes_root=episodes_root,
-            episode_ref_cache=episode_ref_cache,
-            dialogue_episode_spans_cache=dialogue_episode_spans_cache,
+            sample_session_dialogue_cache=sample_session_dialogue_cache,
+            dialogue_segment_spans_cache=dialogue_segment_spans_cache,
+            dialogue_ref_segment_cache=dialogue_ref_segment_cache,
         )
-        if recall_acc is None:
-            recall_acc = _compute_recall_from_context(
+        if gold_dialogue_refs and not gold_segment_refs:
+            # Gold evidence exists, but cannot be projected to segments.
+            recall_acc = 0.0
+            workspace_execute_recall = 0.0
+        else:
+            recall_acc = _compute_recall_from_segment_refs(
                 qa=qa,
                 prediction_key=prediction_key,
-                evidence_refs=evidence_refs,
+                gold_segment_refs=gold_segment_refs,
             )
-        if recall_acc is None:
-            recall_acc = 1.0 if not evidence_refs else 0.0
+            if recall_acc is None:
+                recall_acc = _compute_recall_from_context_segment(
+                    qa=qa,
+                    prediction_key=prediction_key,
+                    gold_segment_refs=gold_segment_refs,
+                )
+            if recall_acc is None:
+                recall_acc = 1.0 if not gold_segment_refs else 0.0
+            workspace_execute_recall = _compute_workspace_execute_recall(
+                qa=qa,
+                prediction_key=prediction_key,
+                gold_segment_refs=gold_segment_refs,
+            )
 
         all_recall.append(recall_acc)
+        all_workspace_execute_recall.append(workspace_execute_recall)
 
-    return all_scores, all_b1_scores, all_recall
+    return all_scores, all_b1_scores, all_recall, all_workspace_execute_recall
 
 
 def get_conversation_lengths(conversation: Dict[str, Any]) -> Dict[str, int]:
@@ -1412,6 +1749,7 @@ def main() -> int:
     stats_file = output_paths["stats_file"]
     log_file = output_paths["log_file"]
     trace_file = output_paths["trace_file"]
+    simple_trace_file = output_paths["simple_trace_file"]
     recall_root = LOG_DIR / _sanitize_test_id(args.test_id) / _sanitize_recall_dir_segment(
         args.recall_dir
     )
@@ -1424,6 +1762,7 @@ def main() -> int:
     logger.info("stats_file=%s", stats_file)
     logger.info("log_file=%s", log_file)
     logger.info("trace_file=%s", trace_file)
+    logger.info("simple_trace_file=%s", simple_trace_file)
     logger.info("recall_root=%s", recall_root)
     if args.overwrite and recall_root.exists():
         shutil.rmtree(recall_root, ignore_errors=True)
@@ -1563,6 +1902,8 @@ def main() -> int:
     trace_mode = "w" if args.overwrite else "a"
     Path(trace_file).parent.mkdir(parents=True, exist_ok=True)
     trace_fp = open(trace_file, trace_mode, encoding="utf-8")
+    Path(simple_trace_file).parent.mkdir(parents=True, exist_ok=True)
+    simple_trace_fp = open(simple_trace_file, trace_mode, encoding="utf-8")
 
     progress = None
     if tqdm is not None:
@@ -1621,6 +1962,7 @@ def main() -> int:
                 tool_calls: Any = None
                 question_plan: Any = None
                 evidence_episode_refs: List[str] = []
+                workspace_execute_segment_refs: List[str] = []
                 evidence_episode_ref_count = 0
 
                 if not question:
@@ -1641,6 +1983,9 @@ def main() -> int:
                         evidence_episode_refs = _extract_episode_refs(
                             ask_result.get("evidence_episode_refs")
                         )
+                        workspace_execute_segment_refs = _extract_workspace_execute_segment_refs(
+                            ask_result
+                        )
                         raw_ref_count = ask_result.get("evidence_episode_ref_count")
                         try:
                             evidence_episode_ref_count = int(raw_ref_count)
@@ -1654,6 +1999,9 @@ def main() -> int:
                         qa[args.prediction_key + "_gold_answer"] = pred
                         qa[args.prediction_key + "_evidence"] = evidence
                         qa[args.prediction_key + "_evidence_episode_refs"] = evidence_episode_refs
+                        qa[args.prediction_key + "_workspace_execute_segment_refs"] = (
+                            workspace_execute_segment_refs
+                        )
                         qa[args.prediction_key + "_evidence_episode_ref_count"] = (
                             evidence_episode_ref_count
                         )
@@ -1683,6 +2031,7 @@ def main() -> int:
                                 "_gold_answer",
                                 "_evidence",
                                 "_evidence_episode_refs",
+                                "_workspace_execute_segment_refs",
                                 "_evidence_episode_ref_count",
                             ):
                                 qa.pop(args.prediction_key + suffix, None)
@@ -1731,11 +2080,25 @@ def main() -> int:
                     "prediction_evidence_episode_ref_count": qa.get(
                         args.prediction_key + "_evidence_episode_ref_count"
                     ),
+                    "prediction_workspace_execute_segment_refs": qa.get(
+                        args.prediction_key + "_workspace_execute_segment_refs"
+                    ),
                     "prediction_tool_calls": qa.get(args.prediction_key + "_tool_calls"),
                     "prediction_plan": qa.get(args.prediction_key + "_plan"),
                     "error": error_text,
                 }
                 append_trace(trace_fp, trace_record)
+                simple_trace_record = {
+                    "ts": trace_record["ts"],
+                    "trace_id": trace_id,
+                    "sample_id": sid,
+                    "qa_index": q_idx,
+                    "question": question,
+                    "ground_truth_answer": qa.get("answer", ""),
+                    "prediction": qa.get(args.prediction_key, ""),
+                    "prediction_answer": qa.get(args.prediction_key + "_answer"),
+                }
+                append_simple_trace(simple_trace_fp, simple_trace_record)
 
                 asked_count += 1
                 if progress is not None:
@@ -1762,19 +2125,25 @@ def main() -> int:
         if progress is not None:
             progress.close()
         trace_fp.close()
+        simple_trace_fp.close()
 
-    episode_ref_cache: Dict[str, List[str]] = {}
-    dialogue_episode_spans_cache: Dict[str, Dict[str, Tuple[int, int]]] = {}
+    sample_session_dialogue_cache: Dict[str, Dict[int, str]] = {}
+    dialogue_segment_spans_cache: Dict[str, List[Tuple[str, str, int, int]]] = {}
+    dialogue_ref_segment_cache: Dict[Tuple[str, str], str | None] = {}
+    workspace_execute_recall_metric_key = args.model_key + "_workspace_execute_recall"
     for sample in out_map.values():
         qas = sample.get("qa", [])
         if not isinstance(qas, list):
             continue
-        f1_scores, b1_scores, recalls = eval_question_answering_locomo(
+        sample_id = str(sample.get("sample_id", "") or "")
+        f1_scores, b1_scores, recalls, workspace_execute_recalls = eval_question_answering_locomo(
             qas,
             args.prediction_key,
             episodes_root=episodes_root,
-            episode_ref_cache=episode_ref_cache,
-            dialogue_episode_spans_cache=dialogue_episode_spans_cache,
+            sample_id=sample_id,
+            sample_session_dialogue_cache=sample_session_dialogue_cache,
+            dialogue_segment_spans_cache=dialogue_segment_spans_cache,
+            dialogue_ref_segment_cache=dialogue_ref_segment_cache,
         )
         for i, qa in enumerate(qas):
             if not isinstance(qa, dict):
@@ -1783,10 +2152,12 @@ def main() -> int:
                 qa.pop(f1_metric_key, None)
                 qa.pop(b1_metric_key, None)
                 qa.pop(args.model_key + "_recall", None)
+                qa.pop(workspace_execute_recall_metric_key, None)
                 continue
             qa[f1_metric_key] = round(f1_scores[i], 3)
             qa[b1_metric_key] = round(b1_scores[i], 3)
             qa[args.model_key + "_recall"] = round(recalls[i], 3)
+            qa[workspace_execute_recall_metric_key] = round(workspace_execute_recalls[i], 3)
 
     _write_outputs(out_file, samples, out_map)
 
@@ -1805,6 +2176,13 @@ def main() -> int:
     recall_summary = summarize_metric_by_category(out_samples_in_order, recall_metric_key)
     stats["summary_by_category_recall"] = recall_summary["summary_by_category"]
     stats["overall_recall"] = recall_summary["overall"]
+    workspace_execute_recall_summary = summarize_metric_by_category(
+        out_samples_in_order, workspace_execute_recall_metric_key
+    )
+    stats["summary_by_category_workspace_execute_recall"] = workspace_execute_recall_summary[
+        "summary_by_category"
+    ]
+    stats["overall_workspace_execute_recall"] = workspace_execute_recall_summary["overall"]
     all_stats = _load_json(stats_file) if os.path.exists(stats_file) else {}
     if not isinstance(all_stats, dict):
         all_stats = {}
@@ -1815,11 +2193,17 @@ def main() -> int:
     logger.info("Saved predictions: %s", out_file)
     logger.info("Saved stats: %s", stats_file)
     logger.info("Saved trace: %s", trace_file)
+    logger.info("Saved simple trace: %s", simple_trace_file)
     logger.info("Recall artifacts under: %s", recall_root)
     logger.info("Evaluated new questions this run: %d", asked_count)
     logger.info("Overall accuracy (%s): %.3f", args.model_key, stats["overall_accuracy"])
     logger.info("Overall B1 (%s): %.3f", args.model_key, stats["overall_b1"])
     logger.info("Overall recall (%s): %.3f", args.model_key, stats["overall_recall"])
+    logger.info(
+        "Overall workspace execute recall (%s): %.3f",
+        args.model_key,
+        stats["overall_workspace_execute_recall"],
+    )
     logger.info("Category accuracy: %s", json.dumps(stats["summary_by_category"], ensure_ascii=False))
     if fatal_error is not None:
         logger.error("Evaluation stopped early due to network/API error: %s", fatal_error)

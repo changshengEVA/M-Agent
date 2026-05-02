@@ -3,42 +3,118 @@ EVENT_DETAIL_RECALL:
     zh: "对记忆片段的事实和对话内容进行语义检索。适用于关于事件、话题或人物的一般性问题。"
     en: "Semantic search over episode facts and dialogue details. Best for general questions about events, topics, or people."
   params: '{"detail_query": "<search query>", "topk": <int, default 10>}'
+  planner_quota:
+    # Fallback guarantee: even if the question looks “entity-ish”, we still want at least
+    # one dialogue-grounded retrieval in round-1 to avoid starving episodic evidence.
+    min_round1: 1
+    max_per_round: 3
+    eligibility:
+      require_entity_uid: false
+      rounds: [1, 2, 3]
   search_entry_anchors:
-    zh: "当原始问题或当前检索查询暴露出语义入口时选用：包括问题本身整句，以及人物/实体、主题、活动、物品、地点、目标或需要从对话与事实中匹配的任何具体表述。"
-    en: "Use when the original question or current retrieval query exposes semantic entry points—including the full question text itself—as well as entities, topics, activities, objects, places, goals, or any concrete wording that should be matched against stored dialogue and facts."
+    zh: "【默认主力工具】当问题需要从对话/事件细节中找证据时使用：包括 WHEN/WHERE/做过几次/持续多久/最后一次/在某月某周/发生了什么/谁说了什么/提到过什么 等；以及包含人物、地点、物品、活动、目标等具体表述需要做语义匹配的场景。若问题看似实体层级，也建议第1轮至少先做一次对话证据检索避免被画像信息“互挤”。"
+    en: "[Default primary tool] Use whenever the answer should be grounded in dialogue/event details: WHEN/WHERE, how many times, how long (duration), last time, in a month/week, what happened, who said what, what was mentioned; plus any concrete entities/places/objects/activities/goals that benefit from semantic matching against stored dialogue and facts. Even for entity-leaning questions, prefer at least one round-1 episodic retrieval to avoid cross-tool starvation."
 
-EVENT_TIME_RECALL:
+# EVENT_TIME_RECALL:
+#   description:
+#     zh: "按日期/时间范围检索事件。当问题涉及具体日期或时间段时使用。"
+#     en: "Retrieve events within a specific date/time range. Use when the question mentions dates or time periods."
+#   params: '{"start_time": "<ISO date>", "end_time": "<ISO date>"}'
+#   planner_quota:
+#     min_round1: 0
+#     max_per_round: 1
+#     eligibility:
+#       require_entity_uid: false
+#       # Planner should only schedule this when it can extract a bounded range.
+#       require_time_range: true
+#   search_entry_anchors:
+#     zh: "当问题暴露出时间入口时选用：明确日期、可映射为起止时间的月份/季节/周、相对时间窗，或需要按时间范围过滤事件的表述。"
+#     en: "Use when the question exposes a time entry point—explicit dates, month/season/week phrases you can map to start_time/end_time, relative windows, or any need to filter events by a bounded time range."
+
+EVENT_DETAIL_MULTI_ROUTE_RECALL:
   description:
-    zh: "按日期/时间范围检索事件。当问题涉及具体日期或时间段时使用。"
-    en: "Retrieve events within a specific date/time range. Use when the question mentions dates or time periods."
-  params: '{"start_time": "<ISO date>", "end_time": "<ISO date>"}'
+    zh: "多路并行语义召回（entity/action/time/relation/topic）并融合。适用于需要扩大召回覆盖面的场景。"
+    en: "Parallel multi-route semantic recall (entity/action/time/relation/topic) with fusion. Use to broaden coverage when single-route recall is insufficient."
+  params: '{"detail_query": "<search query>", "topk": <int, default 10>}'
+  planner_quota:
+    min_round1: 0
+    max_per_round: 1
+    eligibility:
+      require_entity_uid: false
+      min_round: 2
   search_entry_anchors:
-    zh: "当问题暴露出时间入口时选用：明确日期、可映射为起止时间的月份/季节/周、相对时间窗，或需要按时间范围过滤事件的表述。"
-    en: "Use when the question exposes a time entry point—explicit dates, month/season/week phrases you can map to start_time/end_time, relative windows, or any need to filter events by a bounded time range."
+    zh: "当第一轮语义检索命中不足或需要扩大覆盖面时（通常从第2轮开始）选用。"
+    en: "Use when the first-round semantic recall is weak or you need broader coverage (typically from round 2)."
 
 ENTITY_PROFILE_SEARCH:
   description:
     zh: "按实体 UID 获取档案摘要；可选查询句用于相似度过滤与 LLM 确认。"
     en: "Fetch entity profile summary by UID; optional query triggers similarity filter + LLM confirmation."
   params: '{"entity_uid":"<id>","optional_query":"<optional semantic check>"}'
+  planner_quota:
+    # No forced min: entity tools are valuable but should not run without a concrete UID.
+    min_round1: 0
+    max_per_round: 1
+    eligibility:
+      require_entity_uid: true
   search_entry_anchors:
-    zh: "当问题已绑定具体实体 UID 或需要从结构化档案摘要核对事实时。"
-    en: "When the question is anchored to a concrete entity UID or needs checking against a structured profile summary."
+    zh: "当问题明确要求“人物画像/背景/稳定属性/总体描述/共同特点(需画像总结)”且已绑定具体实体 UID 时使用。不要用来回答 WHEN/WHERE/次数/时长 等事件细节题；这些优先走 EVENT_DETAIL_RECALL（必要时多轮补救）。"
+    en: "Use when the question explicitly asks for an entity profile/overall description/stable attributes/background or common traits that require profile-level aggregation AND you have a concrete entity UID. Do NOT use for WHEN/WHERE/count/duration event-detail questions; those should prefer EVENT_DETAIL_RECALL (and remedies) first."
 
 ENTITY_STATUS_QA:
   description:
     zh: "给定实体 UID 与字段语义（yield），对状态槽位做向量召回并由模型生成简短回答。"
     en: "Vector recall over status slots for an entity plus a short grounded answer."
   params: '{"entity_uid":"<id>","field_yield":"<field or paraphrase>","user_question":"<question>","topk":3}'
+  planner_quota:
+    min_round1: 0
+    max_per_round: 1
+    eligibility:
+      require_entity_uid: true
   search_entry_anchors:
-    zh: "当问题询问某实体的具体属性/偏好/状态且已知 UID 时。"
-    en: "When the question asks for a specific attribute/preference/state of a known entity UID."
+    zh: "当问题询问某实体“当前/长期”的具体属性/偏好/状态字段（例如喜欢什么、职业、住哪里、习惯、关系状态等）且已知 UID 时使用。不要用于从对话中抽取某次事件发生的时间/地点/次数/时长；那类题优先 episodic 工具。"
+    en: "Use when the question asks for a specific stable/current attribute/preference/status field of a known entity UID (e.g., likes, job, residence, habits, relationship status). Do NOT use to extract the time/place/count/duration of a specific event from dialogue; prefer episodic tools for that."
+
+ENTITY_FEATURE_SEARCH:
+  description:
+    zh: "在实体特征/评价/画像向量空间中检索，与“共同特点/性格/偏好/风格”等抽象问题匹配。"
+    en: "Search in entity feature/traits space. Best for abstract questions like common traits, personality, preferences, style."
+  params: '{"entity_id":"<id>","feature_query":"<semantic query>","topk": <int, default 5>}'
+  planner_quota:
+    min_round1: 0
+    max_per_round: 1
+    eligibility:
+      require_entity_uid: true
+  search_entry_anchors:
+    zh: "当问题是实体层级的抽象特征检索：例如“共同特点/性格/风格/偏好/评价/画像关键词”，且已知实体 ID 时使用；它不是事件细节回忆工具，不适合 WHEN/WHERE/次数/时长 类问题。"
+    en: "Use for abstract entity-level feature retrieval (common traits/personality/style/preferences/evaluations/profile keywords) when entity id is known. This is NOT an event-detail recall tool; avoid it for WHEN/WHERE/count/duration questions."
+
+ENTITY_EVENT_SEARCH:
+  description:
+    zh: "在实体关联的事件/行为轨迹中检索，适用于围绕某实体‘做过什么/发生了什么’的聚合型问题。"
+    en: "Search events associated with an entity. Use for aggregated questions about what an entity did/what happened involving them."
+  params: '{"entity_id":"<id>","event_query":"<semantic query>","topk": <int, default 5>}'
+  planner_quota:
+    min_round1: 0
+    max_per_round: 1
+    eligibility:
+      require_entity_uid: true
+  search_entry_anchors:
+    zh: "当问题要围绕某实体“做过什么/参与过哪些事/经历概览/相关事件列表”这类实体关联事件的聚合检索，且已知实体 ID 时使用；如果问的是某一次具体事件的细节（时间/地点/次数/时长），优先 EVENT_DETAIL_RECALL。"
+    en: "Use to retrieve/summarize events involving a known entity (what they did, what events they participated in, overview/list). If the question asks for details of a specific event (time/place/count/duration), prefer EVENT_DETAIL_RECALL."
 
 RECALL_REMEDY_MULTI_ROUTE:
   description:
-    zh: "多路召回补救措施，当之前的搜索未找到有用证据时作为最后手段使用。同时搜索多个索引。"
-    en: "Broad multi-route recall as a last resort when previous searches found nothing useful. Searches across multiple indexes simultaneously."
+    zh: "多路召回补救措施。当 EVENT_DETAIL_RECALL 已经被调用过一次但工作区仍 INSUFFICIENT 时，应立即使用此工具进行多路扩展召回（按 entity / action / time / relation / topic 五个路由并行检索并融合结果）。"
+    en: "Broad multi-route recall (parallel queries via entity/action/time/relation/topic routes, RRF-fused). Use whenever EVENT_DETAIL_RECALL has already been called once and the workspace is still INSUFFICIENT — escalate aggressively rather than repeating EVENT_DETAIL_RECALL with paraphrased queries."
   params: '{"detail_query": "<search query>", "topk": <int, default 10>}'
+  planner_quota:
+    min_round1: 0
+    max_per_round: 1
+    eligibility:
+      require_entity_uid: false
+      min_round: 2
+      require_workspace_status: "INSUFFICIENT"
   search_entry_anchors:
-    zh: "仅在前序工具无效或处于补救模式时使用；不作为首轮默认工具。"
-    en: "Use only after ordinary tools failed or the planner is in remedy mode; not as a default first-round tool."
+    zh: "【第2轮+补救】当 EVENT_DETAIL_RECALL 已调用过但证据仍不足、workspace 被判 INSUFFICIENT/INVALID 时优先使用；它用于扩展覆盖面（多路并行），避免在同一类 detail recall 上反复同义改写刷屏。"
+    en: "[Round-2+ remedy] Prefer when EVENT_DETAIL_RECALL has already been used but evidence is still insufficient and the workspace is judged INSUFFICIENT/INVALID. Use to broaden coverage via parallel routes instead of spamming more paraphrased EVENT_DETAIL_RECALL."

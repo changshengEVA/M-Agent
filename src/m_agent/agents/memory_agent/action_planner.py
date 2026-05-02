@@ -34,6 +34,8 @@ class ToolDescriptor(TypedDict, total=False):
     params: str
     # When to use this tool: search-entry anchor hints (from YAML), injected into planner prompt.
     search_entry_anchors: str
+    # Optional quota policy (from YAML) for downstream enforcement.
+    planner_quota: Dict[str, Any]
 
 
 # Tool copy for the LLM planner is loaded only from ``tool_descriptions.yaml`` via
@@ -70,8 +72,145 @@ def build_tool_registry_from_config(
             anchors = str(anchor_node or "").strip()
         if anchors:
             entry["search_entry_anchors"] = anchors
+        quota = tool_cfg.get("planner_quota")
+        if isinstance(quota, dict) and quota:
+            entry["planner_quota"] = quota
         registry.append(entry)
     return registry
+
+
+def apply_tool_quota_policy(
+    actions: List[MemoryAction],
+    *,
+    tool_descriptions: Dict[str, Any],
+    round_id: int,
+    max_actions: int,
+    # Context for constructing fallback/min actions.
+    original_question: str,
+    cur_query: str,
+) -> List[MemoryAction]:
+    """Enforce per-tool min/max quotas for a given round.
+
+    Quotas are defined in `config/agents/memory/tool_descriptions.yaml` under each tool's
+    `planner_quota` field. This function is deliberately tool-agnostic for max limits,
+    and uses conservative fallbacks for min enforcement (skipping mins when prerequisites
+    like entity_uid cannot be satisfied).
+    """
+    max_actions = max(1, int(max_actions))
+    rid = max(1, int(round_id))
+    oq = str(original_question or "").strip().lower()
+    cq = str(cur_query or "").strip().lower()
+    qtext = (cq or oq).strip()
+
+    def _needs_broader_round1_detail() -> bool:
+        """Heuristic: broad/aggregate questions benefit from multiple detail recalls in round-1."""
+        if rid != 1 or not qtext:
+            return False
+        triggers = (
+            "what activities",
+            "shared activities",
+            "participated",
+            "participate",
+            "arrange",
+            "arranged",
+            "project",
+            "projects",
+            "go smoothly",
+            "work on to",
+            "worked on to",
+            "with his friends",
+            "with her friends",
+            "with their friends",
+        )
+        return any(t in qtext for t in triggers)
+
+    def _quota_for(action_type: str) -> Dict[str, Any]:
+        cfg = tool_descriptions.get(action_type)
+        if isinstance(cfg, dict):
+            q = cfg.get("planner_quota")
+            if isinstance(q, dict):
+                return q
+        return {}
+
+    def _get_int(q: Dict[str, Any], key: str, default: int) -> int:
+        try:
+            return int(q.get(key, default))
+        except Exception:
+            return default
+
+    def _eligible(action_type: str) -> bool:
+        q = _quota_for(action_type)
+        elig = q.get("eligibility")
+        if not isinstance(elig, dict):
+            return True
+        # Currently only enforce `require_entity_uid` as a hard prerequisite.
+        if elig.get("require_entity_uid"):
+            # We don't have a reliable UID in the planner layer without explicit actions.
+            return False
+        return True
+
+    # ---- 1) Apply max_per_round (and keep original order) ----
+    kept: List[MemoryAction] = []
+    counts: Dict[str, int] = {}
+    for act in actions:
+        at = str(act.get("action_type", "")).strip()
+        q = _quota_for(at)
+        max_per_round = _get_int(q, "max_per_round", 999999)
+        cur = counts.get(at, 0)
+        if cur >= max_per_round:
+            continue
+        kept.append(act)
+        counts[at] = cur + 1
+        if len(kept) >= max_actions:
+            break
+
+    # ---- 2) Ensure min_per_round by inserting conservative fallback actions ----
+    # Note: mins are only enforced when eligible, and only for tools with safe fallback params.
+    def _make_fallback(action_type: str, idx: int) -> MemoryAction | None:
+        # Only support safe episodic tools here. Entity tools are skipped unless a UID is available.
+        if action_type in (ACTION_EVENT_DETAIL_RECALL, ACTION_EVENT_DETAIL_MULTI_ROUTE_RECALL, ACTION_RECALL_REMEDY_MULTI_ROUTE):
+            return {
+                "action_id": f"r{rid}_min_{idx}",
+                "action_type": action_type,
+                "query": {"detail_query": cur_query or original_question, "topk": 10},
+                "source_sub_question_idx": 0,
+                "priority": 999,
+            }
+        # Time recall requires explicit bounds; do not synthesize blindly here.
+        if action_type == ACTION_EVENT_TIME_RECALL:
+            return None
+        return None
+
+    if len(kept) < max_actions:
+        # Iterate tools in a stable order (enabled tools order isn't available here; use yaml key order).
+        insert_idx = 0
+        for action_type in tool_descriptions.keys():
+            q = _quota_for(action_type)
+            if not q:
+                continue
+            # Round-specific mins: `min_round1` is the primary knob; `min_per_round` is a legacy alias.
+            if rid == 1:
+                min_per_round = _get_int(q, "min_round1", _get_int(q, "min_per_round", 0))
+            else:
+                min_per_round = _get_int(q, "min_per_round", 0)
+            # Dynamic bump: broad questions need more episodic evidence early.
+            if action_type == ACTION_EVENT_DETAIL_RECALL and _needs_broader_round1_detail():
+                min_per_round = max(min_per_round, 2)
+            if min_per_round <= 0:
+                continue
+            if not _eligible(action_type):
+                continue
+            cur = counts.get(action_type, 0)
+            while cur < min_per_round and len(kept) < max_actions:
+                fb = _make_fallback(action_type, insert_idx)
+                insert_idx += 1
+                if fb is None:
+                    break
+                kept.insert(0, fb)
+                cur += 1
+                counts[action_type] = cur
+
+    return kept[:max_actions]
 
 
 def tool_registry_for_prompt(

@@ -139,7 +139,10 @@ class KGBase:
         """
         try:
             self._run_write(query, payload)
-            self._publish_event("ENTITY_ADDED", {"entity_id": entity_id})
+            self._publish_event(
+                "ENTITY_ADDED",
+                {"entity_id": entity_id, "entity_name": name_value},
+            )
             return {
                 "success": True,
                 "changed": True,
@@ -403,6 +406,48 @@ class KGBase:
             return {"success": True, "changed": True, "details": {"operation": "delete_entity", "entity_id": entity_id}}
         except Exception as exc:
             return {"success": False, "changed": False, "details": {"operation": "delete_entity", "error": str(exc)}}
+
+    def clear_workflow_graph(self) -> CoreResult:
+        """
+        Remove every node and relationship in this KGBase's Neo4j database.
+
+        Intended for forced episode rebuilds. Safe only when ``database`` is a dedicated
+        per-workflow DB. Refuses to run when Neo4j fell back to the shared default database
+        (``database`` is unset), to avoid wiping unrelated workflows.
+        """
+        if not self.store.available:
+            return self._disabled_result("clear_workflow_graph")
+        db_name = str(self.database or "").strip()
+        if not db_name:
+            return {
+                "success": False,
+                "changed": False,
+                "details": {
+                    "operation": "clear_workflow_graph",
+                    "error": (
+                        "refusing to wipe graph: no isolated database name (Neo4j fell back to "
+                        "default DB). Use per-workflow databases (NEO4J_DATABASE_TEMPLATE / "
+                        "Enterprise CREATE DATABASE) before force-clearing."
+                    ),
+                },
+            }
+        try:
+            self._run_write("MATCH (n) DETACH DELETE n", {})
+            self._publish_event(
+                "WORKFLOW_GRAPH_CLEARED",
+                {"workflow_id": self.workflow_id, "database": db_name},
+            )
+            return {
+                "success": True,
+                "changed": True,
+                "details": {"operation": "clear_workflow_graph", "database": db_name},
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "changed": False,
+                "details": {"operation": "clear_workflow_graph", "error": str(exc)},
+            }
 
     def rename_entity(
         self,
