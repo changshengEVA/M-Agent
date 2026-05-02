@@ -226,6 +226,27 @@ def resolve_target_conv_ids(payload: Dict[str, Any]) -> List[str]:
     return merged
 
 
+def resolve_locomo_workflow_id(payload: Dict[str, Any], cli_workflow_id: str = "") -> str:
+    """
+    Resolve workflow id for LoCoMo eval/warmup.
+
+    Resolution order: CLI --workflow-id, then import.process_id, else empty string.
+    Empty means downstream falls back to MemoryCore YAML workflow_id.
+    """
+    w = str(cli_workflow_id or "").strip()
+    if w:
+        return w
+
+    import_cfg = payload.get("import", {})
+    if not isinstance(import_cfg, dict):
+        import_cfg = {}
+    process_id = str(import_cfg.get("process_id", "") or "").strip()
+    if process_id:
+        return process_id
+
+    return ""
+
+
 def get_data_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     data_cfg = payload.get("data", {})
     if not isinstance(data_cfg, dict):

@@ -20,6 +20,7 @@ from _shared import (
     log_env_config_summary,
     parse_question_selection,
     resolve_project_path,
+    resolve_locomo_workflow_id,
     resolve_target_conv_ids,
 )
 
@@ -179,7 +180,7 @@ def main() -> int:
         cmd.append("--overwrite")
     if question_config_path is not None:
         cmd.extend(["--question-config", str(question_config_path)])
-    workflow_id = str(args.workflow_id or "").strip()
+    workflow_id = resolve_locomo_workflow_id(payload, args.workflow_id)
     if workflow_id:
         cmd.extend(["--workflow-id", workflow_id])
 

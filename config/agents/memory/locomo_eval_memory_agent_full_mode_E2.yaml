@@ -6,7 +6,7 @@
 
 model_name: "gpt-4.1-mini"
 agent_temperature: 0.0
-memory_core_config_path: "../../memory/core/locomo_eval_memory_core_full_mode.yaml"
+memory_core_config_path: "../../memory/core/locomo_eval_memory_core.yaml"
 runtime_prompt_config_path: "./runtime/agent_runtime_facts_only__baseline.yaml"
 prompt_language: "en"
 recursion_limit: 60

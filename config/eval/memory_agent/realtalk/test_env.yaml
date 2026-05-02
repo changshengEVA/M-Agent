@@ -1,0 +1,45 @@
+# Unified REALTALK test environment config
+# Used by:
+#   python scripts/run_realtalk/import_realtalk.py --env-config config/eval/memory_agent/realtalk/test_env.yaml
+#   python scripts/run_realtalk/warmup_realtalk.py --env-config config/eval/memory_agent/realtalk/test_env.yaml
+#   python scripts/run_realtalk/eval_realtalk.py --env-config config/eval/memory_agent/realtalk/test_env.yaml
+#   python scripts/run_realtalk/run_realtalk_pipeline.py --env-config config/eval/memory_agent/realtalk/test_env.yaml --batch --test-id-suffix
+
+name: realtalk_test_env
+description: Build/evaluate REALTALK with chat-level isolated memory.
+
+data:
+  file: data/REALTALK/data
+  loader_type: realtalk
+
+selection:
+  # Option A: explicit chat-level sample ids (highest priority).
+  # sample_ids:
+  #   - realtalk-chat-1
+  #   - realtalk-chat-2
+
+  # Option B: select chats to auto-expand sample_ids.
+  chat_ids:
+    - 1
+
+import:
+  process_id: "realtalk/chat-1"
+  clean_output: true
+  episode_max_workers: 3
+
+warmup:
+  scene_max_workers: 3
+  scene_fact_max_workers: 3
+  force: true
+
+eval:
+  test_id: realtalk_eval_chat1
+  memory_agent_config: config/agents/memory/locomo_eval_memory_agent_full_mode_E2.yaml
+  model_key: memory_agent
+  prediction_key: memory_agent_prediction
+  thread_id_prefix: realtalk-eval
+  overwrite: true
+  max_questions: 0
+  save_every: 1
+  sleep_seconds: 0.0
+  recall_dir: recall
