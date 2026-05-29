@@ -505,6 +505,56 @@ class ThinkLifeRuntime:
             "episode_notes_drained": len(drained),
         }
 
+    def build_dialogue_flush_payload(
+        self,
+        thread_id: str,
+        *,
+        source: str = "chat_api_thread_flush",
+    ) -> Optional[Dict[str, Any]]:
+        """Export Scene entries since last flush as canonical dialogue JSON (v2)."""
+        tid = str(thread_id or "").strip()
+        if not tid:
+            return None
+        reader = self.scene_system.reader
+        entries_fn = getattr(reader, "entries_since_flush", None)
+        if not callable(entries_fn):
+            return None
+        entries = list(entries_fn(tid))
+        if not entries:
+            return None
+
+        from m_agent.chat.chat_memory_persistence import (
+            build_dialogue_id,
+            build_dialogue_payload_from_scene_entries,
+        )
+
+        user_name = str(getattr(self.agent, "user_name", "User") or "User")
+        assistant_name = str(getattr(self.agent, "assistant_name", "Memory Assistant") or "Memory Assistant")
+        start_ts = entries[0].occurred_at
+        try:
+            from datetime import datetime, timezone
+
+            created_at = datetime.fromisoformat(str(start_ts).replace("Z", "+00:00"))
+        except Exception:
+            from datetime import datetime, timezone
+
+            created_at = datetime.now(timezone.utc)
+        dialogue_id = build_dialogue_id(thread_id=tid, created_at=created_at)
+        return build_dialogue_payload_from_scene_entries(
+            dialogue_id=dialogue_id,
+            thread_id=tid,
+            entries=entries,
+            source=source,
+            user_name=user_name,
+            assistant_name=assistant_name,
+        )
+
+    def mark_scene_flushed(self, thread_id: str, *, through_seq: int) -> None:
+        tid = str(thread_id or "").strip()
+        mark_fn = getattr(self.scene_system.reader, "mark_flushed", None)
+        if callable(mark_fn) and int(through_seq) > 0:
+            mark_fn(tid, through_seq=int(through_seq))
+
     def health(self) -> Dict[str, Any]:
         return {
             "profile": "think_life",

@@ -44,6 +44,23 @@ def _write_json(path: Path, payload: Dict[str, Any]) -> None:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 
 
+def _parse_utc_timestamp(raw: Any) -> Optional[datetime]:
+    if isinstance(raw, datetime):
+        return raw.astimezone(timezone.utc)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).astimezone(timezone.utc)
+        except Exception:
+            return None
+    return None
+
+
+def _parse_ts_from_turn(turn: Dict[str, Any]) -> Optional[datetime]:
+    if not isinstance(turn, dict):
+        return None
+    return _parse_utc_timestamp(turn.get("timestamp") or turn.get("occurred_at"))
+
+
 def normalize_dialogue_rounds(rounds: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     normalized: List[Dict[str, Any]] = []
     if not isinstance(rounds, list):
@@ -59,15 +76,23 @@ def normalize_dialogue_rounds(rounds: List[Dict[str, Any]]) -> List[Dict[str, An
 
         user_at = item.get("user_at")
         user_dt = user_at if isinstance(user_at, datetime) else _utc_now()
+        user_turn_obj = item.get("user_turn") if isinstance(item.get("user_turn"), dict) else {}
+        ts_from_turn = _parse_ts_from_turn(user_turn_obj)
+        if ts_from_turn is not None:
+            user_dt = ts_from_turn
 
         assistant_at = item.get("assistant_at")
         if isinstance(assistant_at, datetime):
             assistant_dt = assistant_at
         else:
             assistant_dt = user_dt + timedelta(seconds=1)
+        assistant_turn_obj = item.get("assistant_turn") if isinstance(item.get("assistant_turn"), dict) else {}
+        ts_assistant = _parse_ts_from_turn(assistant_turn_obj)
+        if ts_assistant is not None:
+            assistant_dt = ts_assistant
 
         if assistant_dt < user_dt:
-            assistant_dt = user_dt + timedelta(seconds=1)
+            assistant_dt = user_dt
 
         normalized.append(
             {
@@ -106,6 +131,96 @@ def build_trace_summary(rounds: List[Dict[str, Any]]) -> Dict[str, Any]:
     return {
         "tool_call_count": tool_call_count,
         "recall_modes": recall_modes,
+    }
+
+
+def scene_entry_to_dialogue_turn(
+    entry: Any,
+    *,
+    user_name: str,
+    assistant_name: str,
+) -> Optional[Dict[str, Any]]:
+    """Map a user utterance or assistant reply Scene entry to a v1 dialogue turn."""
+    if hasattr(entry, "to_dict"):
+        data = entry.to_dict()
+    elif isinstance(entry, dict):
+        data = dict(entry)
+    else:
+        data = {}
+
+    actor = str(data.get("actor", "") or "").strip().lower()
+    entry_type = str(data.get("entry_type", "") or "").strip().lower()
+    text = str(data.get("text", "") or "").strip()
+    if not text:
+        return None
+
+    is_user = entry_type == "utterance" or actor == "user"
+    is_assistant = entry_type == "reply" or actor == "assistant"
+    if is_user and not is_assistant:
+        speaker = user_name
+    elif is_assistant and not is_user:
+        speaker = assistant_name
+    else:
+        return None
+
+    ts_raw = data.get("occurred_at") or data.get("timestamp")
+    ts = _parse_utc_timestamp(ts_raw)
+    return {
+        "speaker": speaker,
+        "text": text,
+        "timestamp": _to_utc_iso(ts) if ts is not None else str(ts_raw or ""),
+    }
+
+
+def build_dialogue_payload_from_scene_entries(
+    *,
+    dialogue_id: str,
+    thread_id: str,
+    entries: List[Any],
+    source: str,
+    user_name: str,
+    assistant_name: str,
+    trace_summary: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build v1 dialogue JSON from Scene: user/reply only, chronological, real timestamps."""
+    from m_agent.chat.dialogue_import import turns_to_rounds
+
+    turns: List[Dict[str, Any]] = []
+    for entry in entries:
+        turn = scene_entry_to_dialogue_turn(
+            entry,
+            user_name=user_name,
+            assistant_name=assistant_name,
+        )
+        if turn is None:
+            continue
+        turn["turn_id"] = len(turns)
+        turns.append(turn)
+
+    if not turns:
+        raise ValueError("scene entries produced no user/assistant dialogue turns")
+
+    start_ts = _parse_utc_timestamp(turns[0].get("timestamp")) or _utc_now()
+    end_ts = _parse_utc_timestamp(turns[-1].get("timestamp")) or start_ts
+    derived_rounds = turns_to_rounds(turns, user_speaker=user_name, assistant_speaker=assistant_name)
+    trace_summary = build_trace_summary(derived_rounds) if derived_rounds else {}
+
+    return {
+        "dialogue_id": dialogue_id,
+        "user_id": user_name,
+        "participants": [user_name, assistant_name],
+        "meta": {
+            "start_time": _to_utc_iso(start_ts),
+            "end_time": _to_utc_iso(end_ts),
+            "language": "zh",
+            "platform": "chat_api",
+            "version": 1,
+            "thread_id": str(thread_id or "").strip(),
+            "source": str(source or "chat_api_thread_flush"),
+            "round_count": len(derived_rounds),
+            "trace_summary": trace_summary or {},
+        },
+        "turns": turns,
     }
 
 
@@ -285,6 +400,62 @@ class ChatDialogueArchive:
                     "error": str(exc),
                 }
 
+    def persist_dialogue_payload(
+        self,
+        *,
+        dialogue_payload: Dict[str, Any],
+        progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Write a pre-built dialogue document (system layer canonical artifact)."""
+        if not isinstance(dialogue_payload, dict):
+            return {
+                "success": False,
+                "workflow_id": self.workflow_id,
+                "error": "dialogue_payload must be a dict",
+            }
+        dialogue_id = str(dialogue_payload.get("dialogue_id", "") or "").strip()
+        if not dialogue_id:
+            return {
+                "success": False,
+                "workflow_id": self.workflow_id,
+                "error": "dialogue_id is required",
+            }
+
+        with self._lock:
+            dialogue_file = dialogue_file_path(self.dialogues_dir, dialogue_payload)
+            try:
+                _write_json(dialogue_file, dialogue_payload)
+                if progress_callback is not None:
+                    progress_callback(
+                        "flush_stage",
+                        {
+                            "stage": "dialogue_json_written",
+                            "status": "completed",
+                            "dialogue_file": str(dialogue_file),
+                        },
+                    )
+                meta = dialogue_payload.get("meta") if isinstance(dialogue_payload.get("meta"), dict) else {}
+                return {
+                    "success": True,
+                    "workflow_id": self.workflow_id,
+                    "memory_root": str(self.dialogues_dir.parent),
+                    "dialogue_id": dialogue_id,
+                    "round_count": int(meta.get("round_count", 0) or 0),
+                    "turn_count": len(dialogue_payload.get("turns", []) or []),
+                    "dialogue_file": str(dialogue_file),
+                    "dialogue_payload": dialogue_payload,
+                    "import_result": None,
+                    "error": None,
+                }
+            except Exception as exc:
+                logger.exception("Persist dialogue archive failed for dialogue_id=%s", dialogue_id)
+                return {
+                    "success": False,
+                    "workflow_id": self.workflow_id,
+                    "dialogue_id": dialogue_id,
+                    "error": str(exc),
+                }
+
 
 # Backward-compatible alias for older imports / docs.
 ChatMemoryPersistence = ChatDialogueArchive
@@ -294,5 +465,7 @@ __all__ = [
     "ChatMemoryPersistence",
     "build_dialogue_id",
     "build_dialogue_payload",
+    "build_dialogue_payload_from_scene_entries",
     "normalize_dialogue_rounds",
+    "scene_entry_to_dialogue_turn",
 ]

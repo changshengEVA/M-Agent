@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from m_agent.chat.chat_agent_factory import create_chat_agent
+from m_agent.chat.chat_memory_persistence import _parse_ts_from_turn
 from m_agent.chat.three_layer_chat_agent import ThreeLayerChatAgent
 from m_agent.chat.working_memory import build_working_memory_api_payload
 from m_agent.paths import chat_user_slug
@@ -327,6 +328,7 @@ class ChatServiceRuntime:
                 {
                     "user_message": _normalize_text(user_message),
                     "user_turn": deepcopy(user_turn),
+                    "submitted_at": _now_utc(),
                 }
             )
 
@@ -348,19 +350,40 @@ class ChatServiceRuntime:
             if session is None:
                 session = ThreadSessionState(thread_id=tid, mode="manual")
                 self._threads[tid] = session
+            submitted_at = pending.get("submitted_at")
+            if not isinstance(submitted_at, datetime):
+                user_turn_obj = pending.get("user_turn") if isinstance(pending.get("user_turn"), dict) else {}
+                submitted_at = _parse_ts_from_turn(user_turn_obj) or _now_utc()
+            assistant_at = _now_utc()
+            user_turn = (
+                deepcopy(pending.get("user_turn"))
+                if isinstance(pending.get("user_turn"), dict)
+                else {}
+            )
+            user_turn.setdefault(
+                "speaker",
+                str(getattr(self.agent, "user_name", "user") or "user").strip() or "user",
+            )
+            user_turn["text"] = str(pending.get("user_message", "") or user_turn.get("text", "") or "")
+            user_turn["timestamp"] = _to_iso(submitted_at)
             assistant_turn = {
                 "speaker": str(getattr(self.agent, "assistant_name", "assistant") or "assistant").strip()
                 or "assistant",
                 "text": _normalize_text(assistant_message),
+                "timestamp": _to_iso(assistant_at),
+                "entry_type": "reply",
+                "actor": "assistant",
             }
             self._append_round(
                 session,
                 user_message=str(pending.get("user_message", "") or ""),
                 assistant_message=_normalize_text(assistant_message),
                 agent_result=None,
-                user_turn=pending.get("user_turn") if isinstance(pending.get("user_turn"), dict) else None,
+                user_turn=user_turn,
                 assistant_turn=assistant_turn,
                 source="user",
+                user_at=submitted_at,
+                assistant_at=assistant_at,
             )
             snapshot = self._thread_state_snapshot(session)
         self._emit_thread_event(tid, "thread_state_updated", {"thread_state": snapshot})
@@ -538,9 +561,13 @@ class ChatServiceRuntime:
         assistant_turn: Optional[Dict[str, Any]] = None,
         source: str = "user",
         capture_state_override: Optional[str] = None,
+        user_at: Optional[datetime] = None,
+        assistant_at: Optional[datetime] = None,
     ) -> BufferedRound:
-        user_at = _now_utc()
-        assistant_at = user_at + timedelta(seconds=1)
+        resolved_user_at = user_at if isinstance(user_at, datetime) else _now_utc()
+        resolved_assistant_at = (
+            assistant_at if isinstance(assistant_at, datetime) else resolved_user_at + timedelta(seconds=1)
+        )
         capture_state = (
             str(capture_state_override or "").strip()
             or ("pending" if session.mode == "manual" else "skipped")
@@ -560,15 +587,15 @@ class ChatServiceRuntime:
                 or "assistant",
                 fallback_text=assistant_message,
             ),
-            user_at=user_at,
-            assistant_at=assistant_at,
+            user_at=resolved_user_at,
+            assistant_at=resolved_assistant_at,
             agent_result=deepcopy(agent_result) if isinstance(agent_result, dict) else None,
             capture_state=capture_state,
             source=str(source or "user").strip() or "user",
         )
         session.rounds.append(round_item)
-        session.last_activity_at = assistant_at
-        session.updated_at = assistant_at
+        session.last_activity_at = resolved_assistant_at
+        session.updated_at = resolved_assistant_at
         self._trim_history(session)
         return round_item
 
@@ -693,6 +720,11 @@ class ChatServiceRuntime:
         if self._think_life is not None:
             THREAD_RUNTIME_STATUS.mark_busy(active_thread_id, reason="chat_run")
             try:
+                self._enqueue_think_life_user_turn(
+                    active_thread_id,
+                    user_message=_normalize_text(normalized_user_turn.get("text")) or rendered_message,
+                    user_turn=normalized_user_turn,
+                )
                 self._think_life.submit_user_message(
                     thread_id=active_thread_id,
                     text=rendered_message,
@@ -727,15 +759,16 @@ class ChatServiceRuntime:
             "text": answer_text,
         }
         with self._threads_lock:
-            self._append_round(
-                session,
-                user_message=_normalize_text(normalized_user_turn.get("text")) or rendered_message,
-                assistant_message=answer_text,
-                agent_result=agent_result,
-                user_turn=normalized_user_turn,
-                assistant_turn=assistant_turn,
-                source="user",
-            )
+            if self._think_life is None:
+                self._append_round(
+                    session,
+                    user_message=_normalize_text(normalized_user_turn.get("text")) or rendered_message,
+                    assistant_message=answer_text,
+                    agent_result=agent_result,
+                    user_turn=normalized_user_turn,
+                    assistant_turn=assistant_turn,
+                    source="user",
+                )
             thread_state = self._thread_state_snapshot(session)
 
         with self._stats_lock:
@@ -956,6 +989,31 @@ class ChatServiceRuntime:
             seq += 1
             yield {"seq": seq, **event}
 
+    def _scene_flush_through_seq(self, thread_id: str) -> int:
+        if self._think_life is None:
+            return 0
+        reader = self._think_life.scene_system.reader
+        entries_fn = getattr(reader, "entries_since_flush", None)
+        if not callable(entries_fn):
+            return 0
+        entries = list(entries_fn(str(thread_id or "").strip()))
+        return max((int(getattr(entry, "seq", 0) or 0) for entry in entries), default=0)
+
+    def _scene_flush_payload(self, thread_id: str) -> Optional[Dict[str, Any]]:
+        if self._think_life is None:
+            return None
+        try:
+            return self._think_life.build_dialogue_flush_payload(
+                thread_id,
+                source="chat_api_thread_flush",
+            )
+        except Exception:
+            logger.exception(
+                "Think-life build_dialogue_flush_payload failed thread_id=%s",
+                thread_id,
+            )
+            return None
+
     def flush_thread(self, thread_id: str, *, reason: str = "manual_api") -> Dict[str, Any]:
         session = self._get_or_create_thread(thread_id)
         operation_id = f"flush_{uuid.uuid4().hex}"
@@ -963,7 +1021,9 @@ class ChatServiceRuntime:
             pending_rounds = list(self._pending_rounds(session))
             session.last_flush_attempt_at = _now_utc()
             session.updated_at = session.last_flush_attempt_at
-            if not pending_rounds:
+            scene_payload = self._scene_flush_payload(session.thread_id)
+
+            if not scene_payload and not pending_rounds:
                 think_life_segment: Optional[Dict[str, Any]] = None
                 if self._think_life is not None:
                     try:
@@ -1009,6 +1069,17 @@ class ChatServiceRuntime:
                 self._emit_thread_event(snapshot["thread_id"], "thread_state_updated", {"thread_state": snapshot})
                 return result
 
+        if scene_payload:
+            turns = scene_payload.get("turns") if isinstance(scene_payload.get("turns"), list) else []
+            meta = scene_payload.get("meta") if isinstance(scene_payload.get("meta"), dict) else {}
+            rounds_flushed = int(meta.get("round_count", 0) or 0)
+            turns_flushed = len(turns)
+            flush_mode = "scene"
+        else:
+            turns_flushed = len(pending_rounds) * 2
+            rounds_flushed = len(pending_rounds)
+            flush_mode = "legacy_rounds"
+
         self._emit_thread_event(
             session.thread_id,
             "flush_started",
@@ -1016,26 +1087,14 @@ class ChatServiceRuntime:
                 "operation_id": operation_id,
                 "thread_id": session.thread_id,
                 "flush_reason": reason,
-                "pending_rounds": len(pending_rounds),
-                "pending_turns": len(pending_rounds) * 2,
+                "pending_rounds": rounds_flushed,
+                "pending_turns": turns_flushed,
+                "flush_mode": flush_mode,
             },
         )
 
         with self._stats_lock:
             self._flushes_started += 1
-
-        round_payloads = [
-            {
-                "user_message": item.user_message,
-                "assistant_message": item.assistant_message,
-                "user_turn": deepcopy(item.user_turn),
-                "assistant_turn": deepcopy(item.assistant_turn),
-                "user_at": item.user_at,
-                "assistant_at": item.assistant_at,
-                "agent_result": item.agent_result,
-            }
-            for item in pending_rounds
-        ]
 
         def progress_callback(event_type: str, payload: Dict[str, Any]) -> None:
             event_payload = {
@@ -1048,27 +1107,51 @@ class ChatServiceRuntime:
             self._emit_thread_event(session.thread_id, event_type, event_payload)
 
         with self._operation_lock:
-            # Prefer the agent-level ``persist_dialogue`` (which routes through
-            # the episodic backend so it can merge episode_notes into the
-            # dialogue file on flush). Stubs / older agents that only expose
-            # ``memory_persistence.persist_dialogue`` still work.
-            persist_dialogue = getattr(self.agent, "persist_dialogue", None)
-            if callable(persist_dialogue):
-                flush_result = persist_dialogue(
-                    thread_id=session.thread_id,
-                    rounds=round_payloads,
-                    reason=f"chat_thread_{reason}",
-                    source="chat_api_thread_flush",
-                    progress_callback=progress_callback,
-                )
+            if scene_payload:
+                persist_dialogue_payload = getattr(self.agent, "persist_dialogue_payload", None)
+                if callable(persist_dialogue_payload):
+                    flush_result = persist_dialogue_payload(
+                        dialogue_payload=scene_payload,
+                        thread_id=session.thread_id,
+                        reason=f"chat_thread_{reason}",
+                        source="chat_api_thread_flush",
+                        progress_callback=progress_callback,
+                    )
+                else:
+                    flush_result = {
+                        "success": False,
+                        "error": "agent does not support persist_dialogue_payload",
+                    }
             else:
-                flush_result = self.agent.memory_persistence.persist_dialogue(
-                    thread_id=session.thread_id,
-                    rounds=round_payloads,
-                    reason=f"chat_thread_{reason}",
-                    source="chat_api_thread_flush",
-                    progress_callback=progress_callback,
-                )
+                round_payloads = [
+                    {
+                        "user_message": item.user_message,
+                        "assistant_message": item.assistant_message,
+                        "user_turn": deepcopy(item.user_turn),
+                        "assistant_turn": deepcopy(item.assistant_turn),
+                        "user_at": item.user_at,
+                        "assistant_at": item.assistant_at,
+                        "agent_result": item.agent_result,
+                    }
+                    for item in pending_rounds
+                ]
+                persist_dialogue = getattr(self.agent, "persist_dialogue", None)
+                if callable(persist_dialogue):
+                    flush_result = persist_dialogue(
+                        thread_id=session.thread_id,
+                        rounds=round_payloads,
+                        reason=f"chat_thread_{reason}",
+                        source="chat_api_thread_flush",
+                        progress_callback=progress_callback,
+                    )
+                else:
+                    flush_result = self.agent.memory_persistence.persist_dialogue(
+                        thread_id=session.thread_id,
+                        rounds=round_payloads,
+                        reason=f"chat_thread_{reason}",
+                        source="chat_api_thread_flush",
+                        progress_callback=progress_callback,
+                    )
 
         flush_success = bool(flush_result.get("success", False))
         drained_episode_notes: List[Dict[str, Any]] = []
@@ -1085,9 +1168,18 @@ class ChatServiceRuntime:
                 session.last_flush_at = session.last_flush_attempt_at
                 session.flush_count += 1
 
-                # Drop the in-progress conversation state and bump the
-                # conversation sequence so subsequent turns start a fresh
-                # ConversationState with empty WM + episode buffer.
+                if scene_payload and self._think_life is not None:
+                    try:
+                        self._think_life.mark_scene_flushed(
+                            session.thread_id,
+                            through_seq=self._scene_flush_through_seq(session.thread_id),
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Think-life mark_scene_flushed failed thread_id=%s",
+                            session.thread_id,
+                        )
+
                 old_conversation_id = session.conversation_id
                 try:
                     drained_episode_notes = list(
@@ -1139,8 +1231,9 @@ class ChatServiceRuntime:
             "thread_id": session.thread_id,
             "flush_reason": reason,
             "status": "written" if flush_success else "failed",
-            "rounds_flushed": len(pending_rounds),
-            "turns_flushed": len(pending_rounds) * 2,
+            "flush_mode": flush_mode,
+            "rounds_flushed": rounds_flushed if flush_success else 0,
+            "turns_flushed": turns_flushed if flush_success else 0,
             "memory_write": flush_result,
             "thread_state": snapshot,
             "error": None if flush_success else str(flush_result.get("error", "memory flush failed")),

@@ -34,7 +34,7 @@ M-Agent/
 - **三层栈**：`layers/perception`（`PerceptionInput` 组装）、`layers/thinking`、`layers/execution`。
 - **子系统插件开发**（详细）：[`docs/systems-plugin-development.zh-CN.md`](systems-plugin-development.zh-CN.md)
 - **工具能力** 只在 `src/m_agent/systems/tools/capabilities/` 实现；`chat/capabilities` 等旧路径已移除。
-- **Episodic 默认**：`config/systems/episodic/rag_default.yaml` → `SimpleRagEpisodicBackend`；Chat 运行时按用户写入 `data/memory/chat-api/<user>/episodic/`（RAG）与 `dialogues/`（flush 归档），详见 [`systems-plugin-development.zh-CN.md`](systems-plugin-development.zh-CN.md) §3.4.1。
+- **Episodic 默认**：`config/systems/episodic/rag_default.yaml` → `SimpleRagEpisodicBackend`；Chat 运行时按用户写入 `data/memory/chat-api/<user>/episodic/`（RAG）与 `dialogues/`（flush 归档），详见 [`systems-plugin/episodic.zh-CN.md`](systems-plugin/episodic.zh-CN.md)；各子系统插拔见 [`systems-plugin/`](systems-plugin/)。
 - **完整 MemoryAgent**：见 `F:/AI/WorkspaceMem`（`workspace_mem` 包）。
 
 常用命令：

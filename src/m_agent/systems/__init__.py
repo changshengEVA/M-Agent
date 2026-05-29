@@ -1,18 +1,20 @@
 """M-Agent pluggable subsystems.
 
-The chat stack is built from **three pluggable subsystems** that
-together expose **six access points**:
+The chat stack is built from **three pluggable subsystems** with
+**five external plug-in access points** (plus episodic ``query`` config):
 
 * :class:`WMSystem` — working-memory subsystem.
     * ``writer`` :class:`WMWriter`
     * ``reader`` :class:`WMReader`
     * ``display`` :class:`WMDisplay`
 * :class:`EpisodicMemorySystem` — episodic-memory subsystem.
-    * ``recorder`` :class:`EpisodeRecorder`
-    * ``backend`` :class:`EpisodicMemoryBackend`
-    * ``query_module`` :class:`EpisodeQueryModule` (on/off switch)
+    * ``backend`` :class:`EpisodicMemoryBackend` (primary swap target)
+    * ``query_module`` :class:`EpisodeQueryModule` (on/off switch; YAML ``query:``)
+    * ``recorder`` :class:`EpisodeRecorder` — **system-internal**, not a public plug-in slot
 * :class:`ToolSuiteSystem` — top-level tool suite.
     * ``registry`` :class:`ControllerCapabilityRegistry`
+
+See ``docs/systems-plugin/`` (6 guides: WM / episodic / tools × zh/en).
 
 Each subsystem owns its own YAML file under ``config/systems/<name>/``;
 the chat-controller main YAML only holds three string pointers

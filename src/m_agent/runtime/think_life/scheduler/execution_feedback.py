@@ -157,6 +157,7 @@ def build_feedback_user_message(
     else:
         parts.append(
             "Plan next: mode=execute with one tool_name for another step, "
+            "mode=silent when no reply or tool step is needed yet, "
             "or answer_directly when the user request is satisfied."
         )
     return " ".join(parts)

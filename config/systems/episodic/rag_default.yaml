@@ -1,10 +1,8 @@
 # Default episodic subsystem — simple local RAG (no MemoryAgent).
 # Per-user index paths are applied at runtime by ThreeLayerChatAgent
 # (see m_agent.paths.chat_user_episodic_rag_paths).
+# EpisodeRecorder is system-internal — do not add a recorder: block here.
 system: episodic
-
-recorder:
-  path: m_agent.systems.episodic.default.recorder:DefaultEpisodeRecorder
 
 backend:
   path: m_agent.systems.episodic.default.rag_backend:SimpleRagEpisodicBackend

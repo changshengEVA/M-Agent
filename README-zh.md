@@ -160,12 +160,13 @@ python -m m_agent.api.chat_api \
 
 Chat 栈默认使用 **RAG 情景后端**（`SimpleRagEpisodicBackend`），配置见 `config/systems/episodic/rag_default.yaml`：每轮与 flush 时写入用户目录下的向量索引，经 `shallow_recall` / `deep_recall` 检索。
 
+- **可插拔专题：** [docs/systems-plugin/](docs/systems-plugin/)（WM / 情景记忆 / 工具，各中英一篇）
 - **RAG 索引**：`data/memory/chat-api/<用户>/episodic/`（`chunks.jsonl`、`embeddings.npy`）
 - **对话归档**（flush）：`data/memory/chat-api/<用户>/dialogues/`
 - **Scene log**（Think-life）：`data/memory/chat-api/<用户>/scene/<thread_id>.jsonl` — 跨事务、按时间序的「讲了什么 / 做了什么」记录
 - **与 WM 区别**：WM 按 **事务** 隔离（Think-life）或按 conversation 段（legacy），为进程内热上下文；episodic / Scene 可跨轮检索或按时间轴阅读
 
-开发细节见 **[docs/systems-plugin-development.zh-CN.md §3.4.1](docs/systems-plugin-development.zh-CN.md)**；`GET .../memory/state` 返回 `thread_state.episodic_persistence` 可查看当前路径。
+开发细节见 **[docs/systems-plugin/episodic.zh-CN.md](docs/systems-plugin/episodic.zh-CN.md)**（持久化路径）；`GET .../memory/state` 返回 `thread_state.episodic_persistence`。
 
 ## WorkspaceMem（完整记忆栈与评测）
 

@@ -6,16 +6,50 @@ from threading import RLock
 from typing import Any, Dict, List, Optional
 
 
+SILENT_MODES = frozenset({"silent", "wait", "defer"})
+
+
+def normalize_thinking_mode(mode: Any) -> str:
+    """Return a canonical planning mode string."""
+    value = str(mode or "").strip().lower()
+    if value in SILENT_MODES:
+        return "silent"
+    if value == "execute":
+        return "execute"
+    if value in {"answer_directly", "reply"}:
+        return "answer_directly"
+    return value or "answer_directly"
+
+
+def is_silent_mode(mode: Any) -> bool:
+    return normalize_thinking_mode(mode) == "silent"
+
+
+def is_execute_mode(mode: Any) -> bool:
+    return normalize_thinking_mode(mode) == "execute"
+
+
+def is_reply_mode(mode: Any) -> bool:
+    return normalize_thinking_mode(mode) == "answer_directly"
+
+
+def request_is_complete(decision: "ThinkingDecision") -> bool:
+    return bool(getattr(decision, "request_complete", None))
+
+
 @dataclass
 class ThinkingDecision:
     """Structured output of the thinking layer's planning pass.
 
-    ``mode`` is either ``"execute"`` (issue an instruction to the execution
-    layer) or ``"answer_directly"`` (respond to the user without any
-    execution-layer call). At most one of ``instruction`` or ``answer`` is
-    populated, matching the chosen mode. ``episode_note`` is an optional
-    free-form note the thinking layer wants to remember about this turn; it
-    is appended to the per-conversation episode buffer.
+    ``mode`` is one of:
+
+    * ``"execute"`` — delegate one tool via the execution layer.
+    * ``"answer_directly"`` — send a user-visible reply (Think-life: ``reply_to_user``).
+    * ``"silent"`` — neither delegate nor reply; keep the transaction open unless
+      ``request_complete`` is true.
+
+    At most one of ``instruction`` or ``answer`` is populated, matching the
+    chosen mode. ``episode_note`` is optional and appended to the episode buffer.
     """
 
     mode: str = "answer_directly"

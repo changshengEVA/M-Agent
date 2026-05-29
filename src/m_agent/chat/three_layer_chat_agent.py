@@ -805,6 +805,58 @@ class ThreeLayerChatAgent:
             progress_callback=progress_callback,
         )
 
+    def persist_dialogue_payload(
+        self,
+        *,
+        dialogue_payload: Dict[str, Any],
+        thread_id: str,
+        reason: str = "chat_thread_flush",
+        source: str = "chat_api_thread_flush",
+        progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Persist a system-built dialogue document and index episodic memory from it."""
+        from m_agent.chat.dialogue_import import turns_to_rounds
+
+        archive = self.memory_persistence or self.ensure_dialogue_archive()
+        if archive is None:
+            return {"success": False, "error": "no dialogue archive configured"}
+
+        archive_result = archive.persist_dialogue_payload(
+            dialogue_payload=dialogue_payload,
+            progress_callback=progress_callback,
+        )
+        if not archive_result.get("success"):
+            return archive_result
+
+        meta = dialogue_payload.get("meta") if isinstance(dialogue_payload.get("meta"), dict) else {}
+        tid = str(thread_id or meta.get("thread_id") or "").strip()
+        turns = dialogue_payload.get("turns") if isinstance(dialogue_payload.get("turns"), list) else []
+        user_name = str(dialogue_payload.get("user_id") or getattr(self, "user_name", "User") or "User")
+        participants = dialogue_payload.get("participants") if isinstance(dialogue_payload.get("participants"), list) else []
+        assistant_name = str(
+            participants[1]
+            if len(participants) >= 2
+            else getattr(self, "assistant_name", "Memory Assistant") or "Memory Assistant"
+        )
+        rounds = turns_to_rounds(turns, user_speaker=user_name, assistant_speaker=assistant_name)
+
+        backend = self.systems.episodic.backend
+        if rounds and getattr(backend, "persistence", None) is not archive:
+            try:
+                rag_result = backend.persist_dialogue(
+                    thread_id=tid,
+                    rounds=rounds,
+                    reason=reason,
+                    source=source,
+                    progress_callback=progress_callback,
+                )
+                if isinstance(archive_result, dict) and isinstance(rag_result, dict):
+                    archive_result.setdefault("rag_store", rag_result)
+            except Exception:
+                logger.exception("Episodic backend persist_dialogue failed for thread_id=%s", tid)
+
+        return archive_result
+
     def on_flush(self, *, conversation_id: str, thread_id: str) -> List[Dict[str, Any]]:
         """Drain the conversation state and merge notes into the persisted dialogue.
 

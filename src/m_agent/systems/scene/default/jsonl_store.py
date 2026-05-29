@@ -37,6 +37,26 @@ class SceneLogStore:
         self._lock = threading.RLock()
         self._entries: Dict[str, List[SceneEntry]] = {}
         self._seq: Dict[str, int] = {}
+        self._flush_seq: Dict[str, int] = {}
+
+    def flush_watermark(self, thread_id: str) -> int:
+        tid = str(thread_id or "").strip()
+        with self._lock:
+            return int(self._flush_seq.get(tid, 0))
+
+    def entries_since_flush(self, thread_id: str) -> List[SceneEntry]:
+        tid = str(thread_id or "").strip()
+        with self._lock:
+            watermark = int(self._flush_seq.get(tid, 0))
+            return [e for e in self._entries.get(tid, []) if e.seq > watermark]
+
+    def mark_flushed(self, thread_id: str, *, through_seq: int) -> None:
+        tid = str(thread_id or "").strip()
+        if not tid:
+            return
+        with self._lock:
+            current = int(self._flush_seq.get(tid, 0))
+            self._flush_seq[tid] = max(current, int(through_seq))
 
     def _next_seq(self, thread_id: str) -> int:
         current = int(self._seq.get(thread_id, 0))
@@ -107,6 +127,8 @@ class SceneLogStore:
         with self._lock:
             self._entries[tid] = loaded
             self._seq[tid] = max_seq
+            if tid not in self._flush_seq:
+                self._flush_seq[tid] = 0
 
 
 class SceneWriterAdapter:
@@ -123,3 +145,9 @@ class SceneReaderAdapter:
 
     def tail(self, thread_id: str, *, limit: int = 40, before_seq: Optional[int] = None) -> List[SceneEntry]:
         return self._store.tail(thread_id, limit=limit, before_seq=before_seq)
+
+    def entries_since_flush(self, thread_id: str) -> List[SceneEntry]:
+        return self._store.entries_since_flush(thread_id)
+
+    def mark_flushed(self, thread_id: str, *, through_seq: int) -> None:
+        self._store.mark_flushed(thread_id, through_seq=through_seq)

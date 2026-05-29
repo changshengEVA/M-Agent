@@ -1,4 +1,4 @@
-"""Direct single-tool invocation for Think-life (no execution-layer LLM)."""
+"""Direct single-tool invocation for Think-life (param LLM + direct invoke)."""
 from __future__ import annotations
 
 import logging
@@ -12,7 +12,10 @@ logger = logging.getLogger(__name__)
 
 REPLY_TOOL_NAME = "reply_to_user"
 
-# Primary string argument on each tool populated from ThinkingDecision.instruction.
+# Tools whose args are fixed or trivial — skip the param LLM.
+SKIP_PARAM_LLM_TOOLS = frozenset({REPLY_TOOL_NAME, "get_current_time"})
+
+# Legacy fallback mapping when param LLM fails (primary string arg per tool).
 _TOOL_PRIMARY_ARG: Dict[str, str] = {
     "schedule_manage": "instruction",
     "schedule_query": "query",
@@ -28,7 +31,7 @@ def build_tool_input(
     instruction: str = "",
     user_reply_text: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Map think-layer instruction text to a single tool invoke payload."""
+    """Legacy hard map from think-layer instruction text to a tool invoke payload."""
     name = str(tool_name or "").strip()
     text = str(instruction or "").strip()
 
@@ -69,5 +72,5 @@ def invoke_single_tool(
     )
 
 
-def result_summary_from_tool_history(tool_history: List[Dict[str, Any]]) -> str:
+def summarize_tool_history(tool_history: List[Dict[str, Any]]) -> str:
     return feedback_summary_from_tool_history(tool_history)

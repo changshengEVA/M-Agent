@@ -2,7 +2,7 @@
 
 > 中文版：[systems-plugin-development.zh-CN.md](./systems-plugin-development.zh-CN.md)
 
-This is the **canonical** guide for external developers: how to add or swap WM, episodic-memory, and tool-suite integrations, and how to wire them through `config/systems/*.yaml`.
+This is the **index** (rules, architecture, shared YAML, delivery, testing). Per-subsystem plug-in guides live in **[systems-plugin/](./systems-plugin/)** (6 files).
 
 - **Code:** `src/m_agent/systems/`
 - **Config:** `config/systems/`
@@ -24,7 +24,28 @@ This is the **canonical** guide for external developers: how to add or swap WM, 
 
 ---
 
-## 2. Architecture
+## 2. Subsystem guides (6 files)
+
+Plug-in applies at **agent construction** (reload after YAML change). Slot details, LLM surfaces, and delivery steps:
+
+| Subsystem | 中文 | English |
+|-----------|------|---------|
+| WM | [wm.zh-CN.md](./systems-plugin/wm.zh-CN.md) | [wm.md](./systems-plugin/wm.md) |
+| Episodic | [episodic.zh-CN.md](./systems-plugin/episodic.zh-CN.md) | [episodic.md](./systems-plugin/episodic.md) |
+| Tools | [tools.zh-CN.md](./systems-plugin/tools.zh-CN.md) | [tools.md](./systems-plugin/tools.md) |
+
+```yaml
+systems:
+  wm:       ../../systems/wm/default.yaml
+  episodic: ../../systems/episodic/rag_default.yaml
+  tools:    ../../systems/tools/default.yaml
+```
+
+Five public `path` slots: WM writer/reader/display; episodic `backend`; tools `registry`. `EpisodeRecorder` is system-internal — see episodic guide.
+
+---
+
+## 3. Architecture
 
 ### Config + load chain
 
@@ -35,24 +56,17 @@ chat_controller.yaml  →  systems.{wm,episodic,tools}  →  load_*_system()
 
 ### Source layout
 
-See [systems-plugin-development.zh-CN.md §2.3](./systems-plugin-development.zh-CN.md) (same tree).
+See [systems-plugin-development.zh-CN.md §3.3](./systems-plugin-development.zh-CN.md) (same tree).
 
-### Six access points
+### Plug-in access points
 
-| System | Field | Protocol | Shipped `path` |
-|--------|-------|----------|----------------|
-| `WMSystem` | `writer` / `reader` / `display` | `WMWriter` / `WMReader` / `WMDisplay` | `wm.default.defaults:*` |
-| `EpisodicMemorySystem` | `recorder` / `backend` | `EpisodeRecorder` / `EpisodicMemoryBackend` | `episodic.default.*` |
-| `EpisodicMemorySystem` | `query_module` | `EpisodeQueryModule` | YAML `query:` only |
-| `ToolSuiteSystem` | `registry` | `ControllerCapabilityRegistry` | `tools.default.registry:get_default_capability_registry` |
-
-`ToolSuiteSystem` also has `enabled`, `defaults`, `runtime_descriptions` in YAML.
+See [systems-plugin/](./systems-plugin/) (6 guides).
 
 ---
 
-## 3. YAML reference (summary)
+## 4. YAML reference (summary)
 
-Full tables and Chinese prose: [zh-CN guide §3](./systems-plugin-development.zh-CN.md).
+Shared rules: [zh-CN guide §4](./systems-plugin-development.zh-CN.md). Per-subsystem YAML fields: [systems-plugin/](./systems-plugin/).
 
 **Common**
 
@@ -78,50 +92,25 @@ Full tables and Chinese prose: [zh-CN guide §3](./systems-plugin-development.zh
 
 ---
 
-## 4. Delivery checklist
+## 5. Delivery checklist
 
 1. Pick subsystem (`wm` / `episodic` / `tools`).
 2. Implement protocol in-repo (`systems/<name>/<package>/`) or external pip package.
 3. Export symbols referenced by YAML `path`.
 4. Copy nearest variant YAML → `my_variant.yaml`, edit `path`/`kwargs`.
 5. Point `chat_controller.yaml` `systems.<name>` at it.
-6. Run `pytest tests/systems/` (+ checklist in §7 of zh-CN doc).
+6. Run `pytest tests/systems/` (+ checklist in §8 of zh-CN doc).
 7. Do not patch `default/` for one-off trials.
 
 ---
 
-## 5. Implementation notes (by subsystem)
+## 6. Implementation notes
 
-### WM
-
-- `WMWriter.write` mutates `entries`; `WMReader.render` → thinking layer; `WMDisplay.render` → execution layer (default: same tail-N as reader).
-- Loader injects `config=WorkingMemoryConfig` into reader/writer/display constructors.
-
-### Episodic
-
-- Backend: `shallow_recall`, `deep_recall`, `persist_round`, `persist_dialogue`, `on_flush`.
-- Recorder: `append`, `flush`; runtime drains buffer → `on_flush`.
-- Recall tools call `context.get_episodic_backend()` only.
-
-**Chat stack — per-user persistence (see [zh-CN §3.4.1](./systems-plugin-development.zh-CN.md))**
-
-- Dialogue JSON: `data/memory/chat-api/<user>/dialogues/` (on successful flush).
-- RAG index: `data/memory/chat-api/<user>/episodic/` (`chunks.jsonl`, `embeddings.npy`); written on each `persist_round` and on flush `persist_dialogue`.
-- `ThreeLayerChatAgent` rebinding overrides YAML `storage_dir`/`workflow_id` at runtime.
-- Inspect paths via `thread_state.episodic_persistence` on `GET .../memory/state`.
-- Writing dialogue files alone does **not** build embeddings.
-
-### Tools
-
-- `ControllerCapabilitySpec` + `build_tool(context, description)`.
-- Use `context.check_tool_call_limits`, `start_tool_call`, `finish_tool_call`.
-- Prefer isolated `build_my_registry()` over global `register_capability()`.
-
-Detailed examples (semantic WM reader, remote backend, custom capability): **zh-CN guide §5** or previous `src/m_agent/systems/README.md` content now merged there.
+See [systems-plugin/wm.md](./systems-plugin/wm.md), [episodic.md](./systems-plugin/episodic.md), [tools.md](./systems-plugin/tools.md).
 
 ---
 
-## 6. Override precedence
+## 7. Override precedence
 
 `systems=` arg → legacy `plugins=` → YAML `systems:` → legacy flat fields → built-in defaults.
 
@@ -132,27 +121,27 @@ bundle = SystemsBundle(episodic=load_episodic_system({...}))
 
 ---
 
-## 7. Testing
+## 8. Testing
 
 ```bash
 pytest tests/systems/
 ```
 
-See zh-CN §7 for file-level map and PR checklist.
+See zh-CN §8 for file-level map and PR checklist.
 
 ---
 
-## 8. Pitfalls
+## 9. Pitfalls
 
-Wrong dotted path · kwargs mismatch · `query.enabled` vs recall tools mismatch · global registry mutation · bypassing episodic backend · inlining params in chat_controller.
+Wrong dotted path · kwargs mismatch · `query.enabled` vs recall tools mismatch · global registry mutation · bypassing episodic backend · inlining params in chat_controller · configuring episodic `recorder:` (not a public plug-in slot).
 
 ---
 
-## 9. Related docs
+## 10. Related docs
 
 - [Project structure](./project-structure.md)
 - [Pipeline / SSE](./m_agent_pipeline.md)
 - [Chat API](./chat_api/README.md)
 - [WorkspaceMem](F:/AI/WorkspaceMem)
 
-**Maintenance:** update zh-CN and EN together; keep `src/m_agent/systems/README*.md` and `config/**/README.md` as short indexes only.
+**Maintenance:** plug-in detail in `docs/systems-plugin/` (6 files); keep this index + zh-CN in sync; short README indexes elsewhere.

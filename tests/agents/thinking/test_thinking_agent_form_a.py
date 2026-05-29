@@ -104,6 +104,7 @@ def _make_agent(
     summaries: List[ThinkingSummary],
     execution_result: ExecutionResult,
     wm_config: WorkingMemoryConfig | None = None,
+    max_executions_per_turn: int = 1,
 ) -> tuple[ThinkingAgent, _StubExecutionAgent, _FakeChatModel]:
     wm_cfg = wm_config or WorkingMemoryConfig(enable=True)
     fake_model = _FakeChatModel(
@@ -124,7 +125,7 @@ def _make_agent(
         episode_recorder=DefaultEpisodeRecorder(),
         state_registry=ConversationStateRegistry(),
         prompt_language="zh",
-        max_executions_per_turn=1,
+        max_executions_per_turn=max_executions_per_turn,
         skip_summarize_on_direct_answer=True,
     )
     return agent, stub_execution, fake_model
@@ -153,6 +154,22 @@ def test_answer_directly_skips_execution_and_summarize() -> None:
     assert state.turn_count == 1
     # episode_note should be buffered for later flush.
     assert any(entry["note"] == "user said hi" for entry in state.episode_buffer)
+
+
+def test_silent_mode_skips_fallback_answer() -> None:
+    decisions = [ThinkingDecision(mode="silent", episode_note="ack only", reasoning="no reply needed")]
+    agent, stub, fake_model = _make_agent(
+        decisions=decisions,
+        summaries=[],
+        execution_result=ExecutionResult(summary="(unused)"),
+        max_executions_per_turn=0,
+    )
+    turn = agent.handle(_make_perception())
+
+    assert turn.answer == ""
+    assert turn.execution_result is None
+    assert stub.calls == []
+    assert len(fake_model.structured_calls(ThinkingDecision)) == 1
 
 
 def test_execute_then_summarize_writes_wm_and_returns_summary_answer() -> None:

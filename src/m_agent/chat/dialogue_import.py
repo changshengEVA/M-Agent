@@ -51,7 +51,9 @@ def turns_to_rounds(
         text = str(item.get("text", "") or "").strip()
         if not text:
             continue
-        ts_raw = item.get("timestamp")
+        entry_type = str(item.get("entry_type", "") or "").strip().lower()
+        actor = str(item.get("actor", "") or "").strip().lower()
+        ts_raw = item.get("timestamp") or item.get("occurred_at")
         ts = None
         if isinstance(ts_raw, str) and ts_raw.strip():
             try:
@@ -59,10 +61,15 @@ def turns_to_rounds(
             except Exception:
                 ts = None
 
-        if speaker in user_names or (pending_user is None and speaker not in assistant_names):
+        is_user = entry_type == "utterance" or actor == "user" or (
+            speaker in user_names and entry_type not in {"reply", "action", "thought"}
+        )
+        is_assistant = entry_type == "reply" or actor == "assistant" or speaker in assistant_names
+
+        if is_user and not is_assistant:
             pending_user = {"text": text, "timestamp": ts, "turn": dict(item)}
             continue
-        if speaker in assistant_names and pending_user is not None:
+        if is_assistant and pending_user is not None:
             user_at = pending_user.get("timestamp") or _utc_now()
             assistant_at = ts or user_at
             rounds.append(
@@ -76,6 +83,9 @@ def turns_to_rounds(
                 }
             )
             pending_user = None
+            continue
+        if speaker in user_names or (pending_user is None and speaker not in assistant_names):
+            pending_user = {"text": text, "timestamp": ts, "turn": dict(item)}
 
     return rounds
 

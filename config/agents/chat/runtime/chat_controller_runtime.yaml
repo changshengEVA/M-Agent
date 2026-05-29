@@ -58,10 +58,10 @@ chat_controller:
       zh: |
         [规划要求]
         请按以下结构化字段输出本轮决策：
-        - mode: 仅可填 "execute" 或 "answer_directly"。
+        - mode: 仅可填 "execute"、"answer_directly" 或 "silent"。
         - tool_name: 当 mode==execute 时必填，且只能填一个已启用能力名（每轮只调用这一个工具）。
         - instruction: 当 mode==execute 时，写简短参数说明（查什么、发给谁等）；否则留空或填 null。
-        - answer: 当 mode==answer_directly 时直接给出最终回复；否则留空或填 null。
+        - answer: 当 mode==answer_directly 时直接给出最终回复；silent/execute 时留空或填 null。
         - episode_note: 可选；写下你认为以后值得记住的一两句话，不要把工具结果原样塞进去。
         - capability_hint: 可选遗留字段；请优先使用 tool_name。
         - request_complete: 仅当用户原始请求已全部完成时填 true；否则 false 并继续 execute。
@@ -71,16 +71,17 @@ chat_controller:
         - 当 mode==execute 时，不要在 answer 中给出最终回复。
         - 多步任务（一周/每天/多个）：每轮只 execute 一个 tool_name；以 feedback 里 Structured tool result 的 count 为准。
         - 只有全部步骤完成或 schedule_query 核实后，才 request_complete=true 并 answer_directly。
-        - 闲聊、致谢、与可委托能力无关的请求，直接 answer_directly（系统会用 reply_to_user 发出）。
+        - 纯附和、无需对用户说话、或等待更多信息时，用 silent（不 delegate、不 reply）。
+        - 闲聊、致谢、与可委托能力无关且需要回应的请求，用 answer_directly（系统会用 reply_to_user 发出）。
         - instruction 只写当前这一步的单条参数（如一条日程的明确时间 + 具体提醒动作，例如「2026-05-30 08:00 提醒我起床」），不要打包整周/多个，不要用「第一条」等抽象标签。
         - 邮件/日程：tool_name 选对应能力；schedule_manage 每次只创建 1 条。
       en: |
         [Planning Requirements]
         Emit the structured decision for this turn:
-        - mode: must be either "execute" or "answer_directly".
+        - mode: must be "execute", "answer_directly", or "silent".
         - tool_name: required when mode==execute; exactly one enabled capability (one tool this round).
         - instruction: when mode==execute, short args hint (what to recall, whom to email, etc.).
-        - answer: required when mode==answer_directly; the final user-facing reply.
+        - answer: required when mode==answer_directly; leave empty for silent/execute.
         - episode_note: optional short text worth remembering; do not dump raw tool output here.
         - capability_hint: optional legacy field; prefer tool_name.
         - request_complete: true only when the full user request is done; otherwise false and continue execute.
@@ -89,8 +90,8 @@ chat_controller:
         - No direct tools; mode==execute must name exactly one tool_name per plan round.
         - Multi-step requests: one tool_name per round; trust Structured tool result count on feedback.
         - Set request_complete=true and answer_directly only after all steps or schedule_query verification.
-        - When mode==execute, leave answer empty.
-        - For small talk or non-delegable requests, use answer_directly (reply_to_user will deliver it).
+        - Use silent for acks, waiting for more input, or when no user-visible reply is needed.
+        - For small talk or non-delegable requests that need a reply, use answer_directly (reply_to_user will deliver it).
         - Do not pack multiple tools into one round.
         - For email/schedule, pick the matching tool_name only; no unrelated recall.
 

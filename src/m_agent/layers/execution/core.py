@@ -254,6 +254,185 @@ class ExecutionAgent:
 
         return execution_result
 
+    def fill_tool_args(
+        self,
+        *,
+        tool_name: str,
+        instruction: str,
+        thread_id: str,
+        pending_user_request: str = "",
+        correlation_id: str = "",
+    ) -> Dict[str, Any]:
+        """Think-life param pass: one LLM call with a single bound tool to fill structured args."""
+        name = str(tool_name or "").strip()
+        if not name:
+            raise ValueError("tool_name must be a non-empty string")
+        active_thread_id = str(thread_id or "").strip()
+        if not active_thread_id:
+            raise ValueError("thread_id must be a non-empty string")
+        if name not in self.enabled_capability_names:
+            supported = ", ".join(self.enabled_capability_names)
+            raise ValueError(f"Unknown or disabled tool: {name}. Enabled: {supported}")
+
+        tool_obj = self._build_single_tool_object(tool_name=name, thread_id=active_thread_id)
+        system_prompt = self._build_param_fill_system_prompt(tool_name=name)
+        user_content = self._build_param_fill_user_message(
+            tool_name=name,
+            instruction=str(instruction or "").strip(),
+            pending_user_request=str(pending_user_request or "").strip(),
+        )
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_content},
+        ]
+
+        bound_model = self.model_provider.model.bind_tools([tool_obj], tool_choice=name)
+
+        def _attempt(_: int) -> Any:
+            return bound_model.invoke(messages)
+
+        response = self.model_provider.invoke_with_network_retry(
+            _attempt,
+            call_name=f"execution.fill_tool_args.{name}",
+        )
+        args = self._extract_tool_call_args(response, expected_name=name)
+        if not args:
+            raise ValueError(f"param LLM returned no tool call for {name!r}")
+        logger.debug(
+            "fill_tool_args tool=%s correlation_id=%s args=%s",
+            name,
+            correlation_id,
+            args,
+        )
+        return args
+
+    def _build_single_tool_bundle(
+        self,
+        *,
+        tool_name: str,
+        thread_id: str,
+        think_life_hooks: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Any, Dict[str, Any], Dict[str, Any]]:
+        name = str(tool_name or "").strip()
+        recall_state: Dict[str, Any] = {"mode": None, "result": None, "history": []}
+        controller_state: Dict[str, Any] = {"history": [], "call_seq": 0}
+        if think_life_hooks:
+            controller_state["think_life"] = dict(think_life_hooks)
+        tool_defaults = self._tool_defaults_for_request(
+            ExecutionRequest(
+                instruction="",
+                thread_id=thread_id,
+                allowed_tool_names=[name],
+            ),
+            [name],
+        )
+        capability_context = ControllerCapabilityContext(
+            active_thread_id=thread_id,
+            recall_state=recall_state,
+            controller_state=controller_state,
+            tool_defaults=tool_defaults,
+            logger=logger,
+            email_agent_provider=self.email_agent_provider,
+            schedule_agent_provider=self.schedule_agent_provider,
+            episodic_backend=self.episodic_backend,
+        )
+        tools = build_controller_tools(
+            context=capability_context,
+            enabled_tool_names=[name],
+            tool_descriptions=self.capability_descriptions,
+            registry=self.registry,
+        )
+        if not tools:
+            raise ValueError(f"Failed to build tool: {name}")
+        return tools[0], controller_state, recall_state
+
+    def _build_single_tool_object(
+        self,
+        *,
+        tool_name: str,
+        thread_id: str,
+        think_life_hooks: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        tool_obj, _, _ = self._build_single_tool_bundle(
+            tool_name=tool_name,
+            thread_id=thread_id,
+            think_life_hooks=think_life_hooks,
+        )
+        return tool_obj
+
+    def _build_param_fill_system_prompt(self, *, tool_name: str) -> str:
+        if self.prompt_language == "zh":
+            return (
+                f"你是 Think-life 工具参数助手。思考层已选定唯一工具 `{tool_name}`。\n"
+                "你的任务：根据「上层意图」调用该工具一次，参数必须符合工具 schema。\n"
+                "硬约束：只调用这一个工具；不要选择其它工具；不要输出自然语言回复。"
+            )
+        return (
+            f"You are the Think-life tool-argument assistant. The thinking layer chose `{tool_name}` only.\n"
+            "Call that tool once with arguments matching its schema.\n"
+            "Hard constraints: do not call any other tool; do not reply in natural language."
+        )
+
+    @staticmethod
+    def _build_param_fill_user_message(
+        *,
+        tool_name: str,
+        instruction: str,
+        pending_user_request: str,
+    ) -> str:
+        parts: List[str] = [f"Call `{tool_name}` with the correct arguments."]
+        if instruction:
+            parts.append(f"Upper-layer intent: {instruction}")
+        if pending_user_request:
+            parts.append(f"Original user request: {pending_user_request}")
+        return "\n".join(parts)
+
+    @staticmethod
+    def _extract_tool_call_args(message: Any, *, expected_name: str) -> Dict[str, Any]:
+        expected = str(expected_name or "").strip()
+        tool_calls = getattr(message, "tool_calls", None)
+        if isinstance(tool_calls, list):
+            for item in tool_calls:
+                if not isinstance(item, dict):
+                    continue
+                name = str(item.get("name", "") or "").strip()
+                if name != expected:
+                    continue
+                args = item.get("args")
+                if isinstance(args, dict):
+                    return dict(args)
+                if isinstance(args, str) and args.strip():
+                    try:
+                        parsed = json.loads(args)
+                        if isinstance(parsed, dict):
+                            return parsed
+                    except json.JSONDecodeError:
+                        continue
+        additional = getattr(message, "additional_kwargs", None)
+        if isinstance(additional, dict):
+            raw_calls = additional.get("tool_calls")
+            if isinstance(raw_calls, list):
+                for item in raw_calls:
+                    if not isinstance(item, dict):
+                        continue
+                    fn = item.get("function")
+                    if not isinstance(fn, dict):
+                        continue
+                    name = str(fn.get("name", "") or "").strip()
+                    if name != expected:
+                        continue
+                    arguments = fn.get("arguments")
+                    if isinstance(arguments, dict):
+                        return dict(arguments)
+                    if isinstance(arguments, str) and arguments.strip():
+                        try:
+                            parsed = json.loads(arguments)
+                            if isinstance(parsed, dict):
+                                return parsed
+                        except json.JSONDecodeError:
+                            continue
+        return {}
+
     def invoke_tool_direct(
         self,
         *,
@@ -276,37 +455,12 @@ class ExecutionAgent:
 
         recall_state: Dict[str, Any] = {"mode": None, "result": None, "history": []}
         controller_state: Dict[str, Any] = {"history": [], "call_seq": 0}
-        if think_life_hooks:
-            controller_state["think_life"] = dict(think_life_hooks)
 
-        tool_defaults = self._tool_defaults_for_request(
-            ExecutionRequest(
-                instruction="",
-                thread_id=active_thread_id,
-                allowed_tool_names=[name],
-            ),
-            [name],
+        tool_obj, controller_state, recall_state = self._build_single_tool_bundle(
+            tool_name=name,
+            thread_id=active_thread_id,
+            think_life_hooks=think_life_hooks,
         )
-        capability_context = ControllerCapabilityContext(
-            active_thread_id=active_thread_id,
-            recall_state=recall_state,
-            controller_state=controller_state,
-            tool_defaults=tool_defaults,
-            logger=logger,
-            email_agent_provider=self.email_agent_provider,
-            schedule_agent_provider=self.schedule_agent_provider,
-            episodic_backend=self.episodic_backend,
-        )
-        tools = build_controller_tools(
-            context=capability_context,
-            enabled_tool_names=[name],
-            tool_descriptions=self.capability_descriptions,
-            registry=self.registry,
-        )
-        if not tools:
-            raise ValueError(f"Failed to build tool: {name}")
-
-        tool_obj = tools[0]
         invoke_fn = getattr(tool_obj, "invoke", None) or getattr(tool_obj, "run", None)
         if invoke_fn is None:
             raise RuntimeError(f"Tool {name} has no invoke/run method")

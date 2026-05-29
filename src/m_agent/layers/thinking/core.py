@@ -51,6 +51,9 @@ from m_agent.layers.thinking.state import (
     ConversationStateRegistry,
     ThinkingDecision,
     ThinkingSummary,
+    is_execute_mode,
+    is_silent_mode,
+    normalize_thinking_mode,
 )
 from m_agent.utils.api_error_utils import is_network_api_error
 
@@ -160,10 +163,13 @@ class ThinkingAgent:
         decision = self._plan(perception, state)
         emit("thinking_plan", self._decision_event_payload(decision, perception, state))
 
-        if decision.mode != "execute" or self.max_executions_per_turn <= 0:
-            answer = str(decision.answer or "").strip()
-            if not answer:
-                answer = self._fallback_answer(perception)
+        if not is_execute_mode(decision.mode) or self.max_executions_per_turn <= 0:
+            if is_silent_mode(decision.mode):
+                answer = ""
+            else:
+                answer = str(decision.answer or "").strip()
+                if not answer:
+                    answer = self._fallback_answer(perception)
             self.episode_recorder.append(
                 state.episode_buffer,
                 note=decision.episode_note,
@@ -449,9 +455,9 @@ class ThinkingAgent:
             return (
                 "[规划要求]\n"
                 "请按以下结构化字段输出本轮的决策：\n"
-                "- mode: 仅可填 \"execute\" 或 \"answer_directly\"。\n"
+                "- mode: 仅可填 \"execute\"、\"answer_directly\" 或 \"silent\"。\n"
                 "- instruction: 当 mode==execute 时，写一条自然语言指令交给执行层；否则留空或填 null。\n"
-                "- answer: 当 mode==answer_directly 时直接给出最终回复；否则留空或填 null。\n"
+                "- answer: 当 mode==answer_directly 时直接给出最终回复；silent/execute 时留空或填 null。\n"
                 "- episode_note: 可选；写下你认为以后值得记住的一两句话，不要把工具结果原样塞进去。\n"
                 "- tool_name: 当 mode==execute 时必填，且只能填一个已启用能力名（本轮只执行这一个工具）。\n"
                 "- request_complete: 仅当用户原始请求已全部完成时填 true；否则 false 并继续 execute。\n"
@@ -461,15 +467,16 @@ class ThinkingAgent:
                 "- 你本身没有工具权限，所有外部动作只能通过 execute 委托，且每轮最多一个 tool_name。\n"
                 "- 多步任务：以 feedback 中 Structured tool result 的 count 为准；未完成时 request_complete=false。\n"
                 "- 当 mode==execute 时，不要在 answer 中给出最终回复，让执行层先工作。\n"
-                "- 闲聊、致谢、与可委托能力无关的请求，直接 answer_directly。\n"
+                "- 闲聊、致谢、与可委托能力无关的请求，用 answer_directly；纯附和/无需回复时用 silent。\n"
+                "- mode==silent：不 delegate、不 reply，仅记录 reasoning/episode_note，等待后续刺激。\n"
                 "- 不要在指令中重复用户原话，要写明你希望执行层做什么。"
             )
         return (
             "[Planning Requirements]\n"
             "Emit the structured decision for this turn:\n"
-            "- mode: must be either \"execute\" or \"answer_directly\".\n"
+            "- mode: must be \"execute\", \"answer_directly\", or \"silent\".\n"
             "- instruction: required when mode==execute; a single natural-language directive for the execution layer.\n"
-            "- answer: required when mode==answer_directly; the final user-facing reply.\n"
+            "- answer: required when mode==answer_directly; leave empty for silent/execute.\n"
             "- episode_note: optional short text worth remembering; do not dump raw tool output here.\n"
             "- tool_name: required when mode==execute; exactly one enabled capability (one tool this round).\n"
             "- request_complete: true only when the original user request is fully done; else false and continue execute.\n"
@@ -479,7 +486,8 @@ class ThinkingAgent:
             "- You hold no tools yourself; delegate via execute with at most one tool_name per round.\n"
             "- Multi-step tasks: trust Structured tool result count on feedback; request_complete=false until done.\n"
             "- When mode==execute, leave answer empty and let the execution layer work first.\n"
-            "- For small talk, acknowledgements, or requests unrelated to delegable capabilities, choose answer_directly.\n"
+            "- For small talk or delegable-unrelated requests, choose answer_directly; use silent for acks that need no reply.\n"
+            "- mode==silent: no delegate, no reply; record reasoning/episode_note and wait for further stimulus.\n"
             "- Don't echo the user; in the instruction state explicitly what you want the execution layer to do."
         )
 
@@ -678,7 +686,7 @@ class ThinkingAgent:
             return raw
         if isinstance(raw, dict):
             return ThinkingDecision(
-                mode=str(raw.get("mode", "answer_directly") or "answer_directly"),
+                mode=normalize_thinking_mode(raw.get("mode", "answer_directly")),
                 tool_name=raw.get("tool_name"),
                 instruction=raw.get("instruction"),
                 answer=raw.get("answer"),
@@ -689,7 +697,7 @@ class ThinkingAgent:
             )
         if hasattr(raw, "mode"):
             return ThinkingDecision(
-                mode=str(getattr(raw, "mode", "answer_directly") or "answer_directly"),
+                mode=normalize_thinking_mode(getattr(raw, "mode", "answer_directly")),
                 tool_name=getattr(raw, "tool_name", None),
                 instruction=getattr(raw, "instruction", None),
                 answer=getattr(raw, "answer", None),

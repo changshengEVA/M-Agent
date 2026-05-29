@@ -20,7 +20,14 @@ from m_agent.layers.perception.contracts import PerceptionInput
 
 from m_agent.layers.thinking.core import ThinkingAgent, ThinkingTurnResult
 
-from m_agent.layers.thinking.state import ConversationStateRegistry, ThinkingDecision
+from m_agent.layers.thinking.state import (
+    ConversationStateRegistry,
+    ThinkingDecision,
+    is_reply_mode,
+    is_silent_mode,
+    is_execute_mode,
+    request_is_complete,
+)
 
 from m_agent.runtime.think_life.config import ThinkLifeConfig
 
@@ -53,7 +60,11 @@ from m_agent.runtime.think_life.scheduler.cpu_state import THREAD_CPU_STATE
 
 from m_agent.runtime.think_life.scheduler.schedule_lifecycle import ScheduleLifecycleHook
 
-from m_agent.runtime.think_life.scheduler.delegate import plan_delegate
+from m_agent.runtime.think_life.scheduler.delegate import (
+    DelegateTarget,
+    plan_delegate_target,
+    resolve_delegate_tool_input,
+)
 
 from m_agent.runtime.think_life.scheduler.execution_feedback import (
     augment_perception_with_nudge,
@@ -555,7 +566,7 @@ class ThinkLifeLoop:
             )
             decision = turn.decision
 
-            if decision.mode != "answer_directly":
+            if not is_reply_mode(decision.mode):
                 break
             if stimulus.kind != StimulusKind.EXECUTION_FEEDBACK:
                 break
@@ -600,14 +611,6 @@ class ThinkLifeLoop:
     ) -> Dict[str, Any]:
 
         record = self.registry.get(transaction.transaction_id) or transaction
-
-        if stimulus.kind == StimulusKind.EXECUTION_FEEDBACK:
-
-            tool_history = stimulus.payload.get("tool_history")
-
-            if isinstance(tool_history, list) and record.can_accept_wm_write():
-
-                self.wm_system.write(record.wm_entries, tool_history)
 
         record.think_rounds += 1
 
@@ -688,30 +691,30 @@ class ThinkLifeLoop:
             return self._handle_preempt(stimulus, record, phase="think")
 
         enabled_tools = self.execution_agent.enabled_capability_names
+        pending_user_request = latest_user_utterance_from_scene(scene_tail)
 
         if turn.execution_result is not None:
             answer = str(turn.answer or "").strip()
             if answer:
-                planned = plan_delegate(
+                target = plan_delegate_target(
                     decision,
                     enabled_tools=enabled_tools,
                     for_user_reply=True,
                     user_reply_text=answer,
                 )
-                if planned:
-                    tool_name, tool_input = planned
+                if target:
                     return self._delegate_and_wait(
                         record,
-                        tool_name=tool_name,
-                        tool_input=tool_input,
+                        target=target,
+                        pending_user_request=pending_user_request,
                         perception=perception,
                         stimulus=stimulus,
                         cancel_event=cancel_event,
                     )
 
-        if decision.mode == "execute":
-            planned = plan_delegate(decision, enabled_tools=enabled_tools)
-            if planned:
+        if is_execute_mode(decision.mode):
+            target = plan_delegate_target(decision, enabled_tools=enabled_tools)
+            if target:
                 limit = self.config.max_delegates_per_transaction
                 if limit is not None and record.delegate_count >= limit:
                     self.registry.transition(record.transaction_id, TransactionStatus.FAILED)
@@ -720,11 +723,10 @@ class ThinkLifeLoop:
                         "error": "max_delegates_per_transaction exceeded",
                         "transaction_id": record.transaction_id,
                     }
-                tool_name, tool_input = planned
                 return self._delegate_and_wait(
                     record,
-                    tool_name=tool_name,
-                    tool_input=tool_input,
+                    target=target,
+                    pending_user_request=pending_user_request,
                     perception=perception,
                     stimulus=stimulus,
                     cancel_event=cancel_event,
@@ -737,31 +739,67 @@ class ThinkLifeLoop:
                 "transaction_id": record.transaction_id,
             }
 
-        if decision.mode == "answer_directly":
+        if is_silent_mode(decision.mode):
+            return self._finish_silent_plan_turn(record, decision)
+
+        if is_reply_mode(decision.mode):
             answer = str(decision.answer or "").strip()
             if answer:
-                planned = plan_delegate(
+                target = plan_delegate_target(
                     decision,
                     enabled_tools=enabled_tools,
                     for_user_reply=True,
                     user_reply_text=answer,
                 )
-                if planned:
-                    tool_name, tool_input = planned
+                if target:
                     return self._delegate_and_wait(
                         record,
-                        tool_name=tool_name,
-                        tool_input=tool_input,
+                        target=target,
+                        pending_user_request=pending_user_request,
                         perception=perception,
                         stimulus=stimulus,
                         cancel_event=cancel_event,
                     )
+            logger.warning(
+                "answer_directly without answer for txn=%s; treating as silent",
+                record.transaction_id,
+            )
+            return self._finish_silent_plan_turn(record, decision)
 
         self._complete_transaction_after_turn(record)
         return {
             "success": True,
             "transaction_id": record.transaction_id,
             "completed": True,
+            "phases": ["plan"],
+        }
+
+    def _finish_silent_plan_turn(
+        self,
+        record: TransactionRecord,
+        decision: ThinkingDecision,
+    ) -> Dict[str, Any]:
+        """No delegate, no reply; keep the transaction open unless request_complete."""
+        if request_is_complete(decision):
+            self._complete_transaction_after_turn(record)
+            return {
+                "success": True,
+                "transaction_id": record.transaction_id,
+                "completed": True,
+                "silent": True,
+                "phases": ["plan"],
+            }
+        current = self.registry.get(record.transaction_id) or record
+        if current.status in {
+            TransactionStatus.PENDING,
+            TransactionStatus.WAITING_EXECUTION,
+        }:
+            self.registry.transition(record.transaction_id, TransactionStatus.RUNNING)
+        return {
+            "success": True,
+            "transaction_id": record.transaction_id,
+            "completed": False,
+            "silent": True,
             "phases": ["plan"],
         }
 
@@ -788,9 +826,9 @@ class ThinkLifeLoop:
 
         *,
 
-        tool_name: str,
+        target: DelegateTarget,
 
-        tool_input: Dict[str, Any],
+        pending_user_request: str = "",
 
         perception: Any,
 
@@ -813,6 +851,15 @@ class ThinkLifeLoop:
         record.correlation.delegate_id = delegate_id
 
         self.registry.transition(record.transaction_id, TransactionStatus.WAITING_EXECUTION)
+
+        tool_input = resolve_delegate_tool_input(
+            self.execution_agent,
+            target,
+            thread_id=record.thread_id,
+            correlation_id=delegate_id,
+            pending_user_request=pending_user_request,
+        )
+        tool_name = target.tool_name
 
         replies: List[str] = []
 
