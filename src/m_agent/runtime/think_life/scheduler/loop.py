@@ -69,7 +69,9 @@ from m_agent.runtime.think_life.scheduler.delegate import (
 from m_agent.runtime.think_life.scheduler.execution_feedback import (
     augment_perception_with_nudge,
     build_completion_nudge_message,
+    build_param_gap_tool_history,
     feedback_summary_from_tool_history,
+    param_gap_summary,
     premature_reply_block_reason,
 )
 
@@ -80,6 +82,8 @@ from m_agent.runtime.think_life.scheduler.think_context import (
     build_perception_for_stimulus,
 
     latest_user_utterance_from_scene,
+
+    read_scene_segment,
 
 )
 
@@ -639,7 +643,11 @@ class ThinkLifeLoop:
 
         )
 
-        scene_tail = self.scene_reader.tail(record.thread_id, limit=self.config.scene_context_max_entries)
+        scene_tail = read_scene_segment(
+            self.scene_reader,
+            record.thread_id,
+            max_entries=self.config.scene_context_max_entries,
+        )
 
         ctx = ThinkContext(transaction=record, stimulus=stimulus, scene_tail=scene_tail)
 
@@ -852,7 +860,7 @@ class ThinkLifeLoop:
 
         self.registry.transition(record.transaction_id, TransactionStatus.WAITING_EXECUTION)
 
-        tool_input = resolve_delegate_tool_input(
+        fill_result = resolve_delegate_tool_input(
             self.execution_agent,
             target,
             thread_id=record.thread_id,
@@ -860,6 +868,28 @@ class ThinkLifeLoop:
             pending_user_request=pending_user_request,
         )
         tool_name = target.tool_name
+
+        if fill_result.needs_clarification:
+            tool_history = build_param_gap_tool_history(
+                fill_result,
+                instruction=target.instruction,
+            )
+            self._append_tool_scene(record, tool_history, delegate_id=delegate_id)
+            self.gateway.submit_execution_feedback(
+                thread_id=record.thread_id,
+                transaction_id=record.transaction_id,
+                delegate_id=delegate_id,
+                tool_history=tool_history,
+                summary=param_gap_summary(fill_result),
+            )
+            return {
+                "success": True,
+                "transaction_id": record.transaction_id,
+                "delegate_id": delegate_id,
+                "waiting_feedback": True,
+                "param_gap": True,
+                "summary": param_gap_summary(fill_result),
+            }
 
         replies: List[str] = []
 
@@ -884,7 +914,7 @@ class ThinkLifeLoop:
 
             exec_result = self.execution_agent.invoke_tool_direct(
                 tool_name=tool_name,
-                tool_input=dict(tool_input or {}),
+                tool_input=dict(fill_result.args or {}),
                 thread_id=record.thread_id,
                 correlation_id=delegate_id,
                 think_life_hooks={

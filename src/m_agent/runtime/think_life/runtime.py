@@ -432,9 +432,19 @@ class ThinkLifeRuntime:
         *,
         limit: int = 40,
         before_seq: Optional[int] = None,
+        since_flush: bool = True,
     ) -> Dict[str, Any]:
         cap = max(1, min(200, int(limit or 40)))
-        entries = self.scene_system.reader.tail(thread_id, limit=cap + 1, before_seq=before_seq)
+        tid = str(thread_id or "").strip()
+        reader = self.scene_system.reader
+        if since_flush:
+            self.ensure_scene_thread_loaded(tid)
+            since_fn = getattr(reader, "entries_since_flush", None)
+            entries = list(since_fn(tid)) if callable(since_fn) else []
+            if before_seq is not None:
+                entries = [e for e in entries if e.seq < int(before_seq)]
+        else:
+            entries = list(reader.tail(tid, limit=cap + 1, before_seq=before_seq))
         has_more = len(entries) > cap
         if has_more:
             entries = entries[-cap:]
@@ -442,6 +452,7 @@ class ThinkLifeRuntime:
             "thread_id": thread_id,
             "entries": [e.to_dict() for e in entries],
             "has_more": has_more,
+            "since_flush": bool(since_flush),
         }
 
     def run_thread(
@@ -505,6 +516,51 @@ class ThinkLifeRuntime:
             "episode_notes_drained": len(drained),
         }
 
+    def ensure_scene_thread_loaded(self, thread_id: str) -> None:
+        tid = str(thread_id or "").strip()
+        if not tid:
+            return
+        store = getattr(self.scene_system, "store", None)
+        ensure_fn = getattr(store, "ensure_thread_loaded", None)
+        if callable(ensure_fn):
+            ensure_fn(tid)
+
+    def scene_pending_flush_metrics(self, thread_id: str) -> Dict[str, Any]:
+        """Return Scene-based flush eligibility for thread_state / idle flush."""
+        from m_agent.chat.chat_memory_persistence import scene_entry_to_dialogue_turn
+
+        tid = str(thread_id or "").strip()
+        if not tid:
+            return {
+                "scene_pending_entries": 0,
+                "scene_pending_turns": 0,
+                "active_user_segment": False,
+                "can_flush": False,
+            }
+        self.ensure_scene_thread_loaded(tid)
+        reader = self.scene_system.reader
+        entries_fn = getattr(reader, "entries_since_flush", None)
+        entries: List[Any] = list(entries_fn(tid)) if callable(entries_fn) else []
+        user_name = str(getattr(self.agent, "user_name", "User") or "User")
+        assistant_name = str(getattr(self.agent, "assistant_name", "Memory Assistant") or "Memory Assistant")
+        pending_turns = sum(
+            1
+            for entry in entries
+            if scene_entry_to_dialogue_turn(
+                entry,
+                user_name=user_name,
+                assistant_name=assistant_name,
+            )
+            is not None
+        )
+        active_user_segment = self.registry.get_active_user_transaction(tid) is not None
+        return {
+            "scene_pending_entries": len(entries),
+            "scene_pending_turns": pending_turns,
+            "active_user_segment": active_user_segment,
+            "can_flush": pending_turns > 0 or active_user_segment,
+        }
+
     def build_dialogue_flush_payload(
         self,
         thread_id: str,
@@ -515,6 +571,7 @@ class ThinkLifeRuntime:
         tid = str(thread_id or "").strip()
         if not tid:
             return None
+        self.ensure_scene_thread_loaded(tid)
         reader = self.scene_system.reader
         entries_fn = getattr(reader, "entries_since_flush", None)
         if not callable(entries_fn):
@@ -551,6 +608,7 @@ class ThinkLifeRuntime:
 
     def mark_scene_flushed(self, thread_id: str, *, through_seq: int) -> None:
         tid = str(thread_id or "").strip()
+        self.ensure_scene_thread_loaded(tid)
         mark_fn = getattr(self.scene_system.reader, "mark_flushed", None)
         if callable(mark_fn) and int(through_seq) > 0:
             mark_fn(tid, through_seq=int(through_seq))

@@ -1,6 +1,7 @@
 """Tests for Think-life execution feedback + completion gate."""
 from __future__ import annotations
 
+from m_agent.layers.execution.contracts import ParamFillResult
 from m_agent.runtime.think_life.contracts import (
     SceneActor,
     SceneEntry,
@@ -13,6 +14,8 @@ from m_agent.runtime.think_life.contracts import (
 )
 from m_agent.runtime.think_life.scheduler.execution_feedback import (
     build_feedback_user_message,
+    build_param_gap_tool_history,
+    extract_last_tool_step,
     feedback_summary_from_tool_history,
     looks_like_multi_step_request,
     premature_reply_block_reason,
@@ -29,7 +32,7 @@ def test_looks_like_multi_step_request() -> None:
 def test_feedback_summary_uses_tool_count() -> None:
     history = [
         {
-            "tool_name": "schedule_manage",
+            "tool_name": "schedule_create",
             "result": {
                 "success": True,
                 "action": "create",
@@ -40,7 +43,7 @@ def test_feedback_summary_uses_tool_count() -> None:
     ]
     summary = feedback_summary_from_tool_history(history)
     assert "count=1" in summary
-    assert "schedule_manage" in summary
+    assert "schedule_create" in summary
 
 
 def test_premature_reply_block_after_single_schedule_create() -> None:
@@ -51,7 +54,7 @@ def test_premature_reply_block_after_single_schedule_create() -> None:
         payload={
             "tool_history": [
                 {
-                    "tool_name": "schedule_manage",
+                    "tool_name": "schedule_create",
                     "result": {"success": True, "action": "create", "count": 1, "answer": "已创建日程"},
                 }
             ],
@@ -63,7 +66,7 @@ def test_premature_reply_block_after_single_schedule_create() -> None:
         pending_user_request="安排一周，每天6点起床20点睡觉",
         stimulus=stimulus,
     )
-    assert reason == "schedule_manage_created_only_one"
+    assert reason == "schedule_create_created_only_one"
 
 
 def test_feedback_user_message_does_not_claim_request_finished() -> None:
@@ -71,7 +74,7 @@ def test_feedback_user_message_does_not_claim_request_finished() -> None:
         pending_user_request="安排一周作息",
         tool_history=[
             {
-                "tool_name": "schedule_manage",
+                "tool_name": "schedule_create",
                 "result": {"count": 1, "answer": "已创建日程"},
             }
         ],
@@ -107,7 +110,7 @@ def test_build_perception_includes_structured_feedback() -> None:
         kind=StimulusKind.EXECUTION_FEEDBACK,
         payload={
             "tool_history": [
-                {"tool_name": "schedule_manage", "result": {"count": 1, "answer": "ok"}}
+                {"tool_name": "schedule_create", "result": {"count": 1, "answer": "ok"}}
             ],
             "summary": "llm says done",
         },
@@ -123,3 +126,40 @@ def test_build_perception_includes_structured_feedback() -> None:
     assert fb.get("structured_summary")
     assert "count=1" in str(fb.get("structured_summary"))
     assert fb.get("multi_step_request") is True
+
+
+def test_param_gap_tool_history_and_summary() -> None:
+    fill = ParamFillResult(
+        tool_name="schedule_create",
+        status="needs_clarification",
+        missing_fields=["due_at"],
+        reason="no explicit time",
+    )
+    history = build_param_gap_tool_history(fill, instruction="提醒我起床")
+    step = extract_last_tool_step(history)
+    assert step.get("needs_clarification") is True
+    assert step.get("stage") == "param_fill"
+    assert step.get("tool_invoked") is False
+    summary = feedback_summary_from_tool_history(history)
+    assert "needs_clarification=true" in summary
+    assert "stage=param_fill" in summary
+    assert "tool_invoked=false" in summary
+    assert "missing_fields=due_at" in summary
+
+
+def test_param_gap_feedback_user_message() -> None:
+    fill = ParamFillResult(
+        tool_name="schedule_create",
+        status="needs_clarification",
+        missing_fields=["due_at"],
+        reason="no explicit time",
+    )
+    history = build_param_gap_tool_history(fill, instruction="提醒我起床")
+    text = build_feedback_user_message(
+        pending_user_request="帮我设个提醒",
+        tool_history=history,
+    )
+    assert "NOT invoked" in text
+    assert "Missing fields: due_at" in text
+    assert "Try other enabled tools" in text
+    assert "answer_directly" in text

@@ -16,3 +16,6 @@ class SceneWriter(Protocol):
 class SceneReader(Protocol):
     def tail(self, thread_id: str, *, limit: int = 40, before_seq: Optional[int] = None) -> List[SceneEntry]:
         ...
+
+    def entries_since_flush(self, thread_id: str) -> List[SceneEntry]:
+        ...

@@ -53,6 +53,27 @@ systems:
 
 **禁止：** 全局 `register_capability()` 污染 default registry；recall 绕过 `get_episodic_backend()`。
 
+## Think-life 参数化跳过声明（`THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG`）
+
+Think-life 对部分工具**不走 param LLM**，而是把思考层本轮的 `instruction` 直接映射为 invoke 参数（见 `src/m_agent/runtime/think_life/scheduler/tool_runner.py`）。
+
+新增或调整「单字符串 / 无参」类能力时，若应跳过 param LLM，必须在 **`THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG`** 中登记：
+
+| 字段含义 | 说明 |
+|----------|------|
+| 键 | capability 名（与 `ControllerCapabilitySpec.name` 一致） |
+| 值 | 思考层 `instruction` 写入的工具参数字段名；`None` 表示无参（如 `get_current_time`） |
+
+当前登记示例：
+
+| 工具 | `instruction` 映射字段 |
+|------|------------------------|
+| `get_current_time` | （无，`{}`） |
+| `shallow_recall` | `question` |
+| `deep_recall` | `question` |
+
+`reply_to_user` 单独处理，不在此表中。其余工具（如 `email_send`、`schedule_create`、`schedule_query`、`schedule_delete`）仍走 param LLM 结构化填参。
+
 ## 交付
 
 1. 实现 capability + registry 工厂

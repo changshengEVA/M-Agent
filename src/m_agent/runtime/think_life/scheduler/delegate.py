@@ -1,10 +1,10 @@
 """Resolve Think-life delegate targets (one tool per delegate)."""
 from __future__ import annotations
 
-import logging
 from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence, Tuple
 
+from m_agent.layers.execution.contracts import ParamFillResult
 from m_agent.layers.thinking.state import ThinkingDecision, is_execute_mode
 from m_agent.layers.execution.core import ExecutionAgent
 from m_agent.runtime.think_life.scheduler.tool_runner import (
@@ -12,9 +12,6 @@ from m_agent.runtime.think_life.scheduler.tool_runner import (
     SKIP_PARAM_LLM_TOOLS,
     build_tool_input,
 )
-
-
-logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -124,30 +121,21 @@ def resolve_delegate_tool_input(
     thread_id: str,
     correlation_id: str = "",
     pending_user_request: str = "",
-) -> Dict[str, Any]:
+) -> ParamFillResult:
     """Build tool invoke payload: param LLM when needed, else legacy hard map."""
+    tool_name = str(target.tool_name or "").strip()
     if not uses_param_llm(target.tool_name, for_user_reply=target.for_user_reply):
-        return build_tool_input(
+        args = build_tool_input(
             target.tool_name,
             instruction=target.instruction,
             user_reply_text=target.user_reply_text,
         )
+        return ParamFillResult(tool_name=tool_name, status="ready", args=args)
 
-    fallback = build_tool_input(
-        target.tool_name,
+    return execution_agent.fill_tool_args(
+        tool_name=target.tool_name,
         instruction=target.instruction,
+        thread_id=thread_id,
+        pending_user_request=pending_user_request,
+        correlation_id=correlation_id,
     )
-    try:
-        return execution_agent.fill_tool_args(
-            tool_name=target.tool_name,
-            instruction=target.instruction,
-            thread_id=thread_id,
-            pending_user_request=pending_user_request,
-            correlation_id=correlation_id,
-        )
-    except Exception:
-        logger.exception(
-            "param LLM failed for tool=%s; falling back to hard map",
-            target.tool_name,
-        )
-        return fallback

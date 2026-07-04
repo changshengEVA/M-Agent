@@ -29,10 +29,29 @@ class ThinkContext:
     scene_tail: List[SceneEntry]
 
 
+def read_scene_segment(
+    scene_reader: SceneReader,
+    thread_id: str,
+    *,
+    max_entries: int,
+) -> List[SceneEntry]:
+    """Scene entries in the current flush segment (since last memory flush), capped."""
+    tid = str(thread_id or "").strip()
+    cap = max(1, int(max_entries or 40))
+    since_fn = getattr(scene_reader, "entries_since_flush", None)
+    if callable(since_fn):
+        entries = list(since_fn(tid))
+    else:
+        entries = list(scene_reader.tail(tid, limit=cap))
+    if len(entries) > cap:
+        return entries[-cap:]
+    return entries
+
+
 def format_scene_tail(entries: List[SceneEntry], *, max_chars: int = 8000) -> str:
     if not entries:
         return ""
-    lines: List[str] = ["[Scene log — chronological, cross-transaction]"]
+    lines: List[str] = ["[Scene log — current segment since last memory flush]"]
     used = 0
     for entry in entries:
         line = f"- ({entry.occurred_at}) [{entry.actor.value}/{entry.entry_type.value}] {entry.text}"
@@ -61,7 +80,11 @@ def build_perception_for_stimulus(
     scene_context_max_entries: int,
     history_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> PerceptionInput:
-    scene_tail = scene_reader.tail(transaction.thread_id, limit=scene_context_max_entries)
+    scene_tail = read_scene_segment(
+        scene_reader,
+        transaction.thread_id,
+        max_entries=scene_context_max_entries,
+    )
     pending_user_request = ""
     if stimulus.kind == StimulusKind.EXECUTION_FEEDBACK:
         pending_user_request = latest_user_utterance_from_scene(scene_tail)

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 
 @dataclass(frozen=True)
@@ -31,7 +31,7 @@ class ExecutionRequest:
 
     ``capability_hint`` is legacy/telemetry; prefer ``allowed_tool_names``.
     ``correlation_id`` is used for log/event correlation.
-    ``thread_id`` is required by some capabilities (e.g. schedule_manage) and
+    ``thread_id`` is required by some capabilities (e.g. schedule_create) and
     by recall thread namespacing — it does not pollute the NL instruction.
     """
 
@@ -79,3 +79,23 @@ class ExecutionResult:
             if name and name not in names:
                 names.append(name)
         return names
+
+
+@dataclass
+class ParamFillResult:
+    """Outcome of Think-life param fill (structured LLM pass before direct invoke)."""
+
+    tool_name: str
+    status: Literal["ready", "needs_clarification"]
+    args: Dict[str, Any] = field(default_factory=dict)
+    missing_fields: List[str] = field(default_factory=list)
+    reason: str = ""
+    stage: str = "param_fill"
+
+    @property
+    def is_ready(self) -> bool:
+        return self.status == "ready"
+
+    @property
+    def needs_clarification(self) -> bool:
+        return self.status == "needs_clarification"

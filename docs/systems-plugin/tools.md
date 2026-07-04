@@ -38,6 +38,18 @@ Tools in `enabled`; descriptions in execution prompt; limits via `defaults`.
 - Use `start_tool_call` / `finish_tool_call` / `check_tool_call_limits`
 - Prefer isolated `build_my_registry()` over global `register_capability()`
 
+## Think-life skip-param declaration (`THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG`)
+
+Some tools skip the param LLM; the thinking layer’s `instruction` is mapped directly to invoke kwargs via `build_tool_input` in `src/m_agent/runtime/think_life/scheduler/tool_runner.py`.
+
+When adding a capability that should skip param fill, register it in **`THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG`**:
+
+| Key | Value |
+|-----|--------|
+| Tool name | Kwarg name filled from `instruction`, or `None` for no args (e.g. `get_current_time`) |
+
+Current entries: `get_current_time` → none; `shallow_recall` / `deep_recall` → `question`. `reply_to_user` is handled separately. Schedule and mail tools (`schedule_create`, `schedule_query`, `schedule_delete`, `email_send`, etc.) use the param LLM.
+
 ## Delivery
 
 1. Implement capabilities + registry factory

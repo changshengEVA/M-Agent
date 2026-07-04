@@ -33,15 +33,16 @@ def _build_base_configs(tmp_path: Path) -> Path:
                 "shallow_recall",
                 "deep_recall",
                 "get_current_time",
-                "schedule_manage",
+                "schedule_create",
                 "schedule_query",
+                "schedule_delete",
                 "email_ask",
                 "email_read",
                 "email_send",
             ],
             "tool_defaults": {
                 "get_current_time": {"timezone_name": "Asia/Shanghai"},
-                "schedule_manage": {"timezone_name": "Asia/Shanghai"},
+                "schedule_create": {"timezone_name": "Asia/Shanghai"},
                 "schedule_query": {"timezone_name": "Asia/Shanghai", "limit": 10},
                 "email_ask": {"mail_scope": "unread"},
             },
@@ -56,7 +57,8 @@ def _build_base_configs(tmp_path: Path) -> Path:
                     "shallow_recall": {"description": {"zh": "A", "en": "A"}},
                     "deep_recall": {"description": {"zh": "B", "en": "B"}},
                     "get_current_time": {"description": {"zh": "C", "en": "C"}},
-                    "schedule_manage": {"description": {"zh": "SM", "en": "SM"}},
+                    "schedule_create": {"description": {"zh": "SC", "en": "SC"}},
+                    "schedule_delete": {"description": {"zh": "SD", "en": "SD"}},
                     "schedule_query": {"description": {"zh": "SQ", "en": "SQ"}},
                     "email_ask": {"description": {"zh": "D", "en": "D"}},
                     "email_read": {"description": {"zh": "E", "en": "E"}},
@@ -143,7 +145,8 @@ def test_verify_credentials_syncs_tool_related_user_configs(tmp_path: Path) -> N
 
     refreshed_runtime = yaml.safe_load(user_runtime_path.read_text(encoding="utf-8"))
     runtime_tools = refreshed_runtime["chat_controller"]["tools"]
-    assert "schedule_manage" in runtime_tools
+    assert "schedule_create" in runtime_tools
+    assert "schedule_delete" in runtime_tools
     assert "schedule_query" in runtime_tools
     assert "email_ask" in runtime_tools
     assert "email_read" in runtime_tools

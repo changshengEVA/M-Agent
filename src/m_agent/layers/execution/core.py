@@ -25,12 +25,13 @@ import logging
 import threading
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Literal, Optional, Sequence
 
 import yaml
 from langchain.agents import create_agent
 from langchain.agents.structured_output import ToolStrategy
 from langgraph.errors import GraphRecursionError
+from pydantic import BaseModel, Field
 
 from m_agent.systems.tools import (
     ControllerCapabilityContext,
@@ -44,6 +45,7 @@ from m_agent.layers.execution.contracts import (
     CapabilityDescriptor,
     ExecutionRequest,
     ExecutionResult,
+    ParamFillResult,
 )
 from m_agent.layers.execution.errors import ExecutionCancelledError
 from m_agent.layers.execution.model_provider import ModelProvider
@@ -68,6 +70,15 @@ class _ExecutionAnswer:
     """
 
     answer: str
+
+
+class _ParamFillOutcome(BaseModel):
+    """Structured output schema for Think-life param fill."""
+
+    outcome: Literal["invoke", "clarify"]
+    args: Optional[Dict[str, Any]] = None
+    missing_fields: List[str] = Field(default_factory=list)
+    reason: str = ""
 
 
 class ExecutionAgent:
@@ -262,8 +273,8 @@ class ExecutionAgent:
         thread_id: str,
         pending_user_request: str = "",
         correlation_id: str = "",
-    ) -> Dict[str, Any]:
-        """Think-life param pass: one LLM call with a single bound tool to fill structured args."""
+    ) -> ParamFillResult:
+        """Think-life param pass: structured LLM call to fill args or report gaps."""
         name = str(tool_name or "").strip()
         if not name:
             raise ValueError("tool_name must be a non-empty string")
@@ -275,7 +286,8 @@ class ExecutionAgent:
             raise ValueError(f"Unknown or disabled tool: {name}. Enabled: {supported}")
 
         tool_obj = self._build_single_tool_object(tool_name=name, thread_id=active_thread_id)
-        system_prompt = self._build_param_fill_system_prompt(tool_name=name)
+        schema_text = self._tool_args_schema_text(tool_obj)
+        system_prompt = self._build_param_fill_system_prompt(tool_name=name, tool_schema=schema_text)
         user_content = self._build_param_fill_user_message(
             tool_name=name,
             instruction=str(instruction or "").strip(),
@@ -286,25 +298,61 @@ class ExecutionAgent:
             {"role": "user", "content": user_content},
         ]
 
-        bound_model = self.model_provider.model.bind_tools([tool_obj], tool_choice=name)
+        try:
+            try:
+                structured_model = self.model_provider.model.with_structured_output(
+                    _ParamFillOutcome,
+                    include_raw=False,
+                )
+            except Exception:
+                structured_model = self.model_provider.model.with_structured_output(_ParamFillOutcome)
 
-        def _attempt(_: int) -> Any:
-            return bound_model.invoke(messages)
+            def _attempt(_: int) -> _ParamFillOutcome:
+                return structured_model.invoke(messages)
 
-        response = self.model_provider.invoke_with_network_retry(
-            _attempt,
-            call_name=f"execution.fill_tool_args.{name}",
-        )
-        args = self._extract_tool_call_args(response, expected_name=name)
+            outcome = self.model_provider.invoke_with_network_retry(
+                _attempt,
+                call_name=f"execution.fill_tool_args.{name}",
+            )
+        except Exception:
+            logger.exception(
+                "fill_tool_args failed tool=%s correlation_id=%s",
+                name,
+                correlation_id,
+            )
+            return ParamFillResult(
+                tool_name=name,
+                status="needs_clarification",
+                reason="param_llm_failed",
+            )
+
+        if not isinstance(outcome, _ParamFillOutcome):
+            outcome = _ParamFillOutcome.model_validate(outcome)
+
+        if outcome.outcome == "clarify":
+            return ParamFillResult(
+                tool_name=name,
+                status="needs_clarification",
+                missing_fields=list(outcome.missing_fields or []),
+                reason=str(outcome.reason or "").strip() or "missing_required_args",
+            )
+
+        args = dict(outcome.args or {})
         if not args:
-            raise ValueError(f"param LLM returned no tool call for {name!r}")
+            return ParamFillResult(
+                tool_name=name,
+                status="needs_clarification",
+                missing_fields=list(outcome.missing_fields or []),
+                reason=str(outcome.reason or "").strip() or "invoke_missing_args",
+            )
+
         logger.debug(
             "fill_tool_args tool=%s correlation_id=%s args=%s",
             name,
             correlation_id,
             args,
         )
-        return args
+        return ParamFillResult(tool_name=name, status="ready", args=args)
 
     def _build_single_tool_bundle(
         self,
@@ -360,18 +408,40 @@ class ExecutionAgent:
         )
         return tool_obj
 
-    def _build_param_fill_system_prompt(self, *, tool_name: str) -> str:
+    def _build_param_fill_system_prompt(self, *, tool_name: str, tool_schema: str = "") -> str:
+        schema_block = ""
+        safe_schema = str(tool_schema or "").strip()
+        if safe_schema:
+            schema_block = f"\n目标工具参数 schema（JSON）：\n{safe_schema}\n"
         if self.prompt_language == "zh":
             return (
                 f"你是 Think-life 工具参数助手。思考层已选定唯一工具 `{tool_name}`。\n"
-                "你的任务：根据「上层意图」调用该工具一次，参数必须符合工具 schema。\n"
-                "硬约束：只调用这一个工具；不要选择其它工具；不要输出自然语言回复。"
+                "请输出结构化结果：\n"
+                "- outcome=invoke：args 必须符合工具 schema，且不得猜测关键字段（时间、收件人等）。\n"
+                "- outcome=clarify：信息不足时列出 missing_fields 与 reason，禁止勉强填参。\n"
+                f"{schema_block}"
             )
         return (
             f"You are the Think-life tool-argument assistant. The thinking layer chose `{tool_name}` only.\n"
-            "Call that tool once with arguments matching its schema.\n"
-            "Hard constraints: do not call any other tool; do not reply in natural language."
+            "Return structured output:\n"
+            "- outcome=invoke: args must match the tool schema; do not guess critical fields.\n"
+            "- outcome=clarify: list missing_fields and reason when required args are unavailable.\n"
+            f"{schema_block}"
         )
+
+    @staticmethod
+    def _tool_args_schema_text(tool_obj: Any) -> str:
+        schema = getattr(tool_obj, "args_schema", None)
+        if schema is None:
+            return ""
+        try:
+            if hasattr(schema, "model_json_schema"):
+                return json.dumps(schema.model_json_schema(), ensure_ascii=False, indent=2)
+            if hasattr(schema, "schema"):
+                return json.dumps(schema.schema(), ensure_ascii=False, indent=2)
+        except Exception:
+            logger.debug("Failed to serialize tool args schema", exc_info=True)
+        return str(schema)
 
     @staticmethod
     def _build_param_fill_user_message(
@@ -380,7 +450,7 @@ class ExecutionAgent:
         instruction: str,
         pending_user_request: str,
     ) -> str:
-        parts: List[str] = [f"Call `{tool_name}` with the correct arguments."]
+        parts: List[str] = [f"Fill arguments for `{tool_name}` or report missing fields (outcome=clarify)."]
         if instruction:
             parts.append(f"Upper-layer intent: {instruction}")
         if pending_user_request:
@@ -612,7 +682,7 @@ class ExecutionAgent:
             return "episode_query"
         if name in {"email_ask", "email_read", "email_send"}:
             return "email"
-        if name in {"schedule_manage", "schedule_query"}:
+        if name in {"schedule_create", "schedule_query", "schedule_delete"}:
             return "schedule"
         if name == "get_current_time":
             return "time"

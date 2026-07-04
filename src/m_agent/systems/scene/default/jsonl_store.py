@@ -38,14 +38,55 @@ class SceneLogStore:
         self._entries: Dict[str, List[SceneEntry]] = {}
         self._seq: Dict[str, int] = {}
         self._flush_seq: Dict[str, int] = {}
+        self._loaded_threads: set[str] = set()
+
+    def _meta_path(self, thread_id: str) -> Optional[Path]:
+        if not self._persist_enabled or self._persist_dir is None:
+            return None
+        tid = str(thread_id or "").strip()
+        if not tid:
+            return None
+        return self._persist_dir / f"{scene_persist_file_stem(tid)}.meta.json"
+
+    def _persist_flush_meta(self, thread_id: str) -> None:
+        path = self._meta_path(thread_id)
+        if path is None:
+            return
+        tid = str(thread_id or "").strip()
+        payload = {"flush_seq": int(self._flush_seq.get(tid, 0))}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    def _load_flush_meta(self, thread_id: str) -> None:
+        path = self._meta_path(thread_id)
+        tid = str(thread_id or "").strip()
+        if path is None or not path.is_file():
+            return
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError, TypeError, ValueError):
+            return
+        if isinstance(payload, dict):
+            self._flush_seq[tid] = max(int(self._flush_seq.get(tid, 0)), int(payload.get("flush_seq", 0) or 0))
+
+    def ensure_thread_loaded(self, thread_id: str) -> None:
+        tid = str(thread_id or "").strip()
+        if not tid:
+            return
+        with self._lock:
+            if tid in self._loaded_threads:
+                return
+        self.load_thread_from_disk(tid)
 
     def flush_watermark(self, thread_id: str) -> int:
         tid = str(thread_id or "").strip()
+        self.ensure_thread_loaded(tid)
         with self._lock:
             return int(self._flush_seq.get(tid, 0))
 
     def entries_since_flush(self, thread_id: str) -> List[SceneEntry]:
         tid = str(thread_id or "").strip()
+        self.ensure_thread_loaded(tid)
         with self._lock:
             watermark = int(self._flush_seq.get(tid, 0))
             return [e for e in self._entries.get(tid, []) if e.seq > watermark]
@@ -54,9 +95,11 @@ class SceneLogStore:
         tid = str(thread_id or "").strip()
         if not tid:
             return
+        self.ensure_thread_loaded(tid)
         with self._lock:
             current = int(self._flush_seq.get(tid, 0))
             self._flush_seq[tid] = max(current, int(through_seq))
+        self._persist_flush_meta(tid)
 
     def _next_seq(self, thread_id: str) -> int:
         current = int(self._seq.get(thread_id, 0))
@@ -68,6 +111,7 @@ class SceneLogStore:
         tid = str(thread_id or "").strip()
         if not tid:
             raise ValueError("thread_id is required for Scene append")
+        self.ensure_thread_loaded(tid)
         with self._lock:
             seq = self._next_seq(tid)
             stored = SceneEntry(
@@ -98,37 +142,63 @@ class SceneLogStore:
     ) -> List[SceneEntry]:
         tid = str(thread_id or "").strip()
         cap = max(1, int(limit or 40))
+        self.ensure_thread_loaded(tid)
         with self._lock:
             items = list(self._entries.get(tid, []))
         if before_seq is not None:
             items = [e for e in items if e.seq < int(before_seq)]
         return items[-cap:]
 
+    @staticmethod
+    def _normalize_loaded_entries(loaded: List[SceneEntry]) -> List[SceneEntry]:
+        if not loaded:
+            return loaded
+        seen_seq = {entry.seq for entry in loaded}
+        if len(seen_seq) == len(loaded):
+            return loaded
+        normalized: List[SceneEntry] = []
+        for index, entry in enumerate(loaded, start=1):
+            normalized.append(
+                SceneEntry(
+                    seq=index,
+                    occurred_at=entry.occurred_at,
+                    entry_type=entry.entry_type,
+                    actor=entry.actor,
+                    text=entry.text,
+                    transaction_id=entry.transaction_id,
+                    delegate_id=entry.delegate_id,
+                    tool_name=entry.tool_name,
+                    payload_ref=entry.payload_ref,
+                )
+            )
+        return normalized
+
     def load_thread_from_disk(self, thread_id: str) -> None:
-        if not self._persist_enabled or self._persist_dir is None:
-            return
         tid = str(thread_id or "").strip()
-        path = self._persist_dir / f"{scene_persist_file_stem(tid)}.jsonl"
-        if not path.is_file():
+        if not tid:
             return
         loaded: List[SceneEntry] = []
-        max_seq = 0
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = SceneEntry.from_dict(json.loads(line))
-                except (json.JSONDecodeError, TypeError, ValueError):
-                    continue
-                loaded.append(entry)
-                max_seq = max(max_seq, entry.seq)
+        if self._persist_enabled and self._persist_dir is not None:
+            path = self._persist_dir / f"{scene_persist_file_stem(tid)}.jsonl"
+            if path.is_file():
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = SceneEntry.from_dict(json.loads(line))
+                        except (json.JSONDecodeError, TypeError, ValueError):
+                            continue
+                        loaded.append(entry)
+        loaded = self._normalize_loaded_entries(loaded)
         with self._lock:
             self._entries[tid] = loaded
-            self._seq[tid] = max_seq
+            self._seq[tid] = len(loaded)
             if tid not in self._flush_seq:
                 self._flush_seq[tid] = 0
+            self._loaded_threads.add(tid)
+        self._load_flush_meta(tid)
 
 
 class SceneWriterAdapter:

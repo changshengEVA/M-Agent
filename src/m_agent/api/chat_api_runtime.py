@@ -535,7 +535,10 @@ class ChatServiceRuntime:
         return {}
 
     def _rounds_for_history(self, session: ThreadSessionState) -> List[BufferedRound]:
-        return list(session.rounds[-self.history_max_rounds :])
+        rounds = session.rounds
+        if self._think_life is not None:
+            rounds = [item for item in rounds if item.capture_state != "flushed"]
+        return list(rounds[-self.history_max_rounds :])
 
     def _build_history_messages(self, session: ThreadSessionState) -> List[Dict[str, str]]:
         messages: List[Dict[str, str]] = []
@@ -629,6 +632,23 @@ class ChatServiceRuntime:
         ]
         history_preview = history_rounds_data[-3:]
 
+        has_pending_data = bool(pending_rounds)
+        scene_pending_entries = 0
+        scene_pending_turns = 0
+        active_user_segment = False
+        if self._think_life is not None:
+            try:
+                scene_metrics = self._think_life.scene_pending_flush_metrics(session.thread_id)
+                scene_pending_entries = int(scene_metrics.get("scene_pending_entries", 0) or 0)
+                scene_pending_turns = int(scene_metrics.get("scene_pending_turns", 0) or 0)
+                active_user_segment = bool(scene_metrics.get("active_user_segment"))
+                has_pending_data = has_pending_data or bool(scene_metrics.get("can_flush"))
+            except Exception:
+                logger.exception(
+                    "Think-life scene_pending_flush_metrics failed thread_id=%s",
+                    session.thread_id,
+                )
+
         snapshot: Dict[str, Any] = {
             "thread_id": session.thread_id,
             "conversation_id": session.conversation_id,
@@ -637,7 +657,10 @@ class ChatServiceRuntime:
             "history_messages": len(self._build_history_messages(session)),
             "pending_rounds": len(pending_rounds),
             "pending_turns": pending_turns,
-            "has_pending_data": bool(pending_rounds),
+            "has_pending_data": has_pending_data,
+            "scene_pending_entries": scene_pending_entries,
+            "scene_pending_turns": scene_pending_turns,
+            "active_user_segment": active_user_segment,
             "last_activity_at": _to_iso(session.last_activity_at),
             "last_flush_at": _to_iso(session.last_flush_at) if session.last_flush_at else None,
             "last_flush_attempt_at": _to_iso(session.last_flush_attempt_at) if session.last_flush_attempt_at else None,
@@ -1022,6 +1045,9 @@ class ChatServiceRuntime:
             session.last_flush_attempt_at = _now_utc()
             session.updated_at = session.last_flush_attempt_at
             scene_payload = self._scene_flush_payload(session.thread_id)
+            scene_flush_through_seq = (
+                self._scene_flush_through_seq(session.thread_id) if scene_payload else 0
+            )
 
             if not scene_payload and not pending_rounds:
                 think_life_segment: Optional[Dict[str, Any]] = None
@@ -1172,7 +1198,7 @@ class ChatServiceRuntime:
                     try:
                         self._think_life.mark_scene_flushed(
                             session.thread_id,
-                            through_seq=self._scene_flush_through_seq(session.thread_id),
+                            through_seq=scene_flush_through_seq,
                         )
                     except Exception:
                         logger.exception(
@@ -1268,7 +1294,18 @@ class ChatServiceRuntime:
             for thread_id, session in self._threads.items():
                 if session.mode != "manual":
                     continue
-                if not self._pending_rounds(session):
+                has_legacy_pending = bool(self._pending_rounds(session))
+                has_scene_pending = False
+                if self._think_life is not None:
+                    try:
+                        metrics = self._think_life.scene_pending_flush_metrics(thread_id)
+                        has_scene_pending = int(metrics.get("scene_pending_turns", 0) or 0) > 0
+                    except Exception:
+                        logger.exception(
+                            "Idle flush scene metrics failed thread_id=%s",
+                            thread_id,
+                        )
+                if not has_legacy_pending and not has_scene_pending:
                     continue
                 if session.last_activity_at + timedelta(seconds=self.idle_flush_seconds) <= now:
                     candidates.append(thread_id)
@@ -1319,6 +1356,7 @@ class ChatServiceRuntime:
         *,
         limit: int = 40,
         before_seq: Optional[int] = None,
+        since_flush: bool = True,
     ) -> Dict[str, Any]:
         if self._think_life is None:
             raise RuntimeError("profile_not_supported")
@@ -1327,6 +1365,7 @@ class ChatServiceRuntime:
             active_thread_id,
             limit=limit,
             before_seq=before_seq,
+            since_flush=since_flush,
         )
 
     def get_think_life_transactions(self, thread_id: str) -> Dict[str, Any]:

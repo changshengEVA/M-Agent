@@ -11,8 +11,9 @@ enabled:
   - deep_recall
   - reply_to_user
   - get_current_time
-  - schedule_manage
+  - schedule_create
   - schedule_query
+  - schedule_delete
   - email_ask
   - email_read
   - email_send
@@ -24,7 +25,7 @@ defaults:
     max_calls_per_turn: 8
   get_current_time:
     timezone_name: Asia/Shanghai
-  schedule_manage:
+  schedule_create:
     timezone_name: Asia/Shanghai
   schedule_query:
     timezone_name: Asia/Shanghai

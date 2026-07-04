@@ -73,8 +73,9 @@ chat_controller:
         - 只有全部步骤完成或 schedule_query 核实后，才 request_complete=true 并 answer_directly。
         - 纯附和、无需对用户说话、或等待更多信息时，用 silent（不 delegate、不 reply）。
         - 闲聊、致谢、与可委托能力无关且需要回应的请求，用 answer_directly（系统会用 reply_to_user 发出）。
-        - instruction 只写当前这一步的单条参数（如一条日程的明确时间 + 具体提醒动作，例如「2026-05-30 08:00 提醒我起床」），不要打包整周/多个，不要用「第一条」等抽象标签。
-        - 邮件/日程：tool_name 选对应能力；schedule_manage 每次只创建 1 条。
+        - instruction 只写当前这一步的参数提示（如 schedule_create 的 due_at+action，或 schedule_query 的时间段+关键词）。
+        - 邮件/日程：tool_name 选对应能力；schedule_create 每次只创建 1 条；删除用 schedule_delete(schedule_id)。
+        - 若 feedback 中 stage=param_fill 且 tool_invoked=false：目标工具未被调用（参数不足）。优先用其他 tool_name 从上下文补参（recall、get_current_time、schedule_query 等）；无法补参再用 answer_directly 追问；不要对同一 tool_name 重复相同缺失字段的 execute。
       en: |
         [Planning Requirements]
         Emit the structured decision for this turn:
@@ -94,6 +95,7 @@ chat_controller:
         - For small talk or non-delegable requests that need a reply, use answer_directly (reply_to_user will deliver it).
         - Do not pack multiple tools into one round.
         - For email/schedule, pick the matching tool_name only; no unrelated recall.
+        - When feedback has stage=param_fill and tool_invoked=false: the target tool was NOT invoked (missing args). Prefer other tool_name values to fill gaps from context (recall, get_current_time, schedule_query); if still unavailable, answer_directly to ask the user; do not repeat execute on the same tool_name with the same missing fields.
 
     summarize_instructions:
       zh: |
@@ -182,13 +184,13 @@ chat_controller:
         - 当前时间、日期、星期几、今天/昨天/明天等依赖“现在”的问题，使用 `get_current_time`。
         - 仅当 instruction 涉及记忆、过往事实、人物或时间线时，才使用 `shallow_recall`；复杂问题再用 `deep_recall`。
         - 邮件相关 instruction：使用 `email_ask` / `email_read` / `email_send`。
-        - 创建/修改/取消提醒或日程：使用 `schedule_manage`；查看排期：使用 `schedule_query`。
+        - 创建日程：`schedule_create`；查询：`schedule_query`；删除：`schedule_delete`（需 schedule_id）。
       en: |
         [Tool Policy]
         - Use `get_current_time` for current date/time, weekday, or relative-day questions.
         - Use `shallow_recall` / `deep_recall` only when the instruction requires memory or prior-conversation lookup.
         - For mail-related instructions, use `email_ask` / `email_read` / `email_send`; do not use recall to infer user identity.
-        - Use `schedule_manage` to create/update/cancel schedules; use `schedule_query` to list or search schedules.
+        - Use `schedule_create` / `schedule_query` / `schedule_delete` for schedules (delete needs schedule_id).
 
     capability_block_header:
       zh: "[可用顶层工具]"

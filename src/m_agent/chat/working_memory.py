@@ -230,9 +230,17 @@ def _project_schedule(tool_name: str, params: Dict[str, Any], result: Dict[str, 
     schedule_id = _schedule_primary_id(result)
     extra = ""
     if tool_name == "schedule_query":
-        extra = _truncate(str(params.get("query", "") or ""), 160)
-    elif tool_name == "schedule_manage":
-        extra = _truncate(str(params.get("instruction", "") or ""), 200)
+        kw = str(params.get("keyword", "") or "")
+        start = str(params.get("start_at", "") or "")
+        end = str(params.get("end_at", "") or "")
+        extra = _truncate(f"{kw}|{start}|{end}".strip("|"), 200)
+    elif tool_name == "schedule_create":
+        extra = _truncate(
+            f"{params.get('due_at', '')} {params.get('action', '')}".strip(),
+            200,
+        )
+    elif tool_name == "schedule_delete":
+        extra = _truncate(str(params.get("schedule_id", "") or ""), 80)
     return {
         "kind": "schedule",
         "tool": tool_name,
@@ -287,9 +295,7 @@ def project_tool_call_to_entry(
         return _project_email_read(params, result, config)
     if tool_name == "email_send":
         return _project_email_send(params, result, config)
-    if tool_name == "schedule_manage":
-        return _project_schedule(tool_name, params, result, config)
-    if tool_name == "schedule_query":
+    if tool_name in {"schedule_create", "schedule_query", "schedule_delete"}:
         return _project_schedule(tool_name, params, result, config)
     if tool_name == "get_current_time":
         if not config.record_time_tool:

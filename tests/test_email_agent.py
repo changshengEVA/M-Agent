@@ -7,6 +7,7 @@ from typing import Any, Dict
 import yaml
 
 from m_agent.agents.email_agent import EmailAgent
+from m_agent.integrations.gmail_client import GmailApiClient, GmailClientConfig
 
 
 _CN_QUERY = "\u5e2e\u6211\u770b\u770b\u6709\u6ca1\u6709\u5b9e\u4e60\u62db\u8058\u76f8\u5173\u90ae\u4ef6"
@@ -78,6 +79,36 @@ class _FakeGmailClient:
     def send_raw_message(self, *, raw_message: str) -> Dict[str, Any]:
         self.sent_raw_messages.append(raw_message)
         return {"id": "gmail-msg-1", "threadId": "th-send", "labelIds": ["SENT"]}
+
+
+class _FakeAuthResp:
+    status = 401
+
+
+class _FakeAuthFailure(RuntimeError):
+    resp = _FakeAuthResp()
+
+
+class _FakeRequest:
+    def __init__(self, *, result: Dict[str, Any] | None = None, exc: BaseException | None = None) -> None:
+        self.result = result or {}
+        self.exc = exc
+
+    def execute(self) -> Dict[str, Any]:
+        if self.exc is not None:
+            raise self.exc
+        return self.result
+
+
+class _RetryingGmailClient(GmailApiClient):
+    def __init__(self, services: list[object]) -> None:
+        super().__init__(config=GmailClientConfig())
+        self.services = list(services)
+        self.force_reauth_flags: list[bool] = []
+
+    def _build_service(self, *, force_reauth: bool = False) -> object:
+        self.force_reauth_flags.append(force_reauth)
+        return self.services.pop(0)
 
 
 def _write_email_config(tmp_path: Path) -> Path:
@@ -226,3 +257,22 @@ def test_send_rejects_invalid_recipient(tmp_path: Path) -> None:
         assert "blocked by policy" in str(exc).lower()
     else:
         raise AssertionError("expected ValueError for invalid recipient")
+
+
+def test_gmail_client_reauthenticates_once_after_api_auth_failure() -> None:
+    first_service = object()
+    second_service = object()
+    client = _RetryingGmailClient([first_service, second_service])
+    seen_services: list[object] = []
+
+    def request_factory(service: object) -> _FakeRequest:
+        seen_services.append(service)
+        if len(seen_services) == 1:
+            return _FakeRequest(exc=_FakeAuthFailure("invalid credentials"))
+        return _FakeRequest(result={"ok": True})
+
+    result = client._execute_request(request_factory)
+
+    assert result == {"ok": True}
+    assert seen_services == [first_service, second_service]
+    assert client.force_reauth_flags == [False, True]

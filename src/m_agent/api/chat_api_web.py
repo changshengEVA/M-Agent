@@ -867,6 +867,7 @@ def create_app(
         request: Request,
         limit: int = 40,
         before_seq: Optional[int] = None,
+        since_flush: bool = True,
     ) -> JSONResponse:
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
@@ -882,6 +883,7 @@ def create_app(
                 runtime_thread_id,
                 limit=limit,
                 before_seq=before_seq,
+                since_flush=since_flush,
             )
         except RuntimeError:
             return JSONResponse(

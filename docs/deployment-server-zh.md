@@ -526,7 +526,9 @@ enabled_tools:
 如果确认日程稳定，再加：
 
 ```yaml
-  - schedule_manage
+  - schedule_create
+  - schedule_query
+  - schedule_delete
   - schedule_query
 ```
 

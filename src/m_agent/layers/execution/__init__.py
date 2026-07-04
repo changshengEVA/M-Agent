@@ -10,6 +10,7 @@ from .contracts import (
     CapabilityDescriptor,
     ExecutionRequest,
     ExecutionResult,
+    ParamFillResult,
 )
 from .core import ExecutionAgent
 from .model_provider import ModelProvider, build_model_provider_from_config
@@ -20,5 +21,6 @@ __all__ = [
     "ExecutionRequest",
     "ExecutionResult",
     "ModelProvider",
+    "ParamFillResult",
     "build_model_provider_from_config",
 ]

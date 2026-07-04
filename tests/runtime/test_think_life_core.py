@@ -1,6 +1,7 @@
 """Unit tests for Think-life contracts, Scene log, and transaction registry."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from m_agent.runtime.think_life.config import ThinkLifeConfig, ThinkLifeSchedulerConfig
@@ -98,6 +99,106 @@ def test_scene_persist_scoped_thread_id_is_filesystem_safe(tmp_path: Path) -> No
     tail = store2.tail(scoped_tid, limit=5)
     assert len(tail) == 1
     assert tail[0].text == "hi"
+
+
+def test_scene_append_after_restart_continues_seq(tmp_path: Path) -> None:
+    tid = "thread-restart"
+    store = SceneLogStore(persist_dir=tmp_path, persist_enabled=True)
+    store.append(
+        tid,
+        SceneEntry(
+            seq=0,
+            occurred_at="2026-01-01T00:00:01Z",
+            entry_type=SceneEntryType.UTTERANCE,
+            actor=SceneActor.USER,
+            text="first",
+        ),
+    )
+    store2 = SceneLogStore(persist_dir=tmp_path, persist_enabled=True)
+    store2.append(
+        tid,
+        SceneEntry(
+            seq=0,
+            occurred_at="2026-01-01T00:00:02Z",
+            entry_type=SceneEntryType.REPLY,
+            actor=SceneActor.ASSISTANT,
+            text="second",
+        ),
+    )
+    tail = store2.tail(tid, limit=10)
+    assert [entry.seq for entry in tail] == [1, 2]
+
+
+def test_scene_flush_watermark_persists_across_restart(tmp_path: Path) -> None:
+    tid = "thread-flush-meta"
+    store = SceneLogStore(persist_dir=tmp_path, persist_enabled=True)
+    store.append(
+        tid,
+        SceneEntry(
+            seq=0,
+            occurred_at="2026-01-01T00:00:01Z",
+            entry_type=SceneEntryType.UTTERANCE,
+            actor=SceneActor.USER,
+            text="hello",
+        ),
+    )
+    store.mark_flushed(tid, through_seq=1)
+    assert store.entries_since_flush(tid) == []
+
+    store2 = SceneLogStore(persist_dir=tmp_path, persist_enabled=True)
+    store2.ensure_thread_loaded(tid)
+    assert store2.flush_watermark(tid) == 1
+    assert store2.entries_since_flush(tid) == []
+
+
+def test_scene_load_normalizes_duplicate_seq_on_disk(tmp_path: Path) -> None:
+    tid = "thread-dup-seq"
+    stem = scene_persist_file_stem(tid)
+    path = tmp_path / f"{stem}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    SceneEntry(
+                        seq=1,
+                        occurred_at="2026-01-01T00:00:01Z",
+                        entry_type=SceneEntryType.UTTERANCE,
+                        actor=SceneActor.USER,
+                        text="a",
+                    ).to_dict(),
+                    ensure_ascii=False,
+                ),
+                json.dumps(
+                    SceneEntry(
+                        seq=1,
+                        occurred_at="2026-01-01T00:00:02Z",
+                        entry_type=SceneEntryType.REPLY,
+                        actor=SceneActor.ASSISTANT,
+                        text="b",
+                    ).to_dict(),
+                    ensure_ascii=False,
+                ),
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    store = SceneLogStore(persist_dir=tmp_path, persist_enabled=True)
+    store.ensure_thread_loaded(tid)
+    tail = store.tail(tid, limit=10)
+    assert [entry.seq for entry in tail] == [1, 2]
+    next_entry = store.append(
+        tid,
+        SceneEntry(
+            seq=0,
+            occurred_at="2026-01-01T00:00:03Z",
+            entry_type=SceneEntryType.UTTERANCE,
+            actor=SceneActor.USER,
+            text="c",
+        ),
+    )
+    assert next_entry.seq == 3
 
 
 def test_execution_feedback_attribution() -> None:
@@ -265,6 +366,45 @@ def test_latest_user_utterance_from_scene() -> None:
         ),
     ]
     assert latest_user_utterance_from_scene(entries) == "今天有什么安排吗"
+
+
+def test_read_scene_segment_excludes_flushed_entries(tmp_path: Path) -> None:
+    from m_agent.runtime.think_life.scheduler.think_context import (
+        format_scene_tail,
+        read_scene_segment,
+    )
+    from m_agent.systems.scene.default import SceneReaderAdapter, SceneWriterAdapter
+
+    tid = "seg-thread"
+    store = SceneLogStore(persist_dir=tmp_path, persist_enabled=True)
+    writer = SceneWriterAdapter(store)
+    reader = SceneReaderAdapter(store)
+    writer.append(
+        tid,
+        SceneEntry(
+            seq=0,
+            occurred_at="2026-01-01T00:00:01Z",
+            entry_type=SceneEntryType.UTTERANCE,
+            actor=SceneActor.USER,
+            text="old segment",
+        ),
+    )
+    store.mark_flushed(tid, through_seq=1)
+    writer.append(
+        tid,
+        SceneEntry(
+            seq=0,
+            occurred_at="2026-01-01T00:00:02Z",
+            entry_type=SceneEntryType.UTTERANCE,
+            actor=SceneActor.USER,
+            text="new segment",
+        ),
+    )
+    segment = read_scene_segment(reader, tid, max_entries=40)
+    assert len(segment) == 1
+    assert segment[0].text == "new segment"
+    assert "new segment" in format_scene_tail(segment)
+    assert "old segment" not in format_scene_tail(segment)
 
 
 def test_execution_feedback_perception_includes_pending_user_request() -> None:

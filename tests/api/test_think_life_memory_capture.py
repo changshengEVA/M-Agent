@@ -5,7 +5,7 @@ import threading
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
-from m_agent.api.chat_api_runtime import ChatServiceRuntime, ThreadSessionState
+from m_agent.api.chat_api_runtime import BufferedRound, ChatServiceRuntime, ThreadSessionState
 
 
 def _minimal_runtime() -> ChatServiceRuntime:
@@ -40,6 +40,47 @@ def test_capture_think_life_round_buffers_pending_for_flush() -> None:
     assert pending[0].user_message == "你好"
     assert pending[0].assistant_message == "你好，有什么可以帮你？"
     assert pending[0].capture_state == "pending"
+
+
+def test_rounds_for_history_excludes_flushed_when_think_life() -> None:
+    from datetime import datetime, timezone
+
+    rt = _minimal_runtime()
+    rt._think_life = object()
+    tid = "think_life_test::hist-thread"
+    session = ThreadSessionState(thread_id=tid)
+    flushed_at = datetime(2026, 5, 29, 10, 0, 0, tzinfo=timezone.utc)
+    session.rounds.append(
+        BufferedRound(
+            round_id="old",
+            user_message="old user",
+            assistant_message="old assistant",
+            user_turn={"speaker": "u", "text": "old user"},
+            assistant_turn={"speaker": "a", "text": "old assistant"},
+            user_at=flushed_at,
+            assistant_at=flushed_at,
+            agent_result=None,
+            capture_state="flushed",
+        )
+    )
+    session.rounds.append(
+        BufferedRound(
+            round_id="new",
+            user_message="new user",
+            assistant_message="new assistant",
+            user_turn={"speaker": "u", "text": "new user"},
+            assistant_turn={"speaker": "a", "text": "new assistant"},
+            user_at=datetime(2026, 5, 31, 12, 0, 0, tzinfo=timezone.utc),
+            assistant_at=datetime(2026, 5, 31, 12, 0, 1, tzinfo=timezone.utc),
+            agent_result=None,
+            capture_state="pending",
+        )
+    )
+    rt._threads[tid] = session
+    history = rt._build_history_messages(session)
+    assert len(history) == 2
+    assert history[0]["content"] == "new user"
+    assert history[1]["content"] == "new assistant"
 
 
 def test_capture_think_life_round_uses_real_timestamps_not_fixed_offset() -> None:
