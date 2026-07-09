@@ -88,6 +88,10 @@ ALIBABA_EMBED_MODEL=text-embedding-v4
 LANGUAGE=zh
 EMBED_PROVIDER=aliyun
 LLM_PROVIDER=deepseek
+
+# Web search (Tavily / You.com — optional, for web_search tool)
+YDC_API_KEY=你的_You.com_密钥
+TAVILY_API_KEY=你的_Tavily_密钥
 ```
 
 ---

@@ -5,7 +5,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
-from tests.fixtures.app_factory import build_test_app
+from tests.fixtures.app_factory import build_test_app, build_test_runtime
 from tests.fixtures.payload_builders import run_payload
 from tests.fixtures.sse_helpers import parse_sse_events
 
@@ -61,3 +61,27 @@ def test_run_lifecycle_snapshot_and_event_stream() -> None:
 
         run_completed_event = [event for event in events if event["event"] == "run_completed"][-1]
         assert run_completed_event["data"]["payload"]["answer"] == "echo:hello"
+
+
+def test_stop_thread_thinking_endpoint() -> None:
+    app = build_test_app(
+        auth_enabled=False,
+        service_runtime=build_test_runtime(runtime_profile="think_life"),
+    )
+
+    with TestClient(app) as client:
+        queued = client.post(
+            "/v1/chat/threads/demo-thread/stimuli",
+            json={"kind": "user_message", "text": "keep thinking"},
+        )
+        assert queued.status_code == 202
+
+        stopped = client.post("/v1/chat/threads/demo-thread/thinking/stop")
+
+    assert stopped.status_code == 200
+    payload = stopped.json()
+    assert payload["success"] is True
+    assert payload["thread_id"] == "demo-thread"
+    assert payload["runtime_profile"] == "think_life"
+    assert payload["cleared_pending_stimuli"] == 1
+    assert payload["thread_state"]["thread_id"] == "demo-thread"

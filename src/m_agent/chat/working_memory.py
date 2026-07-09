@@ -34,6 +34,9 @@ class WorkingMemoryConfig:
     max_subject_chars: int = 120
     max_email_body_excerpt_chars: int = 1500
     max_schedule_summary_chars: int = 400
+    max_web_answer_chars: int = 1000
+    max_web_result_items: int = 5
+    max_web_snippet_chars: int = 240
     record_time_tool: bool = True
     # Last N WM entries included in thread_state.working_memory.entries for UI (GET memory/state, SSE).
     ui_expose_max_entries: int = 200
@@ -61,6 +64,9 @@ def normalize_working_memory_config(raw: Any) -> WorkingMemoryConfig:
         max_subject_chars=max(16, _int("max_subject_chars", 120)),
         max_email_body_excerpt_chars=max(128, _int("max_email_body_excerpt_chars", 1500)),
         max_schedule_summary_chars=max(32, _int("max_schedule_summary_chars", 400)),
+        max_web_answer_chars=max(128, _int("max_web_answer_chars", 1000)),
+        max_web_result_items=max(1, min(20, _int("max_web_result_items", 5))),
+        max_web_snippet_chars=max(64, _int("max_web_snippet_chars", 240)),
         record_time_tool=bool(raw.get("record_time_tool", True)),
         ui_expose_max_entries=max(0, min(5000, _int("ui_expose_max_entries", 200))),
     )
@@ -262,6 +268,58 @@ def _project_time(params: Dict[str, Any], result: Dict[str, Any], config: Workin
     return {"kind": "time", "tool": "get_current_time", "summary": _truncate(summary, 240)}
 
 
+def _project_web_search(params: Dict[str, Any], result: Dict[str, Any], config: WorkingMemoryConfig) -> Dict[str, Any]:
+    items_out: List[Dict[str, Any]] = []
+    results = result.get("results")
+    if isinstance(results, list):
+        for row in results[: config.max_web_result_items]:
+            if not isinstance(row, dict):
+                continue
+            item: Dict[str, Any] = {
+                "title": _truncate(str(row.get("title", "") or ""), config.max_subject_chars),
+                "url": _truncate(str(row.get("url", "") or ""), 300),
+                "snippet": _truncate(str(row.get("snippet", "") or ""), config.max_web_snippet_chars),
+            }
+            if row.get("content_chars") is not None:
+                try:
+                    item["content_chars"] = int(row.get("content_chars") or 0)
+                except (TypeError, ValueError):
+                    item["content_chars"] = 0
+            items_out.append(item)
+
+    mode = str(result.get("mode", "") or "").strip()
+    if not mode:
+        mode = "extract" if str(result.get("url", "") or params.get("url", "") or "").strip() else "search"
+
+    try:
+        result_count = int(result.get("result_count", len(items_out)) or 0)
+    except (TypeError, ValueError):
+        result_count = len(items_out)
+
+    content_chars = None
+    if result.get("content_chars") is not None:
+        try:
+            content_chars = int(result.get("content_chars") or 0)
+        except (TypeError, ValueError):
+            content_chars = None
+
+    return {
+        "kind": "web_search",
+        "tool": "web_search",
+        "mode": mode,
+        "provider": str(result.get("provider", "") or params.get("provider", "") or "").strip(),
+        "query": _truncate(str(result.get("query", "") or params.get("query", "") or ""), config.max_question_chars),
+        "url": _truncate(str(result.get("url", "") or params.get("url", "") or ""), 300),
+        "answer": _truncate(str(result.get("answer", "") or result.get("message", "") or ""), config.max_web_answer_chars),
+        "result_count": result_count,
+        "content_chars": content_chars,
+        "insufficient": bool(result.get("insufficient", False)),
+        "needs_clarification": bool(result.get("needs_clarification", False)),
+        "auth_required": bool(result.get("auth_required", False)),
+        "items": items_out,
+    }
+
+
 def _project_fallback(tool_name: str, result: Dict[str, Any]) -> Dict[str, Any]:
     msg = result.get("message") or result.get("answer") or ""
     text = str(msg).strip() or json.dumps(result, ensure_ascii=False)[:400]
@@ -301,6 +359,8 @@ def project_tool_call_to_entry(
         if not config.record_time_tool:
             return None
         return _project_time(params, result, config)
+    if tool_name == "web_search":
+        return _project_web_search(params, result, config)
 
     return _project_fallback(tool_name, result)
 
@@ -380,6 +440,49 @@ def _format_entry_line(index: int, entry: Dict[str, Any], *, zh: bool) -> str:
         return f"{index}. schedule[{str(entry.get('tool', ''))}] action={act} id={sid} cnt={cnt} q={qoi} | {sm}"
     if kind == "time":
         return f"{index}. time: {str(entry.get('summary', '') or '')}"
+    if kind == "web_search":
+        mode = str(entry.get("mode", "") or "")
+        provider = str(entry.get("provider", "") or "")
+        query = str(entry.get("query", "") or "")
+        url = str(entry.get("url", "") or "")
+        answer = str(entry.get("answer", "") or "")
+        cnt = entry.get("result_count", "")
+        content_chars = entry.get("content_chars")
+        flags = []
+        if entry.get("auth_required"):
+            flags.append("auth_required")
+        if entry.get("needs_clarification"):
+            flags.append("needs_clarification")
+        if entry.get("insufficient"):
+            flags.append("insufficient")
+        facts = [f"mode={mode}", f"provider={provider}", f"cnt={cnt}"]
+        if query:
+            facts.append(f"q={query}")
+        if url:
+            facts.append(f"url={url}")
+        if content_chars is not None:
+            facts.append(f"content_chars={content_chars}")
+        if flags:
+            facts.append(f"flags={','.join(flags)}")
+
+        parts = []
+        for it in entry.get("items", []) or []:
+            if not isinstance(it, dict):
+                continue
+            title = str(it.get("title", "") or "")
+            hit_url = str(it.get("url", "") or "")
+            snippet = str(it.get("snippet", "") or "")
+            label = title or hit_url or "result"
+            hit = f"title={label}"
+            if hit_url:
+                hit += f" url={hit_url}"
+            if snippet:
+                hit += f" snippet={snippet}"
+            if it.get("content_chars") is not None:
+                hit += f" content_chars={it.get('content_chars')}"
+            parts.append(hit)
+        joined = " ; ".join(parts) if parts else "(no sources)"
+        return f"{index}. web_search {' '.join(facts)} | answer:{answer} | sources:{joined}"
     if kind == "limit":
         return f"{index}. LIMIT tool={str(entry.get('tool', '') or '')} scope={str(entry.get('limit_scope', '') or '')} | {str(entry.get('summary', '') or '')}"
     return f"{index}. {str(entry.get('tool', '') or 'tool')}: {str(entry.get('summary', '') or '')}"

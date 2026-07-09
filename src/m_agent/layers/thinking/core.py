@@ -536,7 +536,6 @@ class ThinkingAgent:
 
         return self.execution_agent.execute(
             request,
-            wm_entries=list(state.wm_entries),
             wm_writer_callback=_wm_write,
         )
 

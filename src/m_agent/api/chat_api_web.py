@@ -432,6 +432,7 @@ def create_app(
                 "thread_scene": "/v1/chat/threads/{thread_id}/scene",
                 "thread_transactions": "/v1/chat/threads/{thread_id}/transactions",
                 "thread_stimuli": "/v1/chat/threads/{thread_id}/stimuli",
+                "thread_thinking_stop": "/v1/chat/threads/{thread_id}/thinking/stop",
                 "thread_state": "/v1/chat/threads/{thread_id}/memory/state",
                 "thread_mode": "/v1/chat/threads/{thread_id}/memory/mode",
                 "thread_flush": "/v1/chat/threads/{thread_id}/memory/flush",
@@ -923,6 +924,24 @@ def create_app(
             return JSONResponse(status_code=409, content={"error": "profile_not_supported"})
         result["thread_id"] = thread_id
         return JSONResponse(status_code=202, content=result)
+
+    @app.post("/v1/chat/threads/{thread_id}/thinking/stop")
+    def stop_thread_thinking(thread_id: str, request: Request) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        result = active_runtime.force_stop_thread(runtime_thread_id)
+        result = deepcopy(result)
+        result["thread_id"] = thread_id
+        if isinstance(result.get("thread_state"), dict):
+            result["thread_state"] = _with_public_thread_state(result.get("thread_state"), public_thread_id=thread_id)
+        if isinstance(result.get("thread_runtime"), dict):
+            result["thread_runtime"] = _with_public_thread_state(
+                result.get("thread_runtime"),
+                public_thread_id=thread_id,
+            )
+        return JSONResponse(content=result)
 
     @app.get("/v1/chat/threads/{thread_id}/memory/state")
     def get_thread_state(thread_id: str, request: Request) -> JSONResponse:

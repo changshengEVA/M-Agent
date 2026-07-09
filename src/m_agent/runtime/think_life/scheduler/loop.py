@@ -349,6 +349,10 @@ class ThinkLifeLoop:
 
         except ExecutionCancelledError:
 
+            if self._is_force_stop(cancel_event):
+
+                return self._handle_force_stop(stimulus, transaction, phase="execute")
+
             return self._handle_preempt(stimulus, transaction, phase="execute")
 
         finally:
@@ -550,6 +554,54 @@ class ThinkLifeLoop:
 
         }
 
+    @staticmethod
+    def _is_force_stop(cancel_event: Optional[Any]) -> bool:
+        return bool(cancel_event is not None and getattr(cancel_event, "force_stop", False))
+
+    def _handle_force_stop(
+
+        self,
+
+        stimulus: Stimulus,
+
+        transaction: TransactionRecord,
+
+        *,
+
+        phase: str,
+
+    ) -> Dict[str, Any]:
+
+        current = self.registry.get(transaction.transaction_id) or transaction
+
+        try:
+
+            if not current.status.is_terminal():
+
+                self.registry.transition(current.transaction_id, TransactionStatus.CANCELLED)
+
+        except TransactionTransitionError:
+
+            pass
+
+        self._refresh_pending_stimuli(stimulus.thread_id)
+
+        return {
+
+            "success": False,
+
+            "cancelled": True,
+
+            "force_stopped": True,
+
+            "phase": phase,
+
+            "stimulus_id": stimulus.stimulus_id,
+
+            "transaction_id": transaction.transaction_id,
+
+        }
+
     def _think_plan_with_gate(
         self,
         *,
@@ -695,6 +747,10 @@ class ThinkLifeLoop:
             return self._handle_preempt(stimulus, record, phase="think")
 
         if cancel_event is not None and cancel_event.is_set():
+
+            if self._is_force_stop(cancel_event):
+
+                return self._handle_force_stop(stimulus, record, phase="think")
 
             return self._handle_preempt(stimulus, record, phase="think")
 

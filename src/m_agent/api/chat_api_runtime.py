@@ -33,6 +33,10 @@ logger = logging.getLogger(__name__)
 ThreadEventSink = Optional[Callable[[str, str, Dict[str, Any]], Any]]
 
 
+class ThinkingForceStoppedError(RuntimeError):
+    """Raised when a thread is force-stopped through the chat API."""
+
+
 class _ThinkLifeScheduleLifecycle:
     """Bridges Think-life HEARTBEAT processing to the schedule store."""
 
@@ -268,6 +272,8 @@ class ChatServiceRuntime:
         )
         self._systems_override: Optional[SystemsBundle] = systems_override
         self._threads: Dict[str, ThreadSessionState] = {}
+        self._force_stop_lock = threading.Lock()
+        self._force_stop_events: Dict[str, threading.Event] = {}
         # Think-life async: user turns awaiting finalize reply (FIFO per thread).
         self._think_life_pending_users: Dict[str, Deque[Dict[str, Any]]] = {}
         self._runs_started = 0
@@ -511,6 +517,8 @@ class ChatServiceRuntime:
         """Return an emitter closure bound to ``thread_id`` for three-layer streaming."""
 
         def _emit(event_type: str, payload: Dict[str, Any]) -> None:
+            if self._force_stop_requested(thread_id):
+                raise ThinkingForceStoppedError("thinking force stopped")
             if event_type not in self._THREE_LAYER_STREAM_EVENTS:
                 return
             safe_payload = dict(payload) if isinstance(payload, dict) else {"data": payload}
@@ -518,6 +526,68 @@ class ChatServiceRuntime:
             self._emit_thread_event(thread_id, event_type, safe_payload)
 
         return _emit
+
+    def _force_stop_event(self, thread_id: str) -> threading.Event:
+        tid = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
+        with self._force_stop_lock:
+            event = self._force_stop_events.get(tid)
+            if event is None:
+                event = threading.Event()
+                self._force_stop_events[tid] = event
+            return event
+
+    def _clear_force_stop(self, thread_id: str) -> threading.Event:
+        event = self._force_stop_event(thread_id)
+        event.clear()
+        return event
+
+    def _force_stop_requested(self, thread_id: str) -> bool:
+        tid = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
+        with self._force_stop_lock:
+            event = self._force_stop_events.get(tid)
+            return bool(event is not None and event.is_set())
+
+    def force_stop_thread(self, thread_id: str, *, reason: str = "user_requested") -> Dict[str, Any]:
+        """Request cancellation for the active thread and clear queued Think-life work."""
+        active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
+        self._force_stop_event(active_thread_id).set()
+        safe_reason = str(reason or "user_requested").strip() or "user_requested"
+        cleared_pending_users = 0
+        with self._threads_lock:
+            pending = self._think_life_pending_users.pop(active_thread_id, None)
+            cleared_pending_users = len(pending or [])
+
+        if self._think_life is not None:
+            result = self._think_life.force_stop_thread(active_thread_id, reason=safe_reason)
+        else:
+            result = {
+                "success": True,
+                "thread_id": active_thread_id,
+                "runtime_profile": "legacy",
+                "cancelled_in_flight": self._force_stop_requested(active_thread_id),
+                "cleared_pending_stimuli": 0,
+                "cancelled_transactions": [],
+            }
+            self._emit_thread_event(
+                active_thread_id,
+                "thinking_force_stopped",
+                {
+                    "thread_id": active_thread_id,
+                    "reason": safe_reason,
+                    "cancelled_in_flight": True,
+                    "cleared_pending_stimuli": 0,
+                    "cancelled_transactions": [],
+                },
+            )
+
+        session = self._get_or_create_thread(active_thread_id)
+        with self._threads_lock:
+            snapshot = self._thread_state_snapshot(session)
+        result = dict(result)
+        result["cleared_pending_user_turns"] = int(cleared_pending_users)
+        result["thread_state"] = snapshot
+        self._emit_thread_event(active_thread_id, "thread_state_updated", {"thread_state": snapshot})
+        return result
 
     def _working_memory_api_payload(self, session: ThreadSessionState) -> Dict[str, Any]:
         """Return the ``thread_state.working_memory`` payload for HTTP/SSE clients."""
@@ -724,6 +794,7 @@ class ChatServiceRuntime:
         user_turn: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
+        cancel_event = self._clear_force_stop(active_thread_id)
         session = self._get_or_create_thread(active_thread_id)
         with self._threads_lock:
             history_messages = self._build_history_messages(session)
@@ -774,6 +845,9 @@ class ChatServiceRuntime:
                     conversation_id=conversation_id,
                     event_emitter=self._build_thinking_event_emitter(active_thread_id),
                 )
+
+        if cancel_event.is_set():
+            raise ThinkingForceStoppedError("thinking force stopped")
 
         answer_text = str(result.get("answer", "") or "").strip()
         agent_result = result.get("agent_result") if isinstance(result.get("agent_result"), dict) else None

@@ -260,7 +260,10 @@ class ThreeLayerChatAgent:
             prompt_language=self.prompt_language,
             capability_block_header=str(execution_prompts.get("capability_block_header", "") or "").strip(),
             fallback_system_prompt=str(execution_prompts.get("fallback_system_prompt", "") or "").strip(),
-            wm_display=self.systems.wm.display,
+            # Execution is intentionally instruction-bound by default. WM stays
+            # in the thinking layer, which should compile any needed state into
+            # the delegated instruction or structured args.
+            wm_display=None,
         )
 
         # ---- Build thinking layer

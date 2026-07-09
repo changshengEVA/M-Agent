@@ -100,6 +100,86 @@ def test_limit_entry() -> None:
     assert entry["kind"] == "limit"
 
 
+def test_project_web_search_keeps_source_evidence() -> None:
+    cfg = WorkingMemoryConfig(max_web_result_items=2, max_web_snippet_chars=40)
+    entry = project_tool_call_to_entry(
+        {
+            "tool_name": "web_search",
+            "params": {"query": "latest model news", "provider": "tavily"},
+            "result": {
+                "mode": "search",
+                "provider": "tavily",
+                "query": "latest model news",
+                "answer": "The answer synthesized from search results.",
+                "results": [
+                    {
+                        "title": "Source A",
+                        "url": "https://example.com/a",
+                        "snippet": "Source A says the important thing.",
+                    },
+                    {
+                        "title": "Source B",
+                        "url": "https://example.com/b",
+                        "snippet": "Source B confirms the detail.",
+                    },
+                    {
+                        "title": "Source C",
+                        "url": "https://example.com/c",
+                        "snippet": "Should be capped out.",
+                    },
+                ],
+                "result_count": 3,
+                "insufficient": False,
+            },
+        },
+        cfg,
+    )
+
+    assert entry is not None
+    assert entry["kind"] == "web_search"
+    assert entry["mode"] == "search"
+    assert entry["provider"] == "tavily"
+    assert entry["result_count"] == 3
+    assert len(entry["items"]) == 2
+    assert entry["items"][0]["title"] == "Source A"
+
+
+def test_format_prompt_renders_web_search_sources() -> None:
+    cfg = WorkingMemoryConfig(max_web_result_items=2)
+    entry = project_tool_call_to_entry(
+        {
+            "tool_name": "web_search",
+            "params": {"query": "topic"},
+            "result": {
+                "mode": "extract",
+                "provider": "youcom",
+                "query": "topic",
+                "url": "https://example.com/page",
+                "answer": "Detailed extracted page answer.",
+                "content_chars": 1234,
+                "results": [
+                    {
+                        "title": "Example Page",
+                        "url": "https://example.com/page",
+                        "snippet": "Relevant page snippet.",
+                        "content_chars": 1234,
+                    }
+                ],
+                "result_count": 1,
+            },
+        },
+        cfg,
+    )
+
+    text = format_working_memory_prompt([entry], cfg, prompt_language="en")
+
+    assert "web_search" in text
+    assert "mode=extract" in text
+    assert "content_chars=1234" in text
+    assert "Example Page" in text
+    assert "Relevant page snippet" in text
+
+
 def test_build_working_memory_api_payload_tail_and_cap() -> None:
     cfg = WorkingMemoryConfig(ui_expose_max_entries=3)
     entries = [{"kind": "recall", "n": i} for i in range(10)]

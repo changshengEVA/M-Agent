@@ -61,8 +61,8 @@ class DefaultWMWriter:
 class DefaultWMDisplay:
     """Default :class:`WMDisplay` — recent tail via ``inject_max_entries``.
 
-    Uses the same renderer as :class:`DefaultWMReader` so execution-layer
-    WM visibility matches the thinking layer's tail-N injection policy.
+    Uses the same renderer as :class:`DefaultWMReader`. The default chat path
+    leaves execution WM display disabled, but custom runtimes may opt in.
     """
 
     def __init__(self, config: WorkingMemoryConfig) -> None:

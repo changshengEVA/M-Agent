@@ -11,6 +11,7 @@ enabled:
   - deep_recall
   - reply_to_user
   - get_current_time
+  - web_search
   - schedule_create
   - schedule_query
   - schedule_delete
@@ -25,6 +26,10 @@ defaults:
     max_calls_per_turn: 8
   get_current_time:
     timezone_name: Asia/Shanghai
+  web_search:
+    provider: auto
+    max_results: 5
+    max_calls_per_turn: 3
   schedule_create:
     timezone_name: Asia/Shanghai
   schedule_query:

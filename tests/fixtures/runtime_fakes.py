@@ -452,6 +452,49 @@ class FakeRuntime:
             "error": None,
         }
 
+    def force_stop_thread(self, thread_id: str, *, reason: str = "user_requested") -> Dict[str, Any]:
+        tid = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
+        with self._threads_lock:
+            state = self._ensure_state(tid)
+            if self._runtime_profile == "think_life":
+                state.setdefault(
+                    "think_life",
+                    {
+                        "pending_stimuli": 0,
+                        "busy": False,
+                        "busy_reason": "idle",
+                        "runtime_profile": "think_life",
+                    },
+                )
+                cleared = int(state["think_life"].get("pending_stimuli", 0) or 0)
+                state["think_life"]["pending_stimuli"] = 0
+                state["think_life"]["busy"] = False
+                state["think_life"]["busy_reason"] = "idle"
+            else:
+                cleared = 0
+            snapshot = deepcopy(state)
+        if callable(self._thread_event_sink):
+            self._thread_event_sink(
+                tid,
+                "thinking_force_stopped",
+                {
+                    "thread_id": tid,
+                    "reason": reason,
+                    "cancelled_in_flight": True,
+                    "cleared_pending_stimuli": cleared,
+                    "cancelled_transactions": [],
+                },
+            )
+        return {
+            "success": True,
+            "thread_id": tid,
+            "runtime_profile": self._runtime_profile,
+            "cancelled_in_flight": True,
+            "cleared_pending_stimuli": cleared,
+            "cancelled_transactions": [],
+            "thread_state": snapshot,
+        }
+
     def run_chat(self, *, message: str, thread_id: str, user_turn: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         with self._threads_lock:
             state = self._ensure_state(thread_id)

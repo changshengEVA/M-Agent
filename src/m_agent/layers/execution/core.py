@@ -7,8 +7,9 @@ The execution layer:
   natural-language messages from the thinking layer above.
 * Exposes :py:meth:`describe_capabilities` so the thinking layer can build a
   capability boundary into its own system prompt.
-* Accepts per-invocation WM entries via :class:`~m_agent.systems.wm.WMDisplay`
-  for its own system prompt (recent tail, same policy as the thinking layer).
+* Can optionally render per-invocation WM entries for diagnostics / custom
+  runtimes, but the default chat path keeps WM in the thinking layer and sends
+  execution only the current instruction.
 * Returns a structured :class:`~m_agent.layers.execution.contracts.ExecutionResult`
   (the final NL summary + the raw tool call history) instead of the
   controller-level ``ChatAgentResponse``.
@@ -115,6 +116,8 @@ class ExecutionAgent:
         self.prompt_language = str(prompt_language or "zh").strip().lower() or "zh"
         self._capability_block_header_override = str(capability_block_header or "").strip()
         self._fallback_system_prompt_override = str(fallback_system_prompt or "").strip()
+        # Optional hook for custom/debug execution prompts. The default product
+        # wiring leaves this unset so execution remains instruction-bound.
         self.wm_display = wm_display
 
         # Apply the episode-query switch BEFORE storing the active capability set.

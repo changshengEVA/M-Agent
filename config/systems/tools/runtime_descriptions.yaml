@@ -23,6 +23,11 @@ tools:
       zh: "功能：当前日期、时间、星期及今天/昨天/明天等。所需：无。"
       en: "Function: current date, time, weekday, and relative days such as today, yesterday, and tomorrow. Needs: none."
 
+  web_search:
+    description:
+      zh: "功能：联网检索公开实时信息，或读取指定网页 URL 的详细页面内容（自动选择 You.com 或 Tavily）。所需：query 和/或 url；可选 max_results、include_content、provider=auto|youcom|tavily。"
+      en: "Function: search the public web by query/title or inspect a known webpage URL for detailed page content (auto-selects You.com or Tavily). Needs: query and/or url; optional max_results, include_content, provider=auto|youcom|tavily."
+
   schedule_create:
     description:
       zh: >

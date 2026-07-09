@@ -68,3 +68,10 @@ class StimulusInbox:
             if thread_id is not None:
                 return len(self._queues.get(str(thread_id).strip(), []))
             return sum(len(q) for q in self._queues.values())
+
+    def clear_thread(self, thread_id: str) -> int:
+        """Drop all queued stimuli for one thread and return the removed count."""
+        tid = str(thread_id or "").strip()
+        with self._lock:
+            queue = self._queues.pop(tid, None)
+            return len(queue or [])

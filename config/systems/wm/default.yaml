@@ -24,5 +24,8 @@ config:
   max_subject_chars: 120
   max_email_body_excerpt_chars: 1500
   max_schedule_summary_chars: 400
+  max_web_answer_chars: 1000
+  max_web_result_items: 5
+  max_web_snippet_chars: 240
   record_time_tool: true
   ui_expose_max_entries: 200

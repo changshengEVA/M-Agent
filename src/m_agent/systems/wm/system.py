@@ -4,7 +4,8 @@ A WM system is a self-contained plug-in unit covering two access points:
 
 * ``writer`` — a :class:`~m_agent.systems.wm.protocols.WMWriter`
 * ``reader`` — a :class:`~m_agent.systems.wm.protocols.WMReader`
-* ``display`` — a :class:`~m_agent.systems.wm.protocols.WMDisplay`
+* ``display`` — a :class:`~m_agent.systems.wm.protocols.WMDisplay` for
+  optional execution-layer diagnostics / custom runtimes
 
 Both share a :class:`WorkingMemoryConfig` (rendering / projection knobs)
 that is built from the ``render:`` section of the YAML. Switching the WM

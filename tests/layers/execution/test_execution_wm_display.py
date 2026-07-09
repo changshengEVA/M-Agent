@@ -1,4 +1,4 @@
-"""Execution layer injects WM display into its system prompt."""
+"""Execution layer can opt into WM display for custom/debug prompts."""
 from __future__ import annotations
 
 from typing import Any, Dict, List
@@ -43,7 +43,7 @@ def test_execution_system_prompt_includes_wm_display_tail() -> None:
     assert "q2" in prompt
 
 
-def test_execution_execute_passes_wm_entries_to_system_prompt() -> None:
+def test_execution_execute_honors_explicit_wm_entries_for_debug_prompt() -> None:
     wm_cfg = WorkingMemoryConfig(enable=True)
     agent = _minimal_execution_agent(wm_display=DefaultWMDisplay(wm_cfg))
     captured: Dict[str, Any] = {}
@@ -55,7 +55,10 @@ def test_execution_execute_passes_wm_entries_to_system_prompt() -> None:
         return mock_agent
 
     wm_entries = [{"kind": "time", "tool": "get_current_time", "summary": "now"}]
-    with patch("m_agent.layers.execution.core.create_agent", side_effect=_fake_create_agent):
+    with (
+        patch("m_agent.layers.execution.core.build_controller_tools", return_value=[MagicMock()]),
+        patch("m_agent.layers.execution.core.create_agent", side_effect=_fake_create_agent),
+    ):
         agent.execute(
             ExecutionRequest(instruction="check time", thread_id="t1"),
             wm_entries=wm_entries,

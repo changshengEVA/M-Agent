@@ -60,10 +60,12 @@ class ThreadCpuStateRegistry:
         with self._lock:
             return self._in_flight.get(tid)
 
-    def cancel_in_flight(self, thread_id: str) -> bool:
+    def cancel_in_flight(self, thread_id: str, *, force: bool = False) -> bool:
         record = self.get_in_flight(thread_id)
         if record is None:
             return False
+        if force:
+            setattr(record.cancel_event, "force_stop", True)
         record.cancel_event.set()
         return True
 

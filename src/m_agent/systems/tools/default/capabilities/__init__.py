@@ -18,6 +18,7 @@ from .schedule_ops import (
 )
 from .reply_to_user import REPLY_TO_USER_CAPABILITY
 from .time_context import GET_CURRENT_TIME_CAPABILITY
+from .web_search_ops import WEB_SEARCH_CAPABILITY
 
 __all__ = [
     "DEEP_RECALL_CAPABILITY",
@@ -30,4 +31,5 @@ __all__ = [
     "SCHEDULE_DELETE_CAPABILITY",
     "SCHEDULE_QUERY_CAPABILITY",
     "SHALLOW_RECALL_CAPABILITY",
+    "WEB_SEARCH_CAPABILITY",
 ]

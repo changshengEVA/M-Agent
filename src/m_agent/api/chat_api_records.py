@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from m_agent.utils.logging_trace import FunctionTraceHandler, TraceEvent
 
 from .chat_api_protocol import _log_protocol_event
-from .chat_api_runtime import ChatServiceRuntime
+from .chat_api_runtime import ChatServiceRuntime, ThinkingForceStoppedError
 from .chat_api_shared import (
     _get_thread_lock,
     _now_iso,
@@ -398,6 +398,11 @@ def _run_chat_worker(record: ChatRunRecord, service_runtime: ChatServiceRuntime)
             record.append_event("chat_result", {"agent_result": agent_result})
 
         record.complete(public_result)
+    except ThinkingForceStoppedError as exc:
+        with service_runtime._stats_lock:
+            service_runtime._runs_failed += 1
+            service_runtime._last_run_finished_at = _now_iso()
+        record.fail(str(exc) or "thinking force stopped")
     except Exception:
         with service_runtime._stats_lock:
             service_runtime._runs_failed += 1

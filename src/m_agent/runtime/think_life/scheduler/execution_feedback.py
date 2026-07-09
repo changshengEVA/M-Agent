@@ -57,9 +57,22 @@ def extract_last_tool_step(tool_history: Any) -> Dict[str, Any]:
         facts: Dict[str, Any] = {"tool_name": name}
         if isinstance(result, dict):
             facts["success"] = bool(result.get("success", True))
+            mode = str(result.get("mode", "") or "").strip()
+            if mode:
+                facts["mode"] = mode
+            query = str(result.get("query", "") or "").strip()
+            if query:
+                facts["query"] = query
+            url = str(result.get("url", "") or "").strip()
+            if url:
+                facts["url"] = url
             facts["action"] = str(result.get("action", "") or "").strip() or None
             if result.get("count") is not None:
                 facts["count"] = int(result.get("count") or 0)
+            if result.get("result_count") is not None:
+                facts["result_count"] = int(result.get("result_count") or 0)
+            if result.get("content_chars") is not None:
+                facts["content_chars"] = int(result.get("content_chars") or 0)
             facts["answer"] = str(
                 result.get("answer", result.get("message", "")) or ""
             ).strip() or None
@@ -91,8 +104,21 @@ def feedback_summary_from_tool_history(tool_history: Any) -> str:
     action = step.get("action")
     if action:
         parts.append(f"action={action}")
+    mode = step.get("mode")
+    if mode:
+        parts.append(f"mode={mode}")
+    query = step.get("query")
+    if query:
+        parts.append(f"query={query}")
+    url = step.get("url")
+    if url:
+        parts.append(f"url={url}")
     if step.get("count") is not None:
         parts.append(f"count={step['count']}")
+    if step.get("result_count") is not None:
+        parts.append(f"result_count={step['result_count']}")
+    if step.get("content_chars") is not None:
+        parts.append(f"content_chars={step['content_chars']}")
     if step.get("success") is False:
         parts.append("success=false")
     if step.get("needs_clarification") is True:

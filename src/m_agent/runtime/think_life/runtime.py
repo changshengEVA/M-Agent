@@ -14,7 +14,7 @@ from m_agent.chat.three_layer_chat_agent import ThreeLayerChatAgent
 from m_agent.config_paths import resolve_config_path
 from m_agent.paths import chat_user_persistence_root, chat_user_slug
 from m_agent.runtime.think_life.config import ThinkLifeConfig, load_think_life_config
-from m_agent.runtime.think_life.contracts import SceneEntry, TransactionRecord
+from m_agent.runtime.think_life.contracts import SceneEntry, TransactionRecord, TransactionStatus
 from m_agent.runtime.think_life.drainer import ThreadDrainerService
 from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
 from m_agent.runtime.think_life.perception.gateway import PerceptionGateway
@@ -339,6 +339,62 @@ class ThinkLifeRuntime:
             "effective_depth": snap.effective_depth,
             "runtime_phase": snap.runtime_phase,
             "accepted": True,
+        }
+
+    def force_stop_thread(self, thread_id: str, *, reason: str = "user_requested") -> Dict[str, Any]:
+        """Cancel the in-flight CPU turn and drop queued stimuli for a thread."""
+        tid = str(thread_id or "").strip()
+        if not tid:
+            raise ValueError("thread_id is required")
+
+        in_flight = THREAD_CPU_STATE.get_in_flight(tid)
+        in_flight_transaction_id = str(in_flight.transaction_id or "").strip() if in_flight is not None else ""
+        cancelled_in_flight = THREAD_CPU_STATE.cancel_in_flight(tid, force=True)
+        cleared_pending = self.inbox.clear_thread(tid)
+        THREAD_RUNTIME_STATUS.set_pending_stimuli(tid, self.inbox.pending_count(tid))
+
+        cancelled_transactions: List[str] = []
+        candidate_ids: List[str] = []
+        if in_flight_transaction_id:
+            candidate_ids.append(in_flight_transaction_id)
+        active = self.registry.get_active_user_transaction(tid)
+        if active is not None:
+            candidate_ids.append(active.transaction_id)
+        seen: set[str] = set()
+        for txn_id in candidate_ids:
+            if not txn_id or txn_id in seen:
+                continue
+            seen.add(txn_id)
+            record = self.registry.get(txn_id)
+            if record is None or record.status.is_terminal():
+                continue
+            try:
+                self.registry.transition(txn_id, TransactionStatus.CANCELLED)
+                cancelled_transactions.append(txn_id)
+            except Exception:
+                logger.exception("force_stop transition failed txn=%s thread_id=%s", txn_id, tid)
+
+        self._emit_thread_event(
+            tid,
+            "thinking_force_stopped",
+            {
+                "thread_id": tid,
+                "reason": str(reason or "user_requested").strip() or "user_requested",
+                "cancelled_in_flight": bool(cancelled_in_flight),
+                "cleared_pending_stimuli": int(cleared_pending),
+                "cancelled_transactions": cancelled_transactions,
+            },
+        )
+        self._emit_runtime_updated(tid)
+        snap = THREAD_RUNTIME_STATUS.snapshot(tid, default_profile="think_life")
+        return {
+            "success": True,
+            "thread_id": tid,
+            "runtime_profile": "think_life",
+            "cancelled_in_flight": bool(cancelled_in_flight),
+            "cleared_pending_stimuli": int(cleared_pending),
+            "cancelled_transactions": cancelled_transactions,
+            "thread_runtime": snap.to_dict(),
         }
 
     def enqueue_schedule(
