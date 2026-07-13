@@ -37,201 +37,97 @@ def _fixed_now_context() -> dict:
     }
 
 
-def test_schedule_manage_marks_partial_for_bulk_instruction(tmp_path: Path) -> None:
+def test_schedule_create_query_delete_flow(tmp_path: Path) -> None:
     agent = _build_agent(tmp_path)
-    result = agent.handle_manage_command(
+    thread_id = "demo-thread"
+
+    created = agent.handle_create_command(
+        thread_id=thread_id,
+        due_at="2026-04-06T09:00:00+08:00",
+        action="开会",
+        timezone_name="Asia/Shanghai",
+        now_context=_fixed_now_context(),
+    )
+    assert created["success"] is True
+    assert created["action"] == "create"
+    assert created["schedule_id"].startswith("sch_")
+    assert created["item"]["title"] == "开会"
+    assert created["item"]["status"] == "pending"
+
+    queried = agent.handle_query_command(
+        thread_id=thread_id,
+        keyword="开会",
+        start_at="2026-04-06T00:00:00+08:00",
+        end_at="2026-04-06T23:59:59+08:00",
+        timezone_name="Asia/Shanghai",
+    )
+    assert queried["success"] is True
+    assert queried["count"] == 1
+    assert created["schedule_id"] in queried["schedule_ids"]
+
+    deleted = agent.handle_delete_command(
+        thread_id=thread_id,
+        schedule_id=created["schedule_id"],
+    )
+    assert deleted["success"] is True
+    assert deleted["action"] == "delete"
+    assert deleted["item"]["status"] == "canceled"
+
+    empty = agent.handle_query_command(
+        thread_id=thread_id,
+        keyword="开会",
+        timezone_name="Asia/Shanghai",
+    )
+    assert empty["success"] is True
+    assert empty["count"] == 0
+
+
+def test_schedule_create_marks_partial_for_bulk_action(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+    result = agent.handle_create_command(
         thread_id="demo-thread",
-        instruction="从明天起一周每天6点起床",
+        due_at="2026-04-06T06:00:00+08:00",
+        action="每天6点起床一周",
         timezone_name="Asia/Shanghai",
         now_context=_fixed_now_context(),
     )
     assert result.get("success") is True
     assert result.get("count") == 1
     assert result.get("partial") is True
+    assert result.get("schedule_id", "").startswith("sch_")
 
 
-def test_schedule_agent_create_query_update_cancel_flow(tmp_path: Path) -> None:
+def test_schedule_create_requires_due_at_and_action(tmp_path: Path) -> None:
     agent = _build_agent(tmp_path)
-    thread_id = "demo-thread"
-
-    created = agent.handle_manage_command(
-        thread_id=thread_id,
-        instruction="明天上午9点提醒我开会",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
-    )
-    assert created["success"] is True
-    assert created["action"] == "create"
-    assert created["item"]["title"] == "开会"
-    assert created["item"]["status"] == "pending"
-    assert created["item"]["owner_id"] == "__anonymous__"
-
-    queried = agent.handle_query_command(
-        thread_id=thread_id,
-        query="明天",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
-    )
-    assert queried["success"] is True
-    assert queried["count"] == 1
-    assert queried["items"][0]["title"] == "开会"
-
-    updated = agent.handle_manage_command(
-        thread_id=thread_id,
-        instruction="把明天那个提醒改到后天下午3点",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
-    )
-    assert updated["success"] is True
-    assert updated["action"] == "update"
-    assert updated["item"]["title"] == "开会"
-    assert updated["item"]["due_display"].endswith("15:00")
-
-    canceled = agent.handle_manage_command(
-        thread_id=thread_id,
-        instruction="取消开会",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
-    )
-    assert canceled["success"] is True
-    assert canceled["action"] == "cancel"
-    assert canceled["item"]["status"] == "canceled"
-
-    empty_active = agent.handle_query_command(
-        thread_id=thread_id,
-        query="",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
-    )
-    assert empty_active["success"] is True
-    assert empty_active["count"] == 0
-
-
-def test_schedule_agent_returns_clarification_when_time_is_missing(tmp_path: Path) -> None:
-    agent = _build_agent(tmp_path)
-
-    result = agent.handle_manage_command(
+    missing_due = agent.handle_create_command(
         thread_id="demo-thread",
-        instruction="提醒我开会",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
+        due_at="",
+        action="开会",
     )
-    assert result["success"] is False
-    assert result["needs_clarification"] is True
-    assert result["action"] == "create"
+    assert missing_due["success"] is False
+    assert missing_due["needs_clarification"] is True
 
-
-def test_schedule_agent_returns_clarification_when_advance_offset_is_missing(tmp_path: Path) -> None:
-    agent = _build_agent(tmp_path)
-
-    result = agent.handle_manage_command(
+    missing_action = agent.handle_create_command(
         thread_id="demo-thread",
-        instruction="提前通知我下午2点的会议",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
+        due_at="2026-04-06T09:00:00+08:00",
+        action="",
     )
-    assert result["success"] is False
-    assert result["needs_clarification"] is True
-    assert result["action"] == "create"
-    assert result["machine"]["parse_error"] == "missing_lead_time"
-    assert "提前多久" in result["answer"]
+    assert missing_action["success"] is False
+    assert missing_action["needs_clarification"] is True
 
 
-def test_schedule_agent_creates_advance_reminder_with_event_metadata(tmp_path: Path) -> None:
+def test_schedule_delete_invalid_or_missing_id(tmp_path: Path) -> None:
     agent = _build_agent(tmp_path)
-
-    result = agent.handle_manage_command(
+    bad_format = agent.handle_delete_command(
         thread_id="demo-thread",
-        instruction="提前30分钟提醒我明天下午2点开会",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
+        schedule_id="not-an-id",
     )
-    assert result["success"] is True
-    assert result["action"] == "create"
-    assert result["item"]["title"] == "开会"
-    assert result["item"]["schedule_kind"] == "before_event"
-    assert result["item"]["due_display"].endswith("13:30")
-    assert result["item"]["event_display"].endswith("14:00")
-    assert result["item"]["reminder_offset_minutes"] == 30
-    assert result["item"]["metadata"]["event_display"].endswith("14:00")
-    assert result["machine"]["parse"]["trigger_kind"] == "before_event"
+    assert bad_format["success"] is False
+    assert bad_format["needs_clarification"] is True
 
-
-def test_schedule_agent_parses_natural_rephrase_of_advance_reminder(tmp_path: Path) -> None:
-    agent = _build_agent(tmp_path)
-
-    result = agent.handle_manage_command(
+    missing = agent.handle_delete_command(
         thread_id="demo-thread",
-        instruction="重新安排后天（4月7日）下午2点的会议提醒，提前30分钟提醒，也就是下午1:30提醒",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
+        schedule_id="sch_doesnotexist00",
     )
-    assert result["success"] is True
-    assert result["item"]["title"] == "会议"
-    assert result["item"]["schedule_kind"] == "before_event"
-    assert result["item"]["due_display"] == "2026-04-07 13:30"
-    assert result["item"]["event_display"] == "2026-04-07 14:00"
-
-
-def test_schedule_agent_explicit_owner_isolation_by_scoped_thread(tmp_path: Path) -> None:
-    agent = _build_agent(tmp_path)
-
-    alice_created = agent.handle_manage_command(
-        thread_id="alice::demo-thread",
-        instruction="明天上午9点提醒我开会",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
-    )
-    bob_created = agent.handle_manage_command(
-        thread_id="bob::demo-thread",
-        instruction="明天下午2点提醒我面试",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
-    )
-
-    assert alice_created["success"] is True
-    assert bob_created["success"] is True
-    assert alice_created["item"]["owner_id"] == "alice"
-    assert bob_created["item"]["owner_id"] == "bob"
-
-    alice_query = agent.handle_query_command(
-        thread_id="alice::demo-thread",
-        query="",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
-    )
-    bob_query = agent.handle_query_command(
-        thread_id="bob::demo-thread",
-        query="",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
-    )
-
-    assert alice_query["count"] == 1
-    assert bob_query["count"] == 1
-    assert alice_query["items"][0]["title"] == "开会"
-    assert bob_query["items"][0]["title"] == "面试"
-
-
-def test_schedule_agent_shares_schedules_across_threads_for_same_owner(tmp_path: Path) -> None:
-    agent = _build_agent(tmp_path)
-
-    created = agent.handle_manage_command(
-        thread_id="alice::work-thread",
-        instruction="明天上午10点提醒我提交日报",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
-    )
-    assert created["success"] is True
-    assert created["item"]["owner_id"] == "alice"
-
-    queried = agent.handle_query_command(
-        thread_id="alice::life-thread",
-        query="",
-        timezone_name="Asia/Shanghai",
-        now_context=_fixed_now_context(),
-    )
-    assert queried["success"] is True
-    assert queried["count"] == 1
-    assert queried["items"][0]["title"] == "提交日报"
-    assert queried["items"][0]["thread_id"] == "alice::work-thread"
+    assert missing["success"] is False
+    assert missing["needs_clarification"] is True

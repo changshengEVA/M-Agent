@@ -325,6 +325,41 @@ def parse_schedule_request(
     return parsed
 
 
+def parse_iso_due_at(
+    due_at: str,
+    *,
+    timezone_name: Optional[str] = None,
+    now_context: Optional[Dict[str, Any]] = None,
+) -> ParsedDateTime:
+    """Parse an ISO-8601 due time; fall back to natural-language parsing."""
+    safe = str(due_at or "").strip()
+    if not safe:
+        return ParsedDateTime(
+            due_local=None,
+            timezone_name=str(timezone_name or "UTC"),
+            error="missing_due_at",
+        )
+    now_local, resolved_timezone_name = _resolve_now(timezone_name, now_context)
+    try:
+        parsed = datetime.fromisoformat(safe.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=now_local.tzinfo)
+        due_local = parsed.astimezone(now_local.tzinfo)
+        return ParsedDateTime(
+            due_local=due_local,
+            timezone_name=resolved_timezone_name,
+            matched_text=safe,
+            has_date=True,
+            has_time=True,
+        )
+    except ValueError:
+        return parse_due_datetime(
+            safe,
+            timezone_name=timezone_name,
+            now_context=now_context,
+        )
+
+
 def parse_day_window(
     text: str,
     *,

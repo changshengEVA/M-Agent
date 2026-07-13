@@ -1,29 +1,36 @@
-"""Thinking layer for the three-layer agent architecture.
+"""Plan-only thinking layer used by the Think-life scheduler.
 
-The thinking layer owns the assistant's persona, the per-conversation working
-memory and episode-buffer, and decides whether to delegate a turn to the
-execution layer. It has NO direct tool-use privileges: any capability that
-requires a tool (memory recall, email, schedule, time) is invoked indirectly
-by issuing a natural-language instruction to the execution layer.
+The selected transaction owns task state, working memory, and episode notes.
+The thinking layer owns persona-guided decisions but has no direct tool-use
+privileges; the scheduler delegates each selected capability.
 """
 from __future__ import annotations
 
 from m_agent.layers.perception.contracts import PerceptionInput
 
-from .core import ThinkingAgent, ThinkingTurnResult
+from .contracts import (
+    TaskProgress,
+    TaskProgressUpdate,
+    TaskState,
+    TaskStateUpdate,
+    ThinkingDecision,
+    TransactionResolution,
+)
+from .core import ThinkingAgent
 from .state import (
     ConversationState,
     ConversationStateRegistry,
-    ThinkingDecision,
-    ThinkingSummary,
 )
 
 __all__ = [
     "ConversationState",
     "ConversationStateRegistry",
     "PerceptionInput",
+    "TaskProgress",
+    "TaskProgressUpdate",
+    "TaskState",
+    "TaskStateUpdate",
     "ThinkingAgent",
     "ThinkingDecision",
-    "ThinkingSummary",
-    "ThinkingTurnResult",
+    "TransactionResolution",
 ]

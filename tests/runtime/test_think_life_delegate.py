@@ -1,7 +1,7 @@
 """Think-life single-tool delegate resolution."""
 from __future__ import annotations
 
-from m_agent.layers.thinking.state import ThinkingDecision
+from m_agent.layers.thinking.contracts import ThinkingDecision
 from m_agent.runtime.think_life.scheduler.delegate import (
     REPLY_TOOL_NAME,
     plan_delegate,
@@ -39,9 +39,17 @@ def test_plan_delegate_reply() -> None:
     assert tool_input.get("finalize") is True
 
 
-def test_build_tool_input_schedule_manage() -> None:
+def test_build_tool_input_schedule_create() -> None:
     payload = build_tool_input(
-        "schedule_manage",
-        instruction="2026-05-30 06:00 起床",
+        "schedule_create",
+        instruction="2026-05-30T06:00:00+08:00",
     )
-    assert payload == {"instruction": "2026-05-30 06:00 起床"}
+    assert payload == {"due_at": "2026-05-30T06:00:00+08:00"}
+
+
+def test_build_tool_input_schedule_delete() -> None:
+    payload = build_tool_input(
+        "schedule_delete",
+        instruction="sch_abc123def456",
+    )
+    assert payload == {"schedule_id": "sch_abc123def456"}

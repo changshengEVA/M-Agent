@@ -1,22 +1,25 @@
 # Subsystem configs (`config/systems/`)
 
-One YAML file = one loaded subsystem instance. The chat controller only holds **three pointers** (`systems.wm` / `episodic` / `tools`).
+One YAML file = one loaded subsystem. The chat controller holds **three pointers** (`systems.wm` / `episodic` / `tools`).
 
-**Full development spec (YAML fields, protocols, examples, PR checklist):**
+**Index:** [docs/systems-plugin-development.zh-CN.md](../../docs/systems-plugin-development.zh-CN.md)
 
-- [docs/systems-plugin-development.zh-CN.md](../../docs/systems-plugin-development.zh-CN.md)
-- [docs/systems-plugin-development.md](../../docs/systems-plugin-development.md)
+**Plug-in guides (6 files):** [docs/systems-plugin/](../../docs/systems-plugin/)
+
+| Subsystem | 中文 | English |
+|-----------|------|---------|
+| WM | [wm.zh-CN.md](../../docs/systems-plugin/wm.zh-CN.md) | [wm.md](../../docs/systems-plugin/wm.md) |
+| Episodic | [episodic.zh-CN.md](../../docs/systems-plugin/episodic.zh-CN.md) | [episodic.md](../../docs/systems-plugin/episodic.md) |
+| Tools | [tools.zh-CN.md](../../docs/systems-plugin/tools.zh-CN.md) | [tools.md](../../docs/systems-plugin/tools.md) |
 
 ## Shipped files
 
 ```
 wm/default.yaml
-episodic/rag_default.yaml   # Chat 运行时 RAG 路径会重绑到 data/memory/chat-api/<user>/episodic/
+episodic/rag_default.yaml
 tools/default.yaml
 tools/runtime_descriptions.yaml
 ```
-
-Per-user dialogue + episodic paths: [docs/systems-plugin-development.zh-CN.md §3.4.1](../../docs/systems-plugin-development.zh-CN.md).
 
 ## Quick swap
 

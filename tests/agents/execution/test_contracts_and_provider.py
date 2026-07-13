@@ -4,7 +4,6 @@ import pytest
 
 from m_agent.layers.execution import (
     CapabilityDescriptor,
-    ExecutionRequest,
     ExecutionResult,
     ModelProvider,
 )
@@ -53,16 +52,6 @@ def test_capability_descriptor_is_frozen() -> None:
     )
     with pytest.raises((AttributeError, Exception)):
         desc.name = "deep_recall"  # type: ignore[misc]
-
-
-def test_execution_request_requires_instruction_and_thread_id() -> None:
-    # Construction does not validate (validation happens in ExecutionAgent.execute),
-    # but we still check that the dataclass accepts and stores the values.
-    req = ExecutionRequest(instruction="do x", thread_id="t1", correlation_id="abc")
-    assert req.instruction == "do x"
-    assert req.thread_id == "t1"
-    assert req.correlation_id == "abc"
-    assert req.capability_hint is None
 
 
 def test_model_provider_backoff_is_capped() -> None:

@@ -1,4 +1,4 @@
-"""Direct single-tool invocation for Think-life (no execution-layer LLM)."""
+"""Direct single-tool invocation for Think-life (param LLM + direct invoke)."""
 from __future__ import annotations
 
 import logging
@@ -12,10 +12,23 @@ logger = logging.getLogger(__name__)
 
 REPLY_TOOL_NAME = "reply_to_user"
 
-# Primary string argument on each tool populated from ThinkingDecision.instruction.
+# Think-life: tools that skip the param LLM; think-layer ``instruction`` maps to invoke kwargs.
+# Value = target kwarg name, or ``None`` when the tool takes no instruction-derived args.
+# New skip-param capabilities MUST be registered here (and in docs/systems-plugin/tools*.md).
+THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG: Dict[str, Optional[str]] = {
+    "get_current_time": None,
+    "shallow_recall": "question",
+    "deep_recall": "question",
+}
+
+# Tools whose args are fixed or trivial — skip the param LLM.
+SKIP_PARAM_LLM_TOOLS = frozenset({REPLY_TOOL_NAME, *THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG.keys()})
+
+# Param-LLM tools: primary string arg filled from think-layer instruction text.
 _TOOL_PRIMARY_ARG: Dict[str, str] = {
-    "schedule_manage": "instruction",
-    "schedule_query": "query",
+    "schedule_create": "due_at",
+    "schedule_query": "keyword",
+    "schedule_delete": "schedule_id",
     "shallow_recall": "question",
     "deep_recall": "question",
     "email_ask": "keywords",
@@ -28,7 +41,7 @@ def build_tool_input(
     instruction: str = "",
     user_reply_text: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Map think-layer instruction text to a single tool invoke payload."""
+    """Map skip-param instructions deterministically to one tool payload."""
     name = str(tool_name or "").strip()
     text = str(instruction or "").strip()
 
@@ -38,8 +51,11 @@ def build_tool_input(
             message = "Acknowledge the user briefly."
         return {"message": message, "finalize": True}
 
-    if name == "get_current_time":
-        return {}
+    skip_arg = THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG.get(name)
+    if skip_arg is not None or name in THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG:
+        if skip_arg is None:
+            return {}
+        return {skip_arg: text}
 
     primary = _TOOL_PRIMARY_ARG.get(name)
     if primary:
@@ -69,5 +85,5 @@ def invoke_single_tool(
     )
 
 
-def result_summary_from_tool_history(tool_history: List[Dict[str, Any]]) -> str:
+def summarize_tool_history(tool_history: List[Dict[str, Any]]) -> str:
     return feedback_summary_from_tool_history(tool_history)

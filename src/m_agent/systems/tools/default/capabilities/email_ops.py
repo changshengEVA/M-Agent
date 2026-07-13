@@ -6,7 +6,50 @@ from typing import Annotated, Any, Dict, Optional
 from langchain.tools import tool
 from pydantic import Field
 
+from m_agent.integrations.gmail_client import GmailAuthError, GmailDependencyError
+
 from ...base import ControllerCapabilityContext, ControllerCapabilitySpec
+
+
+def _gmail_auth_required_result(tool_name: str, exc: BaseException) -> Dict[str, Any]:
+    message = str(exc).strip() or "Gmail authentication is required."
+    base: Dict[str, Any] = {
+        "auth_required": True,
+        "action_required": "gmail_oauth",
+        "provider": "gmail",
+        "error": message,
+        "answer": (
+            "Gmail needs authentication before I can use mail tools. "
+            "Please complete the OAuth sign-in prompt, then retry this email action."
+        ),
+        "insufficient": True,
+    }
+    if tool_name == "email_ask":
+        base.update(
+            {
+                "search_query": "",
+                "evidence_summary": "Gmail authentication required",
+                "evidence_index": [],
+            }
+        )
+    elif tool_name == "email_read":
+        base.update(
+            {
+                "source": "",
+                "message_count": 0,
+                "messages": [],
+            }
+        )
+    elif tool_name == "email_send":
+        base.update(
+            {
+                "success": False,
+                "type": "send",
+                "status": "auth_required",
+                "result": {},
+            }
+        )
+    return base
 
 
 def _controller_tool_count(context: ControllerCapabilityContext, *, tool_name: str) -> int:
@@ -92,6 +135,11 @@ def _build_email_ask_tool(context: ControllerCapabilityContext, description: str
                 mail_scope=effective_scope,
                 debug=bool(debug),
             )
+        except (GmailAuthError, GmailDependencyError) as exc:
+            result = _gmail_auth_required_result("email_ask", exc)
+            context.record_tool_use("email_ask", params, result)
+            context.finish_tool_call(call_id, "email_ask", result=result)
+            return result
         except Exception as exc:
             context.finish_tool_call(call_id, "email_ask", error=str(exc))
             raise
@@ -136,6 +184,11 @@ def _build_email_read_tool(context: ControllerCapabilityContext, description: st
                 max_chars=max_chars,
                 debug=bool(debug),
             )
+        except (GmailAuthError, GmailDependencyError) as exc:
+            result = _gmail_auth_required_result("email_read", exc)
+            context.record_tool_use("email_read", params, result)
+            context.finish_tool_call(call_id, "email_read", result=result)
+            return result
         except Exception as exc:
             context.finish_tool_call(call_id, "email_read", error=str(exc))
             raise
@@ -189,6 +242,11 @@ def _build_email_send_tool(context: ControllerCapabilityContext, description: st
                 body_html=body_html,
                 reply_to=reply_to,
             )
+        except (GmailAuthError, GmailDependencyError) as exc:
+            result = _gmail_auth_required_result("email_send", exc)
+            context.record_tool_use("email_send", params, result)
+            context.finish_tool_call(call_id, "email_send", result=result)
+            return result
         except Exception as exc:
             context.finish_tool_call(call_id, "email_send", error=str(exc))
             raise

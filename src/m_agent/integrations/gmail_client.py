@@ -61,13 +61,13 @@ class GmailApiClient:
             "build": build,
         }
 
-    def _get_service(self) -> Any:
-        if self._service is not None:
+    def _get_service(self, *, force_reauth: bool = False) -> Any:
+        if self._service is not None and not force_reauth:
             return self._service
-        self._service = self._build_service()
+        self._service = self._build_service(force_reauth=force_reauth)
         return self._service
 
-    def _build_service(self) -> Any:
+    def _build_service(self, *, force_reauth: bool = False) -> Any:
         deps = self._import_google_deps()
         Request = deps["Request"]
         Credentials = deps["Credentials"]
@@ -78,11 +78,25 @@ class GmailApiClient:
         token_path = self.config.token_path
         scopes = list(self.config.scopes)
 
-        if token_path and token_path.exists():
-            creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+        if token_path and token_path.exists() and not force_reauth:
+            try:
+                creds = Credentials.from_authorized_user_file(str(token_path), scopes)
+            except Exception:
+                logger.info(
+                    "Saved Gmail OAuth token could not be loaded; starting a new OAuth flow.",
+                    exc_info=True,
+                )
+                creds = None
 
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+            try:
+                creds.refresh(Request())
+            except Exception:
+                logger.info(
+                    "Saved Gmail OAuth token could not be refreshed; starting a new OAuth flow.",
+                    exc_info=True,
+                )
+                creds = None
 
         if not creds or not creds.valid:
             creds = self._run_oauth_flow(InstalledAppFlow)
@@ -95,6 +109,53 @@ class GmailApiClient:
             token_path.write_text(creds.to_json(), encoding="utf-8")
 
         return build("gmail", "v1", credentials=creds, cache_discovery=False)
+
+    @staticmethod
+    def _is_auth_failure(exc: BaseException) -> bool:
+        resp = getattr(exc, "resp", None)
+        status = getattr(resp, "status", None)
+        try:
+            status_code = int(status)
+        except Exception:
+            status_code = 0
+        if status_code in {401, 403}:
+            return True
+
+        text = str(exc).lower()
+        auth_markers = (
+            "invalid_grant",
+            "invalid credentials",
+            "unauthorized",
+            "insufficient authentication",
+            "insufficient permission",
+            "insufficientpermissions",
+        )
+        return any(marker in text for marker in auth_markers)
+
+    def _execute_request(self, request_factory: Any) -> Dict[str, Any]:
+        service = self._get_service()
+        try:
+            return request_factory(service).execute() or {}
+        except Exception as exc:
+            if not self._is_auth_failure(exc):
+                raise
+            logger.info(
+                "Gmail API request was rejected by auth; starting OAuth re-authentication.",
+                exc_info=True,
+            )
+            self._service = None
+
+        try:
+            service = self._get_service(force_reauth=True)
+            return request_factory(service).execute() or {}
+        except GmailAuthError:
+            raise
+        except Exception as exc:
+            if self._is_auth_failure(exc):
+                raise GmailAuthError(
+                    "Gmail authentication is required. Complete the OAuth flow and retry the email action."
+                ) from exc
+            raise
 
     def _run_oauth_flow(self, installed_app_flow_cls: Any) -> Any:
         credentials_path = self.config.credentials_path
@@ -110,7 +171,15 @@ class GmailApiClient:
         )
 
         if self.config.allow_local_webserver_flow:
-            return flow.run_local_server(port=0)
+            try:
+                return flow.run_local_server(port=0)
+            except Exception:
+                if not self.config.allow_console_flow:
+                    raise
+                logger.info(
+                    "Gmail local OAuth flow failed; falling back to console flow.",
+                    exc_info=True,
+                )
         if self.config.allow_console_flow:
             return flow.run_console()
         raise GmailAuthError(
@@ -127,9 +196,8 @@ class GmailApiClient:
         include_spam_trash: bool = False,
         label_ids: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
-        service = self._get_service()
-        request = (
-            service.users()
+        return self._execute_request(
+            lambda service: service.users()
             .threads()
             .list(
                 userId=self.config.user_id,
@@ -140,7 +208,6 @@ class GmailApiClient:
                 labelIds=list(label_ids) if label_ids else None,
             )
         )
-        return request.execute() or {}
 
     def search_messages(
         self,
@@ -151,9 +218,8 @@ class GmailApiClient:
         include_spam_trash: bool = False,
         label_ids: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
-        service = self._get_service()
-        request = (
-            service.users()
+        return self._execute_request(
+            lambda service: service.users()
             .messages()
             .list(
                 userId=self.config.user_id,
@@ -164,7 +230,6 @@ class GmailApiClient:
                 labelIds=list(label_ids) if label_ids else None,
             )
         )
-        return request.execute() or {}
 
     def get_thread(
         self,
@@ -173,9 +238,8 @@ class GmailApiClient:
         fmt: str = "metadata",
         metadata_headers: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
-        service = self._get_service()
-        request = (
-            service.users()
+        return self._execute_request(
+            lambda service: service.users()
             .threads()
             .get(
                 userId=self.config.user_id,
@@ -184,7 +248,6 @@ class GmailApiClient:
                 metadataHeaders=list(metadata_headers) if metadata_headers else None,
             )
         )
-        return request.execute() or {}
 
     def get_message(
         self,
@@ -193,9 +256,8 @@ class GmailApiClient:
         fmt: str = "metadata",
         metadata_headers: Optional[Sequence[str]] = None,
     ) -> Dict[str, Any]:
-        service = self._get_service()
-        request = (
-            service.users()
+        return self._execute_request(
+            lambda service: service.users()
             .messages()
             .get(
                 userId=self.config.user_id,
@@ -204,19 +266,16 @@ class GmailApiClient:
                 metadataHeaders=list(metadata_headers) if metadata_headers else None,
             )
         )
-        return request.execute() or {}
 
     def send_raw_message(self, *, raw_message: str) -> Dict[str, Any]:
-        service = self._get_service()
-        request = (
-            service.users()
+        return self._execute_request(
+            lambda service: service.users()
             .messages()
             .send(
                 userId=self.config.user_id,
                 body={"raw": str(raw_message or "").strip()},
             )
         )
-        return request.execute() or {}
 
     @staticmethod
     def build_raw_message(

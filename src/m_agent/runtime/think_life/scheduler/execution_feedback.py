@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import copy
 import re
+from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
+from m_agent.layers.execution.contracts import ParamFillResult
 from m_agent.layers.perception.contracts import PerceptionInput
-from m_agent.runtime.think_life.contracts import Stimulus, StimulusKind
+from m_agent.runtime.think_life.contracts import StimulusEnvelope, StimulusKind
 
 _MULTI_STEP_MARKERS = (
     "一周",
@@ -56,14 +58,35 @@ def extract_last_tool_step(tool_history: Any) -> Dict[str, Any]:
         facts: Dict[str, Any] = {"tool_name": name}
         if isinstance(result, dict):
             facts["success"] = bool(result.get("success", True))
+            mode = str(result.get("mode", "") or "").strip()
+            if mode:
+                facts["mode"] = mode
+            query = str(result.get("query", "") or "").strip()
+            if query:
+                facts["query"] = query
+            url = str(result.get("url", "") or "").strip()
+            if url:
+                facts["url"] = url
             facts["action"] = str(result.get("action", "") or "").strip() or None
             if result.get("count") is not None:
                 facts["count"] = int(result.get("count") or 0)
+            if result.get("result_count") is not None:
+                facts["result_count"] = int(result.get("result_count") or 0)
+            if result.get("content_chars") is not None:
+                facts["content_chars"] = int(result.get("content_chars") or 0)
             facts["answer"] = str(
                 result.get("answer", result.get("message", "")) or ""
             ).strip() or None
             facts["needs_clarification"] = bool(result.get("needs_clarification"))
             facts["partial"] = bool(result.get("partial"))
+            stage = str(result.get("stage", "") or "").strip()
+            if stage:
+                facts["stage"] = stage
+            if "tool_invoked" in result:
+                facts["tool_invoked"] = bool(result.get("tool_invoked"))
+            missing_fields = result.get("missing_fields")
+            if isinstance(missing_fields, list) and missing_fields:
+                facts["missing_fields"] = [str(item or "").strip() for item in missing_fields if str(item or "").strip()]
         elif result is not None:
             facts["answer"] = str(result).strip()
         return facts
@@ -82,22 +105,82 @@ def feedback_summary_from_tool_history(tool_history: Any) -> str:
     action = step.get("action")
     if action:
         parts.append(f"action={action}")
+    mode = step.get("mode")
+    if mode:
+        parts.append(f"mode={mode}")
+    query = step.get("query")
+    if query:
+        parts.append(f"query={query}")
+    url = step.get("url")
+    if url:
+        parts.append(f"url={url}")
     if step.get("count") is not None:
         parts.append(f"count={step['count']}")
+    if step.get("result_count") is not None:
+        parts.append(f"result_count={step['result_count']}")
+    if step.get("content_chars") is not None:
+        parts.append(f"content_chars={step['content_chars']}")
     if step.get("success") is False:
         parts.append("success=false")
+    if step.get("needs_clarification") is True:
+        parts.append("needs_clarification=true")
     if step.get("partial") is True:
         parts.append("partial=true")
+    stage = step.get("stage")
+    if stage:
+        parts.append(f"stage={stage}")
+    if step.get("tool_invoked") is False:
+        parts.append("tool_invoked=false")
+    missing_fields = step.get("missing_fields")
+    if isinstance(missing_fields, list) and missing_fields:
+        parts.append(f"missing_fields={','.join(missing_fields)}")
     answer = step.get("answer")
     if answer:
         parts.append(f"result={answer}")
     return "; ".join(parts)
 
 
+def build_param_gap_tool_history(
+    fill: ParamFillResult,
+    *,
+    instruction: str = "",
+) -> List[Dict[str, Any]]:
+    """Synthetic controller history when param fill blocks tool invoke."""
+    reason = str(fill.reason or "").strip() or "missing_required_args"
+    missing = [str(item or "").strip() for item in (fill.missing_fields or []) if str(item or "").strip()]
+    answer = reason
+    if missing:
+        answer = f"{reason}; missing: {', '.join(missing)}"
+    params: Dict[str, Any] = {}
+    safe_instruction = str(instruction or "").strip()
+    if safe_instruction:
+        params["instruction"] = safe_instruction
+    return [
+        {
+            "tool_name": str(fill.tool_name or "").strip(),
+            "params": params,
+            "result": {
+                "success": False,
+                "action": "param_clarify",
+                "needs_clarification": True,
+                "stage": "param_fill",
+                "tool_invoked": False,
+                "missing_fields": missing,
+                "answer": answer,
+                "message": answer,
+            },
+        }
+    ]
+
+
+def param_gap_summary(fill: ParamFillResult) -> str:
+    return feedback_summary_from_tool_history(build_param_gap_tool_history(fill))
+
+
 def premature_reply_block_reason(
     *,
     pending_user_request: str,
-    stimulus: Stimulus,
+    stimulus: StimulusEnvelope,
 ) -> Optional[str]:
     """Return a block reason when answer_directly is likely too early."""
     if stimulus.kind != StimulusKind.EXECUTION_FEEDBACK:
@@ -114,9 +197,9 @@ def premature_reply_block_reason(
     tool_name = str(step.get("tool_name", "") or "").strip()
     count = step.get("count")
     if step.get("partial"):
-        return "schedule_manage_partial_step"
-    if tool_name == "schedule_manage" and count == 1 and looks_like_multi_step_request(pending):
-        return "schedule_manage_created_only_one"
+        return "schedule_create_partial_step"
+    if tool_name == "schedule_create" and count == 1 and looks_like_multi_step_request(pending):
+        return "schedule_create_created_only_one"
 
     if tool_name == "schedule_query":
         # Query with zero items on multi-step create request — still in progress
@@ -136,6 +219,26 @@ def build_feedback_user_message(
     structured = feedback_summary_from_tool_history(tool_history)
     pending = str(pending_user_request or "").strip()
     multi = looks_like_multi_step_request(pending)
+    step = extract_last_tool_step(tool_history)
+    is_param_gap = step.get("stage") == "param_fill" and step.get("tool_invoked") is False
+
+    if is_param_gap:
+        parts = [
+            "[Param fill] Required arguments were missing; the tool was NOT invoked.",
+        ]
+        if pending:
+            parts.append(f"Original user request: {pending}")
+        if structured:
+            parts.append(f"Structured tool result: {structured}")
+        missing_fields = step.get("missing_fields")
+        if isinstance(missing_fields, list) and missing_fields:
+            parts.append(f"Missing fields: {', '.join(missing_fields)}")
+        parts.append(
+            "Try other enabled tools (recall, get_current_time, schedule_query) to obtain "
+            "missing info from context; if still unavailable, answer_directly to ask the user. "
+            "Do not repeat execute on the same tool_name with the same missing fields."
+        )
+        return " ".join(parts)
 
     parts = [
         "[Execution feedback] One delegate step finished.",
@@ -157,6 +260,7 @@ def build_feedback_user_message(
     else:
         parts.append(
             "Plan next: mode=execute with one tool_name for another step, "
+            "mode=silent when no reply or tool step is needed yet, "
             "or answer_directly when the user request is satisfied."
         )
     return " ".join(parts)
@@ -164,18 +268,18 @@ def build_feedback_user_message(
 
 def build_completion_nudge_message(block_reason: str) -> str:
     templates = {
-        "schedule_manage_partial_step": (
-            "[System gate] schedule_manage returned partial=true (only one item created for a bulk-style request). "
-            "Do NOT answer_directly. Plan mode=execute with tool_name=schedule_manage for the next single item."
+        "schedule_create_partial_step": (
+            "[System gate] schedule_create returned partial=true (only one item created for a bulk-style request). "
+            "Do NOT answer_directly. Plan mode=execute with tool_name=schedule_create for the next single item."
         ),
-        "schedule_manage_created_only_one": (
-            "[System gate] schedule_manage only created count=1, but the user asked for a multi-day "
-            "or repeating schedule. Do NOT answer_directly. Plan mode=execute with tool_name=schedule_manage "
-            "to create the next single item (one date/time/title per call), or schedule_query to verify."
+        "schedule_create_created_only_one": (
+            "[System gate] schedule_create only created count=1, but the user asked for a multi-day "
+            "or repeating schedule. Do NOT answer_directly. Plan mode=execute with tool_name=schedule_create "
+            "to create the next single item (due_at + action per call), or schedule_query to verify."
         ),
         "schedule_query_empty_while_creating": (
             "[System gate] Schedules are not created yet for this multi-step request. "
-            "Plan mode=execute with tool_name=schedule_manage for the next item."
+            "Plan mode=execute with tool_name=schedule_create for the next item."
         ),
         "multi_step_no_tool_evidence": (
             "[System gate] Multi-step user request but no tool evidence yet. "
@@ -189,17 +293,12 @@ def build_completion_nudge_message(block_reason: str) -> str:
 
 
 def augment_perception_with_nudge(perception: PerceptionInput, nudge: str) -> PerceptionInput:
-    """Copy perception with an appended gate nudge in the user message."""
-    base = str(perception.user_message or "").strip()
+    """Copy perception with an appended gate nudge in readable stimulus text."""
+    base = str(perception.stimulus.text or "").strip()
     merged = f"{base}\n\n{nudge}".strip()
-    ctx = copy.deepcopy(dict(perception.system_context or {}))
-    ctx["completion_gate_nudge"] = str(nudge or "").strip()
-    return PerceptionInput(
-        user_message=merged,
-        thread_id=perception.thread_id,
-        conversation_id=perception.conversation_id,
-        history_messages=list(perception.history_messages or []),
-        source=perception.source,
-        system_context=ctx,
-        attachments=perception.attachments,
+    payload = copy.deepcopy(dict(perception.stimulus.payload or {}))
+    payload["completion_gate_nudge"] = str(nudge or "").strip()
+    return replace(
+        perception,
+        stimulus=replace(perception.stimulus, text=merged, payload=payload),
     )

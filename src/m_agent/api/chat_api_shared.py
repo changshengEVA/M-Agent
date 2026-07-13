@@ -64,6 +64,10 @@ def _with_public_thread_state(state: Any, *, public_thread_id: str) -> Any:
     if not isinstance(state, dict):
         return state
     payload = deepcopy(state)
+    internal_thread_id = str(payload.get("thread_id", "") or "").strip()
+    conversation_id = str(payload.get("conversation_id", "") or "").strip()
+    if internal_thread_id and conversation_id.startswith(f"{internal_thread_id}::"):
+        payload["conversation_id"] = f"{public_thread_id}{conversation_id[len(internal_thread_id):]}"
     payload["thread_id"] = public_thread_id
     return payload
 

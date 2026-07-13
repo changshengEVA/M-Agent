@@ -1,8 +1,7 @@
 """Default WMReader / WMWriter implementations.
 
 These are thin wrappers around the existing
-:mod:`m_agent.chat.working_memory` helpers, so behavior is identical to
-the legacy chat-controller path.
+:mod:`m_agent.chat.working_memory` helpers used by Think-life transactions.
 
 Pluggable callers may swap in custom implementations by satisfying the
 :class:`~m_agent.systems.wm.protocols.WMReader` /
@@ -21,7 +20,7 @@ from m_agent.chat.working_memory import (
 
 
 class DefaultWMReader:
-    """Default :class:`WMReader` that uses the legacy tail-N renderer.
+    """Default :class:`WMReader` that renders the most recent entries.
 
     NOTE: this is intentionally NOT a semantic retriever; it formats the
     stored entries directly. The plug-in slot is reserved so a future
@@ -32,18 +31,25 @@ class DefaultWMReader:
     def __init__(self, config: WorkingMemoryConfig) -> None:
         self.config = config
 
-    def render(self, entries: List[Dict[str, Any]], *, language: str) -> str:
+    def render(
+        self,
+        entries: List[Dict[str, Any]],
+        *,
+        language: str,
+        task_progress: Any = None,
+    ) -> str:
         if not self.config.enable:
             return ""
         return format_working_memory_prompt(
             entries,
             self.config,
             prompt_language=language,
+            task_progress=task_progress,
         )
 
 
 class DefaultWMWriter:
-    """Default :class:`WMWriter` that reuses the legacy projection helper."""
+    """Default :class:`WMWriter` backed by the shared projection helper."""
 
     def __init__(self, config: WorkingMemoryConfig) -> None:
         self.config = config
@@ -61,20 +67,27 @@ class DefaultWMWriter:
 class DefaultWMDisplay:
     """Default :class:`WMDisplay` — recent tail via ``inject_max_entries``.
 
-    Uses the same renderer as :class:`DefaultWMReader` so execution-layer
-    WM visibility matches the thinking layer's tail-N injection policy.
+    Uses the same renderer as :class:`DefaultWMReader`. Think-life does not
+    inject this display into capability calls, but custom integrations may.
     """
 
     def __init__(self, config: WorkingMemoryConfig) -> None:
         self.config = config
 
-    def render(self, entries: List[Dict[str, Any]], *, language: str) -> str:
+    def render(
+        self,
+        entries: List[Dict[str, Any]],
+        *,
+        language: str,
+        task_progress: Any = None,
+    ) -> str:
         if not self.config.enable:
             return ""
         return format_working_memory_prompt(
             entries,
             self.config,
             prompt_language=language,
+            task_progress=task_progress,
         )
 
 

@@ -23,6 +23,8 @@ The current Chat API is not a per-request config override service. It uses a sta
 
 ### 1.1 Core runtime model / 核心运行模型
 
+- Think-life is the sole runtime.
+- Think-life 是唯一运行时。
 - `POST /v1/chat/runs` creates an asynchronous chat run.
 - `GET /v1/chat/runs/{run_id}/events` is the main real-time event stream for one chat run.
 - `GET /v1/chat/runs/{run_id}` returns the final run snapshot.
@@ -56,7 +58,7 @@ In the current implementation:
 | Chat runs | `POST /v1/chat/runs` `GET /v1/chat/runs/{run_id}` `GET /v1/chat/runs/{run_id}/events` | 创建对话、获取结果、订阅 run 级事件 | Create run, fetch final result, subscribe to run events |
 | Thread events | `GET /v1/chat/threads/{thread_id}/events` | 线程级事件流 | Thread-level SSE stream |
 | Thread memory | `GET /v1/chat/threads/{thread_id}/memory/state` `POST /v1/chat/threads/{thread_id}/memory/mode` `POST /v1/chat/threads/{thread_id}/memory/flush` | 查看线程记忆状态、切换模式、手动 flush | Inspect thread state, switch memory mode, manually flush |
-| Dialogues | `GET /v1/chat/dialogues` `GET /v1/chat/dialogues/{dialogue_id}` `POST /v1/chat/dialogues/import` `POST /v1/chat/dialogues/upload` | 已归档对话列表/详情；迁移/批量上传 JSON 并建 RAG 索引（上传为 SSE 进度） | Dialogue list/detail; legacy import; multipart upload + SSE progress |
+| Dialogues | `GET /v1/chat/dialogues` `GET /v1/chat/dialogues/{dialogue_id}` `POST /v1/chat/dialogues/import` `POST /v1/chat/dialogues/upload` | 已归档对话列表/详情；迁移旧目录布局或批量上传 JSON 并建 RAG 索引（上传为 SSE 进度） | Dialogue list/detail; old-layout import; multipart upload + SSE progress |
 | Schedules | `GET/POST/PATCH/DELETE /v1/chat/threads/{thread_id}/schedules...` | 日程提醒查询、创建、更新、取消 | Schedule query, create, update, cancel |
 
 ## 3. Startup / 启动方式
@@ -72,7 +74,7 @@ python -m m_agent.api.chat_api `
   --idle-flush-seconds 1800 `
   --history-max-rounds 12 `
   --schedule-beat-seconds 10 `
-  --schedule-busy-retry-seconds 5 `
+  --schedule-enqueue-retry-seconds 5 `
   --users-db config/users/users.json `
   --session-ttl-seconds 43200
 ```
@@ -87,7 +89,7 @@ python -m m_agent.api.chat_api `
 | `--idle-flush-seconds` | `1800` | `manual` 模式下 pending buffer 的空闲自动 flush 时间 | Idle timeout before pending manual memory is auto-flushed |
 | `--history-max-rounds` | `12` | 每个线程在服务内保留的最大轮次数 | Max in-memory rounds retained per thread |
 | `--schedule-beat-seconds` | `10` | 日程心跳扫描周期 | Schedule heartbeat scan interval |
-| `--schedule-busy-retry-seconds` | `5` | 线程忙时的日程重试延迟 | Schedule retry delay when the target thread is busy |
+| `--schedule-enqueue-retry-seconds` | `5` | 日程刺激入队失败后的 lease 重试延迟 | Lease retry delay after a schedule stimulus fails to enqueue |
 | `--users-db` | `config/users/users.json` | 用户数据库路径 | User database path |
 | `--session-ttl-seconds` | `43200` | 登录会话有效期，单位秒 | Session TTL in seconds |
 | `--disable-auth` | off | 关闭注册/登录与 Bearer 校验，进入匿名模式 | Disable auth and run in anonymous mode |
@@ -215,47 +217,18 @@ The `result` object inside a completed run snapshot.
 
 | Field | Type | 中文说明 | English description |
 | --- | --- | --- | --- |
-| `success` | `boolean` | 当前 chat 调用是否成功 | Whether the chat execution succeeded |
+| `success` | `boolean` | 本次 inbox drain 是否全部成功 | Whether every processed stimulus succeeded |
 | `thread_id` | `string` | 公开线程 ID | Public thread id |
-| `question` | `string` | 本轮问题文本 | Current user question |
-| `answer` | `string` | 最终回答 | Final answer |
-| `history_messages` | `array[object]` | 发给主控 chat 的历史消息数组 | History messages passed to the controller |
-| `agent_result` | `object` | 主控/召回层的结构化结果 | Structured controller/recall result |
+| `results` | `array[object]` | 本次 drain 中每个刺激的事务结果 | Per-stimulus transaction results from this drain |
+| `replies` | `array[string]` | 本次 drain 通过 `reply_to_user` 发出的回复 | Replies emitted through `reply_to_user` during this drain |
+| `answer` | `string` | `replies` 的最后一项；无回复时为空字符串 | Last item in `replies`, or an empty string when no reply was emitted |
 | `memory_write` | `null` | 当前 run 返回中固定为 `null` | Currently always `null` in run output |
 | `memory_capture` | `object` | 当前轮的 memory capture 状态 | Memory capture state for this round |
 | `thread_state` | `object` | 本轮结束后的线程状态快照 | Thread-state snapshot after this run |
 
-Common `agent_result` fields:
+`results` entries are scheduler outcomes, not a second answer schema. Depending on the stimulus and transaction phase, an entry may include fields such as `transaction_id`, `delegate_id`, `waiting_feedback`, `completed`, `silent`, `preempted`, `cancelled`, `summary`, or `error`.
 
-`agent_result` 常见字段：
-
-| Field | Type | 中文说明 | English description |
-| --- | --- | --- | --- |
-| `answer` | `string` | 结构化回答文本 | Structured answer text |
-| `gold_answer` | `string \| null` | 简短答案摘要 | Short answer summary |
-| `evidence` | `string \| null` | 证据摘要 | Evidence summary |
-| `sub_questions` | `array[string]` | recall 分解后的子问题 | Decomposed sub-questions |
-| `plan_summary` | `string \| null` | 本轮策略/计划摘要 | Strategy or plan summary |
-| `tool_call_count` | `integer` | 召回与控制层工具调用总数的近似统计 | Approximate tool-call count |
-| `question_plan` | `object` | 拆题计划 | Question plan |
-| `sub_question_results` | `array[object]` | 子问题执行结果 | Sub-question execution results |
-| `recall_mode` | `string \| null` | 当前使用的 recall 模式 | Recall mode used for this turn |
-| `recall_modes` | `array[string]` | trace summary 中出现过的 recall 模式列表 | Recall modes seen in the trace summary |
-| `recall_history` | `array[object]` | 主控层记录的 recall 调用历史 | Recall history recorded by the controller |
-| `controller_tool_count` | `integer` | 顶层控制器工具调用数 | Top-level controller tool count |
-| `controller_tool_names` | `array[string]` | 顶层控制器工具名称列表 | Top-level controller tool names |
-| `controller_tool_history` | `array[object]` | 顶层控制器工具调用历史 | Top-level controller tool history |
-
-Notes:
-
-- `agent_result` is intentionally broader than a strict fixed schema.
-- exact keys vary by execution path
-- shallow recall, deep recall, direct answer, and top-level controller tools may produce slightly different payloads
-
-说明：
-
-- `agent_result` 不是一个完全刚性的固定 schema
-- 不同执行路径下字段可能略有差异
+`results` 中的条目是调度结果，不是另一套回答 schema。字段随刺激类型和事务阶段变化，常见字段包括 `transaction_id`、`delegate_id`、`waiting_feedback`、`completed`、`silent`、`preempted`、`cancelled`、`summary` 与 `error`。
 
 ### 5.6 `MemoryCapture`
 
@@ -292,7 +265,6 @@ Each item in `history_rounds_data` / `history_preview` contains:
 
 - `round_id`
 - `capture_state`
-- `source`
 - `flush_id`
 - `user_message`
 - `assistant_message`
@@ -365,37 +337,35 @@ Each `turns[]` item contains:
 | Field | Type | 中文说明 | English description |
 | --- | --- | --- | --- |
 | `enabled` | `boolean` | 心跳是否启用 | Whether heartbeat is enabled |
-| `worker_alive` | `boolean` | 心跳线程是否存活 | Whether the heartbeat worker is alive |
-| `created_at` | `string` | 心跳协调器创建时间 | Heartbeat coordinator creation time |
-| `beat_interval_seconds` | `integer` | 扫描周期 | Scan interval |
-| `interval_seconds` | `integer` | 与 `beat_interval_seconds` 等价 | Same as `beat_interval_seconds` |
-| `batch_limit` | `integer` | 单次心跳最大 lease 数 | Max leases per beat |
-| `busy_retry_seconds` | `integer` | 线程忙时的重试秒数 | Retry seconds when thread is busy |
-| `beats_total` | `integer` | 已执行心跳次数 | Total beats executed |
-| `items_leased` | `integer` | 已 lease 的任务总数 | Total leased items |
-| `items_started` | `integer` | 已开始执行的任务总数 | Total started items |
-| `items_completed` | `integer` | 已完成任务总数 | Total completed items |
-| `items_failed` | `integer` | 已失败任务总数 | Total failed items |
-| `items_busy_retried` | `integer` | 因线程忙而重试的任务总数（旧字段，等价于 `counters.schedule_busy_retries_total`） | Total busy-retried items (legacy; same as `counters.schedule_busy_retries_total`) |
 | `status` | `string` | `healthy` / `degraded` / `unhealthy` | Worker health summary |
-| `counters.schedule_busy_retries_total` | `integer` | 单次心跳内因 `thread_runtime.busy==true` 推迟 lease 的条数 | Schedules deferred per beat because `thread_runtime.busy` |
-| `last_beat_started_at` | `string \| null` | 最近一次扫描开始时间 | Last beat start time |
-| `last_beat_finished_at` | `string \| null` | 最近一次扫描结束时间 | Last beat finish time |
-| `next_beat_due_at` | `string \| null` | 下一次扫描时间 | Next scheduled beat time |
+| `worker.alive` | `boolean` | 心跳线程是否存活 | Whether the heartbeat worker is alive |
+| `worker.created_at` | `string` | 心跳协调器创建时间 | Heartbeat coordinator creation time |
+| `scheduler.beat_interval_seconds` | `integer` | 扫描周期 | Scan interval |
+| `scheduler.interval_seconds` | `integer` | 与 `beat_interval_seconds` 等价 | Same as `beat_interval_seconds` |
+| `scheduler.batch_limit` | `integer` | 单次心跳最大 lease 数 | Max leases per beat |
+| `scheduler.enqueue_retry_seconds` | `integer` | 入队失败后的 lease 重试延迟 | Lease retry delay after an enqueue failure |
+| `scheduler.next_beat_due_at` | `string \| null` | 下一次扫描时间 | Next scheduled beat time |
+| `counters.beats_total` | `integer` | 已执行心跳次数 | Total beats executed |
+| `counters.schedule_leased_total` | `integer` | 已 lease 的任务总数 | Total leased items |
+| `counters.schedule_started_total` | `integer` | 已入队的任务总数 | Total enqueued items |
+| `counters.schedule_completed_total` | `integer` | 后台完成的任务总数 | Total items completed in the background |
+| `counters.schedule_failed_total` | `integer` | 已失败任务总数 | Total failed items |
+| `last_beat.started_at` | `string \| null` | 最近一次扫描开始时间 | Last beat start time |
+| `last_beat.finished_at` | `string \| null` | 最近一次扫描结束时间 | Last beat finish time |
 | `last_error` | `string \| null` | 最近错误 | Last error |
 
 ### 5.11.1 `ThreadRuntime`（per-thread）
 
 | Field | Type | 中文说明 | English description |
 | --- | --- | --- | --- |
-| `busy` | `boolean` | Legacy：lease 门控；think_life：`effective_depth >= 2` | Busy flag |
-| `busy_reason` | `string` | Legacy 原因码；think_life 多为 `runtime_phase` | Busy reason code |
-| `runtime_phase` | `string` | `ready` / `processing` / `busy`（think_life 队列投影） | Queue-derived phase |
+| `busy` | `boolean` | `effective_depth >= 2` 时为 `true`；仅作队列积压指示 | `true` when `effective_depth >= 2`; indicates queue backlog |
+| `busy_reason` | `string` | `ready` 时为 `idle`，否则通常等于 `runtime_phase` | `idle` when ready; otherwise normally matches `runtime_phase` |
+| `runtime_phase` | `string` | `ready` / `processing` / `busy`（队列投影） | Queue-derived phase |
 | `effective_depth` | `integer` | inbox + 在途刺激数 | Effective queue depth |
-| `pending_stimuli` | `integer` | Think-life 感知 inbox 深度（未 pop） | Think-life inbox depth |
+| `pending_stimuli` | `integer` | 感知 inbox 深度（未 pop） | Perception inbox depth |
 | `in_flight_stimulus_id` | `string \| null` | 当前正在消费的刺激 id | In-flight stimulus |
-| `runtime_profile` | `string` | `legacy` 或 `think_life` | Active runtime profile |
-| `active_transaction_id` | `string \| null` | 当前 CPU 事务 | Active Think-life transaction |
+| `runtime_profile` | `string` | 固定为 `think_life` | Always `think_life` |
+| `active_transaction_id` | `string \| null` | 当前 CPU 事务 | Active transaction |
 | `preempt_enabled` | `boolean` | 是否启用刺激抢占 | Preemption enabled |
 
 ### 5.12 `SSEEnvelope`
@@ -1009,13 +979,13 @@ Request body:
 
 | Field | Type | Default | 中文说明 | English description |
 | --- | --- | --- | --- | --- |
-| `migrate_legacy` | `boolean` | `false` | 从 `data/memory/user_<username>/dialogues/` 迁移 | Copy from legacy `user_<username>` tree |
+| `migrate_legacy` | `boolean` | `false` | 从旧目录布局 `data/memory/user_<username>/dialogues/` 迁移；与运行时模式无关 | Copy from the old `user_<username>` storage layout; unrelated to runtime mode |
 | `rebuild_rag` | `boolean` | `false` | 重建前清空 `episodic/` 索引 | Clear episodic index before import |
 | `index_rag` | `boolean` | `true` | 是否写入 RAG | Whether to append RAG chunks |
 | `copy_files` | `boolean` | `true` | 是否复制 JSON 到用户 dialogues 目录 | Copy JSON into user dialogues dir |
 | `dialogue_ids` | `array[string]` | null | 仅导入指定 id（不迁移时从当前用户 dialogues 目录取） | Filter by dialogue id when not migrating |
 
-Example (migrate legacy tree for current user):
+Example (migrate the old storage tree for the current user):
 
 ```json
 {
@@ -1092,15 +1062,14 @@ Success response fields:
 | `items` | `array[ScheduleItem]` | 日程列表 | Schedule items |
 | `heartbeat` | `ScheduleHeartbeat` | 当前心跳状态摘要 | Current heartbeat summary |
 
-### 6.17a `GET /v1/chat/threads/{thread_id}/scene`（`runtime.profile=think_life`）
+### 6.17a `GET /v1/chat/threads/{thread_id}/scene`
 
 - 返回跨事务、按时间序的 Scene 日志（分页 `limit` / `before_seq`）
 - Returns chronological Scene log across transactions
 
-### 6.17b `POST /v1/chat/threads/{thread_id}/stimuli`（`think_life` only）
+### 6.17b `POST /v1/chat/threads/{thread_id}/stimuli`
 
 - **202**：用户消息入队；后台 `ThreadDrainer` 消费
-- **409**：`profile_not_supported`（legacy 请用 `POST /v1/chat/runs`）
 
 ### 6.18 `GET /v1/chat/threads/{thread_id}/schedules/heartbeat`
 
@@ -1293,28 +1262,19 @@ The following event types may appear on `GET /v1/chat/runs/{run_id}/events`.
 | --- | --- | --- | --- |
 | `run_started` | run 开始 | Run started | `thread_id`, `message`, `config_path`, `user_id` |
 | `recall_started` | recall 工具开始 | Recall started | `mode`, `question` |
-| `question_strategy` | deep recall 判断先直答还是先拆题 | Strategy decision before decomposition | `question`, `decompose_first`, `reason` |
-| `plan_update` | 拆题计划更新 | Question-plan update | `goal`, `question_type`, `decomposition_reason`, `sub_questions`, `suggested_tool_order`, `completion_criteria` |
-| `sub_question_started` | 子问题开始 | Sub-question started | `index`, `question`, `status` |
 | `tool_call` | 工具调用开始 | Tool call started | `call_id`, `tool_name`, `status`, `params`, optional `ts` |
 | `tool_result` | 工具调用完成或失败 | Tool call completed or failed | `call_id`, `tool_name`, `status`, optional `result`, optional `error` |
-| `sub_question_completed` | 子问题完成 | Sub-question completed | `index`, `question`, `status`, `answer`, optional `gold_answer`, optional `evidence`, optional `error` |
-| `direct_answer_payload` | 直答路径输出结构化结果 | Structured payload from the direct-answer path | `answer`, `gold_answer`, `evidence`, `sub_questions`, `plan_summary` |
-| `direct_answer_fallback` | 直答不足，转为拆题 | Direct-answer fallback to decomposition | `reason`, `question` |
-| `final_answer_payload` | recall 最终结构化回答 | Final structured recall answer | `answer`, `gold_answer`, `evidence`, `tool_call_count`, `question_plan`, `sub_question_results` |
 | `recall_completed` | recall 结束 | Recall completed | `mode`, `question`, `answer` |
 | `assistant_message` | 面向用户的最终回答 | Final user-facing answer | `thread_id`, `answer` |
 | `memory_capture_updated` | 当前轮次的 memory capture 状态 | Memory capture status for the run | `mode`, `status`, `reason`, `pending_rounds`, `pending_turns` |
 | `thread_state_updated` | 当前 run 看到的线程状态快照 | Thread-state snapshot observed by the run | `thread_state` |
-| `chat_result` | 主控/召回层最终结构化结果 | Final structured agent result | `agent_result` |
 | `run_completed` | run 成功结束 | Run completed | `thread_id`, `answer`, `result` |
 | `run_failed` | run 失败 | Run failed | `thread_id`, `error` |
 
 Important notes / 重要说明:
 
-- `chat_result.payload.agent_result` is a final structured result, not a live tool trace
 - `run_completed.payload.result` already contains the final business result, so many clients do not need an extra `GET /v1/chat/runs/{run_id}` call
-- `tool_calls` are intentionally not exposed as a final top-level field in the run result
+- `tool_call` and `tool_result` are live traces from direct capability invocation; planning events are published on the thread stream
 
 ### 7.2 Thread stream events / Thread 级事件
 
@@ -1332,21 +1292,19 @@ The following event types may appear on `GET /v1/chat/threads/{thread_id}/events
 | `schedule_updated` | 手动更新日程 | Schedule updated | `thread_id`, `schedule` |
 | `schedule_canceled` | 手动取消日程 | Schedule canceled | `thread_id`, `schedule` |
 | `schedule_due` | 心跳发现到点任务 | A due schedule was leased by heartbeat | `thread_id`, `schedule_id`, `title`, `status`, `due_at_utc`, `timezone_name` |
-| `schedule_busy_retry` | 目标线程忙，稍后重试 | Target thread busy; retry later | `thread_id`, `schedule_id`, `status`, `retry_after_seconds` |
+| `schedule_queued` | 到点任务进入 Think-life inbox | Due schedule enqueued in the Think-life inbox | `thread_id`, `schedule_id`, `run_id`, `stimulus_id`, `pending_count`, `runtime_phase` |
 | `schedule_started` | 到点任务开始执行 | Due schedule execution started | `thread_id`, `schedule_id`, `run_id` |
 | `schedule_completed` | 到点任务执行完成 | Due schedule execution completed | `thread_id`, `schedule_id`, `run_id`, `status`, `answer` |
 | `schedule_failed` | 到点任务执行失败 | Due schedule execution failed | `thread_id`, `schedule_id`, `run_id`, `error` |
-| `assistant_message` | 日程触发后的回答 | Assistant message emitted by a schedule trigger | `thread_id`, `answer`, `source`, `schedule_id` |
-| `stimulus_queued` | Think-life 刺激入队 | Stimulus enqueued (Think-life) | `stimulus_id`, `kind`, `pending_count` |
-| `reply_emitted` | Think-life 用户可见回复 | User-visible reply (`reply_to_user`) | `message`, `finalize`, `transaction_id`, `delegate_id` |
+| `stimulus_queued` | 刺激入队 | Stimulus enqueued | `stimulus_id`, `kind`, `pending_count` |
+| `reply_emitted` | 用户可见回复 | User-visible reply (`reply_to_user`) | `message`, `finalize`, `transaction_id`, `delegate_id` |
 | `scene_entry_appended` | Scene 时间轴新增条目 | Scene timeline entry appended | `seq`, `occurred_at`, `entry_type`, `actor`, `text`, `transaction_id` |
 | `thread_runtime_updated` | 单线程运行时 busy/队列快照 | Per-thread runtime busy/queue snapshot | `thread_runtime` |
-| `thinking_*` | 三层思考流式事件 | Three-layer thinking stream events | varies |
+| `thinking_*` | 思考层规划事件 | Thinking-layer planning events | varies |
 
 Notes / 说明:
 
 - thread streams do not automatically terminate like run streams
-- a schedule-triggered assistant message appears on the thread stream, not on a user-created run stream
 - `thread_id` inside thread SSE payload is converted back to the public thread id
 
 ## 8. Testing Recommendations / 测试建议

@@ -7,8 +7,8 @@ via :func:`m_agent.chat.create_chat_agent`.
 
 Layering:
 
-* :class:`ExecutionAgent` (persona-less, holds the LangChain agent + tools)
-* :class:`ThinkingAgent` (persona, WM, episode buffer; Form A two-call flow)
+* :class:`ExecutionAgent` (persona-less capability registry and direct tool invoker)
+* :class:`ThinkingAgent` (persona-guided, transaction-scoped planning)
 * This module wires them together via a :class:`SystemsBundle`
   (3 subsystems × 6 access points; see :mod:`m_agent.systems`).
 
@@ -33,11 +33,9 @@ from m_agent.agents.email_agent import EmailAgent
 from m_agent.agents.schedule_agent import ScheduleAgent
 from m_agent.layers.execution import ExecutionAgent
 from m_agent.layers.execution.model_provider import build_model_provider_from_config
-from m_agent.layers.perception import PerceptionInput, build_perception_input
 from m_agent.layers.thinking import (
     ConversationStateRegistry,
     ThinkingAgent,
-    ThinkingTurnResult,
 )
 from m_agent.layers.thinking.persona import merge_system_with_persona
 from m_agent.chat.three_layer_plugins import (
@@ -176,13 +174,47 @@ class ThreeLayerChatAgent:
             name: self._get_capability_description(name) for name in all_enabled
         }
         thinking_prompts = self._get_runtime_section("thinking", "thinking_layer")
+        resolution_prompts = (
+            thinking_prompts.get("resolve_transaction")
+            if isinstance(thinking_prompts.get("resolve_transaction"), dict)
+            else {}
+        )
+        task_state_prompts = (
+            thinking_prompts.get("pre_gen_task_state")
+            if isinstance(thinking_prompts.get("pre_gen_task_state"), dict)
+            else {}
+        )
+        decision_prompts = (
+            thinking_prompts.get("make_decision")
+            if isinstance(thinking_prompts.get("make_decision"), dict)
+            else {}
+        )
         execution_prompts = self._get_runtime_section("execution", "execution_layer")
         legacy_persona = self._legacy_persona_prompts()
 
         base_prompt = self._nested_runtime_text(
-            thinking_prompts,
+            decision_prompts,
             "base_prompt",
             legacy_keys=("base_role_prompt",),
+        )
+        if not base_prompt:
+            base_prompt = self._nested_runtime_text(
+                thinking_prompts,
+                "base_prompt",
+                legacy_keys=("base_role_prompt",),
+            )
+        if not base_prompt:
+            base_prompt = self._nested_runtime_text(
+                task_state_prompts,
+                "base_prompt",
+            )
+        task_state_base_prompt = self._nested_runtime_text(
+            task_state_prompts,
+            "base_prompt",
+        )
+        task_state_instructions_prompt = self._nested_runtime_text(
+            task_state_prompts,
+            "instructions",
         )
         if not base_prompt:
             base_prompt = self._nested_runtime_text(
@@ -192,7 +224,7 @@ class ThreeLayerChatAgent:
             )
         if not base_prompt:
             raise ValueError(
-                f"`chat_controller.thinking.base_prompt` is required in runtime prompt config: "
+                f"`chat_controller.thinking.make_decision.base_prompt` is required in runtime prompt config: "
                 f"{self.runtime_prompt_config_path}"
             )
 
@@ -220,31 +252,6 @@ class ThreeLayerChatAgent:
                 legacy_keys=("merge_system_with_persona",),
             )
 
-        execution_role_prompt = self._nested_runtime_text(
-            execution_prompts,
-            "role_prompt",
-            legacy_keys=("system_prompt",),
-        )
-        if not execution_role_prompt:
-            execution_role_prompt = self._nested_runtime_text(
-                legacy_persona,
-                "base_role_prompt",
-                legacy_keys=("system_prompt",),
-            )
-        if not execution_role_prompt:
-            raise ValueError(
-                f"`chat_controller.execution.role_prompt` is required in runtime prompt config: "
-                f"{self.runtime_prompt_config_path}"
-            )
-
-        tool_policy_prompt = self._nested_runtime_text(
-            execution_prompts,
-            "tool_policy",
-            legacy_keys=("global_tool_policy",),
-        )
-        if not tool_policy_prompt:
-            tool_policy_prompt = self._resolve_runtime_text("global_tool_policy", allow_empty=True)
-
         self.execution_agent = ExecutionAgent(
             model_provider=self.model_provider,
             enabled_capability_names=all_enabled,
@@ -255,12 +262,8 @@ class ThreeLayerChatAgent:
             registry=self.capability_registry,
             episode_query_module=self.episode_query_module,
             episodic_backend=self.systems.episodic.backend,
-            system_prompt_base=execution_role_prompt,
-            tool_policy_prompt=tool_policy_prompt,
             prompt_language=self.prompt_language,
             capability_block_header=str(execution_prompts.get("capability_block_header", "") or "").strip(),
-            fallback_system_prompt=str(execution_prompts.get("fallback_system_prompt", "") or "").strip(),
-            wm_display=self.systems.wm.display,
         )
 
         # ---- Build thinking layer
@@ -272,10 +275,6 @@ class ThreeLayerChatAgent:
             persona_prompt=persona_prompt,
             merge_template=merge_template,
         )
-
-        execution_cfg = self.config.get("execution") if isinstance(self.config.get("execution"), dict) else {}
-        max_executions = int(execution_cfg.get("max_executions_per_turn", 1) or 1)
-        skip_summarize = bool(execution_cfg.get("skip_summarize_on_direct_answer", True))
 
         self.state_registry = ConversationStateRegistry()
         # Convenience aliases so external code that snapshotted the per-slot
@@ -292,18 +291,29 @@ class ThreeLayerChatAgent:
             system_prompt=merged_persona_prompt,
             persona_prompt="",  # already merged into system_prompt
             wm_reader=self.wm_reader,
-            wm_writer=self.wm_writer,
             episode_recorder=self.episode_recorder,
             state_registry=self.state_registry,
             prompt_language=self.prompt_language,
-            max_executions_per_turn=max_executions,
-            skip_summarize_on_direct_answer=skip_summarize,
-            plan_instructions_prompt=str(thinking_prompts.get("plan_instructions", "") or "").strip(),
-            summarize_instructions_prompt=str(thinking_prompts.get("summarize_instructions", "") or "").strip(),
-            capability_boundary_header=str(thinking_prompts.get("capability_boundary_header", "") or "").strip(),
-            runtime_context_schedule_template=str(thinking_prompts.get("runtime_context_schedule", "") or "").strip(),
-            runtime_context_generic_template=str(thinking_prompts.get("runtime_context_generic", "") or "").strip(),
-            fallback_answer_prompt=str(thinking_prompts.get("fallback_answer", "") or "").strip(),
+            task_state_base_prompt=task_state_base_prompt,
+            task_state_instructions_prompt=task_state_instructions_prompt,
+            plan_instructions_prompt=(
+                self._nested_runtime_text(decision_prompts, "instructions")
+                or str(thinking_prompts.get("plan_instructions", "") or "").strip()
+            ),
+            capability_boundary_header=(
+                self._nested_runtime_text(decision_prompts, "capability_boundary_header")
+                or str(thinking_prompts.get("capability_boundary_header", "") or "").strip()
+            ),
+            fallback_answer_prompt=(
+                self._nested_runtime_text(decision_prompts, "fallback_answer")
+                or str(thinking_prompts.get("fallback_answer", "") or "").strip()
+            ),
+            transaction_resolution_base_prompt=self._nested_runtime_text(
+                resolution_prompts, "base_prompt"
+            ),
+            transaction_resolution_instructions_prompt=self._nested_runtime_text(
+                resolution_prompts, "instructions"
+            ),
         )
 
         backend_persistence = getattr(self.systems.episodic.backend, "persistence", None)
@@ -680,77 +690,7 @@ class ThreeLayerChatAgent:
         return self._get_schedule_agent()
 
     # ----------------------------------------------------------------------
-    # Public chat entry (single signature consumed by ChatServiceRuntime)
-    # ----------------------------------------------------------------------
-
-    def chat(
-        self,
-        message: str,
-        thread_id: Optional[str] = None,
-        history_messages: Optional[List[Dict[str, Any]]] = None,
-        persist_memory: Optional[bool] = None,
-        source: str = "user",
-        system_context: Optional[Dict[str, Any]] = None,
-        working_memory_prompt: Optional[str] = None,  # accepted but ignored: WM lives in thinking layer
-        conversation_id: Optional[str] = None,
-        event_emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None,
-    ) -> Dict[str, Any]:
-        if not isinstance(message, str) or not message.strip():
-            raise ValueError("message must be a non-empty string")
-
-        active_thread_id = (
-            str(thread_id or self.default_thread_id).strip() or self.default_thread_id
-        )
-        active_conversation_id = (
-            str(conversation_id or "").strip() or f"{active_thread_id}::0"
-        )
-        perception = build_perception_input(
-            message=message.strip(),
-            thread_id=active_thread_id,
-            conversation_id=active_conversation_id,
-            history_messages=history_messages,
-            source=source,
-            system_context=system_context,
-            attachments=None,
-        )
-
-        turn_result: ThinkingTurnResult = self.thinking_agent.handle(
-            perception, event_emitter=event_emitter
-        )
-        answer_text = turn_result.answer
-
-        agent_result = self._build_agent_result(turn_result, perception)
-
-        # Per-turn persistence routes through the episodic backend so the
-        # backend can track the last dialogue_id for its on_flush hook.
-        should_persist = self.persist_memory if persist_memory is None else bool(persist_memory)
-        if should_persist:
-            memory_write = self.systems.episodic.backend.persist_round(
-                thread_id=active_thread_id,
-                user_message=perception.user_message,
-                assistant_message=answer_text,
-                agent_result=agent_result if isinstance(agent_result, dict) else None,
-            )
-        else:
-            memory_write = {
-                "success": False,
-                "workflow_id": self._episodic_workflow_id(),
-                "error": "persist_memory is disabled",
-            }
-
-        return {
-            "success": True,
-            "thread_id": active_thread_id,
-            "conversation_id": active_conversation_id,
-            "question": perception.user_message,
-            "answer": answer_text,
-            "history_messages": list(perception.history_messages),
-            "agent_result": agent_result,
-            "memory_write": memory_write,
-        }
-
-    # ----------------------------------------------------------------------
-    # Flush + state introspection (used by ChatServiceRuntime)
+    # Persistence used by ChatServiceRuntime
     # ----------------------------------------------------------------------
 
     def ensure_dialogue_archive(self) -> Optional[Any]:
@@ -805,6 +745,58 @@ class ThreeLayerChatAgent:
             progress_callback=progress_callback,
         )
 
+    def persist_dialogue_payload(
+        self,
+        *,
+        dialogue_payload: Dict[str, Any],
+        thread_id: str,
+        reason: str = "chat_thread_flush",
+        source: str = "chat_api_thread_flush",
+        progress_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Persist a system-built dialogue document and index episodic memory from it."""
+        from m_agent.chat.dialogue_import import turns_to_rounds
+
+        archive = self.memory_persistence or self.ensure_dialogue_archive()
+        if archive is None:
+            return {"success": False, "error": "no dialogue archive configured"}
+
+        archive_result = archive.persist_dialogue_payload(
+            dialogue_payload=dialogue_payload,
+            progress_callback=progress_callback,
+        )
+        if not archive_result.get("success"):
+            return archive_result
+
+        meta = dialogue_payload.get("meta") if isinstance(dialogue_payload.get("meta"), dict) else {}
+        tid = str(thread_id or meta.get("thread_id") or "").strip()
+        turns = dialogue_payload.get("turns") if isinstance(dialogue_payload.get("turns"), list) else []
+        user_name = str(dialogue_payload.get("user_id") or getattr(self, "user_name", "User") or "User")
+        participants = dialogue_payload.get("participants") if isinstance(dialogue_payload.get("participants"), list) else []
+        assistant_name = str(
+            participants[1]
+            if len(participants) >= 2
+            else getattr(self, "assistant_name", "Memory Assistant") or "Memory Assistant"
+        )
+        rounds = turns_to_rounds(turns, user_speaker=user_name, assistant_speaker=assistant_name)
+
+        backend = self.systems.episodic.backend
+        if rounds and getattr(backend, "persistence", None) is not archive:
+            try:
+                rag_result = backend.persist_dialogue(
+                    thread_id=tid,
+                    rounds=rounds,
+                    reason=reason,
+                    source=source,
+                    progress_callback=progress_callback,
+                )
+                if isinstance(archive_result, dict) and isinstance(rag_result, dict):
+                    archive_result.setdefault("rag_store", rag_result)
+            except Exception:
+                logger.exception("Episodic backend persist_dialogue failed for thread_id=%s", tid)
+
+        return archive_result
+
     def on_flush(self, *, conversation_id: str, thread_id: str) -> List[Dict[str, Any]]:
         """Drain the conversation state and merge notes into the persisted dialogue.
 
@@ -827,104 +819,6 @@ class ThreeLayerChatAgent:
                 thread_id,
             )
         return drained
-
-    def snapshot_working_memory(self, conversation_id: str) -> List[Dict[str, Any]]:
-        state = self.thinking_agent.snapshot_conversation(conversation_id)
-        if state is None:
-            return []
-        return list(state.wm_entries)
-
-    # ----------------------------------------------------------------------
-    # Helpers
-    # ----------------------------------------------------------------------
-
-    def _build_agent_result(
-        self,
-        turn_result: ThinkingTurnResult,
-        perception: PerceptionInput,
-    ) -> Dict[str, Any]:
-        execution_result = turn_result.execution_result
-        tool_history: List[Dict[str, Any]] = []
-        recall_mode: Optional[str] = None
-        recall_history: List[Dict[str, Any]] = []
-        if execution_result is not None:
-            tool_history = list(execution_result.tool_history)
-            recall_state = execution_result.raw.get("recall_state") if isinstance(execution_result.raw, dict) else None
-            if isinstance(recall_state, dict):
-                recall_mode = str(recall_state.get("mode") or "") or None
-                history_payload = recall_state.get("history")
-                if isinstance(history_payload, list):
-                    recall_history = list(history_payload)
-
-        tool_names: List[str] = []
-        for item in tool_history:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("tool_name", "") or "").strip()
-            if name and name not in tool_names:
-                tool_names.append(name)
-
-        plan_summary_parts: List[str] = []
-        if execution_result is not None:
-            plan_summary_parts.append(execution_result.summary or "")
-        else:
-            if self.prompt_language == "zh":
-                plan_summary_parts.append("本轮对话由思考层直接回应，未调用执行层。")
-            else:
-                plan_summary_parts.append(
-                    "This turn was answered directly by the thinking layer; "
-                    "no execution call was made."
-                )
-        plan_summary = " ".join(part for part in plan_summary_parts if part).strip()
-
-        thinking_summary_payload: Optional[Dict[str, Any]] = None
-        if turn_result.summary is not None:
-            thinking_summary_payload = {
-                "answer_excerpt": str(turn_result.summary.answer or "")[:240],
-                "episode_note": turn_result.summary.episode_note,
-            }
-
-        execution_report: Optional[Dict[str, Any]] = None
-        if execution_result is not None:
-            execution_report = {
-                "summary_excerpt": str(execution_result.summary or "")[:240],
-                "tool_call_count": execution_result.tool_call_count,
-                "tool_names": list(execution_result.tool_names),
-                "insufficient": execution_result.insufficient,
-                "limit_reached": execution_result.limit_reached,
-                "success": execution_result.success,
-            }
-
-        return {
-            "answer": turn_result.answer,
-            "gold_answer": None,
-            "evidence": None,
-            "sub_questions": [],
-            "plan_summary": plan_summary,
-            "tool_call_count": len(tool_history),
-            "controller_tool_count": len(tool_history),
-            "controller_tool_names": tool_names,
-            "controller_tool_history": tool_history,
-            "recall_history": recall_history,
-            "recall_mode": recall_mode,
-            "thinking_decision": {
-                "mode": turn_result.decision.mode,
-                "instruction": turn_result.decision.instruction,
-                "answer_excerpt": (str(turn_result.decision.answer or "").strip()[:160] or None),
-                "capability_hint": list(turn_result.decision.capability_hint or []),
-                "reasoning": turn_result.decision.reasoning,
-                "episode_note": turn_result.decision.episode_note,
-            },
-            "thinking_summary": thinking_summary_payload,
-            "execution_report": execution_report,
-            "question_plan": {
-                "goal": "",
-                "question_type": "",
-                "constraints": {},
-            },
-            "recall_rounds": [],
-        }
-
 
 def create_three_layer_chat_agent(
     config_path: str | Path = DEFAULT_CHAT_CONFIG_PATH,

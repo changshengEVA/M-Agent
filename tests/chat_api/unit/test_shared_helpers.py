@@ -17,6 +17,7 @@ def test_with_public_result_thread_id_rewrites_nested_thread_state() -> None:
         "answer": "ok",
         "thread_state": {
             "thread_id": "alice::demo-thread",
+            "conversation_id": "alice::demo-thread::3",
             "mode": "manual",
         },
     }
@@ -25,8 +26,10 @@ def test_with_public_result_thread_id_rewrites_nested_thread_state() -> None:
 
     assert public_payload["thread_id"] == "demo-thread"
     assert public_payload["thread_state"]["thread_id"] == "demo-thread"
+    assert public_payload["thread_state"]["conversation_id"] == "demo-thread::3"
     assert original["thread_id"] == "alice::demo-thread"
     assert original["thread_state"]["thread_id"] == "alice::demo-thread"
+    assert original["thread_state"]["conversation_id"] == "alice::demo-thread::3"
 
 
 def test_normalize_memory_mode_handles_case_and_fallback() -> None:

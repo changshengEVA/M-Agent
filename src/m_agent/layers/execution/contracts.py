@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal
 
 
 @dataclass(frozen=True)
@@ -20,39 +20,9 @@ class CapabilityDescriptor:
     category: str
     short_description: str
 
-
-@dataclass
-class ExecutionRequest:
-    """A natural-language instruction the thinking layer issues to execution.
-
-    ``allowed_tool_names`` restricts which LangChain tools are mounted for this
-    invocation (Think-life: exactly one name). When set, the execution layer
-    also enforces a single tool call per invoke via controller limits.
-
-    ``capability_hint`` is legacy/telemetry; prefer ``allowed_tool_names``.
-    ``correlation_id`` is used for log/event correlation.
-    ``thread_id`` is required by some capabilities (e.g. schedule_manage) and
-    by recall thread namespacing — it does not pollute the NL instruction.
-    """
-
-    instruction: str
-    thread_id: str
-    correlation_id: str = ""
-    allowed_tool_names: Optional[List[str]] = None
-    capability_hint: Optional[List[str]] = None
-    extra: Dict[str, Any] = field(default_factory=dict)
-
-
 @dataclass
 class ExecutionResult:
-    """Structured outcome of one execution-layer invocation.
-
-    ``summary`` is the natural-language report the thinking layer reads back.
-    ``tool_history`` is the raw controller_tool_history (one entry per tool call)
-    that is later projected into working-memory entries by the WMWriter.
-    ``insufficient`` and ``limit_reached`` are explicit failure-mode signals
-    that the thinking layer can surface to the user in its summarize pass.
-    """
+    """Structured outcome of one direct Think-life capability invocation."""
 
     summary: str
     tool_history: List[Dict[str, Any]] = field(default_factory=list)
@@ -79,3 +49,23 @@ class ExecutionResult:
             if name and name not in names:
                 names.append(name)
         return names
+
+
+@dataclass
+class ParamFillResult:
+    """Outcome of Think-life param fill (structured LLM pass before direct invoke)."""
+
+    tool_name: str
+    status: Literal["ready", "needs_clarification"]
+    args: Dict[str, Any] = field(default_factory=dict)
+    missing_fields: List[str] = field(default_factory=list)
+    reason: str = ""
+    stage: str = "param_fill"
+
+    @property
+    def is_ready(self) -> bool:
+        return self.status == "ready"
+
+    @property
+    def needs_clarification(self) -> bool:
+        return self.status == "needs_clarification"

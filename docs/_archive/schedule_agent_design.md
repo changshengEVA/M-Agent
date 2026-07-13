@@ -4,40 +4,48 @@
 
 Add a schedule domain module that lets the top-level chat controller:
 
-- manage schedules through `schedule_manage`
+- create schedules through `schedule_create`
 - query schedules through `schedule_query`
+- delete schedules through `schedule_delete`
 
 Heartbeat execution is intentionally out of scope for this step, but the service API already reserves the methods needed later.
 
 ## Top-Level Tools
 
-### `schedule_manage`
+### `schedule_create`
 
-Used for:
-
-- create schedule
-- update schedule
-- cancel schedule
+Used for: create one schedule.
 
 Input shape:
 
-- `instruction: str`
+- `due_at: str` (ISO-8601)
+- `action: str` (concrete reminder/action text)
 - `timezone_name: str | None`
+
+Returns `schedule_id` and `item`.
 
 ### `schedule_query`
 
-Used for:
-
-- list schedules
-- search by keyword
-- filter by day
+Used for: list/search schedules.
 
 Input shape:
 
-- `query: str`
+- `keyword: str`
+- `start_at: str`
+- `end_at: str`
 - `timezone_name: str | None`
 - `include_completed: bool`
 - `limit: int | None`
+
+Returns `items[]` and `schedule_ids[]`.
+
+### `schedule_delete`
+
+Used for: cancel one schedule by id.
+
+Input shape:
+
+- `schedule_id: str`
 
 ## Internal Architecture
 
@@ -45,10 +53,7 @@ Input shape:
 
 Domain controller responsible for:
 
-- routing manage intents: `create | update | cancel`
-- query parsing
-- time extraction
-- target resolution for update/cancel
+- structured create/query/delete handlers
 - returning a stable result shape to the chat controller
 
 ### `ScheduleService`
@@ -57,8 +62,6 @@ Deterministic business layer responsible for:
 
 - create
 - list
-- resolve target candidates
-- update
 - cancel
 - future heartbeat-facing methods:
   - `lease_due_schedules`
@@ -78,39 +81,3 @@ Owner isolation:
 - authenticated chat threads use scoped internal thread ids such as `alice::demo-thread`
 - `ScheduleAgent` derives `owner_id=alice` from the scoped thread id and persists it explicitly
 - anonymous usage falls back to `owner_id=__anonymous__`
-
-## Data Model
-
-Each schedule item stores:
-
-- `schedule_id`
-- `owner_id`
-- `thread_id`
-- `title`
-- `status`
-- `due_at_utc`
-- `timezone_name`
-- `original_time_text`
-- `action_type`
-- `action_payload`
-- `created_at`
-- `updated_at`
-- `source_text`
-- `metadata`
-
-## Current Scope
-
-Included:
-
-- one-shot schedule creation
-- query by day / keyword
-- update by natural language target + new time
-- cancel by natural language target
-
-Not included yet:
-
-- recurring schedules
-- heartbeat execution
-- conflict optimization
-- autonomous schedule rearrangement
-

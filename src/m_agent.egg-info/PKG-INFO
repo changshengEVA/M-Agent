@@ -103,7 +103,7 @@ python -m m_agent.api.chat_api `
   --idle-flush-seconds 1800 `
   --history-max-rounds 12 `
   --schedule-beat-seconds 10 `
-  --schedule-busy-retry-seconds 5 `
+  --schedule-enqueue-retry-seconds 5 `
   --users-db config/users/users.json `
   --session-ttl-seconds 43200
 ```

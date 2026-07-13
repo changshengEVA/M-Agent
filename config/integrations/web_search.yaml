@@ -1,0 +1,25 @@
+# Web search integrations (You.com + Tavily).
+# provider: auto | youcom | tavily
+# auto picks the first provider in provider_priority that has a configured API key.
+provider: auto
+provider_priority:
+  - youcom
+  - tavily
+
+youcom:
+  base_url: https://ydc-index.io
+  search_path: /v1/search
+  contents_path: /v1/contents
+  max_results: 5
+  api_key_env: YDC_API_KEY
+
+tavily:
+  base_url: https://api.tavily.com
+  search_path: /search
+  extract_path: /extract
+  search_depth: basic
+  extract_depth: basic
+  content_format: markdown
+  max_results: 5
+  include_answer: true
+  api_key_env: TAVILY_API_KEY

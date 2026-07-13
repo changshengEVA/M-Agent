@@ -8,8 +8,8 @@ to read / write that list:
   compact WM entries (the cross-turn "what tools did I just use" log).
 * :class:`WMReader` — renders the stored entries into a system-prompt
   block that the thinking layer injects when planning / summarizing.
-* :class:`WMDisplay` — renders recent entries for the execution layer
-  (default: same tail-N projection as :class:`WMReader`).
+* :class:`WMDisplay` — optional renderer for execution-layer diagnostics or
+  custom runtimes (default chat execution does not consume WM).
 
 Protocols are intentionally narrow so future semantic-retrieval readers
 or execution-specific displays can be swapped in via YAML.
@@ -23,7 +23,13 @@ from typing import Any, Dict, List, Protocol, runtime_checkable
 class WMReader(Protocol):
     """Render the in-conversation WM entries as a string for prompt injection."""
 
-    def render(self, entries: List[Dict[str, Any]], *, language: str) -> str:
+    def render(
+        self,
+        entries: List[Dict[str, Any]],
+        *,
+        language: str,
+        task_progress: Any = None,
+    ) -> str:
         ...
 
 
@@ -45,9 +51,15 @@ class WMWriter(Protocol):
 
 @runtime_checkable
 class WMDisplay(Protocol):
-    """Render recent WM entries for the execution-layer system prompt."""
+    """Render recent WM entries for optional execution-layer prompt display."""
 
-    def render(self, entries: List[Dict[str, Any]], *, language: str) -> str:
+    def render(
+        self,
+        entries: List[Dict[str, Any]],
+        *,
+        language: str,
+        task_progress: Any = None,
+    ) -> str:
         ...
 
 

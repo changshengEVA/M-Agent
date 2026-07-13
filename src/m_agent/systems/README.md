@@ -1,12 +1,16 @@
 # `m_agent.systems`
 
-Pluggable **WM / episodic / tools** subsystems for the chat stack.
+Pluggable chat subsystems. **Index:** [docs/systems-plugin-development.md](../../../docs/systems-plugin-development.md)
 
-**Developer guide (canonical):** [docs/systems-plugin-development.md](../../../docs/systems-plugin-development.md) · [中文版](../../../docs/systems-plugin-development.zh-CN.md)
+**Subsystem guides (6 files):** [docs/systems-plugin/](../../../docs/systems-plugin/)
 
-**Config layout:** [config/systems/README.md](../../../config/systems/README.md)
+| Subsystem | 中文 | English |
+|-----------|------|---------|
+| WM | [wm.zh-CN.md](../../../docs/systems-plugin/wm.zh-CN.md) | [wm.md](../../../docs/systems-plugin/wm.md) |
+| Episodic | [episodic.zh-CN.md](../../../docs/systems-plugin/episodic.zh-CN.md) | [episodic.md](../../../docs/systems-plugin/episodic.md) |
+| Tools | [tools.zh-CN.md](../../../docs/systems-plugin/tools.zh-CN.md) | [tools.md](../../../docs/systems-plugin/tools.md) |
 
-Quick import:
+**Config:** [config/systems/README.md](../../../config/systems/README.md)
 
 ```python
 from m_agent.systems import (

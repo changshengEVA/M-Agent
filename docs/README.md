@@ -4,7 +4,8 @@
 
 ## 1. 入门与项目结构
 
-- **Pluggable subsystems (WM / episodic / tools) — developer guide**：`docs/systems-plugin-development.md` · [中文](systems-plugin-development.zh-CN.md)
+- **Pluggable subsystems — index**：`docs/systems-plugin-development.md` · [中文](systems-plugin-development.zh-CN.md)
+- **Per-subsystem plug-in guides (6 files)**：`docs/systems-plugin/`（wm / episodic / tools × zh/en）
 - **项目结构与约定**：`docs/project-structure.md`
 - **长期开发分支：迭代前同步 main、迭代后合回 main**：`docs/git-workflow-long-lived-branch-zh.md`
 - **仓库根目录 README（中文）**：`README-zh.md`

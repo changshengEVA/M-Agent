@@ -1,14 +1,16 @@
 # `m_agent.systems`
 
-对话栈的可插拔 **WM / 情景记忆 / 工具** 子系统。
+对话栈可插拔子系统。**总索引：** [docs/systems-plugin-development.zh-CN.md](../../../docs/systems-plugin-development.zh-CN.md)
 
-**开发指南（唯一详细文档）：** [docs/systems-plugin-development.zh-CN.md](../../../docs/systems-plugin-development.zh-CN.md) · [English](../../../docs/systems-plugin-development.md)
+**子系统专题（6 篇）：** [docs/systems-plugin/](../../../docs/systems-plugin/)
 
-Chat 情景记忆默认落盘：`data/memory/chat-api/<用户>/episodic/`（RAG）；对话 JSON：`.../dialogues/`。见开发指南 **§3.4.1**。
+| 子系统 | 中文 | English |
+|--------|------|---------|
+| WM | [wm.zh-CN.md](../../../docs/systems-plugin/wm.zh-CN.md) | [wm.md](../../../docs/systems-plugin/wm.md) |
+| 情景记忆 | [episodic.zh-CN.md](../../../docs/systems-plugin/episodic.zh-CN.md) | [episodic.md](../../../docs/systems-plugin/episodic.md) |
+| 工具 | [tools.zh-CN.md](../../../docs/systems-plugin/tools.zh-CN.md) | [tools.md](../../../docs/systems-plugin/tools.md) |
 
 **配置目录：** [config/systems/README.md](../../../config/systems/README.md)
-
-常用导入：
 
 ```python
 from m_agent.systems import (

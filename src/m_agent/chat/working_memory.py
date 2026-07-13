@@ -34,6 +34,9 @@ class WorkingMemoryConfig:
     max_subject_chars: int = 120
     max_email_body_excerpt_chars: int = 1500
     max_schedule_summary_chars: int = 400
+    max_web_answer_chars: int = 1000
+    max_web_result_items: int = 5
+    max_web_snippet_chars: int = 240
     record_time_tool: bool = True
     # Last N WM entries included in thread_state.working_memory.entries for UI (GET memory/state, SSE).
     ui_expose_max_entries: int = 200
@@ -61,6 +64,9 @@ def normalize_working_memory_config(raw: Any) -> WorkingMemoryConfig:
         max_subject_chars=max(16, _int("max_subject_chars", 120)),
         max_email_body_excerpt_chars=max(128, _int("max_email_body_excerpt_chars", 1500)),
         max_schedule_summary_chars=max(32, _int("max_schedule_summary_chars", 400)),
+        max_web_answer_chars=max(128, _int("max_web_answer_chars", 1000)),
+        max_web_result_items=max(1, min(20, _int("max_web_result_items", 5))),
+        max_web_snippet_chars=max(64, _int("max_web_snippet_chars", 240)),
         record_time_tool=bool(raw.get("record_time_tool", True)),
         ui_expose_max_entries=max(0, min(5000, _int("ui_expose_max_entries", 200))),
     )
@@ -69,18 +75,82 @@ def normalize_working_memory_config(raw: Any) -> WorkingMemoryConfig:
 def build_working_memory_api_payload(
     entries: List[Dict[str, Any]],
     config: WorkingMemoryConfig,
+    *,
+    task_progress: Any = None,
 ) -> Dict[str, Any]:
     """Shape embedded under thread_state.working_memory for HTTP/SSE clients."""
     cap = max(0, int(config.ui_expose_max_entries))
     tail = copy.deepcopy(entries[-cap:]) if cap else []
+    progress_payload = _task_progress_payload(task_progress)
     return {
         "enabled": config.enable,
         "stored_entries": len(entries),
         "inject_max_entries": config.inject_max_entries,
         "max_stored_entries": config.max_stored_entries,
         "ui_expose_max_entries": config.ui_expose_max_entries,
+        "task_progress": progress_payload,
         "entries": tail,
     }
+
+
+def _task_progress_payload(task_progress: Any) -> Dict[str, Any]:
+    if task_progress is None:
+        return {"goal": "", "completed": [], "remaining": []}
+    if hasattr(task_progress, "to_dict"):
+        try:
+            payload = task_progress.to_dict()
+        except Exception:
+            payload = {}
+    elif isinstance(task_progress, dict):
+        payload = task_progress
+    else:
+        payload = {
+            "goal": getattr(task_progress, "goal", ""),
+            "completed": getattr(task_progress, "completed", []),
+            "remaining": getattr(task_progress, "remaining", []),
+        }
+    completed = payload.get("completed", []) if isinstance(payload, dict) else []
+    remaining = payload.get("remaining", []) if isinstance(payload, dict) else []
+    return {
+        "goal": str(payload.get("goal", "") or "").strip() if isinstance(payload, dict) else "",
+        "completed": [
+            str(item or "").strip()
+            for item in (completed if isinstance(completed, list) else [])
+            if str(item or "").strip()
+        ],
+        "remaining": [
+            str(item or "").strip()
+            for item in (remaining if isinstance(remaining, list) else [])
+            if str(item or "").strip()
+        ],
+    }
+
+
+def _task_progress_is_empty(task_progress: Any) -> bool:
+    payload = _task_progress_payload(task_progress)
+    return not (payload["goal"] or payload["completed"] or payload["remaining"])
+
+
+def _format_task_progress(task_progress: Any, *, zh: bool) -> str:
+    payload = _task_progress_payload(task_progress)
+    lines: List[str] = ["[Task progress]"]
+    if zh:
+        lines = ["[浠诲姟杩涘害]"]
+    goal = payload["goal"] or ("(empty)" if not zh else "(绌?)")
+    lines.append(f"goal: {goal}")
+    completed = payload["completed"]
+    remaining = payload["remaining"]
+    lines.append("completed:")
+    if completed:
+        lines.extend(f"- {item}" for item in completed)
+    else:
+        lines.append("- (none)" if not zh else "- (鏃?)")
+    lines.append("remaining:")
+    if remaining:
+        lines.extend(f"- {item}" for item in remaining)
+    else:
+        lines.append("- (none)" if not zh else "- (鏃?)")
+    return "\n".join(lines)
 
 
 def _safe_dict(value: Any) -> Dict[str, Any]:
@@ -230,9 +300,17 @@ def _project_schedule(tool_name: str, params: Dict[str, Any], result: Dict[str, 
     schedule_id = _schedule_primary_id(result)
     extra = ""
     if tool_name == "schedule_query":
-        extra = _truncate(str(params.get("query", "") or ""), 160)
-    elif tool_name == "schedule_manage":
-        extra = _truncate(str(params.get("instruction", "") or ""), 200)
+        kw = str(params.get("keyword", "") or "")
+        start = str(params.get("start_at", "") or "")
+        end = str(params.get("end_at", "") or "")
+        extra = _truncate(f"{kw}|{start}|{end}".strip("|"), 200)
+    elif tool_name == "schedule_create":
+        extra = _truncate(
+            f"{params.get('due_at', '')} {params.get('action', '')}".strip(),
+            200,
+        )
+    elif tool_name == "schedule_delete":
+        extra = _truncate(str(params.get("schedule_id", "") or ""), 80)
     return {
         "kind": "schedule",
         "tool": tool_name,
@@ -252,6 +330,58 @@ def _project_time(params: Dict[str, Any], result: Dict[str, Any], config: Workin
     local_dt = str(result.get("local_datetime", "") or "").strip()
     summary = f"{tz} {local_dt}".strip() if tz or local_dt else json.dumps(result, ensure_ascii=False)[:300]
     return {"kind": "time", "tool": "get_current_time", "summary": _truncate(summary, 240)}
+
+
+def _project_web_search(params: Dict[str, Any], result: Dict[str, Any], config: WorkingMemoryConfig) -> Dict[str, Any]:
+    items_out: List[Dict[str, Any]] = []
+    results = result.get("results")
+    if isinstance(results, list):
+        for row in results[: config.max_web_result_items]:
+            if not isinstance(row, dict):
+                continue
+            item: Dict[str, Any] = {
+                "title": _truncate(str(row.get("title", "") or ""), config.max_subject_chars),
+                "url": _truncate(str(row.get("url", "") or ""), 300),
+                "snippet": _truncate(str(row.get("snippet", "") or ""), config.max_web_snippet_chars),
+            }
+            if row.get("content_chars") is not None:
+                try:
+                    item["content_chars"] = int(row.get("content_chars") or 0)
+                except (TypeError, ValueError):
+                    item["content_chars"] = 0
+            items_out.append(item)
+
+    mode = str(result.get("mode", "") or "").strip()
+    if not mode:
+        mode = "extract" if str(result.get("url", "") or params.get("url", "") or "").strip() else "search"
+
+    try:
+        result_count = int(result.get("result_count", len(items_out)) or 0)
+    except (TypeError, ValueError):
+        result_count = len(items_out)
+
+    content_chars = None
+    if result.get("content_chars") is not None:
+        try:
+            content_chars = int(result.get("content_chars") or 0)
+        except (TypeError, ValueError):
+            content_chars = None
+
+    return {
+        "kind": "web_search",
+        "tool": "web_search",
+        "mode": mode,
+        "provider": str(result.get("provider", "") or params.get("provider", "") or "").strip(),
+        "query": _truncate(str(result.get("query", "") or params.get("query", "") or ""), config.max_question_chars),
+        "url": _truncate(str(result.get("url", "") or params.get("url", "") or ""), 300),
+        "answer": _truncate(str(result.get("answer", "") or result.get("message", "") or ""), config.max_web_answer_chars),
+        "result_count": result_count,
+        "content_chars": content_chars,
+        "insufficient": bool(result.get("insufficient", False)),
+        "needs_clarification": bool(result.get("needs_clarification", False)),
+        "auth_required": bool(result.get("auth_required", False)),
+        "items": items_out,
+    }
 
 
 def _project_fallback(tool_name: str, result: Dict[str, Any]) -> Dict[str, Any]:
@@ -287,14 +417,14 @@ def project_tool_call_to_entry(
         return _project_email_read(params, result, config)
     if tool_name == "email_send":
         return _project_email_send(params, result, config)
-    if tool_name == "schedule_manage":
-        return _project_schedule(tool_name, params, result, config)
-    if tool_name == "schedule_query":
+    if tool_name in {"schedule_create", "schedule_query", "schedule_delete"}:
         return _project_schedule(tool_name, params, result, config)
     if tool_name == "get_current_time":
         if not config.record_time_tool:
             return None
         return _project_time(params, result, config)
+    if tool_name == "web_search":
+        return _project_web_search(params, result, config)
 
     return _project_fallback(tool_name, result)
 
@@ -374,6 +504,49 @@ def _format_entry_line(index: int, entry: Dict[str, Any], *, zh: bool) -> str:
         return f"{index}. schedule[{str(entry.get('tool', ''))}] action={act} id={sid} cnt={cnt} q={qoi} | {sm}"
     if kind == "time":
         return f"{index}. time: {str(entry.get('summary', '') or '')}"
+    if kind == "web_search":
+        mode = str(entry.get("mode", "") or "")
+        provider = str(entry.get("provider", "") or "")
+        query = str(entry.get("query", "") or "")
+        url = str(entry.get("url", "") or "")
+        answer = str(entry.get("answer", "") or "")
+        cnt = entry.get("result_count", "")
+        content_chars = entry.get("content_chars")
+        flags = []
+        if entry.get("auth_required"):
+            flags.append("auth_required")
+        if entry.get("needs_clarification"):
+            flags.append("needs_clarification")
+        if entry.get("insufficient"):
+            flags.append("insufficient")
+        facts = [f"mode={mode}", f"provider={provider}", f"cnt={cnt}"]
+        if query:
+            facts.append(f"q={query}")
+        if url:
+            facts.append(f"url={url}")
+        if content_chars is not None:
+            facts.append(f"content_chars={content_chars}")
+        if flags:
+            facts.append(f"flags={','.join(flags)}")
+
+        parts = []
+        for it in entry.get("items", []) or []:
+            if not isinstance(it, dict):
+                continue
+            title = str(it.get("title", "") or "")
+            hit_url = str(it.get("url", "") or "")
+            snippet = str(it.get("snippet", "") or "")
+            label = title or hit_url or "result"
+            hit = f"title={label}"
+            if hit_url:
+                hit += f" url={hit_url}"
+            if snippet:
+                hit += f" snippet={snippet}"
+            if it.get("content_chars") is not None:
+                hit += f" content_chars={it.get('content_chars')}"
+            parts.append(hit)
+        joined = " ; ".join(parts) if parts else "(no sources)"
+        return f"{index}. web_search {' '.join(facts)} | answer:{answer} | sources:{joined}"
     if kind == "limit":
         return f"{index}. LIMIT tool={str(entry.get('tool', '') or '')} scope={str(entry.get('limit_scope', '') or '')} | {str(entry.get('summary', '') or '')}"
     return f"{index}. {str(entry.get('tool', '') or 'tool')}: {str(entry.get('summary', '') or '')}"
@@ -384,12 +557,16 @@ def format_working_memory_prompt(
     config: WorkingMemoryConfig,
     *,
     prompt_language: str = "zh",
+    task_progress: Any = None,
 ) -> str:
-    if not config.enable or not entries:
+    if not config.enable:
         return ""
     zh = str(prompt_language or "zh").strip().lower().startswith("zh")
+    has_progress = not _task_progress_is_empty(task_progress)
+    if not entries and not has_progress:
+        return ""
     tail = entries[-config.inject_max_entries :]
-    lines = [_format_entry_line(i + 1, e, zh=zh) for i, e in enumerate(tail)]
+    evidence_header = "[Tool evidence]"
     if zh:
         header = "[工作记忆]"
         guide = (
@@ -399,7 +576,13 @@ def format_working_memory_prompt(
     else:
         header = "[Working memory]"
         guide = (
-            "Concise summaries of recent top-level tool calls for reasoning only; "
+            "Task progress is maintained by the thinking layer; tool evidence is recent tool output for reasoning only. "
             "do not repeat verbatim to the user; if this conflicts with the dialogue, prefer the dialogue."
         )
-    return "\n".join([header, guide, *lines]).strip()
+    sections = [header, guide]
+    if has_progress:
+        sections.append(_format_task_progress(task_progress, zh=zh))
+    if tail:
+        lines = [_format_entry_line(i + 1, e, zh=zh) for i, e in enumerate(tail)]
+        sections.append("\n".join([evidence_header, *lines]))
+    return "\n".join(sections).strip()

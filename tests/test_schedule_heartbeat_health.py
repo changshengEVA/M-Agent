@@ -62,4 +62,4 @@ def test_schedule_heartbeat_next_due_falls_back_to_last_started_and_clears_error
 
     assert result["beat_finished_at"]
     assert health["last_error"] is None
-    assert health["next_beat_due_at"]
+    assert health["scheduler"]["next_beat_due_at"]

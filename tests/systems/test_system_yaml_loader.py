@@ -54,15 +54,10 @@ def test_episodic_yaml_parses_and_dotted_paths_import(yaml_name: str) -> None:
     assert path.exists(), f"missing episodic yaml: {path}"
     payload = load_system_yaml(path, expected_kind="episodic")
 
-    # Recorder dotted path must resolve to a callable.
-    recorder_spec = payload.get("recorder")
-    if isinstance(recorder_spec, dict):
-        recorder_path = recorder_spec.get("path")
-    else:
-        recorder_path = recorder_spec
-    assert isinstance(recorder_path, str) and recorder_path.strip()
-    target = resolve_dotted_path(recorder_path)
-    assert callable(target)
+    # Shipped episodic YAML must not configure recorder (system-internal).
+    assert payload.get("recorder") is None, (
+        "rag_default.yaml should omit recorder:; use DefaultEpisodeRecorder via loader default"
+    )
 
     # Backend dotted path must resolve to a callable. We don't construct
     # the backend here because it would try to build a MemoryAgent.
@@ -74,9 +69,12 @@ def test_episodic_yaml_parses_and_dotted_paths_import(yaml_name: str) -> None:
 
 
 def test_episodic_rag_default_yaml_loads() -> None:
+    from m_agent.systems.episodic.default.recorder import DefaultEpisodeRecorder
+
     path = CONFIG_SYSTEMS_DIR / "episodic" / "rag_default.yaml"
     system = load_episodic_system(path)
     assert isinstance(system, EpisodicMemorySystem)
+    assert isinstance(system.recorder, DefaultEpisodeRecorder)
     assert system.query_module.enabled is True
 
 

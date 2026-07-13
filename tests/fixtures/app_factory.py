@@ -14,12 +14,10 @@ def build_test_runtime(
     *,
     config_path: Path | None = None,
     default_thread_id: str = "demo-thread",
-    runtime_profile: str = "legacy",
 ) -> FakeRuntime:
     return FakeRuntime(
         config_path=config_path or Path("tests/configs/chat_api.test.yaml"),
         default_thread_id=default_thread_id,
-        runtime_profile=runtime_profile,
     )
 
 
@@ -33,7 +31,7 @@ def build_test_app(
     service_runtime: FakeRuntime | None = None,
     user_access: FakeUserAccessService | None = None,
     schedule_beat_seconds: int = 60,
-    schedule_busy_retry_seconds: int = 5,
+    schedule_enqueue_retry_seconds: int = 5,
 ) -> FastAPI:
     runtime = service_runtime or build_test_runtime()
     active_user_access = user_access
@@ -45,5 +43,5 @@ def build_test_app(
         service_runtime=runtime,
         user_access=active_user_access,
         schedule_beat_seconds=schedule_beat_seconds,
-        schedule_busy_retry_seconds=schedule_busy_retry_seconds,
+        schedule_enqueue_retry_seconds=schedule_enqueue_retry_seconds,
     )

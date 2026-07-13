@@ -22,7 +22,7 @@ class TransactionTransitionError(ValueError):
 class TransactionRegistry:
     def __init__(self) -> None:
         self._by_id: Dict[str, TransactionRecord] = {}
-        self._active_by_thread: Dict[str, str] = {}
+        self._active_by_conversation: Dict[str, str] = {}
         self._lock = RLock()
 
     def create(
@@ -30,16 +30,19 @@ class TransactionRegistry:
         *,
         thread_id: str,
         kind: TransactionKind,
+        conversation_id: Optional[str] = None,
         priority: int = 50,
         correlation: Optional[TransactionCorrelation] = None,
     ) -> TransactionRecord:
         tid = str(thread_id or "").strip()
+        cid = str(conversation_id or "").strip() or f"{tid}::0"
         if not tid:
             raise ValueError("thread_id is required")
         now = _now_iso()
         record = TransactionRecord(
             transaction_id=f"txn_{uuid.uuid4().hex}",
             thread_id=tid,
+            conversation_id=cid,
             status=TransactionStatus.PENDING,
             priority=int(priority),
             kind=kind,
@@ -60,10 +63,15 @@ class TransactionRegistry:
         with self._lock:
             return [t for t in self._by_id.values() if t.thread_id == tid]
 
-    def get_active_user_transaction(self, thread_id: str) -> Optional[TransactionRecord]:
-        tid = str(thread_id or "").strip()
+    def list_for_conversation(self, conversation_id: str) -> List[TransactionRecord]:
+        cid = str(conversation_id or "").strip()
         with self._lock:
-            active_id = self._active_by_thread.get(tid)
+            return [t for t in self._by_id.values() if t.conversation_id == cid]
+
+    def get_active_user_transaction(self, conversation_id: str) -> Optional[TransactionRecord]:
+        cid = str(conversation_id or "").strip()
+        with self._lock:
+            active_id = self._active_by_conversation.get(cid)
             if not active_id:
                 return None
             rec = self._by_id.get(active_id)
@@ -73,17 +81,17 @@ class TransactionRegistry:
                 return None
             return rec
 
-    def set_active_user_transaction(self, thread_id: str, transaction_id: str) -> None:
+    def set_active_user_transaction(self, conversation_id: str, transaction_id: str) -> None:
         with self._lock:
-            self._active_by_thread[str(thread_id).strip()] = str(transaction_id).strip()
+            self._active_by_conversation[str(conversation_id).strip()] = str(transaction_id).strip()
 
-    def clear_active_user_transaction(self, thread_id: str) -> None:
+    def clear_active_user_transaction(self, conversation_id: str) -> None:
         with self._lock:
-            self._active_by_thread.pop(str(thread_id).strip(), None)
+            self._active_by_conversation.pop(str(conversation_id).strip(), None)
 
-    def complete_active_user_transaction(self, thread_id: str) -> Optional[str]:
+    def complete_active_user_transaction(self, conversation_id: str) -> Optional[str]:
         """End the flush-bounded user task segment (clears active pointer)."""
-        active = self.get_active_user_transaction(thread_id)
+        active = self.get_active_user_transaction(conversation_id)
         if active is None:
             return None
         tx_id = active.transaction_id
@@ -109,7 +117,7 @@ class TransactionRegistry:
             if new_status.is_terminal():
                 record.terminal_at = record.updated_at
                 if record.kind == TransactionKind.USER_TASK:
-                    self._active_by_thread.pop(record.thread_id, None)
+                    self._active_by_conversation.pop(record.conversation_id, None)
             return record
 
     def count_all(self) -> int:

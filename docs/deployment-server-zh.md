@@ -296,6 +296,41 @@ oauth:
 
 ---
 
+## 7.5 Web Search（You.com / Tavily）
+
+联网检索工具 `web_search` 支持两个后端，默认 **auto** 按优先级自动选择第一个已配置密钥的提供商（见 [`config/integrations/web_search.yaml`](config/integrations/web_search.yaml)）。
+
+| 提供商 | 环境变量 | 密钥前缀 |
+|--------|----------|----------|
+| You.com | `YDC_API_KEY` | `ydc-...` |
+| Tavily | `TAVILY_API_KEY` | `tvly-...` |
+
+### 7.5.1 配置
+
+1. 在对应平台创建 API Key（[you.com/platform](https://you.com/platform/api-keys) 或 [tavily.com](https://tavily.com)）。
+2. 写入项目根目录 `.env`（可只配其中一个，也可两个都配）：
+
+```dotenv
+YDC_API_KEY=ydc-你的You.com密钥
+TAVILY_API_KEY=tvly-你的Tavily密钥
+```
+
+3. 若误把 You.com 密钥写在 `TAVILY_API_KEY` 中，auto 模式仍会识别并使用 You.com；建议改放到 `YDC_API_KEY`。
+4. 可选：在 `defaults.web_search.provider` 中指定 `auto` / `youcom` / `tavily`。
+
+### 7.5.2 网络
+
+服务器需能 **出站 HTTPS** 访问：
+
+- `https://ydc-index.io`（You.com）
+- `https://api.tavily.com`（Tavily）
+
+### 7.5.3 验证
+
+重启 Chat API 后提问需要实时信息的问题。工具返回中会包含 `provider` 与 `provider_status.available` 字段。
+
+---
+
 ## 8. 启动后端
 
 手动启动：
@@ -526,7 +561,9 @@ enabled_tools:
 如果确认日程稳定，再加：
 
 ```yaml
-  - schedule_manage
+  - schedule_create
+  - schedule_query
+  - schedule_delete
   - schedule_query
 ```
 
