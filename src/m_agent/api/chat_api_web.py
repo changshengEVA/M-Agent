@@ -259,7 +259,7 @@ def create_app(
     service_runtime: ChatServiceRuntime,
     user_access: Optional[UserAccessService] = None,
     schedule_beat_seconds: int = 10,
-    schedule_busy_retry_seconds: int = 5,
+    schedule_enqueue_retry_seconds: int = 5,
 ) -> FastAPI:
     wire_runtime_event_sink(service_runtime)
     image_store = ChatImageStore(
@@ -270,7 +270,7 @@ def create_app(
         service_runtime=service_runtime,
         user_access=user_access,
         beat_interval_seconds=max(1, int(schedule_beat_seconds or 10)),
-        busy_retry_seconds=max(1, int(schedule_busy_retry_seconds or 5)),
+        enqueue_retry_seconds=max(1, int(schedule_enqueue_retry_seconds or 5)),
         thread_event_sink=_THREAD_EVENTS.append_event,
     )
 
@@ -362,17 +362,10 @@ def create_app(
         thread_id: str,
         *,
         runtime_thread_id: Optional[str] = None,
-        active_runtime: Optional[ChatServiceRuntime] = None,
     ) -> Dict[str, Any]:
         payload = dict(schedule_heartbeat.health_payload())
         internal_tid = str(runtime_thread_id or thread_id or "").strip()
-        profile = "legacy"
-        if active_runtime is not None:
-            profile = active_runtime.runtime_profile
-        thread_runtime = THREAD_RUNTIME_STATUS.snapshot(
-            internal_tid,
-            default_profile=profile,
-        ).to_dict()
+        thread_runtime = THREAD_RUNTIME_STATUS.snapshot(internal_tid).to_dict()
         return {
             "thread_id": thread_id,
             "scope": "owner",
@@ -849,16 +842,8 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        if active_runtime.runtime_profile != "think_life":
-            return JSONResponse(
-                status_code=404,
-                content={"error": "profile_not_supported", "runtime_profile": active_runtime.runtime_profile},
-            )
         runtime_thread_id = _runtime_thread_id(user, thread_id)
-        try:
-            payload = active_runtime.get_think_life_transactions(runtime_thread_id)
-        except RuntimeError:
-            return JSONResponse(status_code=404, content={"error": "profile_not_supported"})
+        payload = active_runtime.get_think_life_transactions(runtime_thread_id)
         payload["thread_id"] = thread_id
         return JSONResponse(content=payload)
 
@@ -873,24 +858,13 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        if active_runtime.runtime_profile != "think_life":
-            return JSONResponse(
-                status_code=404,
-                content={"error": "profile_not_supported", "runtime_profile": active_runtime.runtime_profile},
-            )
         runtime_thread_id = _runtime_thread_id(user, thread_id)
-        try:
-            payload = active_runtime.get_scene(
-                runtime_thread_id,
-                limit=limit,
-                before_seq=before_seq,
-                since_flush=since_flush,
-            )
-        except RuntimeError:
-            return JSONResponse(
-                status_code=404,
-                content={"error": "profile_not_supported"},
-            )
+        payload = active_runtime.get_scene(
+            runtime_thread_id,
+            limit=limit,
+            before_seq=before_seq,
+            since_flush=since_flush,
+        )
         payload["thread_id"] = thread_id
         return JSONResponse(content=payload)
 
@@ -903,25 +877,17 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        if active_runtime.runtime_profile != "think_life":
-            return JSONResponse(
-                status_code=409,
-                content={"error": "profile_not_supported", "runtime_profile": active_runtime.runtime_profile},
-            )
         runtime_thread_id = _runtime_thread_id(user, thread_id)
         attachments = list(body.attachments or [])
         message = str(body.text or "").strip()
         if not message and not _has_effective_attachment(attachments):
             return JSONResponse(status_code=400, content={"error": "text and attachments are both empty"})
         user_turn = _build_user_turn_payload(message=message, attachments=attachments)
-        try:
-            result = active_runtime.submit_stimulus(
-                thread_id=runtime_thread_id,
-                message=message,
-                user_turn=user_turn,
-            )
-        except RuntimeError:
-            return JSONResponse(status_code=409, content={"error": "profile_not_supported"})
+        result = active_runtime.submit_stimulus(
+            thread_id=runtime_thread_id,
+            message=message,
+            user_turn=user_turn,
+        )
         result["thread_id"] = thread_id
         return JSONResponse(status_code=202, content=result)
 
@@ -1044,7 +1010,6 @@ def create_app(
             content=_serialize_schedule_heartbeat(
                 thread_id,
                 runtime_thread_id=runtime_thread_id,
-                active_runtime=active_runtime,
             )
         )
 
@@ -1259,12 +1224,12 @@ def create_handler(
     service_runtime: ChatServiceRuntime,
     user_access: Optional[UserAccessService] = None,
     schedule_beat_seconds: int = 10,
-    schedule_busy_retry_seconds: int = 5,
+    schedule_enqueue_retry_seconds: int = 5,
 ) -> FastAPI:
     """Backward-compatible alias for the old stdlib server entrypoint."""
     return create_app(
         service_runtime=service_runtime,
         user_access=user_access,
         schedule_beat_seconds=schedule_beat_seconds,
-        schedule_busy_retry_seconds=schedule_busy_retry_seconds,
+        schedule_enqueue_retry_seconds=schedule_enqueue_retry_seconds,
     )

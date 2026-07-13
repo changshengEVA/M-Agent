@@ -4,7 +4,7 @@
 
 ## Role
 
-Project **in-process** tool-call history into text for thinking and execution layers. WM is **not persisted across restarts** and has **no recall tools** — use [episodic.md](./episodic.md) for cross-turn retrieval.
+Project **in-process** capability-call history into text for Think-life planning. WM is **not persisted across restarts** and has **no recall tools** — use [episodic.md](./episodic.md) for persisted retrieval.
 
 ## Mount & swap
 
@@ -23,23 +23,25 @@ systems:
 
 | YAML field | Protocol | Default | Role |
 |------------|----------|---------|------|
-| `writer` | `WMWriter` | `DefaultWMWriter` | Append `tool_history` to `wm_entries` after execution |
-| `reader` | `WMReader` | `DefaultWMReader` | WM text → **thinking** plan / summarize |
-| `display` | `WMDisplay` | `DefaultWMDisplay` | WM text → **execution** system prompt |
+| `writer` | `WMWriter` | `DefaultWMWriter` | Append `tool_history` to the active transaction's `wm_entries` after a capability call |
+| `reader` | `WMReader` | `DefaultWMReader` | Render `wm_entries` for the next **Think-life planning** turn |
+| `display` | `WMDisplay` | `DefaultWMDisplay` | Optional renderer for integrations; the Think-life execution path does not inject a WM system prompt |
 | `config` | `WorkingMemoryConfig` | see default.yaml | Not a `path`; injected into writer/reader/display |
 
 ## LLM-facing surfaces
 
 | Surface | Layer |
 |---------|-------|
-| WM text block | Thinking (`WMReader.render`) |
-| WM text block | Execution (`WMDisplay.render`) |
+| WM text block | Think-life planning (`WMReader.render`) |
+| Capability result | Scheduler writes `tool_history` through `WMWriter.write` |
+| `WMDisplay` | Available to custom integrations; not consumed by Think-life capability invocation |
 | No tools | LLM only reads rendered prompt text |
 
 ## Implementation
 
-- `WMWriter.write` — mutate `entries`, respect `max_stored_entries`
-- `WMReader.render` / `WMDisplay.render` — prompt injection
+- `WMWriter.write` — mutate the active transaction's entries and respect `max_stored_entries`
+- `WMReader.render` — inject the transaction's recent entries into planning
+- `WMDisplay.render` — provide an optional text rendering without changing Think-life execution
 
 **Do not** call episodic backends or domain agents from WM code.
 

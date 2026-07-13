@@ -41,7 +41,7 @@ def build_tool_input(
     instruction: str = "",
     user_reply_text: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Legacy hard map from think-layer instruction text to a tool invoke payload."""
+    """Map skip-param instructions deterministically to one tool payload."""
     name = str(tool_name or "").strip()
     text = str(instruction or "").strip()
 

@@ -12,8 +12,8 @@ reader:
 display:
   path: m_agent.systems.wm.default.defaults:DefaultWMDisplay
 
-# Working-memory rendering / projection parameters. Same shape as the
-# legacy `working_memory:` block in chat_controller.yaml.
+# Working-memory rendering / projection parameters shared by the writer,
+# reader, and optional display integration.
 config:
   enable: true
   inject_max_entries: 20

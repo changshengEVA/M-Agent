@@ -213,6 +213,39 @@ def test_scene_flush_watermark_persists_across_restart(tmp_path: Path) -> None:
     assert store2.entries_since_flush(tid) == []
 
 
+def test_scene_conversation_sequence_persists_across_restart(tmp_path: Path) -> None:
+    tid = "alice::persistent-thread"
+    store = SceneLogStore(persist_dir=tmp_path, persist_enabled=True)
+    store.persist_conversation_seq(tid, 4)
+
+    store2 = SceneLogStore(persist_dir=tmp_path, persist_enabled=True)
+    assert store2.load_conversation_seq(tid) == 4
+
+
+def test_scene_conversation_sequence_is_inferred_for_existing_files(tmp_path: Path) -> None:
+    tid = "alice::existing-thread"
+    conversation_id = f"{tid}::2"
+    store = SceneLogStore(persist_dir=tmp_path, persist_enabled=True)
+    store.append(
+        conversation_id,
+        SceneEntry(
+            seq=0,
+            occurred_at="2026-01-01T00:00:01Z",
+            entry_type=SceneEntryType.UTTERANCE,
+            actor=SceneActor.USER,
+            text="still pending",
+        ),
+    )
+    store.persist_conversation_seq(tid, 2)
+
+    store2 = SceneLogStore(persist_dir=tmp_path, persist_enabled=True)
+    assert store2.load_conversation_seq(tid) == 2
+
+    store2.mark_flushed(conversation_id, through_seq=1)
+    store3 = SceneLogStore(persist_dir=tmp_path, persist_enabled=True)
+    assert store3.load_conversation_seq(tid) == 3
+
+
 def test_scene_load_normalizes_duplicate_seq_on_disk(tmp_path: Path) -> None:
     tid = "thread-dup-seq"
     stem = scene_persist_file_stem(tid)

@@ -12,14 +12,7 @@
 
 使用 **`python -m m_agent.api.chat_api`** 以 **HTTP / SSE 长驻服务** 方式运行智能体：为每条用户消息创建 run、订阅事件流、读取最终结果，服务端维护 **thread 级** 会话状态。
 
-支持两种 **运行时配置**（见 [`config/agents/chat/chat_controller.yaml`](config/agents/chat/chat_controller.yaml) 中的 `runtime.profile`）：
-
-| 配置 | 说明 |
-| --- | --- |
-| **`legacy`**（默认） | 传统三轮对话栈：感知 → 思考 → 执行 → 思考层 **总结** 后作为 API 的 `answer` 返回。 |
-| **`think_life`** | 产品运行时：刺激经 **感知总线** 入队，**按事务隔离的 WM**、按时间序追加的 **Scene log**，用户可见回复仅通过 **`reply_to_user`** 工具发出；日程心跳与执行反馈已接入。规格见 **[docs/think-life-runtime-spec.zh-CN.md](docs/think-life-runtime-spec.zh-CN.md)**。 |
-
-启用 Think-life：在 YAML 中设置 `runtime.profile: think_life`，或启动时加 `--runtime-profile think_life`（命令行覆盖 YAML）。
+**Think-life 是唯一的产品运行时。** 刺激经 **感知总线** 入队，WM 按事务隔离，**Scene log** 按时间序记录完整时间线，用户可见回复仅通过 **`reply_to_user`** 工具发出；日程心跳与执行反馈也走同一运行时路径。规格见 **[docs/think-life-runtime-spec.zh-CN.md](docs/think-life-runtime-spec.zh-CN.md)**。
 
 ### 应用端
 
@@ -98,9 +91,9 @@ TAVILY_API_KEY=你的_Tavily_密钥
 
 ## 用法一：Chat API 后台常态启动（FastAPI）
 
-仓库提供基于 **启动时固定配置 + 线程级会话状态** 的 HTTP / SSE 对话服务（非「每次请求携带完整 config」模式）。
+仓库提供基于 **启动时固定配置 + 线程级会话状态** 的 HTTP / SSE 对话服务（非「每次请求携带完整 config」模式）。服务始终运行 Think-life。
 
-### Legacy 配置（默认）
+### 启动服务
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -108,37 +101,14 @@ python -m m_agent.api.chat_api `
   --host 127.0.0.1 `
   --port 8777 `
   --config config/agents/chat/chat_controller.yaml `
-  --runtime-profile legacy `
   --idle-flush-seconds 1800 `
   --history-max-rounds 12 `
   --schedule-beat-seconds 10 `
-  --schedule-busy-retry-seconds 5 `
   --users-db config/users/users.json `
   --session-ttl-seconds 43200
 ```
 
-（若 YAML 中已是 `runtime.profile: legacy`，可省略 `--runtime-profile legacy`。）
-
-### Think-life 配置
-
-```powershell
-$env:PYTHONPATH = "src"
-python -m m_agent.api.chat_api `
-  --host 127.0.0.1 `
-  --port 8777 `
-  --config config/agents/chat/chat_controller.yaml `
-  --runtime-profile think_life `
-  --idle-flush-seconds 18000 `
-  --history-max-rounds 12 `
-  --schedule-beat-seconds 10 `
-  --schedule-busy-retry-seconds 5 `
-  --users-db config/users/users.json `
-  --session-ttl-seconds 43200
-```
-
-也可在 `chat_controller.yaml` 里写 `runtime.profile: think_life`，则无需传 `--runtime-profile`。
-
-Think-life 参数（每事务最大委托次数、Scene 上下文条数、是否抢占等）在同文件的 `runtime.think_life` 下配置。
+Think-life 参数（每事务最大委托次数、Scene 上下文条数、是否抢占等）在 `chat_controller.yaml` 的 `runtime.think_life` 下配置。
 
 ### 启动后
 
@@ -154,8 +124,7 @@ export PYTHONPATH=src
 python -m m_agent.api.chat_api \
   --host 127.0.0.1 \
   --port 8777 \
-  --config config/agents/chat/chat_controller.yaml \
-  --runtime-profile think_life
+  --config config/agents/chat/chat_controller.yaml
 ```
 
 
@@ -167,8 +136,8 @@ Chat 栈默认使用 **RAG 情景后端**（`SimpleRagEpisodicBackend`），配�
 - **可插拔专题：** [docs/systems-plugin/](docs/systems-plugin/)（WM / 情景记忆 / 工具，各中英一篇）
 - **RAG 索引**：`data/memory/chat-api/<用户>/episodic/`（`chunks.jsonl`、`embeddings.npy`）
 - **对话归档**（flush）：`data/memory/chat-api/<用户>/dialogues/`
-- **Scene log**（Think-life）：`data/memory/chat-api/<用户>/scene/<thread_id>.jsonl` — 跨事务、按时间序的「讲了什么 / 做了什么」记录
-- **与 WM 区别**：WM 按 **事务** 隔离（Think-life）或按 conversation 段（legacy），为进程内热上下文；episodic / Scene 可跨轮检索或按时间轴阅读
+- **Scene log**：`data/memory/chat-api/<用户>/scene/<thread_id>.jsonl` — 跨事务、按时间序的「讲了什么 / 做了什么」记录
+- **与 WM 区别**：WM 按 **事务** 隔离，为进程内热上下文；episodic / Scene 可跨轮检索或按时间轴阅读
 
 开发细节见 **[docs/systems-plugin/episodic.zh-CN.md](docs/systems-plugin/episodic.zh-CN.md)**（持久化路径）；`GET .../memory/state` 返回 `thread_state.episodic_persistence`。
 

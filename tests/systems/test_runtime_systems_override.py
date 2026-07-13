@@ -38,11 +38,22 @@ class _FakeAgent:
         self.systems = systems
         self.received_kwargs: dict | None = None
 
-    def chat(self, **kwargs):  # pragma: no cover — not exercised here
-        return {"success": True, "answer": "", "agent_result": {}}
 
-    def snapshot_working_memory(self, conversation_id: str):  # noqa: ARG002
-        return []
+class _FakeThinkLifeRuntime:
+    """Minimal runtime shell needed while testing agent-factory wiring."""
+
+    def __init__(self, agent, *, owner_id: str) -> None:
+        self.agent = agent
+        self.owner_id = owner_id
+
+    def set_thread_event_emitter(self, emitter) -> None:
+        self.emitter = emitter
+
+    def set_history_provider(self, provider) -> None:
+        self.history_provider = provider
+
+    def set_schedule_lifecycle(self, lifecycle) -> None:
+        self.schedule_lifecycle = lifecycle
 
 
 def test_runtime_rejects_non_systems_bundle(tmp_path: Path) -> None:
@@ -71,7 +82,10 @@ def test_runtime_forwards_systems_override_to_factory(tmp_path: Path) -> None:
         )
     )
 
-    with patch("m_agent.api.chat_api_runtime.create_chat_agent", side_effect=_factory):
+    with (
+        patch("m_agent.api.chat_api_runtime.create_chat_agent", side_effect=_factory),
+        patch("m_agent.api.chat_api_runtime.ThinkLifeRuntime", _FakeThinkLifeRuntime),
+    ):
         rt = ChatServiceRuntime(
             config_path=tmp_path / "irrelevant.yaml",
             idle_flush_seconds=0,
@@ -95,7 +109,10 @@ def test_runtime_default_does_not_force_systems_override(tmp_path: Path) -> None
         captured.update(kwargs)
         return _FakeAgent()
 
-    with patch("m_agent.api.chat_api_runtime.create_chat_agent", side_effect=_factory):
+    with (
+        patch("m_agent.api.chat_api_runtime.create_chat_agent", side_effect=_factory),
+        patch("m_agent.api.chat_api_runtime.ThinkLifeRuntime", _FakeThinkLifeRuntime),
+    ):
         rt = ChatServiceRuntime(
             config_path=tmp_path / "irrelevant.yaml",
             idle_flush_seconds=0,

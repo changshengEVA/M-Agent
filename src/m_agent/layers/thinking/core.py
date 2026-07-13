@@ -1,47 +1,19 @@
-"""ThinkingAgent: persona-owning planning + summarizing layer (Form A).
+"""Persona-owning, plan-only thinking layer for the Think-life runtime.
 
-Flow per turn::
-
-    PerceptionInput
-        │
-        ▼  plan_call (LLM #1, structured -> ThinkingDecision)
-        │
-        ├─── mode == "answer_directly" ──► return answer  (1 LLM call total)
-        │
-        └─── mode == "execute"
-                │
-                ▼ ExecutionAgent.execute(NL instruction)
-                │
-                ▼ WMWriter.write(wm_entries, execution.tool_history)
-                │
-                ▼ summarize_call (LLM #2, structured -> ThinkingSummary)
-                │
-                ▼ return answer  (2 LLM calls + 1 execution call total)
-
-After each LLM pass, the optional ``episode_note`` is appended to the
-per-conversation episode buffer via :class:`EpisodeRecorder`. The thinking
-layer never invokes external tools directly — capability use is always
-mediated through the execution layer.
+Each stimulus updates transaction task state and produces one structured
+decision. Tool execution and user-visible replies are delegated by the
+Think-life scheduler, so this layer never invokes capabilities directly.
 """
 from __future__ import annotations
 
 import logging
 import json
-from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
-from uuid import uuid4
 
-from m_agent.layers.execution.contracts import ExecutionRequest, ExecutionResult
 from m_agent.layers.execution.core import ExecutionAgent
 from m_agent.layers.execution.model_provider import ModelProvider
-
-
-#: Callback signature for streaming intermediate thinking-layer + execution-layer
-#: state out to the perception layer (which forwards to SSE). Implementations
-#: should be cheap and side-effect-only; they must not raise.
-ThinkingEventEmitter = Callable[[str, Dict[str, Any]], None]
 from m_agent.systems.episodic import DefaultEpisodeRecorder, EpisodeRecorder
-from m_agent.systems.wm import WMReader, WMWriter
+from m_agent.systems.wm import WMReader
 from m_agent.layers.perception.contracts import PerceptionInput
 from m_agent.layers.thinking.persona import (
     build_capability_boundary_block,
@@ -51,8 +23,6 @@ from m_agent.layers.thinking.contracts import (
     TaskProgressUpdate,
     TransactionResolution,
     ThinkingDecision,
-    ThinkingSummary,
-    is_execute_mode,
     is_silent_mode,
     normalize_thinking_mode,
 )
@@ -62,26 +32,13 @@ from m_agent.utils.api_error_utils import is_network_api_error
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class ThinkingTurnResult:
-    """Aggregate outcome of a single thinking-layer turn.
-
-    Returned to the perception layer (``ChatServiceRuntime``). It carries the
-    final user-facing answer plus enough metadata to populate the legacy
-    ``agent_result`` shape so the rest of the API surface keeps working.
-    """
-
-    answer: str
-    conversation_id: str
-    decision: ThinkingDecision
-    execution_result: Optional[ExecutionResult] = None
-    summary: Optional[ThinkingSummary] = None
-    wm_entries_snapshot: List[Dict[str, Any]] = field(default_factory=list)
+#: Callback signature for streaming planning state to the perception layer,
+#: which forwards it to SSE. Implementations must be cheap and must not raise.
+ThinkingEventEmitter = Callable[[str, Dict[str, Any]], None]
 
 
 class ThinkingAgent:
-    """Persona-owning planning + summarizing agent (Form A two-call flow)."""
+    """Update task state and choose the next Think-life action."""
 
     def __init__(
         self,
@@ -91,16 +48,12 @@ class ThinkingAgent:
         system_prompt: str,
         persona_prompt: str = "",
         wm_reader: Optional[WMReader] = None,
-        wm_writer: Optional[WMWriter] = None,
         episode_recorder: Optional[EpisodeRecorder] = None,
         state_registry: Optional[ConversationStateRegistry] = None,
         prompt_language: str = "zh",
-        max_executions_per_turn: int = 1,
-        skip_summarize_on_direct_answer: bool = True,
         task_state_base_prompt: str = "",
         task_state_instructions_prompt: str = "",
         plan_instructions_prompt: str = "",
-        summarize_instructions_prompt: str = "",
         capability_boundary_header: str = "",
         fallback_answer_prompt: str = "",
         transaction_resolution_base_prompt: str = "",
@@ -111,18 +64,14 @@ class ThinkingAgent:
         self.system_prompt = str(system_prompt or "").strip()
         self.persona_prompt = str(persona_prompt or "").strip()
         self.wm_reader = wm_reader
-        self.wm_writer = wm_writer
         self.episode_recorder: EpisodeRecorder = episode_recorder or DefaultEpisodeRecorder()
         self.state_registry = state_registry or ConversationStateRegistry()
         self.prompt_language = str(prompt_language or "zh").strip().lower() or "zh"
-        self.max_executions_per_turn = max(0, int(max_executions_per_turn))
-        self.skip_summarize_on_direct_answer = bool(skip_summarize_on_direct_answer)
 
         # YAML-overridable prompt fragments. Empty/None means "use built-in default".
         self._task_state_base_override = str(task_state_base_prompt or "").strip()
         self._task_state_instructions_override = str(task_state_instructions_prompt or "").strip()
         self._plan_instructions_override = str(plan_instructions_prompt or "").strip()
-        self._summarize_instructions_override = str(summarize_instructions_prompt or "").strip()
         self._capability_boundary_header_override = str(capability_boundary_header or "").strip()
         self._fallback_answer_override = str(fallback_answer_prompt or "").strip()
         self._transaction_resolution_base_override = str(
@@ -213,7 +162,7 @@ class ThinkingAgent:
         *,
         transaction_state: Optional[Any] = None,
         event_emitter: Optional[ThinkingEventEmitter] = None,
-    ) -> ThinkingTurnResult:
+    ) -> ThinkingDecision:
         if not isinstance(perception, PerceptionInput):
             raise TypeError("ThinkingAgent.handle expects PerceptionInput")
         if not str(perception.stimulus.text or "").strip():
@@ -254,114 +203,27 @@ class ThinkingAgent:
         decision = self._plan(perception, state)
         emit("thinking_plan", self._decision_event_payload(decision, perception, state))
 
-        if not is_execute_mode(decision.mode) or self.max_executions_per_turn <= 0:
-            if is_silent_mode(decision.mode):
-                answer = ""
-            else:
-                answer = str(decision.answer or "").strip()
-                if not answer:
-                    answer = self._fallback_answer(perception)
-            self.episode_recorder.append(
-                state.episode_buffer,
-                note=decision.episode_note,
-                turn_meta={**turn_meta, "phase": "plan"},
-            )
-            emit(
-                "thinking_completed",
-                {
-                    "thread_id": perception.thread_id,
-                    "conversation_id": perception.conversation_id,
-                    "executed": False,
-                    "phases": ["plan"],
-                },
-            )
-            return ThinkingTurnResult(
-                answer=answer,
-                conversation_id=perception.conversation_id,
-                decision=decision,
-                wm_entries_snapshot=list(state.wm_entries),
+        mode = normalize_thinking_mode(decision.mode)
+        if not is_silent_mode(mode) and mode != "execute":
+            decision.answer = (
+                str(decision.answer or "").strip() or self._fallback_answer(perception)
             )
 
-        instruction = str(decision.instruction or "").strip()
-        if not instruction:
-            logger.warning(
-                "ThinkingDecision.mode=='execute' but instruction is empty; falling back to direct answer"
-            )
-            answer = str(decision.answer or self._fallback_answer(perception)).strip()
-            emit(
-                "thinking_completed",
-                {
-                    "thread_id": perception.thread_id,
-                    "conversation_id": perception.conversation_id,
-                    "executed": False,
-                    "phases": ["plan"],
-                    "reason": "execute_with_empty_instruction",
-                },
-            )
-            return ThinkingTurnResult(
-                answer=answer,
-                conversation_id=perception.conversation_id,
-                decision=decision,
-                wm_entries_snapshot=list(state.wm_entries),
-            )
-
-        # Record the plan-phase episode note before executing so the summarize
-        # pass can see the "what I intended to do" log in the buffer.
         self.episode_recorder.append(
             state.episode_buffer,
             note=decision.episode_note,
             turn_meta={**turn_meta, "phase": "plan"},
         )
-
-        emit(
-            "execution_started",
-            {
-                "thread_id": perception.thread_id,
-                "conversation_id": perception.conversation_id,
-                "instruction": instruction,
-                "capability_hint": list(decision.capability_hint or []),
-            },
-        )
-        execution_result = self._execute(
-            decision=decision,
-            perception=perception,
-            state=state,
-        )
-        emit("execution_completed", self._execution_event_payload(execution_result, perception))
-
-        summary = self._summarize(
-            perception=perception,
-            decision=decision,
-            execution_result=execution_result,
-            state=state,
-        )
-        self._apply_task_progress_update(state, summary.task_progress_update)
-        emit("thinking_summary", self._summary_event_payload(summary, perception))
-
-        self.episode_recorder.append(
-            state.episode_buffer,
-            note=summary.episode_note,
-            turn_meta={**turn_meta, "phase": "summarize"},
-        )
-
         emit(
             "thinking_completed",
             {
                 "thread_id": perception.thread_id,
                 "conversation_id": perception.conversation_id,
-                "executed": True,
-                "phases": ["plan", "execute", "summarize"],
+                "executed": False,
+                "phases": ["plan"],
             },
         )
-
-        return ThinkingTurnResult(
-            answer=str(summary.answer or "").strip() or execution_result.summary,
-            conversation_id=perception.conversation_id,
-            decision=decision,
-            execution_result=execution_result,
-            summary=summary,
-            wm_entries_snapshot=list(state.wm_entries),
-        )
+        return decision
 
     @staticmethod
     def _make_safe_emitter(
@@ -414,39 +276,6 @@ class ThinkingAgent:
             "capability_hint": list(decision.capability_hint or []),
             "episode_note": decision.episode_note,
             "task_progress": state.task_progress.to_dict(),
-        }
-
-    @staticmethod
-    def _execution_event_payload(
-        execution_result: ExecutionResult,
-        perception: PerceptionInput,
-    ) -> Dict[str, Any]:
-        return {
-            "thread_id": perception.thread_id,
-            "conversation_id": perception.conversation_id,
-            "summary_excerpt": str(execution_result.summary or "")[:240],
-            "tool_call_count": execution_result.tool_call_count,
-            "tool_names": list(execution_result.tool_names),
-            "insufficient": execution_result.insufficient,
-            "limit_reached": execution_result.limit_reached,
-            "success": execution_result.success,
-        }
-
-    @staticmethod
-    def _summary_event_payload(
-        summary: ThinkingSummary,
-        perception: PerceptionInput,
-    ) -> Dict[str, Any]:
-        return {
-            "thread_id": perception.thread_id,
-            "conversation_id": perception.conversation_id,
-            "answer_excerpt": str(summary.answer or "")[:240],
-            "episode_note": summary.episode_note,
-            "task_progress_update": (
-                summary.task_progress_update.to_dict()
-                if summary.task_progress_update is not None
-                else None
-            ),
         }
 
     def on_flush(self, conversation_id: str, *, thread_id: str) -> List[Dict[str, Any]]:
@@ -764,7 +593,7 @@ class ThinkingAgent:
             "- episode_note: optional short text worth remembering; do not dump raw tool output here.\n"
             "- tool_name: required when mode==execute; exactly one enabled capability (one tool this round).\n"
             "- request_complete: true only when the original user request is fully done; else false and continue execute.\n"
-            "- capability_hint: optional legacy field; prefer tool_name.\n"
+            "- capability_hint: optional compatibility field; tool_name is authoritative.\n"
             "- reasoning: optional short rationale for the chosen mode (for auditing).\n"
             "[Hard Constraints]\n"
             "- You hold no tools yourself; delegate via execute with at most one tool_name per round.\n"
@@ -774,163 +603,6 @@ class ThinkingAgent:
             "- For small talk or delegable-unrelated requests, choose answer_directly; use silent for acks that need no reply.\n"
             "- mode==silent: no delegate, no reply; record reasoning/episode_note and wait for further stimulus.\n"
             "- Don't echo the user; in the instruction state explicitly what you want the execution layer to do."
-        )
-
-    # ------------------------------------------------------------------
-    # Execution call
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _allowed_tools_for_decision(decision: ThinkingDecision) -> Optional[List[str]]:
-        name = str(decision.tool_name or "").strip()
-        if name:
-            return [name]
-        hints = decision.capability_hint or []
-        if isinstance(hints, list) and len(hints) == 1:
-            only = str(hints[0] or "").strip()
-            if only:
-                return [only]
-        return None
-
-    def _execute(
-        self,
-        *,
-        decision: ThinkingDecision,
-        perception: PerceptionInput,
-        state: ConversationState,
-    ) -> ExecutionResult:
-        allowed = self._allowed_tools_for_decision(decision)
-        request = ExecutionRequest(
-            instruction=str(decision.instruction or "").strip(),
-            thread_id=perception.thread_id,
-            correlation_id=uuid4().hex,
-            allowed_tool_names=allowed,
-            capability_hint=list(decision.capability_hint or []) or None,
-        )
-
-        def _wm_write(result: ExecutionResult) -> None:
-            if self.wm_writer is None:
-                return
-            try:
-                self.wm_writer.write(state.wm_entries, result.tool_history)
-            except Exception:
-                logger.exception(
-                    "WMWriter.write failed for conversation_id=%s",
-                    perception.conversation_id,
-                )
-
-        return self.execution_agent.execute(
-            request,
-            wm_writer_callback=_wm_write,
-        )
-
-    # ------------------------------------------------------------------
-    # Summarize pass (LLM #2)
-    # ------------------------------------------------------------------
-
-    def _summarize(
-        self,
-        *,
-        perception: PerceptionInput,
-        decision: ThinkingDecision,
-        execution_result: ExecutionResult,
-        state: ConversationState,
-    ) -> ThinkingSummary:
-        messages = self._build_summarize_messages(
-            perception=perception,
-            decision=decision,
-            execution_result=execution_result,
-            state=state,
-        )
-        try:
-            structured_model = self.model_provider.model.with_structured_output(
-                ThinkingSummary,
-                include_raw=False,
-            )
-        except Exception:
-            structured_model = self.model_provider.model.with_structured_output(ThinkingSummary)
-
-        result = self._invoke_structured(
-            structured_model,
-            messages=messages,
-            call_name="thinking.summarize",
-        )
-        return self._coerce_summary(result, execution_result)
-
-    def _build_summarize_messages(
-        self,
-        *,
-        perception: PerceptionInput,
-        decision: ThinkingDecision,
-        execution_result: ExecutionResult,
-        state: ConversationState,
-    ) -> List[Dict[str, str]]:
-        sections: List[str] = []
-        if self.system_prompt:
-            sections.append(self.system_prompt)
-        if self.persona_prompt:
-            sections.append(self.persona_prompt)
-        sections.append(self._summarize_instructions_block(execution_result))
-
-        sections.append(self._render_perception_input_block(perception))
-        if perception.scene_context:
-            sections.append(f"[Scene Context]\n{perception.scene_context}")
-        sections.append(self._render_task_state(state))
-
-        if self.wm_reader is not None:
-            wm_block = self._render_working_memory(state)
-            if wm_block:
-                sections.append(wm_block)
-
-        # Execution-layer report.
-        if self.prompt_language == "zh":
-            exec_block = [
-                "[执行层报告]",
-                f"上一步指令: {decision.instruction or '(空)'}",
-                f"执行摘要: {execution_result.summary or '(空)'}",
-                f"是否充分: {'否' if execution_result.insufficient else '是'}",
-                f"是否触限: {'是' if execution_result.limit_reached else '否'}",
-                f"工具调用数: {execution_result.tool_call_count}",
-            ]
-        else:
-            exec_block = [
-                "[Execution Report]",
-                f"Instruction: {decision.instruction or '(empty)'}",
-                f"Summary: {execution_result.summary or '(empty)'}",
-                f"Sufficient: {'no' if execution_result.insufficient else 'yes'}",
-                f"Limit reached: {'yes' if execution_result.limit_reached else 'no'}",
-                f"Tool calls: {execution_result.tool_call_count}",
-            ]
-        sections.append("\n".join(exec_block))
-
-        system_text = "\n\n".join(section for section in sections if section).strip()
-        messages: List[Dict[str, str]] = [{"role": "system", "content": system_text}]
-        messages.append({"role": "user", "content": str(perception.stimulus.text or "").strip()})
-        return messages
-
-    def _summarize_instructions_block(self, execution_result: ExecutionResult) -> str:
-        if self._summarize_instructions_override:
-            return self._summarize_instructions_override
-        if self.prompt_language == "zh":
-            return (
-                "[总结要求]\n"
-                "请基于执行层报告，向用户输出最终回复，并按结构化字段返回：\n"
-                "- answer: 给用户的自然语言回复（必填，使用与用户相同的语言）。\n"
-                "- episode_note: 可选，简短记下值得长期记忆的事实或承诺。\n"
-                "[硬约束]\n"
-                "- 不要复述执行层的原始结果，只总结对用户有意义的部分。\n"
-                "- 若执行层报告 insufficient 或 limit_reached，请如实说明，不要编造证据。"
-            )
-        return (
-            "[Summarize Requirements]\n"
-            "Using the execution report, produce the final reply for the user, in structured form:\n"
-            "- answer: required, the natural-language reply (match the user's language).\n"
-            "- episode_note: optional short note worth remembering long-term.\n"
-            "- task_progress_update: optional partial update after this execution: goal, completed, remaining. Omit unchanged fields.\n"
-            "[Hard Constraints]\n"
-            "- Do not echo raw execution output; summarize only what matters to the user.\n"
-            "- Update task_progress_update only from the execution report and visible tool evidence.\n"
-            "- If the execution report is insufficient or limit_reached, say so plainly; do not fabricate evidence."
         )
 
     # ------------------------------------------------------------------
@@ -1033,35 +705,6 @@ class ThinkingAgent:
             mode="answer_directly",
             answer=str(raw or "").strip() or None,
         )
-
-    @classmethod
-    def _coerce_summary(cls, raw: Any, execution_result: ExecutionResult) -> ThinkingSummary:
-        if isinstance(raw, ThinkingSummary):
-            answer = str(raw.answer or "").strip() or execution_result.summary
-            return ThinkingSummary(
-                answer=answer,
-                episode_note=raw.episode_note,
-                task_progress_update=raw.task_progress_update,
-            )
-        if isinstance(raw, dict):
-            answer = str(raw.get("answer", "") or "").strip() or execution_result.summary
-            return ThinkingSummary(
-                answer=answer,
-                episode_note=raw.get("episode_note"),
-                task_progress_update=cls._coerce_task_progress_update(
-                    raw.get("task_progress_update")
-                ),
-            )
-        if hasattr(raw, "answer"):
-            answer = str(getattr(raw, "answer", "") or "").strip() or execution_result.summary
-            return ThinkingSummary(
-                answer=answer,
-                episode_note=getattr(raw, "episode_note", None),
-                task_progress_update=cls._coerce_task_progress_update(
-                    getattr(raw, "task_progress_update", None)
-                ),
-            )
-        return ThinkingSummary(answer=str(raw or "").strip() or execution_result.summary)
 
     def _fallback_answer(self, perception: PerceptionInput) -> str:
         if self._fallback_answer_override:

@@ -25,17 +25,17 @@ Dialogue JSON (v1 shape)  →  dialogues/<user>/YYYY-MM/*.json   ← system arti
 Episodic RAG  →  episodic/<user>/…                     ← plug-in artifact
 ```
 
-**Think-life path:** flush exports user/assistant turns from Scene (same v1 fields: `speaker` / `text` / `turn_id` / `timestamp`), with real chronological order and timestamps—no thought/action in the archive.
+**Runtime path:** flush exports user/assistant turns from Scene using the v1 fields `speaker` / `text` / `turn_id` / `timestamp`, with real chronological order and timestamps—no thought/action in the archive. `BufferedRound` remains an in-process history and flush-bookkeeping structure; it is not the canonical archive source.
 
 ## Dialogue input contract (plug-in view)
 
-The plug-in **never parses Scene**. It only receives archive files and runtime round lists. Think-life and legacy flush share the **same JSON shape**; only turn order and timestamp source differ (Scene `occurred_at` vs buffered rounds).
+The plug-in **never parses Scene**. It only receives archive files and runtime round lists derived by the Chat system.
 
-| Aspect | legacy flush | Scene flush (Think-life) |
-|--------|--------------|--------------------------|
-| Turn order | From buffered rounds | Chronological from Scene; multiple user turns before one reply allowed |
-| Timestamps | Capture time or +1s | Scene `occurred_at` |
-| Turn fields | `speaker`, `text`, `turn_id`, `timestamp` | **Same** |
+| Aspect | Runtime contract |
+|--------|------------------|
+| Turn order | Chronological from Scene; multiple user turns before one reply are allowed |
+| Timestamps | Scene `occurred_at` |
+| Turn fields | `speaker`, `text`, `turn_id`, `timestamp` |
 
 Upload validation: `dialogue_validation.py`.
 
@@ -111,17 +111,17 @@ Root: `M_AGENT_MEMORY_ROOT`, or `M_AGENT_DATA_DIR/memory`, or `<project>/data/me
 
 Runtime `_rebind_episodic_for_chat_user()` overrides YAML paths. Custom backends should use `chat_user_episodic_rag_paths()` or implement `describe_persistence()`.
 
-**Debug:** `GET /v1/chat/threads/{id}/memory/state` → `episodic_persistence`; flush events include `flush_mode`: `scene` | `legacy_rounds`.
+**Debug:** `GET /v1/chat/threads/{id}/memory/state` → `episodic_persistence`; normal flush events report `flush_mode: scene`. If Scene export is unexpectedly unavailable, the data-loss recovery path reports `flush_mode: buffered_rounds`.
 
 **Note:** Writing `dialogues/*.json` alone does not build embeddings; indexing requires `persist_dialogue` (upload import or normal flush).
 
 ## Flush lifecycle (short)
 
 1. User flush or idle timeout.
-2. **Think-life:** `ThinkLifeRuntime.build_dialogue_flush_payload` from Scene `entries_since_flush`.
+2. `ThinkLifeRuntime.build_dialogue_flush_payload` reads Scene `entries_since_flush`.
 3. **Agent:** `persist_dialogue_payload` writes v1 Dialogue → `turns_to_rounds` → `backend.persist_dialogue`.
 4. On success: `mark_scene_flushed(through_seq)`, drain `episode_note`, `on_flush_segment`, bump `conversation_seq`.
-5. **Legacy:** pending rounds → `persist_dialogue` → v1 Dialogue.
+5. Recovery only: if no Scene payload can be built, persist the in-process buffered rounds through `persist_dialogue`.
 
 ## Delivery
 

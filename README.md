@@ -12,14 +12,7 @@
 
 Run the agent as a **long-lived HTTP / SSE service** (`python -m m_agent.api.chat_api`). You create a run per user message, subscribe to the event stream, and read the final result while the server keeps **thread-level** session state.
 
-Two **runtime profiles** are available (see `runtime.profile` in [`config/agents/chat/chat_controller.yaml`](config/agents/chat/chat_controller.yaml)):
-
-| Profile | Purpose |
-| --- | --- |
-| **`legacy`** (default) | Single-turn-style chat loop: perception → thinking → execution → thinking summarizes the **answer** returned by the API. |
-| **`think_life`** | Product runtime: stimuli go through a **perception bus**, **transaction-scoped WM**, chronological **Scene log**, and user-visible text only via the **`reply_to_user`** tool. Schedule heartbeat and execution feedback are integrated. Spec: **[docs/think-life-runtime-spec.zh-CN.md](docs/think-life-runtime-spec.zh-CN.md)**. |
-
-Enable Think-life either in YAML (`runtime.profile: think_life`) or at startup with `--runtime-profile think_life` (CLI overrides YAML).
+**Think-life is the sole product runtime.** Stimuli go through a **perception bus**, WM is isolated by transaction, the **Scene log** records a chronological timeline, and user-visible text is emitted only through the **`reply_to_user`** tool. Schedule heartbeat and execution feedback use the same runtime path. See **[docs/think-life-runtime-spec.zh-CN.md](docs/think-life-runtime-spec.zh-CN.md)**.
 
 ### Client side
 
@@ -98,28 +91,9 @@ TAVILY_API_KEY=YOUR_TAVILY_KEY
 
 ## Usage 1: Chat API as a Long-Running Backend (FastAPI)
 
-The repo ships an HTTP / SSE chat service built on **fixed startup-time config + thread-level session state** (i.e. *not* the "send full config with every request" pattern).
+The repo ships an HTTP / SSE chat service built on **fixed startup-time config + thread-level session state** (i.e. *not* the "send full config with every request" pattern). The service always runs the Think-life runtime.
 
-### Legacy profile (default)
-
-```powershell
-$env:PYTHONPATH = "src"
-python -m m_agent.api.chat_api `
-  --host 127.0.0.1 `
-  --port 8777 `
-  --config config/agents/chat/chat_controller.yaml `
-  --runtime-profile legacy `
-  --idle-flush-seconds 1800 `
-  --history-max-rounds 12 `
-  --schedule-beat-seconds 10 `
-  --schedule-busy-retry-seconds 5 `
-  --users-db config/users/users.json `
-  --session-ttl-seconds 43200
-```
-
-(`--runtime-profile legacy` is optional when `runtime.profile` in the YAML is already `legacy`.)
-
-### Think-life profile
+### Start the service
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -127,18 +101,14 @@ python -m m_agent.api.chat_api `
   --host 127.0.0.1 `
   --port 8777 `
   --config config/agents/chat/chat_controller.yaml `
-  --runtime-profile think_life `
   --idle-flush-seconds 1800 `
   --history-max-rounds 12 `
   --schedule-beat-seconds 10 `
-  --schedule-busy-retry-seconds 5 `
   --users-db config/users/users.json `
   --session-ttl-seconds 43200
 ```
 
-Or set `runtime.profile: think_life` in `chat_controller.yaml` and omit `--runtime-profile`.
-
-Think-life tuning (delegates per transaction, Scene context window, preemption) lives under `runtime.think_life` in the same YAML file.
+Think-life tuning (delegates per transaction, Scene context window, preemption) lives under `runtime.think_life` in `chat_controller.yaml`.
 
 ### After startup
 
@@ -154,8 +124,7 @@ export PYTHONPATH=src
 python -m m_agent.api.chat_api \
   --host 127.0.0.1 \
   --port 8777 \
-  --config config/agents/chat/chat_controller.yaml \
-  --runtime-profile think_life
+  --config config/agents/chat/chat_controller.yaml
 ```
 
 
@@ -167,8 +136,8 @@ The **chat stack** uses a **RAG episodic backend** (`SimpleRagEpisodicBackend`) 
 - **Pluggable subsystem guides:** [docs/systems-plugin/](docs/systems-plugin/) (one Chinese and one English guide for each of WM, episodic memory, and tools)
 - **RAG index:** `data/memory/chat-api/<user>/episodic/` (`chunks.jsonl`, `embeddings.npy`)
 - **Dialogue archive** (flush): `data/memory/chat-api/<user>/dialogues/`
-- **Scene log** (Think-life): `data/memory/chat-api/<user>/scene/<thread_id>.jsonl` — a chronological, cross-transaction record of what was said and done
-- **How this differs from WM:** WM is isolated by **transaction** (Think-life) or conversation segment (legacy) and provides hot in-process context; episodic memory and Scene logs can be retrieved across turns or read chronologically
+- **Scene log**: `data/memory/chat-api/<user>/scene/<thread_id>.jsonl` — a chronological, cross-transaction record of what was said and done
+- **How this differs from WM:** WM is isolated by **transaction** and provides hot in-process context; episodic memory and Scene logs can be retrieved across turns or read chronologically
 
 For persistence details, see **[docs/systems-plugin/episodic.md](docs/systems-plugin/episodic.md)**. `GET .../memory/state` returns `thread_state.episodic_persistence`.
 

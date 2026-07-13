@@ -10,8 +10,7 @@ from m_agent.api.user_access import UserAccessService
 from m_agent.schedule.store import ANONYMOUS_OWNER_ID
 
 from .chat_api_runtime import ChatServiceRuntime, ThreadEventSink
-from .chat_api_shared import _get_thread_lock, _now_iso
-from .thread_runtime_status import THREAD_RUNTIME_STATUS
+from .chat_api_shared import _now_iso
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +25,7 @@ class ScheduleHeartbeatCoordinator:
         user_access: Optional[UserAccessService] = None,
         beat_interval_seconds: int = 10,
         batch_limit: int = 20,
-        busy_retry_seconds: int = 5,
+        enqueue_retry_seconds: int = 5,
         thread_event_sink: ThreadEventSink = None,
         autostart: bool = True,
     ) -> None:
@@ -34,7 +33,7 @@ class ScheduleHeartbeatCoordinator:
         self.user_access = user_access
         self.beat_interval_seconds = max(1, int(beat_interval_seconds or 10))
         self.batch_limit = max(1, min(200, int(batch_limit or 20)))
-        self.busy_retry_seconds = max(1, int(busy_retry_seconds or 5))
+        self.enqueue_retry_seconds = max(1, int(enqueue_retry_seconds or 5))
         self.thread_event_sink = thread_event_sink
         self.created_at = _now_iso()
         self._stop_event = threading.Event()
@@ -45,7 +44,6 @@ class ScheduleHeartbeatCoordinator:
         self._items_started = 0
         self._items_completed = 0
         self._items_failed = 0
-        self._items_busy_retried = 0
         self._last_beat_started_at: Optional[str] = None
         self._last_beat_finished_at: Optional[str] = None
         self._last_error: Optional[str] = None
@@ -151,7 +149,6 @@ class ScheduleHeartbeatCoordinator:
         total_started = 0
         total_completed = 0
         total_failed = 0
-        total_busy_retried = 0
 
         with self._stats_lock:
             self._beats_total += 1
@@ -172,160 +169,55 @@ class ScheduleHeartbeatCoordinator:
                 payload = self._schedule_event_payload(schedule_item)
                 self._emit_thread_event(target_thread_id, "schedule_due", payload)
 
-                profile = str(getattr(runtime, "runtime_profile", "legacy") or "legacy")
-                if profile == "think_life" and runtime.think_life is not None:
-                    run_id = f"schedule_run_{uuid.uuid4().hex}"
-                    owner_id = str(getattr(schedule_item, "owner_id", "") or owner_id)
-                    schedule_id = str(getattr(schedule_item, "schedule_id", "") or "")
-                    schedule_prompt = runtime._schedule_prompt(schedule_item)
-                    system_context = runtime._schedule_system_context(schedule_item)
-                    try:
-                        queued = runtime.think_life.enqueue_schedule(
-                            thread_id=target_thread_id,
-                            conversation_id=runtime._get_or_create_thread(
-                                target_thread_id
-                            ).conversation_id,
-                            schedule_id=schedule_id,
-                            text=schedule_prompt,
-                            payload=system_context,
-                            run_id=run_id,
-                            owner_id=owner_id,
-                        )
-                        total_started += 1
-                        self._emit_thread_event(
-                            target_thread_id,
-                            "schedule_queued",
-                            {
-                                **payload,
-                                "status": "queued",
-                                "run_id": run_id,
-                                "stimulus_id": queued.get("stimulus_id"),
-                                "pending_count": queued.get("pending_count"),
-                                "runtime_phase": queued.get("runtime_phase"),
-                            },
-                        )
-                    except Exception as exc:
-                        logger.exception(
-                            "Think-life schedule enqueue failed owner_id=%s thread_id=%s schedule_id=%s",
-                            owner_id,
-                            target_thread_id,
-                            schedule_id,
-                        )
-                        error_text = str(exc or "schedule enqueue failed").strip() or "schedule enqueue failed"
-                        schedule_service.release_lease(
-                            owner_id=owner_id,
-                            thread_id=target_thread_id,
-                            schedule_id=schedule_id,
-                            reason="enqueue_failed",
-                            retry_after_seconds=self.busy_retry_seconds,
-                        )
-                        schedule_service.mark_failed(
-                            owner_id=owner_id,
-                            thread_id=target_thread_id,
-                            schedule_id=schedule_id,
-                            error=error_text,
-                        )
-                        total_failed += 1
-                        self._emit_thread_event(
-                            target_thread_id,
-                            "schedule_failed",
-                            self._schedule_event_payload(schedule_item, run_id=run_id, error=error_text),
-                        )
-                    continue
-
-                if THREAD_RUNTIME_STATUS.is_busy(target_thread_id, default_profile=profile):
-                    schedule_service.release_lease(
-                        owner_id=str(getattr(schedule_item, "owner_id", "") or owner_id),
-                        thread_id=target_thread_id,
-                        schedule_id=str(getattr(schedule_item, "schedule_id", "") or ""),
-                        reason="thread_busy",
-                        retry_after_seconds=self.busy_retry_seconds,
-                    )
-                    total_busy_retried += 1
-                    self._emit_thread_event(
-                        target_thread_id,
-                        "schedule_busy_retry",
-                        {
-                            **payload,
-                            "status": "pending",
-                            "retry_after_seconds": self.busy_retry_seconds,
-                            "busy_reason": THREAD_RUNTIME_STATUS.snapshot(
-                                target_thread_id,
-                                default_profile=profile,
-                            ).busy_reason,
-                        },
-                    )
-                    continue
-
-                thread_lock = _get_thread_lock(target_thread_id)
-                if not thread_lock.acquire(blocking=False):
-                    schedule_service.release_lease(
-                        owner_id=str(getattr(schedule_item, "owner_id", "") or owner_id),
-                        thread_id=target_thread_id,
-                        schedule_id=str(getattr(schedule_item, "schedule_id", "") or ""),
-                        reason="thread_busy",
-                        retry_after_seconds=self.busy_retry_seconds,
-                    )
-                    total_busy_retried += 1
-                    self._emit_thread_event(
-                        target_thread_id,
-                        "schedule_busy_retry",
-                        {
-                            **payload,
-                            "status": "pending",
-                            "retry_after_seconds": self.busy_retry_seconds,
-                        },
-                    )
-                    continue
-
                 run_id = f"schedule_run_{uuid.uuid4().hex}"
+                item_owner_id = str(getattr(schedule_item, "owner_id", "") or owner_id)
+                schedule_id = str(getattr(schedule_item, "schedule_id", "") or "")
+                schedule_prompt = runtime._schedule_prompt(schedule_item)
+                system_context = runtime._schedule_system_context(schedule_item)
                 try:
-                    schedule_service.mark_running(
-                        owner_id=str(getattr(schedule_item, "owner_id", "") or owner_id),
+                    queued = runtime.think_life.enqueue_schedule(
                         thread_id=target_thread_id,
-                        schedule_id=str(getattr(schedule_item, "schedule_id", "") or ""),
+                        conversation_id=runtime._get_or_create_thread(
+                            target_thread_id
+                        ).conversation_id,
+                        schedule_id=schedule_id,
+                        text=schedule_prompt,
+                        payload=system_context,
+                        run_id=run_id,
+                        owner_id=item_owner_id,
                     )
                     total_started += 1
                     self._emit_thread_event(
                         target_thread_id,
-                        "schedule_started",
-                        self._schedule_event_payload(schedule_item, run_id=run_id),
-                    )
-
-                    result = runtime.run_schedule_trigger(schedule_item=schedule_item)
-                    answer_text = str(result.get("answer", "") or "").strip()
-                    schedule_service.mark_done(
-                        owner_id=str(getattr(schedule_item, "owner_id", "") or owner_id),
-                        thread_id=target_thread_id,
-                        schedule_id=str(getattr(schedule_item, "schedule_id", "") or ""),
-                        run_id=run_id,
-                        result={
-                            "answer": answer_text,
-                            "memory_capture": result.get("memory_capture"),
-                        },
-                    )
-                    total_completed += 1
-                    self._emit_thread_event(
-                        target_thread_id,
-                        "schedule_completed",
+                        "schedule_queued",
                         {
-                            **self._schedule_event_payload(schedule_item, run_id=run_id),
-                            "status": "done",
-                            "answer": answer_text,
+                            **payload,
+                            "status": "queued",
+                            "run_id": run_id,
+                            "stimulus_id": queued.get("stimulus_id"),
+                            "pending_count": queued.get("pending_count"),
+                            "runtime_phase": queued.get("runtime_phase"),
                         },
                     )
                 except Exception as exc:
                     logger.exception(
-                        "Schedule trigger failed owner_id=%s thread_id=%s schedule_id=%s",
-                        getattr(schedule_item, "owner_id", owner_id),
+                        "Think-life schedule enqueue failed owner_id=%s thread_id=%s schedule_id=%s",
+                        item_owner_id,
                         target_thread_id,
-                        getattr(schedule_item, "schedule_id", ""),
+                        schedule_id,
                     )
-                    error_text = str(exc or "schedule trigger failed").strip() or "schedule trigger failed"
-                    schedule_service.mark_failed(
-                        owner_id=str(getattr(schedule_item, "owner_id", "") or owner_id),
+                    error_text = str(exc or "schedule enqueue failed").strip() or "schedule enqueue failed"
+                    schedule_service.release_lease(
+                        owner_id=item_owner_id,
                         thread_id=target_thread_id,
-                        schedule_id=str(getattr(schedule_item, "schedule_id", "") or ""),
+                        schedule_id=schedule_id,
+                        reason="enqueue_failed",
+                        retry_after_seconds=self.enqueue_retry_seconds,
+                    )
+                    schedule_service.mark_failed(
+                        owner_id=item_owner_id,
+                        thread_id=target_thread_id,
+                        schedule_id=schedule_id,
                         error=error_text,
                     )
                     total_failed += 1
@@ -334,8 +226,6 @@ class ScheduleHeartbeatCoordinator:
                         "schedule_failed",
                         self._schedule_event_payload(schedule_item, run_id=run_id, error=error_text),
                     )
-                finally:
-                    thread_lock.release()
 
         beat_finished_at = _now_iso()
         with self._stats_lock:
@@ -343,7 +233,6 @@ class ScheduleHeartbeatCoordinator:
             self._items_started += total_started
             self._items_completed += total_completed
             self._items_failed += total_failed
-            self._items_busy_retried += total_busy_retried
             self._last_beat_finished_at = beat_finished_at
             self._last_error = None
 
@@ -354,7 +243,6 @@ class ScheduleHeartbeatCoordinator:
             "started": total_started,
             "completed": total_completed,
             "failed": total_failed,
-            "busy_retried": total_busy_retried,
         }
 
     def health_payload(self) -> Dict[str, Any]:
@@ -378,7 +266,7 @@ class ScheduleHeartbeatCoordinator:
                     "beat_interval_seconds": self.beat_interval_seconds,
                     "interval_seconds": self.beat_interval_seconds,
                     "batch_limit": self.batch_limit,
-                    "busy_retry_seconds": self.busy_retry_seconds,
+                    "enqueue_retry_seconds": self.enqueue_retry_seconds,
                     "next_beat_due_at": self._next_beat_due_at(),
                 },
                 "counters": {
@@ -387,27 +275,10 @@ class ScheduleHeartbeatCoordinator:
                     "schedule_started_total": self._items_started,
                     "schedule_completed_total": self._items_completed,
                     "schedule_failed_total": self._items_failed,
-                    "schedule_busy_retries_total": self._items_busy_retried,
                 },
                 "last_beat": {
                     "started_at": self._last_beat_started_at,
                     "finished_at": self._last_beat_finished_at,
                 },
                 "last_error": last_error,
-                # Legacy flat keys (deprecated, kept for older clients)
-                "worker_alive": worker_alive,
-                "created_at": self.created_at,
-                "beat_interval_seconds": self.beat_interval_seconds,
-                "interval_seconds": self.beat_interval_seconds,
-                "batch_limit": self.batch_limit,
-                "busy_retry_seconds": self.busy_retry_seconds,
-                "beats_total": self._beats_total,
-                "items_leased": self._items_leased,
-                "items_started": self._items_started,
-                "items_completed": self._items_completed,
-                "items_failed": self._items_failed,
-                "items_busy_retried": self._items_busy_retried,
-                "last_beat_started_at": self._last_beat_started_at,
-                "last_beat_finished_at": self._last_beat_finished_at,
-                "next_beat_due_at": self._next_beat_due_at(),
             }

@@ -19,7 +19,7 @@ from m_agent.layers.thinking.contracts import (
     is_silent_mode,
     request_is_complete,
 )
-from m_agent.layers.thinking.core import ThinkingAgent, ThinkingTurnResult
+from m_agent.layers.thinking.core import ThinkingAgent
 from m_agent.runtime.think_life.config import ThinkLifeConfig
 from m_agent.runtime.think_life.contracts import (
     SceneActor,
@@ -380,18 +380,16 @@ class ThinkLifeLoop:
         stimulus: StimulusEnvelope,
         perception: PerceptionInput,
         scene_tail: List[SceneEntry],
-    ) -> tuple[ThinkingTurnResult, ThinkingDecision]:
+    ) -> ThinkingDecision:
         """Run plan; on premature answer_directly after feedback, nudge and replan."""
         perception_plan = perception
-        turn: Optional[ThinkingTurnResult] = None
         decision: Optional[ThinkingDecision] = None
         for nudge_idx in range(_MAX_COMPLETION_GATE_NUDGES + 1):
-            turn = self.thinking_agent.handle(
+            decision = self.thinking_agent.handle(
                 perception_plan,
                 transaction_state=record,
                 event_emitter=self._event_emitter,
             )
-            decision = turn.decision
             if not is_reply_mode(decision.mode):
                 break
             if stimulus.kind != StimulusKind.EXECUTION_FEEDBACK:
@@ -414,8 +412,8 @@ class ThinkLifeLoop:
                 perception,
                 build_completion_nudge_message(block),
             )
-        assert turn is not None and decision is not None
-        return turn, decision
+        assert decision is not None
+        return decision
 
     def _run_transaction_turn(
         self,
@@ -448,7 +446,7 @@ class ThinkLifeLoop:
             record.conversation_id,
             max_entries=self.config.scene_context_max_entries,
         )
-        turn, decision = self._think_plan_with_gate(
+        decision = self._think_plan_with_gate(
             record=record,
             stimulus=stimulus,
             perception=perception,
@@ -477,24 +475,6 @@ class ThinkLifeLoop:
             return self._handle_preempt(stimulus, record, phase="think")
         enabled_tools = self.execution_agent.enabled_capability_names
         pending_user_request = latest_user_utterance_from_scene(scene_tail)
-        if turn.execution_result is not None:
-            answer = str(turn.answer or "").strip()
-            if answer:
-                target = plan_delegate_target(
-                    decision,
-                    enabled_tools=enabled_tools,
-                    for_user_reply=True,
-                    user_reply_text=answer,
-                )
-                if target:
-                    return self._delegate_and_wait(
-                        record,
-                        target=target,
-                        pending_user_request=pending_user_request,
-                        perception=perception,
-                        stimulus=stimulus,
-                        cancel_event=cancel_event,
-                    )
         if is_execute_mode(decision.mode):
             target = plan_delegate_target(decision, enabled_tools=enabled_tools)
             if target:

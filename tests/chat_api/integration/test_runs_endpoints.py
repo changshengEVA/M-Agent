@@ -66,7 +66,7 @@ def test_run_lifecycle_snapshot_and_event_stream() -> None:
 def test_stop_thread_thinking_endpoint() -> None:
     app = build_test_app(
         auth_enabled=False,
-        service_runtime=build_test_runtime(runtime_profile="think_life"),
+        service_runtime=build_test_runtime(),
     )
 
     with TestClient(app) as client:

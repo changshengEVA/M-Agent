@@ -25,7 +25,7 @@ Dialogue JSON（v1 结构）  →  dialogues/<user>/YYYY-MM/*.json   ← 系统�
 Episodic RAG  →  episodic/<user>/…                     ← 插件产物
 ```
 
-**Think-life 路径：** flush 从 Scene 导出 user/assistant turns（仍为 v1 字段：`speaker` / `text` / `turn_id` / `timestamp`），语序与时间为 Scene 真实值，不含 thought/action。Legacy `BufferedRound` 仅用于线程内 history。
+**运行时路径：** flush 从 Scene 导出 user/assistant turns（使用 v1 字段：`speaker` / `text` / `turn_id` / `timestamp`），语序与时间为 Scene 真实值，不含 thought/action。`BufferedRound` 仍用于进程内 history 与 flush 记账，但不是归档内容的权威来源。
 
 ## Dialogue 输入契约（插件视角）
 
@@ -34,13 +34,13 @@ Episodic RAG  →  episodic/<user>/…                     ← 插件产物
 1. **归档文件**：`data/memory/chat-api/<user>/dialogues/**/*.json`
 2. **运行时 round 列表**：`persist_dialogue(..., rounds=[...])`
 
-Think-life flush 与 legacy flush 产出 **相同 JSON 结构**；差异仅在 turn 顺序与时间戳来源（Scene `occurred_at` vs 缓冲轮次）。
+运行时从 Scene 生成统一的 Dialogue JSON：
 
-| 改进点 | legacy flush | Scene flush（Think-life） |
-|--------|--------------|---------------------------|
-| `turns[]` 语序 | 按缓冲轮次展开 | 按 Scene 发生时间，可连续多条 user 再 reply |
-| 时间戳 | 可能为 capture 时刻或 +1s | Scene `occurred_at` |
-| turn 字段 | `speaker`, `text`, `turn_id`, `timestamp` | **相同** |
+| 项目 | 运行时契约 |
+|------|------------|
+| `turns[]` 语序 | 按 Scene 发生时间，可连续多条 user 再 reply |
+| 时间戳 | Scene `occurred_at` |
+| turn 字段 | `speaker`, `text`, `turn_id`, `timestamp` |
 
 上传校验见 `dialogue_validation.py`。
 
@@ -121,17 +121,17 @@ Chat API 运行时 `_rebind_episodic_for_chat_user()` 会覆盖 YAML 里的 `sto
 **调试：**
 
 - `GET /v1/chat/threads/{id}/memory/state` → `episodic_persistence`
-- flush 事件 payload 含 `flush_mode`：`scene` | `legacy_rounds`
+- 正常 flush 事件 payload 含 `flush_mode: scene`；若 Scene 导出意外不可用，防丢数据恢复路径报告 `flush_mode: buffered_rounds`
 
 **注意：** 仅手工写入 `dialogues/*.json` **不会**自动建 embedding；须经 `persist_dialogue`（上传导入或正常 flush）触发 backend。
 
 ## Flush 生命周期（简要）
 
 1. 用户触发 flush 或 idle 超时。
-2. **Think-life：** `ThinkLifeRuntime.build_dialogue_flush_payload` ← Scene `entries_since_flush`。
+2. `ThinkLifeRuntime.build_dialogue_flush_payload` ← Scene `entries_since_flush`。
 3. **Agent：** `persist_dialogue_payload` 写 v1 Dialogue → `turns_to_rounds` → `backend.persist_dialogue`。
 4. 成功：`mark_scene_flushed(through_seq)`、drain `episode_note`、`on_flush_segment`、递增 `conversation_seq`。
-5. **Legacy：** pending rounds → `persist_dialogue` → v1 Dialogue。
+5. 仅恢复路径：无法构建 Scene payload 时，通过 `persist_dialogue` 持久化进程内 buffered rounds。
 
 ## 交付
 

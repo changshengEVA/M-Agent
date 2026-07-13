@@ -21,7 +21,7 @@ systems:
   tools:    ../../systems/tools/default.yaml
 
 runtime:
-  profile: think_life
+  # Think-life is the sole runtime; only its tuning knobs live here.
   think_life:
     # max_delegates_per_transaction / max_think_rounds: omit or null = unlimited
     scene_context_max_entries: 40

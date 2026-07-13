@@ -263,11 +263,9 @@ class FakeRuntime:
         config_path: Path,
         default_thread_id: str = "demo-thread",
         schedule_agent: FakeScheduleAgent | None = None,
-        runtime_profile: str = "legacy",
     ) -> None:
         self.config_path = Path(config_path)
         self.default_thread_id = default_thread_id
-        self._runtime_profile = str(runtime_profile or "legacy").strip().lower()
         self.agent = FakeRuntimeAgent(schedule_agent or FakeScheduleAgent())
         self._thread_event_sink = None
         self._threads: dict[str, dict[str, Any]] = {}
@@ -279,7 +277,7 @@ class FakeRuntime:
 
     @property
     def runtime_profile(self) -> str:
-        return self._runtime_profile
+        return "think_life"
 
     def set_thread_event_sink(self, sink) -> None:
         self._thread_event_sink = sink
@@ -292,14 +290,13 @@ class FakeRuntime:
             payload: Dict[str, Any] = {
                 "config_path": str(self.config_path),
                 "default_thread_id": self.default_thread_id,
-                "runtime_profile": self._runtime_profile,
+                "runtime_profile": "think_life",
                 "thread_count": len(self._threads),
-            }
-        if self._runtime_profile == "think_life":
-            payload["think_life"] = {
-                "pending_stimuli_total": 0,
-                "active_drainer_threads": 0,
-                "preempt_enabled": False,
+                "think_life": {
+                    "pending_stimuli_total": 0,
+                    "active_drainer_threads": 0,
+                    "preempt_enabled": False,
+                },
             }
         return payload
 
@@ -310,8 +307,6 @@ class FakeRuntime:
         message: str,
         user_turn: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        if self._runtime_profile != "think_life":
-            raise RuntimeError("profile_not_supported")
         tid = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
         stimulus_id = f"stim_{uuid4().hex[:12]}"
         with self._threads_lock:
@@ -345,8 +340,6 @@ class FakeRuntime:
         limit: int = 40,
         before_seq: Optional[int] = None,
     ) -> Dict[str, Any]:
-        if self._runtime_profile != "think_life":
-            raise RuntimeError("profile_not_supported")
         tid = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
         with self._threads_lock:
             entries = list(self._scene_entries.get(tid, []))
@@ -359,8 +352,6 @@ class FakeRuntime:
         return {"thread_id": tid, "entries": entries, "has_more": has_more}
 
     def get_think_life_transactions(self, thread_id: str) -> Dict[str, Any]:
-        if self._runtime_profile != "think_life":
-            raise RuntimeError("profile_not_supported")
         tid = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
         return {
             "thread_id": tid,
@@ -456,22 +447,19 @@ class FakeRuntime:
         tid = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
         with self._threads_lock:
             state = self._ensure_state(tid)
-            if self._runtime_profile == "think_life":
-                state.setdefault(
-                    "think_life",
-                    {
-                        "pending_stimuli": 0,
-                        "busy": False,
-                        "busy_reason": "idle",
-                        "runtime_profile": "think_life",
-                    },
-                )
-                cleared = int(state["think_life"].get("pending_stimuli", 0) or 0)
-                state["think_life"]["pending_stimuli"] = 0
-                state["think_life"]["busy"] = False
-                state["think_life"]["busy_reason"] = "idle"
-            else:
-                cleared = 0
+            state.setdefault(
+                "think_life",
+                {
+                    "pending_stimuli": 0,
+                    "busy": False,
+                    "busy_reason": "idle",
+                    "runtime_profile": "think_life",
+                },
+            )
+            cleared = int(state["think_life"].get("pending_stimuli", 0) or 0)
+            state["think_life"]["pending_stimuli"] = 0
+            state["think_life"]["busy"] = False
+            state["think_life"]["busy_reason"] = "idle"
             snapshot = deepcopy(state)
         if callable(self._thread_event_sink):
             self._thread_event_sink(
@@ -488,7 +476,7 @@ class FakeRuntime:
         return {
             "success": True,
             "thread_id": tid,
-            "runtime_profile": self._runtime_profile,
+            "runtime_profile": "think_life",
             "cancelled_in_flight": True,
             "cleared_pending_stimuli": cleared,
             "cancelled_transactions": [],
@@ -516,7 +504,6 @@ class FakeRuntime:
                 "round_id": f"round_{uuid4().hex[:8]}",
                 "capture_state": "pending" if memory_status == "buffered" else "skipped",
                 "flush_id": None,
-                "source": "user",
                 "user_message": message,
                 "assistant_message": f"echo:{message}",
                 "user_turn": normalized_user_turn,
@@ -531,9 +518,9 @@ class FakeRuntime:
         return {
             "success": True,
             "thread_id": snapshot["thread_id"],
-            "question": message,
+            "results": [],
+            "replies": [answer],
             "answer": answer,
-            "agent_result": {"answer": answer, "tool_call_count": 0},
             "memory_write": None,
             "memory_capture": {
                 "mode": snapshot["mode"],
@@ -543,40 +530,6 @@ class FakeRuntime:
                 "pending_turns": snapshot["pending_turns"],
             },
             "thread_state": snapshot,
-        }
-
-    def run_schedule_trigger(self, *, schedule_item: Any) -> Dict[str, Any]:
-        thread_id = str(getattr(schedule_item, "thread_id", "") or self.default_thread_id).strip() or self.default_thread_id
-        answer = f"scheduled:{getattr(schedule_item, 'title', 'task')}"
-        if callable(self._thread_event_sink):
-            self._thread_event_sink(
-                thread_id,
-                "assistant_message",
-                {
-                    "thread_id": thread_id,
-                    "answer": answer,
-                    "source": "schedule",
-                    "schedule_id": str(getattr(schedule_item, "schedule_id", "") or "").strip(),
-                },
-            )
-        with self._threads_lock:
-            state = self._ensure_state(thread_id)
-            state["history_rounds"] += 1
-            state["history_messages"] += 1
-            state["last_activity_at"] = _now_iso()
-            snapshot = deepcopy(state)
-        return {
-            "success": True,
-            "thread_id": thread_id,
-            "answer": answer,
-            "thread_state": snapshot,
-            "memory_capture": {
-                "mode": snapshot["mode"],
-                "status": "skipped",
-                "reason": "schedule trigger is not persisted to memory buffer",
-                "pending_rounds": snapshot["pending_rounds"],
-                "pending_turns": snapshot["pending_turns"],
-            },
         }
 
     def _episodic_persistence_payload(self) -> Dict[str, Any]:

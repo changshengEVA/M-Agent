@@ -103,12 +103,3 @@ class TransactionResolution:
     action: str = "create"
     transaction_id: Optional[str] = None
     reasoning: Optional[str] = None
-
-
-@dataclass
-class ThinkingSummary:
-    """Structured legacy summarize-pass output."""
-
-    answer: str = ""
-    episode_note: Optional[str] = None
-    task_progress_update: Optional[TaskStateUpdate] = None

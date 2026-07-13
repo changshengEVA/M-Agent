@@ -7,11 +7,8 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-import yaml
-
 from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS, ThreadRuntimeSnapshot
 from m_agent.chat.three_layer_chat_agent import ThreeLayerChatAgent
-from m_agent.config_paths import resolve_config_path
 from m_agent.paths import chat_user_persistence_root, chat_user_slug
 from m_agent.runtime.think_life.config import ThinkLifeConfig, load_think_life_config
 from m_agent.runtime.think_life.contracts import (
@@ -94,9 +91,6 @@ class ThinkLifeRuntime:
         self._schedule_lifecycle: ScheduleLifecycleHook = None
         self._drain_locks: Dict[str, threading.Lock] = defaultdict(threading.Lock)
 
-        # Think-life: plan-only in ThinkingAgent; execution is delegated by ThinkLifeLoop.
-        agent.thinking_agent.max_executions_per_turn = 0
-
         self._emitting_writer = _EmittingSceneWriter(
             self.scene_system.writer,
             self._on_scene_appended,
@@ -127,7 +121,6 @@ class ThinkLifeRuntime:
         )
 
         self.drainer = ThreadDrainerService(
-            runtime_profile="think_life",
             drain_fn=self._drain_for_thread,
             get_pending=lambda tid: self.inbox.pending_count(tid),
             build_emitter=self._build_drainer_emitter,
@@ -145,17 +138,6 @@ class ThinkLifeRuntime:
     ) -> "ThinkLifeRuntime":
         agent = ThreeLayerChatAgent(config_path=config_path, systems=systems_override)
         return cls(agent, owner_id=owner_id)
-
-    @staticmethod
-    def profile_from_config(config_path: str | Path) -> str:
-        path = resolve_config_path(config_path)
-        if not path.is_file():
-            return "legacy"
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        block = data.get("chat_controller") if isinstance(data.get("chat_controller"), dict) else data
-        runtime = block.get("runtime") if isinstance(block.get("runtime"), dict) else {}
-        return str(runtime.get("profile", "legacy") or "legacy").strip().lower()
 
     def set_thread_event_emitter(self, emitter: Optional[ThreadEventEmitter]) -> None:
         self._thread_event_emitter = emitter
@@ -181,7 +163,7 @@ class ThinkLifeRuntime:
             )
 
     def _emit_runtime_updated(self, thread_id: str) -> None:
-        snap = THREAD_RUNTIME_STATUS.snapshot(thread_id, default_profile="think_life")
+        snap = THREAD_RUNTIME_STATUS.snapshot(thread_id)
         self._emit_thread_event(
             thread_id,
             "thread_runtime_updated",
@@ -214,7 +196,6 @@ class ThinkLifeRuntime:
 
     def _on_stimulus_enqueued(self, stimulus: Any, *, schedule_drainer: bool = True) -> None:
         tid = str(getattr(stimulus, "thread_id", "") or "").strip()
-        THREAD_RUNTIME_STATUS.set_runtime_profile(tid, "think_life")
         THREAD_RUNTIME_STATUS.set_preempt_enabled(tid, self.config.scheduler.preempt_enabled)
         pending = self.inbox.pending_count(tid)
         THREAD_RUNTIME_STATUS.set_pending_stimuli(tid, pending)
@@ -223,7 +204,7 @@ class ThinkLifeRuntime:
             in_flight = THREAD_CPU_STATE.get_in_flight(tid)
             if in_flight is not None and int(new_priority) < int(in_flight.priority):
                 THREAD_CPU_STATE.cancel_in_flight(tid)
-        snap = THREAD_RUNTIME_STATUS.snapshot(tid, default_profile="think_life")
+        snap = THREAD_RUNTIME_STATUS.snapshot(tid)
         self._emit_thread_event(
             tid,
             "stimulus_queued",
@@ -273,10 +254,8 @@ class ThinkLifeRuntime:
         allowed = frozenset(
             {
                 "thinking_started",
+                "thinking_task_state",
                 "thinking_plan",
-                "execution_started",
-                "execution_completed",
-                "thinking_summary",
                 "thinking_completed",
             }
         )
@@ -353,7 +332,7 @@ class ThinkLifeRuntime:
             payload=payload,
         )
         pending = self.inbox.pending_count(thread_id)
-        snap = THREAD_RUNTIME_STATUS.snapshot(thread_id, default_profile="think_life")
+        snap = THREAD_RUNTIME_STATUS.snapshot(thread_id)
         return {
             "stimulus_id": stimulus_id,
             "thread_id": thread_id,
@@ -410,7 +389,7 @@ class ThinkLifeRuntime:
             },
         )
         self._emit_runtime_updated(tid)
-        snap = THREAD_RUNTIME_STATUS.snapshot(tid, default_profile="think_life")
+        snap = THREAD_RUNTIME_STATUS.snapshot(tid)
         return {
             "success": True,
             "thread_id": tid,
@@ -446,7 +425,7 @@ class ThinkLifeRuntime:
             payload=body,
         )
         pending = self.inbox.pending_count(thread_id)
-        snap = THREAD_RUNTIME_STATUS.snapshot(thread_id, default_profile="think_life")
+        snap = THREAD_RUNTIME_STATUS.snapshot(thread_id)
         return {
             "stimulus_id": stimulus_id,
             "thread_id": thread_id,
@@ -471,10 +450,7 @@ class ThinkLifeRuntime:
             None,
         )
         active_id = str(active.transaction_id) if active is not None else None
-        runtime_snap: ThreadRuntimeSnapshot = THREAD_RUNTIME_STATUS.snapshot(
-            tid,
-            default_profile="think_life",
-        )
+        runtime_snap: ThreadRuntimeSnapshot = THREAD_RUNTIME_STATUS.snapshot(tid)
         cpu_txn = str(runtime_snap.active_transaction_id or "").strip() or None
         runtime_phase = str(runtime_snap.runtime_phase or "ready")
 

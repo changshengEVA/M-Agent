@@ -1,8 +1,7 @@
 """Default WMReader / WMWriter implementations.
 
 These are thin wrappers around the existing
-:mod:`m_agent.chat.working_memory` helpers, so behavior is identical to
-the legacy chat-controller path.
+:mod:`m_agent.chat.working_memory` helpers used by Think-life transactions.
 
 Pluggable callers may swap in custom implementations by satisfying the
 :class:`~m_agent.systems.wm.protocols.WMReader` /
@@ -21,7 +20,7 @@ from m_agent.chat.working_memory import (
 
 
 class DefaultWMReader:
-    """Default :class:`WMReader` that uses the legacy tail-N renderer.
+    """Default :class:`WMReader` that renders the most recent entries.
 
     NOTE: this is intentionally NOT a semantic retriever; it formats the
     stored entries directly. The plug-in slot is reserved so a future
@@ -50,7 +49,7 @@ class DefaultWMReader:
 
 
 class DefaultWMWriter:
-    """Default :class:`WMWriter` that reuses the legacy projection helper."""
+    """Default :class:`WMWriter` backed by the shared projection helper."""
 
     def __init__(self, config: WorkingMemoryConfig) -> None:
         self.config = config
@@ -68,8 +67,8 @@ class DefaultWMWriter:
 class DefaultWMDisplay:
     """Default :class:`WMDisplay` — recent tail via ``inject_max_entries``.
 
-    Uses the same renderer as :class:`DefaultWMReader`. The default chat path
-    leaves execution WM display disabled, but custom runtimes may opt in.
+    Uses the same renderer as :class:`DefaultWMReader`. Think-life does not
+    inject this display into capability calls, but custom integrations may.
     """
 
     def __init__(self, config: WorkingMemoryConfig) -> None:

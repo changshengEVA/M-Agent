@@ -6,7 +6,7 @@ from tests.fixtures.app_factory import build_test_app, build_test_runtime
 
 
 def test_healthz_includes_runtime_profile() -> None:
-    runtime = build_test_runtime(runtime_profile="think_life")
+    runtime = build_test_runtime()
     client = TestClient(build_test_app(service_runtime=runtime))
     response = client.get("/healthz")
     assert response.status_code == 200
@@ -16,7 +16,7 @@ def test_healthz_includes_runtime_profile() -> None:
 
 
 def test_stimuli_endpoint_returns_202_for_think_life() -> None:
-    runtime = build_test_runtime(runtime_profile="think_life")
+    runtime = build_test_runtime()
     client = TestClient(build_test_app(service_runtime=runtime))
     response = client.post(
         "/v1/chat/threads/demo-thread/stimuli",
@@ -29,26 +29,8 @@ def test_stimuli_endpoint_returns_202_for_think_life() -> None:
     assert payload["pending_count"] >= 1
 
 
-def test_stimuli_endpoint_409_for_legacy() -> None:
-    runtime = build_test_runtime(runtime_profile="legacy")
-    client = TestClient(build_test_app(service_runtime=runtime))
-    response = client.post(
-        "/v1/chat/threads/demo-thread/stimuli",
-        json={"kind": "user_message", "text": "hello"},
-    )
-    assert response.status_code == 409
-    assert response.json()["error"] == "profile_not_supported"
-
-
-def test_scene_endpoint_404_for_legacy() -> None:
-    runtime = build_test_runtime(runtime_profile="legacy")
-    client = TestClient(build_test_app(service_runtime=runtime))
-    response = client.get("/v1/chat/threads/demo-thread/scene")
-    assert response.status_code == 404
-
-
 def test_transactions_endpoint_for_think_life() -> None:
-    runtime = build_test_runtime(runtime_profile="think_life")
+    runtime = build_test_runtime()
     client = TestClient(build_test_app(service_runtime=runtime))
     response = client.get("/v1/chat/threads/demo-thread/transactions")
     assert response.status_code == 200
@@ -58,7 +40,7 @@ def test_transactions_endpoint_for_think_life() -> None:
 
 
 def test_schedule_heartbeat_includes_thread_runtime() -> None:
-    runtime = build_test_runtime(runtime_profile="think_life")
+    runtime = build_test_runtime()
     client = TestClient(build_test_app(service_runtime=runtime))
     response = client.get("/v1/chat/threads/demo-thread/schedules/heartbeat")
     assert response.status_code == 200

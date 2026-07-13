@@ -80,10 +80,10 @@ def parse_args() -> argparse.Namespace:
         help="Heartbeat scan interval in seconds for due schedules. Default: 10",
     )
     parser.add_argument(
-        "--schedule-busy-retry-seconds",
+        "--schedule-enqueue-retry-seconds",
         type=int,
         default=5,
-        help="Retry delay in seconds when the target thread is busy. Default: 5",
+        help="Retry delay in seconds after a schedule enqueue failure. Default: 5",
     )
     parser.add_argument(
         "--users-db",
@@ -106,12 +106,6 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable verbose backend/module logs. Default mode keeps only concise HTTP/SSE protocol logs.",
     )
-    parser.add_argument(
-        "--runtime-profile",
-        default="",
-        choices=["", "legacy", "think_life"],
-        help="Override runtime.profile from chat_controller.yaml (legacy | think_life).",
-    )
     return parser.parse_args()
 
 
@@ -127,12 +121,10 @@ def main() -> None:
     _configure_windows_event_loop_policy()
     _configure_logging(debug=bool(args.debug))
     config_path = _resolve_config_path(str(args.config or "").strip() or str(DEFAULT_CHAT_CONFIG_PATH))
-    profile_override = str(args.runtime_profile or "").strip().lower() or None
     service_runtime = ChatServiceRuntime(
         config_path=config_path,
         idle_flush_seconds=int(args.idle_flush_seconds),
         history_max_rounds=int(args.history_max_rounds),
-        runtime_profile=profile_override,
     )
     user_access: Optional[UserAccessService] = None
     if not bool(args.disable_auth):
@@ -143,7 +135,6 @@ def main() -> None:
                 config_path=user.config_path,
                 idle_flush_seconds=int(args.idle_flush_seconds),
                 history_max_rounds=int(args.history_max_rounds),
-                runtime_profile=profile_override,
             )
 
         user_access = UserAccessService(
@@ -157,7 +148,7 @@ def main() -> None:
         service_runtime=service_runtime,
         user_access=user_access,
         schedule_beat_seconds=int(args.schedule_beat_seconds),
-        schedule_busy_retry_seconds=int(args.schedule_busy_retry_seconds),
+        schedule_enqueue_retry_seconds=int(args.schedule_enqueue_retry_seconds),
     )
     url = f"http://{args.host}:{args.port}"
     logger.info("M-Agent chat API listening on %s", url)
@@ -168,9 +159,9 @@ def main() -> None:
         service_runtime.history_max_rounds,
     )
     logger.info(
-        "Schedule heartbeat: beat_interval_seconds=%s busy_retry_seconds=%s",
+        "Schedule heartbeat: beat_interval_seconds=%s enqueue_retry_seconds=%s",
         int(args.schedule_beat_seconds),
-        int(args.schedule_busy_retry_seconds),
+        int(args.schedule_enqueue_retry_seconds),
     )
     if user_access is None:
         logger.info("Auth mode: disabled")

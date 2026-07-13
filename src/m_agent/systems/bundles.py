@@ -24,8 +24,8 @@ class SystemsBundle:
     mapping (or built-in defaults) during ``ThreeLayerChatAgent``
     construction. Use :py:meth:`merge_with` to combine an explicit
     user-supplied bundle with one resolved from YAML — the same
-    "explicit > YAML > default" precedence used by the legacy
-    plugin-overrides mechanism is preserved here.
+    "explicit > YAML > default" precedence is preserved for translated
+    plugin-override configurations.
     """
 
     wm: Optional[WMSystem] = None

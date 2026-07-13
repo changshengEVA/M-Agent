@@ -90,7 +90,7 @@ def plan_delegate(
     for_user_reply: bool = False,
     user_reply_text: Optional[str] = None,
 ) -> Optional[Tuple[str, Dict[str, Any]]]:
-    """Return (tool_name, tool_input) using legacy hard mapping (tests / fallback)."""
+    """Return one tool payload using the deterministic skip-param mapping."""
     target = plan_delegate_target(
         decision,
         enabled_tools=enabled_tools,
@@ -122,7 +122,7 @@ def resolve_delegate_tool_input(
     correlation_id: str = "",
     pending_user_request: str = "",
 ) -> ParamFillResult:
-    """Build tool invoke payload: param LLM when needed, else legacy hard map."""
+    """Fill tool arguments with the param LLM or deterministic skip-param mapping."""
     tool_name = str(target.tool_name or "").strip()
     if not uses_param_llm(target.tool_name, for_user_reply=target.for_user_reply):
         args = build_tool_input(

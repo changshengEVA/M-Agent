@@ -1,12 +1,8 @@
-"""Regression test: TOOL CALL DETAIL traces emitted by ExecutionAgent's capability
-context must still reach the SSE projector.
+"""Capability traces emitted during direct invocation reach the SSE projector.
 
-Background: in legacy mode the capability context uses a logger named
-``m_agent.agents.chat_controller_agent``, which is in ``TRACE_LOGGER_NAMES``.
-In three_layer mode ``ExecutionAgent`` uses ``m_agent.layers.execution.core``.
-For ``tool_call`` / ``tool_result`` SSE events to keep working, the parent
-``m_agent.layers.execution`` namespace must be in the trace logger list so
-that child loggers propagate up to the attached ``FunctionTraceHandler``.
+``ExecutionAgent`` uses ``m_agent.layers.execution.core``. For ``tool_call``
+and ``tool_result`` SSE events to keep working, the parent execution namespace
+must be in the trace logger list so child records reach the attached handler.
 """
 from __future__ import annotations
 
@@ -36,8 +32,8 @@ def test_child_logger_emit_is_captured_and_projects_to_tool_call_event() -> None
     handler = FunctionTraceHandler(callback=_callback, include_non_api=True)
     attached = _attach_trace_handler(handler)
     try:
-        # The ExecutionAgent's ControllerCapabilityContext uses this exact
-        # logger name (m_agent.layers.execution.core::logger).
+        # ControllerCapabilityContext receives this module logger from
+        # ExecutionAgent's direct-invocation path.
         child = logging.getLogger("m_agent.layers.execution.core")
         payload = {
             "call_id": 1,

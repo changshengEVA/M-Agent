@@ -59,10 +59,9 @@ def test_config_max_preempt_loaded() -> None:
 def test_effective_depth_not_double_counted_after_pop() -> None:
     """After pop, pending_stimuli must be 0 so in_flight alone yields processing not busy."""
     tid = "thread-after-pop"
-    THREAD_RUNTIME_STATUS.set_runtime_profile(tid, "think_life")
     THREAD_RUNTIME_STATUS.set_pending_stimuli(tid, 0)
     THREAD_CPU_STATE.set_in_flight(tid, stimulus_id="stim_u", transaction_id="txn_u", priority=10)
-    snap = THREAD_RUNTIME_STATUS.snapshot(tid, default_profile="think_life")
+    snap = THREAD_RUNTIME_STATUS.snapshot(tid)
     assert snap.effective_depth == 1
     assert snap.runtime_phase == "processing"
     assert snap.busy is False
@@ -71,10 +70,9 @@ def test_effective_depth_not_double_counted_after_pop() -> None:
 
 def test_thread_runtime_ready_after_clear_in_flight() -> None:
     tid = "thread-ready"
-    THREAD_RUNTIME_STATUS.set_runtime_profile(tid, "think_life")
     THREAD_RUNTIME_STATUS.set_pending_stimuli(tid, 0)
     THREAD_CPU_STATE.set_in_flight(tid, stimulus_id="s", transaction_id="t", priority=10)
     THREAD_CPU_STATE.clear_in_flight(tid)
-    snap = THREAD_RUNTIME_STATUS.snapshot(tid, default_profile="think_life")
+    snap = THREAD_RUNTIME_STATUS.snapshot(tid)
     assert snap.runtime_phase == "ready"
     assert snap.effective_depth == 0

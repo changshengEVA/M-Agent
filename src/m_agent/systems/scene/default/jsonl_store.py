@@ -48,6 +48,54 @@ class SceneLogStore:
             return None
         return self._persist_dir / f"{scene_persist_file_stem(tid)}.meta.json"
 
+    def _conversation_state_path(self, thread_id: str) -> Optional[Path]:
+        if not self._persist_enabled or self._persist_dir is None:
+            return None
+        tid = str(thread_id or "").strip()
+        if not tid:
+            return None
+        return self._persist_dir / f"{scene_persist_file_stem(tid)}.conversation.json"
+
+    def _infer_conversation_seq(self, thread_id: str) -> int:
+        if not self._persist_enabled or self._persist_dir is None:
+            return 0
+        tid = str(thread_id or "").strip()
+        base_stem = scene_persist_file_stem(tid)
+        pattern = re.compile(rf"^{re.escape(base_stem)}__(\d+)\.jsonl$")
+        sequences = []
+        for path in self._persist_dir.glob(f"{base_stem}__*.jsonl"):
+            match = pattern.fullmatch(path.name)
+            if match:
+                sequences.append(int(match.group(1)))
+        if not sequences:
+            return 0
+        latest = max(sequences)
+        latest_conversation_id = f"{tid}::{latest}"
+        return latest if self.entries_since_flush(latest_conversation_id) else latest + 1
+
+    def load_conversation_seq(self, thread_id: str) -> int:
+        """Restore the active conversation sequence for a long-lived thread."""
+        tid = str(thread_id or "").strip()
+        path = self._conversation_state_path(tid)
+        persisted_seq = 0
+        if path is not None and path.is_file():
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+                persisted_seq = max(0, int(payload.get("conversation_seq", 0) or 0))
+            except (AttributeError, json.JSONDecodeError, OSError, TypeError, ValueError):
+                pass
+        return max(persisted_seq, self._infer_conversation_seq(tid))
+
+    def persist_conversation_seq(self, thread_id: str, conversation_seq: int) -> None:
+        """Persist the next/current conversation sequence after a successful flush."""
+        path = self._conversation_state_path(thread_id)
+        if path is None:
+            return
+        payload = {"conversation_seq": max(0, int(conversation_seq))}
+        with self._lock:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
     def _persist_flush_meta(self, thread_id: str) -> None:
         path = self._meta_path(thread_id)
         if path is None:

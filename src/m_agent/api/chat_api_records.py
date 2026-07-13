@@ -28,15 +28,8 @@ logger = logging.getLogger(__name__)
 
 
 class TraceEventProjector:
-    QUESTION_STRATEGY_PREFIX = "QUESTION STRATEGY: "
-    PLAN_UPDATE_PREFIX = "PLAN UPDATE: "
-    SUBQ_START_PREFIX = "SUBQ START: "
-    SUBQ_DONE_PREFIX = "SUBQ DONE: "
     TOOL_CALL_PREFIX = "TOOL CALL DETAIL: "
     TOOL_RESULT_PREFIX = "TOOL RESULT DETAIL: "
-    DIRECT_ANSWER_PREFIX = "DIRECT ANSWER PAYLOAD: "
-    DIRECT_FALLBACK_PREFIX = "DIRECT ANSWER FALLBACK: "
-    FINAL_PAYLOAD_PREFIX = "FINAL ANSWER PAYLOAD: "
     RECALL_START_PREFIX = "RECALL START: "
     RECALL_DONE_PREFIX = "RECALL DONE: "
 
@@ -63,26 +56,6 @@ class TraceEventProjector:
                 "type": "recall_completed",
                 "payload": cls._load_json_payload(raw, cls.RECALL_DONE_PREFIX),
             }
-        if raw.startswith(cls.QUESTION_STRATEGY_PREFIX):
-            return {
-                "type": "question_strategy",
-                "payload": cls._load_json_payload(raw, cls.QUESTION_STRATEGY_PREFIX),
-            }
-        if raw.startswith(cls.PLAN_UPDATE_PREFIX):
-            return {
-                "type": "plan_update",
-                "payload": cls._load_json_payload(raw, cls.PLAN_UPDATE_PREFIX),
-            }
-        if raw.startswith(cls.SUBQ_START_PREFIX):
-            return {
-                "type": "sub_question_started",
-                "payload": cls._load_json_payload(raw, cls.SUBQ_START_PREFIX),
-            }
-        if raw.startswith(cls.SUBQ_DONE_PREFIX):
-            return {
-                "type": "sub_question_completed",
-                "payload": cls._load_json_payload(raw, cls.SUBQ_DONE_PREFIX),
-            }
         if raw.startswith(cls.TOOL_CALL_PREFIX):
             return {
                 "type": "tool_call",
@@ -92,21 +65,6 @@ class TraceEventProjector:
             return {
                 "type": "tool_result",
                 "payload": cls._load_json_payload(raw, cls.TOOL_RESULT_PREFIX),
-            }
-        if raw.startswith(cls.DIRECT_ANSWER_PREFIX):
-            return {
-                "type": "direct_answer_payload",
-                "payload": cls._load_json_payload(raw, cls.DIRECT_ANSWER_PREFIX),
-            }
-        if raw.startswith(cls.DIRECT_FALLBACK_PREFIX):
-            return {
-                "type": "direct_answer_fallback",
-                "payload": cls._load_json_payload(raw, cls.DIRECT_FALLBACK_PREFIX),
-            }
-        if raw.startswith(cls.FINAL_PAYLOAD_PREFIX):
-            return {
-                "type": "final_answer_payload",
-                "payload": cls._load_json_payload(raw, cls.FINAL_PAYLOAD_PREFIX),
             }
         return None
 
@@ -392,10 +350,6 @@ def _run_chat_worker(record: ChatRunRecord, service_runtime: ChatServiceRuntime)
         thread_state = public_result.get("thread_state")
         if isinstance(thread_state, dict):
             record.append_event("thread_state_updated", {"thread_state": thread_state})
-
-        agent_result = public_result.get("agent_result")
-        if isinstance(agent_result, dict):
-            record.append_event("chat_result", {"agent_result": agent_result})
 
         record.complete(public_result)
     except ThinkingForceStoppedError as exc:

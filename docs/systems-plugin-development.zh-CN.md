@@ -70,9 +70,17 @@ load_systems_bundle_from_config()  →  SystemsBundle
         │
         ▼
 ThreeLayerChatAgent
-  ├─ ThinkingAgent  ← wm.reader/writer, episode_note → 内置 recorder
-  └─ ExecutionAgent ← wm.display + tools.registry + episodic.backend（经 capability）
+  ├─ ThinkingAgent  ← wm.reader, episode_note → 内置 recorder
+  └─ ExecutionAgent ← tools.registry + episodic.backend（经 capability）
+        │
+        ▼
+ThinkLifeRuntime / ThinkLifeLoop
+  ├─ 调度 ThinkingAgent 做单步规划
+  ├─ 调用 ExecutionAgent 的目标能力
+  └─ 能力返回后通过 wm.writer 写入当前事务
 ```
+
+`wm.display` 仍是可配置的扩展槽，但 Think-life 能力调用不向执行 prompt 注入它。
 
 ### 3.3 源码目录
 
@@ -129,10 +137,6 @@ systems:
   wm:       ../../systems/wm/default.yaml
   episodic: ../../systems/episodic/rag_default.yaml
   tools:    ../../systems/tools/default.yaml
-
-execution:
-  max_executions_per_turn: 1
-  skip_summarize_on_direct_answer: true
 ```
 
 **不应包含：** `enabled_tools`、`tool_defaults`、`working_memory`、`plugins` 等与 `systems/*` 重复的块（旧用户副本可保留，loader 仍兼容一个版本）。
@@ -174,14 +178,14 @@ execution:
 
 ---
 
-## 7. 运行时覆盖与优先级
+## 7. 子系统覆盖与优先级
 
 `ThreeLayerChatAgent` 解析顺序（单槽可独立覆盖）：
 
 1. 构造参数 `systems=SystemsBundle(...)`
-2. 旧 `plugins=`（`DeprecationWarning`）
+2. 待迁移的 `plugins=`（`DeprecationWarning`）
 3. YAML `systems:`
-4. 旧 YAML `plugins:` / 扁平 legacy 字段
+4. 待迁移 YAML 中的 `plugins:` / 扁平字段
 5. 代码内置 default
 
 **测试 / API 注入：**
@@ -240,9 +244,10 @@ def test_my_backend_is_protocol():
 
 | 模块 | 使用 |
 |------|------|
-| `ThreeLayerChatAgent` | 组装 `SystemsBundle`；`persist_round` / `on_flush` |
-| `ThinkingAgent` | WM；`episode_note` → 内置 recorder；**不**直接 recall |
-| `ExecutionAgent` | tools → LangChain；recall 仅经 capability → backend |
+| `ThreeLayerChatAgent` | 组装 `SystemsBundle`、`ThinkingAgent` 与 `ExecutionAgent` |
+| `ThinkLifeLoop` | 组织规划、目标能力调用、WM 写入与反馈刺激 |
+| `ThinkingAgent` | 通过 `wm.reader` 读当前事务 WM；`episode_note` → 内置 recorder；**不**直接 recall |
+| `ExecutionAgent` | 直接调用目标 capability；recall 仅经 capability → backend |
 
 领域 Agent（`EmailAgent`、`ScheduleAgent`）仍在 `m_agent.agents`；仅通过 tools capability 适配器接入。
 
@@ -260,9 +265,9 @@ def test_my_backend_is_protocol():
 
 ---
 
-## 11. Legacy 兼容（一个版本）
+## 11. 旧配置结构迁移（一个版本）
 
-以下字段若仍出现在 **旧** `config/users/*/chat.yaml` 中，loader 会翻译为虚拟 `SystemsBundle`（可能伴随 `DeprecationWarning`）：
+本节仅描述 YAML 结构迁移，与运行模式无关。以下字段若仍出现在已有的 `config/users/*/chat.yaml` 中，loader 会翻译为虚拟 `SystemsBundle`（可能伴随 `DeprecationWarning`）：
 
 - `plugins:`
 - `enabled_tools` / `tool_defaults`
