@@ -14,9 +14,9 @@ from m_agent.runtime.think_life.contracts import SceneEntry
 _UNSAFE_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
-def scene_persist_file_stem(thread_id: str) -> str:
-    """Return a filesystem-safe stem for per-thread Scene JSONL files."""
-    tid = str(thread_id or "").strip()
+def scene_persist_file_stem(conversation_id: str) -> str:
+    """Return a filesystem-safe stem for per-conversation Scene JSONL files."""
+    tid = str(conversation_id or "").strip()
     if not tid:
         return "thread"
     stem = tid.replace("::", "__")
@@ -29,7 +29,7 @@ def scene_persist_file_stem(thread_id: str) -> str:
 
 
 class SceneLogStore:
-    """Thread-scoped chronological Scene log (cross-transaction)."""
+    """Conversation-scoped chronological Scene log (cross-transaction)."""
 
     def __init__(self, *, persist_dir: Optional[Path] = None, persist_enabled: bool = True) -> None:
         self._persist_dir = persist_dir

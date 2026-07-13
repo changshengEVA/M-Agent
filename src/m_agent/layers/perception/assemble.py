@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from m_agent.layers.perception.contracts import PerceptionInput
+from m_agent.layers.perception.contracts import PerceptionInput, Stimulus
 
 
 def normalize_history_messages(
@@ -25,20 +25,19 @@ def normalize_history_messages(
 
 def build_perception_input(
     *,
-    message: str,
     thread_id: str,
     conversation_id: str,
+    transaction_id: Optional[str] = None,
+    stimulus: Stimulus,
     history_messages: Optional[List[Dict[str, Any]]] = None,
-    source: str = "user",
-    system_context: Optional[Dict[str, Any]] = None,
-    attachments: Optional[List[Dict[str, Any]]] = None,
+    scene_context: str = "",
 ) -> PerceptionInput:
+    """Build the normalized thinking-layer input."""
     return PerceptionInput(
         thread_id=thread_id,
         conversation_id=conversation_id,
-        user_message=message,
-        history_messages=normalize_history_messages(history_messages),
-        source=str(source or "user").strip().lower() or "user",
-        system_context=dict(system_context or {}),
-        attachments=attachments,
+        transaction_id=str(transaction_id or "").strip() or None,
+        stimulus=stimulus,
+        dialogue_history=normalize_history_messages(history_messages),
+        scene_context=str(scene_context or "").strip(),
     )

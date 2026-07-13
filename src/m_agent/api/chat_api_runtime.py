@@ -489,6 +489,11 @@ class ChatServiceRuntime:
 
     def _current_wm_entries(self, session: ThreadSessionState) -> List[Dict[str, Any]]:
         """Return the WM entries owned by the thinking layer for this conversation."""
+        if self._think_life is not None:
+            transaction = self._think_life.registry.get_active_user_transaction(
+                session.conversation_id
+            )
+            return list(transaction.wm_entries) if transaction is not None else []
         try:
             return list(self.agent.snapshot_working_memory(session.conversation_id) or [])
         except Exception:
@@ -498,6 +503,30 @@ class ChatServiceRuntime:
             )
             return []
 
+    def _current_task_progress(self, session: ThreadSessionState) -> Dict[str, Any]:
+        """Return the task progress owned by the thinking layer for this conversation."""
+        if self._think_life is not None:
+            transaction = self._think_life.registry.get_active_user_transaction(
+                session.conversation_id
+            )
+            return (
+                transaction.task_state.to_dict()
+                if transaction is not None
+                else {"goal": "", "completed": [], "remaining": []}
+            )
+        snapshot = getattr(self.agent, "snapshot_task_progress", None)
+        if not callable(snapshot):
+            return {"goal": "", "completed": [], "remaining": []}
+        try:
+            payload = snapshot(session.conversation_id)
+            return payload if isinstance(payload, dict) else {}
+        except Exception:
+            logger.exception(
+                "snapshot_task_progress failed for conversation_id=%s",
+                session.conversation_id,
+            )
+            return {}
+
     # Allow-list of three-layer streaming events the runtime forwards from
     # ``ThinkingAgent.handle`` to SSE. Anything outside this set is silently
     # dropped so a misbehaving custom thinking layer cannot inject arbitrary
@@ -505,6 +534,7 @@ class ChatServiceRuntime:
     _THREE_LAYER_STREAM_EVENTS = frozenset(
         {
             "thinking_started",
+            "thinking_task_state",
             "thinking_plan",
             "execution_started",
             "execution_completed",
@@ -595,7 +625,12 @@ class ChatServiceRuntime:
         if wm_cfg is None:
             return {"enabled": False, "stored_entries": 0, "entries": []}
         entries = self._current_wm_entries(session)
-        return build_working_memory_api_payload(entries, wm_cfg)
+        task_progress = self._current_task_progress(session)
+        return build_working_memory_api_payload(
+            entries,
+            wm_cfg,
+            task_progress=task_progress,
+        )
 
     def _episodic_persistence_payload(self) -> Dict[str, Any]:
         describe = getattr(self.agent, "describe_episodic_persistence", None)
@@ -708,7 +743,10 @@ class ChatServiceRuntime:
         active_user_segment = False
         if self._think_life is not None:
             try:
-                scene_metrics = self._think_life.scene_pending_flush_metrics(session.thread_id)
+                scene_metrics = self._think_life.scene_pending_flush_metrics(
+                    session.thread_id,
+                    conversation_id=session.conversation_id,
+                )
                 scene_pending_entries = int(scene_metrics.get("scene_pending_entries", 0) or 0)
                 scene_pending_turns = int(scene_metrics.get("scene_pending_turns", 0) or 0)
                 active_user_segment = bool(scene_metrics.get("active_user_segment"))
@@ -821,6 +859,7 @@ class ChatServiceRuntime:
                 )
                 self._think_life.submit_user_message(
                     thread_id=active_thread_id,
+                    conversation_id=conversation_id,
                     text=rendered_message,
                     schedule_drainer=False,
                 )
@@ -936,6 +975,7 @@ class ChatServiceRuntime:
             run_id = f"schedule_run_{uuid.uuid4().hex}"
             queued = self._think_life.enqueue_schedule(
                 thread_id=active_thread_id,
+                conversation_id=conversation_id,
                 schedule_id=schedule_id,
                 text=schedule_prompt,
                 payload=system_context,
@@ -1086,22 +1126,25 @@ class ChatServiceRuntime:
             seq += 1
             yield {"seq": seq, **event}
 
-    def _scene_flush_through_seq(self, thread_id: str) -> int:
+    def _scene_flush_through_seq(self, conversation_id: str) -> int:
         if self._think_life is None:
             return 0
         reader = self._think_life.scene_system.reader
         entries_fn = getattr(reader, "entries_since_flush", None)
         if not callable(entries_fn):
             return 0
-        entries = list(entries_fn(str(thread_id or "").strip()))
+        entries = list(entries_fn(str(conversation_id or "").strip()))
         return max((int(getattr(entry, "seq", 0) or 0) for entry in entries), default=0)
 
-    def _scene_flush_payload(self, thread_id: str) -> Optional[Dict[str, Any]]:
+    def _scene_flush_payload(
+        self, thread_id: str, conversation_id: str
+    ) -> Optional[Dict[str, Any]]:
         if self._think_life is None:
             return None
         try:
             return self._think_life.build_dialogue_flush_payload(
                 thread_id,
+                conversation_id=conversation_id,
                 source="chat_api_thread_flush",
             )
         except Exception:
@@ -1118,9 +1161,11 @@ class ChatServiceRuntime:
             pending_rounds = list(self._pending_rounds(session))
             session.last_flush_attempt_at = _now_utc()
             session.updated_at = session.last_flush_attempt_at
-            scene_payload = self._scene_flush_payload(session.thread_id)
+            scene_payload = self._scene_flush_payload(
+                session.thread_id, session.conversation_id
+            )
             scene_flush_through_seq = (
-                self._scene_flush_through_seq(session.thread_id) if scene_payload else 0
+                self._scene_flush_through_seq(session.conversation_id) if scene_payload else 0
             )
 
             if not scene_payload and not pending_rounds:
@@ -1271,7 +1316,7 @@ class ChatServiceRuntime:
                 if scene_payload and self._think_life is not None:
                     try:
                         self._think_life.mark_scene_flushed(
-                            session.thread_id,
+                            session.conversation_id,
                             through_seq=scene_flush_through_seq,
                         )
                     except Exception:
@@ -1372,7 +1417,10 @@ class ChatServiceRuntime:
                 has_scene_pending = False
                 if self._think_life is not None:
                     try:
-                        metrics = self._think_life.scene_pending_flush_metrics(thread_id)
+                        metrics = self._think_life.scene_pending_flush_metrics(
+                            thread_id,
+                            conversation_id=session.conversation_id,
+                        )
                         has_scene_pending = int(metrics.get("scene_pending_turns", 0) or 0) > 0
                     except Exception:
                         logger.exception(
@@ -1420,6 +1468,7 @@ class ChatServiceRuntime:
         )
         return self._think_life.submit_stimulus_async(
             thread_id=active_thread_id,
+            conversation_id=self._get_or_create_thread(active_thread_id).conversation_id,
             text=rendered_message,
             payload={"user_turn": normalized_user_turn},
         )
@@ -1437,6 +1486,7 @@ class ChatServiceRuntime:
         active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
         return self._think_life.list_scene(
             active_thread_id,
+            conversation_id=self._get_or_create_thread(active_thread_id).conversation_id,
             limit=limit,
             before_seq=before_seq,
             since_flush=since_flush,

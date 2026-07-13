@@ -10,20 +10,32 @@ from __future__ import annotations
 
 from m_agent.layers.perception.contracts import PerceptionInput
 
+from .contracts import (
+    TaskProgress,
+    TaskProgressUpdate,
+    TaskState,
+    TaskStateUpdate,
+    ThinkingDecision,
+    ThinkingSummary,
+    TransactionResolution,
+)
 from .core import ThinkingAgent, ThinkingTurnResult
 from .state import (
     ConversationState,
     ConversationStateRegistry,
-    ThinkingDecision,
-    ThinkingSummary,
 )
 
 __all__ = [
     "ConversationState",
     "ConversationStateRegistry",
     "PerceptionInput",
+    "TaskProgress",
+    "TaskProgressUpdate",
+    "TaskState",
+    "TaskStateUpdate",
     "ThinkingAgent",
     "ThinkingDecision",
     "ThinkingSummary",
     "ThinkingTurnResult",
+    "TransactionResolution",
 ]

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from m_agent.layers.execution.contracts import ExecutionResult
 from m_agent.layers.execution.model_provider import ModelProvider
+from m_agent.layers.perception.contracts import Stimulus, StimulusKind
 from m_agent.layers.thinking import (
     ConversationStateRegistry,
     PerceptionInput,
@@ -46,19 +47,18 @@ def test_capability_boundary_block_falls_back_to_default_when_blank() -> None:
 
 
 def test_runtime_context_template_placeholders_are_substituted() -> None:
-    schedule_tpl = "HEADER\nS=<source>\nCTX=<context_json>"
+    context_tpl = "HEADER\nS=<source>\nCTX=<context_json>"
     block = build_runtime_context_block(
         source="schedule",
         system_context={"schedule_id": "sch_1"},
         language="zh",
-        schedule_template=schedule_tpl,
-        generic_template="",
+        template=context_tpl,
     )
     assert "HEADER" in block
     assert "S=schedule" in block
     assert '"schedule_id"' in block and "sch_1" in block
 
-    # Generic path picked when source != schedule
+    # Legacy split templates are still accepted for older user prompt configs.
     generic_tpl = "GEN\nS=<source>"
     block2 = build_runtime_context_block(
         source="external",
@@ -77,12 +77,12 @@ def test_runtime_context_block_skipped_when_user_and_empty_context() -> None:
 
 
 def test_thinking_agent_uses_override_plan_and_fallback_prompts() -> None:
+    custom_task_base = "[CUSTOM TASK STATE BASE]"
+    custom_task_instructions = "[CUSTOM TASK STATE INSTRUCTIONS]"
     custom_plan = "[CUSTOM PLAN BLOCK]"
     custom_summary = "[CUSTOM SUMMARY BLOCK]"
     custom_fallback = "兜底 OVERRIDE"
     custom_cap_header = "[CUSTOM CAP HEADER]"
-    custom_schedule = "SCH-CUSTOM source=<source> ctx=<context_json>"
-    custom_generic = "GEN-CUSTOM source=<source> ctx=<context_json>"
 
     agent = ThinkingAgent(
         execution_agent=_NoopExecutionAgent(),
@@ -93,15 +93,17 @@ def test_thinking_agent_uses_override_plan_and_fallback_prompts() -> None:
         episode_recorder=DefaultEpisodeRecorder(),
         state_registry=ConversationStateRegistry(),
         prompt_language="zh",
+        task_state_base_prompt=custom_task_base,
+        task_state_instructions_prompt=custom_task_instructions,
         plan_instructions_prompt=custom_plan,
         summarize_instructions_prompt=custom_summary,
         capability_boundary_header=custom_cap_header,
-        runtime_context_schedule_template=custom_schedule,
-        runtime_context_generic_template=custom_generic,
         fallback_answer_prompt=custom_fallback,
     )
 
-    # plan / summarize instruction blocks
+    # task-state / plan / summarize instruction blocks
+    assert agent._task_state_base_block() == custom_task_base
+    assert agent._task_state_instructions_block() == custom_task_instructions
     assert agent._plan_instructions_block() == custom_plan
     assert agent._summarize_instructions_block(ExecutionResult(summary="x")) == custom_summary
 
@@ -110,15 +112,18 @@ def test_thinking_agent_uses_override_plan_and_fallback_prompts() -> None:
     perception = PerceptionInput(
         thread_id="t1",
         conversation_id="c::0",
-        user_message="你好",
-        source="schedule",
-        system_context={"schedule_id": "abc"},
+        transaction_id="txn-1",
+        stimulus=Stimulus(
+            kind=StimulusKind.SCHEDULED_PLAN,
+            text="你好",
+            payload={"schedule_id": "abc"},
+        ),
     )
     messages = agent._build_plan_messages(perception, state)
     sys_text = messages[0]["content"]
     assert custom_cap_header in sys_text
-    assert "SCH-CUSTOM" in sys_text
-    assert "source=schedule" in sys_text
+    assert "CTX-CUSTOM" not in sys_text
+    assert "kind: scheduled_plan" in sys_text
     assert custom_plan in sys_text
 
     # fallback answer override
@@ -135,17 +140,35 @@ def test_chat_controller_runtime_yaml_contains_three_layer_prompt_sections() -> 
     thinking = cc.get("thinking")
     assert isinstance(thinking, dict), "chat_controller.thinking must be defined"
     for key in (
-        "base_prompt",
         "persona_tone_prompt",
         "persona_merge_template",
-        "plan_instructions",
-        "summarize_instructions",
-        "capability_boundary_header",
-        "runtime_context_schedule",
-        "runtime_context_generic",
-        "fallback_answer",
     ):
         assert isinstance(thinking.get(key), str) and thinking[key].strip(), f"missing or empty: thinking.{key}"
+    pre_gen = thinking.get("pre_gen_task_state")
+    assert isinstance(pre_gen, dict), "chat_controller.thinking.pre_gen_task_state must be defined"
+    for key in ("base_prompt", "instructions"):
+        assert isinstance(pre_gen.get(key), str) and pre_gen[key].strip(), f"missing or empty: pre_gen_task_state.{key}"
+
+    resolver = thinking.get("resolve_transaction")
+    assert isinstance(resolver, dict), "chat_controller.thinking.resolve_transaction must be defined"
+    for key in ("base_prompt", "instructions"):
+        assert isinstance(resolver.get(key), str) and resolver[key].strip(), f"missing or empty: resolve_transaction.{key}"
+
+    decision = thinking.get("make_decision")
+    assert isinstance(decision, dict), "chat_controller.thinking.make_decision must be defined"
+    for key in (
+        "base_prompt",
+        "instructions",
+        "capability_boundary_header",
+        "fallback_answer",
+    ):
+        assert isinstance(decision.get(key), str) and decision[key].strip(), f"missing or empty: make_decision.{key}"
+
+    assert "base_prompt" not in thinking
+    assert "plan_instructions" not in thinking
+    assert "summarize_instructions" not in thinking
+    assert "runtime_context_schedule" not in thinking
+    assert "runtime_context_generic" not in thinking
 
     execution = cc.get("execution")
     assert isinstance(execution, dict), "chat_controller.execution must be defined"

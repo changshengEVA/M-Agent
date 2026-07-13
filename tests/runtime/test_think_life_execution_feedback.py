@@ -6,12 +6,13 @@ from m_agent.runtime.think_life.contracts import (
     SceneActor,
     SceneEntry,
     SceneEntryType,
-    Stimulus,
+    StimulusEnvelope,
     StimulusKind,
     TransactionKind,
     TransactionRecord,
     TransactionStatus,
 )
+from m_agent.layers.perception.contracts import Stimulus
 from m_agent.runtime.think_life.scheduler.execution_feedback import (
     build_feedback_user_message,
     build_param_gap_tool_history,
@@ -22,6 +23,22 @@ from m_agent.runtime.think_life.scheduler.execution_feedback import (
 )
 from m_agent.runtime.think_life.scheduler.think_context import build_perception_for_stimulus
 from m_agent.systems.scene.default.jsonl_store import SceneLogStore
+
+
+def _stimulus(*, payload: dict, **kwargs) -> StimulusEnvelope:
+    return StimulusEnvelope(
+        stimulus_id=kwargs.get("stimulus_id", "s1"),
+        thread_id=kwargs.get("thread_id", "t1"),
+        conversation_id=kwargs.get("conversation_id", "t1::0"),
+        stimulus=Stimulus(
+            kind=kwargs.get("kind", StimulusKind.EXECUTION_FEEDBACK),
+            text=str(payload.get("summary", "") or "execution feedback"),
+            payload=payload,
+        ),
+        occurred_at=kwargs.get("occurred_at", "2026-01-01T00:00:01Z"),
+        transaction_id=kwargs.get("transaction_id"),
+        delegate_id=kwargs.get("delegate_id"),
+    )
 
 
 def test_looks_like_multi_step_request() -> None:
@@ -47,7 +64,7 @@ def test_feedback_summary_uses_tool_count() -> None:
 
 
 def test_premature_reply_block_after_single_schedule_create() -> None:
-    stimulus = Stimulus(
+    stimulus = _stimulus(
         stimulus_id="s1",
         thread_id="t1",
         kind=StimulusKind.EXECUTION_FEEDBACK,
@@ -89,7 +106,7 @@ def test_feedback_user_message_does_not_claim_request_finished() -> None:
 def test_build_perception_includes_structured_feedback() -> None:
     store = SceneLogStore(persist_enabled=False)
     store.append(
-        "t1",
+        "t1::0",
         SceneEntry(
             seq=0,
             occurred_at="2026-01-01T00:00:00Z",
@@ -101,10 +118,11 @@ def test_build_perception_includes_structured_feedback() -> None:
     txn = TransactionRecord(
         transaction_id="txn1",
         thread_id="t1",
+        conversation_id="t1::0",
         status=TransactionStatus.RUNNING,
         kind=TransactionKind.USER_TASK,
     )
-    stimulus = Stimulus(
+    stimulus = _stimulus(
         stimulus_id="s1",
         thread_id="t1",
         kind=StimulusKind.EXECUTION_FEEDBACK,
@@ -122,7 +140,7 @@ def test_build_perception_includes_structured_feedback() -> None:
         scene_reader=store,
         scene_context_max_entries=10,
     )
-    fb = perception.system_context.get("execution_feedback") or {}
+    fb = perception.stimulus.payload.get("execution_feedback") or {}
     assert fb.get("structured_summary")
     assert "count=1" in str(fb.get("structured_summary"))
     assert fb.get("multi_step_request") is True

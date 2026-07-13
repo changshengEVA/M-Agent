@@ -26,6 +26,7 @@ mediated through the execution layer.
 from __future__ import annotations
 
 import logging
+import json
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
@@ -44,17 +45,18 @@ from m_agent.systems.wm import WMReader, WMWriter
 from m_agent.layers.perception.contracts import PerceptionInput
 from m_agent.layers.thinking.persona import (
     build_capability_boundary_block,
-    build_runtime_context_block,
 )
-from m_agent.layers.thinking.state import (
-    ConversationState,
-    ConversationStateRegistry,
+from m_agent.layers.thinking.contracts import (
+    TaskProgress,
+    TaskProgressUpdate,
+    TransactionResolution,
     ThinkingDecision,
     ThinkingSummary,
     is_execute_mode,
     is_silent_mode,
     normalize_thinking_mode,
 )
+from m_agent.layers.thinking.state import ConversationState, ConversationStateRegistry
 from m_agent.utils.api_error_utils import is_network_api_error
 
 
@@ -95,12 +97,14 @@ class ThinkingAgent:
         prompt_language: str = "zh",
         max_executions_per_turn: int = 1,
         skip_summarize_on_direct_answer: bool = True,
+        task_state_base_prompt: str = "",
+        task_state_instructions_prompt: str = "",
         plan_instructions_prompt: str = "",
         summarize_instructions_prompt: str = "",
         capability_boundary_header: str = "",
-        runtime_context_schedule_template: str = "",
-        runtime_context_generic_template: str = "",
         fallback_answer_prompt: str = "",
+        transaction_resolution_base_prompt: str = "",
+        transaction_resolution_instructions_prompt: str = "",
     ) -> None:
         self.execution_agent = execution_agent
         self.model_provider = model_provider
@@ -115,12 +119,89 @@ class ThinkingAgent:
         self.skip_summarize_on_direct_answer = bool(skip_summarize_on_direct_answer)
 
         # YAML-overridable prompt fragments. Empty/None means "use built-in default".
+        self._task_state_base_override = str(task_state_base_prompt or "").strip()
+        self._task_state_instructions_override = str(task_state_instructions_prompt or "").strip()
         self._plan_instructions_override = str(plan_instructions_prompt or "").strip()
         self._summarize_instructions_override = str(summarize_instructions_prompt or "").strip()
         self._capability_boundary_header_override = str(capability_boundary_header or "").strip()
-        self._runtime_ctx_schedule_override = str(runtime_context_schedule_template or "").strip()
-        self._runtime_ctx_generic_override = str(runtime_context_generic_template or "").strip()
         self._fallback_answer_override = str(fallback_answer_prompt or "").strip()
+        self._transaction_resolution_base_override = str(
+            transaction_resolution_base_prompt or ""
+        ).strip()
+        self._transaction_resolution_instructions_override = str(
+            transaction_resolution_instructions_prompt or ""
+        ).strip()
+
+    def resolve_transaction(
+        self,
+        stimulus: Any,
+        candidates: List[Any],
+        *,
+        dialogue_history: Optional[List[dict]] = None,
+        scene_context: str = "",
+    ) -> Optional[str]:
+        """Return an existing transaction id, or ``None`` to create a new one."""
+        if not candidates:
+            return None
+        base = self._transaction_resolution_base_override or (
+            "You route one incoming stimulus to an existing task transaction only when it "
+            "clearly continues that task. Otherwise choose create."
+        )
+        instructions = self._transaction_resolution_instructions_override or (
+            "Output action='continue' with one listed transaction_id, or action='create' "
+            "with transaction_id=null. Do not merge unrelated tasks."
+        )
+        candidate_lines = []
+        for record in candidates:
+            state = record.task_state
+            candidate_lines.append(
+                f"- {record.transaction_id}: status={record.status.value}; "
+                f"goal={state.goal or '(empty)'}; remaining={state.remaining}"
+            )
+        sections = [
+                base,
+                instructions,
+                f"[Current Stimulus]\nkind: {stimulus.kind.value}\ntext: {stimulus.text}",
+                "[Candidate Transactions]\n" + "\n".join(candidate_lines),
+        ]
+        history = list(dialogue_history or [])[-6:]
+        if history:
+            lines = ["[Dialogue History]"]
+            for item in history:
+                if isinstance(item, dict):
+                    lines.append(
+                        f"- {str(item.get('role', '') or 'unknown')}: "
+                        f"{self._truncate_prompt_value(item.get('content', ''), 500)}"
+                    )
+            sections.append("\n".join(lines))
+        if str(scene_context or "").strip():
+            sections.append(f"[Scene Context]\n{str(scene_context).strip()}")
+        prompt = "\n\n".join(sections)
+        try:
+            model = self.model_provider.model.with_structured_output(
+                TransactionResolution, include_raw=False
+            )
+        except Exception:
+            model = self.model_provider.model.with_structured_output(TransactionResolution)
+        try:
+            raw = self._invoke_structured(
+                model,
+                messages=[{"role": "system", "content": prompt}],
+                call_name="thinking.resolve_transaction",
+            )
+        except Exception:
+            logger.exception("semantic transaction resolution failed")
+            return candidates[-1].transaction_id if len(candidates) == 1 else None
+        if isinstance(raw, dict):
+            action = str(raw.get("action", "") or "").strip().lower()
+            transaction_id = str(raw.get("transaction_id", "") or "").strip()
+        else:
+            action = str(getattr(raw, "action", "") or "").strip().lower()
+            transaction_id = str(getattr(raw, "transaction_id", "") or "").strip()
+        valid_ids = {record.transaction_id for record in candidates}
+        if action == "continue" and transaction_id in valid_ids:
+            return transaction_id
+        return None
 
     # ------------------------------------------------------------------
     # Public API used by the perception layer
@@ -130,23 +211,26 @@ class ThinkingAgent:
         self,
         perception: PerceptionInput,
         *,
+        transaction_state: Optional[Any] = None,
         event_emitter: Optional[ThinkingEventEmitter] = None,
     ) -> ThinkingTurnResult:
         if not isinstance(perception, PerceptionInput):
             raise TypeError("ThinkingAgent.handle expects PerceptionInput")
-        if not str(perception.user_message or "").strip():
-            raise ValueError("PerceptionInput.user_message must be a non-empty string")
+        if not str(perception.stimulus.text or "").strip():
+            raise ValueError("PerceptionInput.stimulus.text must be a non-empty string")
 
-        state = self.state_registry.get_or_create(
-            perception.conversation_id,
-            thread_id=perception.thread_id,
-        )
+        state = transaction_state
+        if state is None:
+            state = self.state_registry.get_or_create(
+                perception.conversation_id,
+                thread_id=perception.thread_id,
+            )
         state.turn_count += 1
         turn_meta = {
             "thread_id": perception.thread_id,
             "conversation_id": perception.conversation_id,
             "turn": state.turn_count,
-            "source": perception.source,
+            "source": perception.stimulus.kind.value,
         }
 
         emit = self._make_safe_emitter(event_emitter)
@@ -156,8 +240,15 @@ class ThinkingAgent:
                 "thread_id": perception.thread_id,
                 "conversation_id": perception.conversation_id,
                 "turn": state.turn_count,
-                "source": perception.source,
+                "source": perception.stimulus.kind.value,
             },
+        )
+
+        task_progress_update = self._pre_gen_task_state(perception, state)
+        self._apply_task_progress_update(state, task_progress_update)
+        emit(
+            "thinking_task_state",
+            self._task_state_event_payload(task_progress_update, perception, state),
         )
 
         decision = self._plan(perception, state)
@@ -244,6 +335,7 @@ class ThinkingAgent:
             execution_result=execution_result,
             state=state,
         )
+        self._apply_task_progress_update(state, summary.task_progress_update)
         emit("thinking_summary", self._summary_event_payload(summary, perception))
 
         self.episode_recorder.append(
@@ -289,6 +381,21 @@ class ThinkingAgent:
         return _safe
 
     @staticmethod
+    def _task_state_event_payload(
+        update: Optional[TaskProgressUpdate],
+        perception: PerceptionInput,
+        state: ConversationState,
+    ) -> Dict[str, Any]:
+        return {
+            "thread_id": perception.thread_id,
+            "conversation_id": perception.conversation_id,
+            "turn": state.turn_count,
+            "source": perception.stimulus.kind.value,
+            "task_progress_update": update.to_dict() if update is not None else None,
+            "task_progress": state.task_progress.to_dict(),
+        }
+
+    @staticmethod
     def _decision_event_payload(
         decision: ThinkingDecision,
         perception: PerceptionInput,
@@ -306,6 +413,7 @@ class ThinkingAgent:
             "request_complete": decision.request_complete,
             "capability_hint": list(decision.capability_hint or []),
             "episode_note": decision.episode_note,
+            "task_progress": state.task_progress.to_dict(),
         }
 
     @staticmethod
@@ -334,6 +442,11 @@ class ThinkingAgent:
             "conversation_id": perception.conversation_id,
             "answer_excerpt": str(summary.answer or "")[:240],
             "episode_note": summary.episode_note,
+            "task_progress_update": (
+                summary.task_progress_update.to_dict()
+                if summary.task_progress_update is not None
+                else None
+            ),
         }
 
     def on_flush(self, conversation_id: str, *, thread_id: str) -> List[Dict[str, Any]]:
@@ -370,8 +483,191 @@ class ThinkingAgent:
         """Read-only snapshot for the ``thread_state`` API."""
         return self.state_registry.snapshot(conversation_id)
 
+    def _render_working_memory(self, state: ConversationState) -> str:
+        if self.wm_reader is None:
+            return ""
+        try:
+            return self.wm_reader.render(
+                state.wm_entries,
+                language=self.prompt_language,
+                task_progress=None,
+            )
+        except TypeError:
+            return self.wm_reader.render(state.wm_entries, language=self.prompt_language)
+
+    @staticmethod
+    def _render_task_state(state: Any) -> str:
+        task_state = getattr(state, "task_state", None) or getattr(
+            state, "task_progress", TaskProgress()
+        )
+        lines = ["[Task State]", f"goal: {str(task_state.goal or '').strip() or '(empty)'}"]
+        lines.append("completed:")
+        lines.extend(f"- {item}" for item in task_state.completed) if task_state.completed else lines.append("- (none)")
+        lines.append("remaining:")
+        lines.extend(f"- {item}" for item in task_state.remaining) if task_state.remaining else lines.append("- (none)")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _apply_task_progress_update(
+        state: ConversationState,
+        update: Optional[TaskProgressUpdate],
+    ) -> None:
+        if update is None or update.is_empty():
+            return
+        if update.goal is not None:
+            state.task_progress.goal = str(update.goal or "").strip()
+        if update.completed is not None:
+            state.task_progress.completed = [
+                str(item or "").strip() for item in update.completed if str(item or "").strip()
+            ]
+        if update.remaining is not None:
+            state.task_progress.remaining = [
+                str(item or "").strip() for item in update.remaining if str(item or "").strip()
+            ]
+
     # ------------------------------------------------------------------
-    # Planning pass (LLM #1)
+    # Task-state pre-generation pass (LLM #1 in think-life)
+    # ------------------------------------------------------------------
+
+    def _pre_gen_task_state(
+        self,
+        perception: PerceptionInput,
+        state: ConversationState,
+    ) -> Optional[TaskProgressUpdate]:
+        prompt_messages = self._build_task_state_messages(perception, state)
+        try:
+            structured_model = self.model_provider.model.with_structured_output(
+                TaskProgressUpdate,
+                include_raw=False,
+            )
+        except Exception:
+            structured_model = self.model_provider.model.with_structured_output(TaskProgressUpdate)
+
+        result = self._invoke_structured(
+            structured_model,
+            messages=prompt_messages,
+            call_name="thinking.pre_gen_task_state",
+        )
+        return self._coerce_task_progress_update(result)
+
+    def _build_task_state_messages(
+        self,
+        perception: PerceptionInput,
+        state: ConversationState,
+    ) -> List[Dict[str, str]]:
+        sections: List[str] = []
+        base = self._task_state_base_block()
+        if base:
+            sections.append(base)
+        instructions = self._task_state_instructions_block()
+        if instructions:
+            sections.append(instructions)
+        input_block = self._render_perception_input_block(perception)
+        if input_block:
+            sections.append(input_block)
+        dialogue_block = self._render_dialogue_history_block(perception)
+        if dialogue_block:
+            sections.append(dialogue_block)
+        if perception.scene_context:
+            sections.append(f"[Scene Context]\n{perception.scene_context}")
+
+        sections.append(self._render_task_state(state))
+
+        if self.wm_reader is not None:
+            wm_block = self._render_working_memory(state)
+            if wm_block:
+                sections.append(wm_block)
+
+        system_text = "\n\n".join(section for section in sections if section).strip()
+        messages: List[Dict[str, str]] = [{"role": "system", "content": system_text}]
+        messages.append({"role": "user", "content": str(perception.stimulus.text or "").strip()})
+        return messages
+
+    def _task_state_base_block(self) -> str:
+        if self._task_state_base_override:
+            return self._task_state_base_override
+        if self.prompt_language == "zh":
+            return (
+                "[任务状态预处理]\n"
+                "你是 think-life 思考层的任务状态预处理器。你的工作是先阅读当前输入、隐藏运行时上下文、"
+                "场景片段和工作记忆，然后只更新可读的任务进度状态。不要决定是否调用工具，不要回复用户。"
+            )
+        return (
+            "[Task-State Preprocessor]\n"
+            "You are the task-state preprocessor for the think-life thinking layer. Read the current stimulus, "
+            "dialogue history, conversation scene, and selected transaction working memory, then update only "
+            "that transaction's readable task state. Do not choose tools and do not reply to the user."
+        )
+
+    def _task_state_instructions_block(self) -> str:
+        if self._task_state_instructions_override:
+            return self._task_state_instructions_override
+        if self.prompt_language == "zh":
+            return (
+                "[输出字段]\n"
+                "- goal: 可选；用户当前整体任务，保持稳定，除非任务真的变化。\n"
+                "- completed: 可选；已经由对话或执行反馈确认完成的步骤。省略表示不变，空数组表示清空。\n"
+                "- remaining: 可选；仍未完成的步骤。省略表示不变，空数组表示已无剩余步骤。\n"
+                "[约束]\n"
+                "- 只输出任务状态更新，不要输出 mode/tool_name/instruction/answer。\n"
+                "- 不要把原始工具结果复制进状态；只写短、可读、可执行的任务步骤。\n"
+                "- 当前刺激为 execution_feedback 时，优先根据可读反馈和可见工具证据更新 completed/remaining。"
+            )
+        return (
+            "[Output Fields]\n"
+            "- goal: optional; the user's overall current task. Keep stable unless the task really changes.\n"
+            "- completed: optional; steps confirmed complete by dialogue or execution feedback. Omit to keep unchanged; [] clears it.\n"
+            "- remaining: optional; unfinished steps. Omit to keep unchanged; [] means no remaining steps.\n"
+            "[Constraints]\n"
+            "- Output only task-state updates; do not output mode/tool_name/instruction/answer.\n"
+            "- Do not copy raw tool results into state; write short, readable, actionable steps.\n"
+            "- For execution_feedback, update completed/remaining from readable feedback and visible tool evidence."
+        )
+
+    @staticmethod
+    def _truncate_prompt_value(value: Any, limit: int = 2000) -> str:
+        text = str(value or "").strip()
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)].rstrip() + "..."
+
+    def _render_perception_input_block(self, perception: PerceptionInput) -> str:
+        lines = [
+            "[Current Stimulus]",
+            f"kind: {perception.stimulus.kind.value}",
+            f"thread_id: {perception.thread_id}",
+            f"conversation_id: {perception.conversation_id}",
+            f"transaction_id: {perception.transaction_id or '(unresolved)'}",
+            "text:",
+            self._truncate_prompt_value(perception.stimulus.text, 2000) or "(empty)",
+        ]
+        return "\n".join(lines).strip()
+
+    def _render_dialogue_history_block(self, perception: PerceptionInput) -> str:
+        history = list(perception.dialogue_history or [])
+        lines = ["[Dialogue History]"]
+        if history:
+            for item in history[-6:]:
+                if not isinstance(item, dict):
+                    continue
+                role = str(item.get("role", "") or "").strip() or "unknown"
+                content = self._truncate_prompt_value(item.get("content", ""), 500)
+                if content:
+                    lines.append(f"- {role}: {content}")
+        return "\n".join(lines).strip() if len(lines) > 1 else ""
+
+    @staticmethod
+    def _safe_prompt_json(value: Any, *, limit: int) -> str:
+        try:
+            text = json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2)
+        except Exception:
+            text = str(value or "")
+        if len(text) <= limit:
+            return text
+        return text[: max(0, limit - 3)].rstrip() + "..."
+
+    # ------------------------------------------------------------------
+    # Decision pass (LLM #2 in think-life)
     # ------------------------------------------------------------------
 
     def _plan(self, perception: PerceptionInput, state: ConversationState) -> ThinkingDecision:
@@ -414,38 +710,26 @@ class ThinkingAgent:
 
         sections.append(self._plan_instructions_block())
 
-        runtime_block = build_runtime_context_block(
-            source=perception.source,
-            system_context=perception.system_context,
-            language=self.prompt_language,
-            schedule_template=self._runtime_ctx_schedule_override,
-            generic_template=self._runtime_ctx_generic_override,
-        )
-        if runtime_block:
-            sections.append(runtime_block)
+        input_block = self._render_perception_input_block(perception)
+        if input_block:
+            sections.append(input_block)
 
-        scene_tail = ""
-        if isinstance(perception.system_context, dict):
-            scene_tail = str(perception.system_context.get("scene_tail_text", "") or "").strip()
-        if scene_tail:
-            sections.append(scene_tail)
+        dialogue_block = self._render_dialogue_history_block(perception)
+        if dialogue_block:
+            sections.append(dialogue_block)
+        if perception.scene_context:
+            sections.append(f"[Scene Context]\n{perception.scene_context}")
+
+        sections.append(self._render_task_state(state))
 
         if self.wm_reader is not None:
-            wm_block = self.wm_reader.render(state.wm_entries, language=self.prompt_language)
+            wm_block = self._render_working_memory(state)
             if wm_block:
                 sections.append(wm_block)
 
         system_text = "\n\n".join(section for section in sections if section).strip()
         messages: List[Dict[str, str]] = [{"role": "system", "content": system_text}]
-        for item in perception.history_messages:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role", "") or "").strip().lower()
-            content = str(item.get("content", "") or "").strip()
-            if role not in {"user", "assistant"} or not content:
-                continue
-            messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": str(perception.user_message or "").strip()})
+        messages.append({"role": "user", "content": str(perception.stimulus.text or "").strip()})
         return messages
 
     def _plan_instructions_block(self) -> str:
@@ -485,6 +769,7 @@ class ThinkingAgent:
             "[Hard Constraints]\n"
             "- You hold no tools yourself; delegate via execute with at most one tool_name per round.\n"
             "- Multi-step tasks: trust Structured tool result count on feedback; request_complete=false until done.\n"
+            "- Read [Current Stimulus], [Scene Context], [Task State], and [Working Memory] before deciding.\n"
             "- When mode==execute, leave answer empty and let the execution layer work first.\n"
             "- For small talk or delegable-unrelated requests, choose answer_directly; use silent for acks that need no reply.\n"
             "- mode==silent: no delegate, no reply; record reasoning/episode_note and wait for further stimulus.\n"
@@ -587,18 +872,13 @@ class ThinkingAgent:
             sections.append(self.persona_prompt)
         sections.append(self._summarize_instructions_block(execution_result))
 
-        runtime_block = build_runtime_context_block(
-            source=perception.source,
-            system_context=perception.system_context,
-            language=self.prompt_language,
-            schedule_template=self._runtime_ctx_schedule_override,
-            generic_template=self._runtime_ctx_generic_override,
-        )
-        if runtime_block:
-            sections.append(runtime_block)
+        sections.append(self._render_perception_input_block(perception))
+        if perception.scene_context:
+            sections.append(f"[Scene Context]\n{perception.scene_context}")
+        sections.append(self._render_task_state(state))
 
         if self.wm_reader is not None:
-            wm_block = self.wm_reader.render(state.wm_entries, language=self.prompt_language)
+            wm_block = self._render_working_memory(state)
             if wm_block:
                 sections.append(wm_block)
 
@@ -625,15 +905,7 @@ class ThinkingAgent:
 
         system_text = "\n\n".join(section for section in sections if section).strip()
         messages: List[Dict[str, str]] = [{"role": "system", "content": system_text}]
-        for item in perception.history_messages:
-            if not isinstance(item, dict):
-                continue
-            role = str(item.get("role", "") or "").strip().lower()
-            content = str(item.get("content", "") or "").strip()
-            if role not in {"user", "assistant"} or not content:
-                continue
-            messages.append({"role": role, "content": content})
-        messages.append({"role": "user", "content": str(perception.user_message or "").strip()})
+        messages.append({"role": "user", "content": str(perception.stimulus.text or "").strip()})
         return messages
 
     def _summarize_instructions_block(self, execution_result: ExecutionResult) -> str:
@@ -654,8 +926,10 @@ class ThinkingAgent:
             "Using the execution report, produce the final reply for the user, in structured form:\n"
             "- answer: required, the natural-language reply (match the user's language).\n"
             "- episode_note: optional short note worth remembering long-term.\n"
+            "- task_progress_update: optional partial update after this execution: goal, completed, remaining. Omit unchanged fields.\n"
             "[Hard Constraints]\n"
             "- Do not echo raw execution output; summarize only what matters to the user.\n"
+            "- Update task_progress_update only from the execution report and visible tool evidence.\n"
             "- If the execution report is insufficient or limit_reached, say so plainly; do not fabricate evidence."
         )
 
@@ -680,7 +954,56 @@ class ThinkingAgent:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _coerce_decision(raw: Any) -> ThinkingDecision:
+    def _coerce_string_list(value: Any) -> Optional[List[str]]:
+        if value is None:
+            return None
+        if not isinstance(value, list):
+            return None
+        return [str(item or "").strip() for item in value if str(item or "").strip()]
+
+    @classmethod
+    def _coerce_task_progress_update(cls, raw: Any) -> Optional[TaskProgressUpdate]:
+        if raw is None:
+            return None
+        if isinstance(raw, TaskProgressUpdate):
+            return raw if not raw.is_empty() else None
+        if isinstance(raw, TaskProgress):
+            update = TaskProgressUpdate(
+                goal=raw.goal,
+                completed=list(raw.completed),
+                remaining=list(raw.remaining),
+            )
+            return update if not update.is_empty() else None
+        if isinstance(raw, dict):
+            update = TaskProgressUpdate(
+                goal=str(raw.get("goal", "") or "").strip() if "goal" in raw else None,
+                completed=cls._coerce_string_list(raw.get("completed")) if "completed" in raw else None,
+                remaining=cls._coerce_string_list(raw.get("remaining")) if "remaining" in raw else None,
+            )
+            return update if not update.is_empty() else None
+        if any(hasattr(raw, name) for name in ("goal", "completed", "remaining")):
+            update = TaskProgressUpdate(
+                goal=(
+                    str(getattr(raw, "goal", "") or "").strip()
+                    if hasattr(raw, "goal")
+                    else None
+                ),
+                completed=(
+                    cls._coerce_string_list(getattr(raw, "completed", None))
+                    if hasattr(raw, "completed")
+                    else None
+                ),
+                remaining=(
+                    cls._coerce_string_list(getattr(raw, "remaining", None))
+                    if hasattr(raw, "remaining")
+                    else None
+                ),
+            )
+            return update if not update.is_empty() else None
+        return None
+
+    @classmethod
+    def _coerce_decision(cls, raw: Any) -> ThinkingDecision:
         if isinstance(raw, ThinkingDecision):
             return raw
         if isinstance(raw, dict):
@@ -711,17 +1034,33 @@ class ThinkingAgent:
             answer=str(raw or "").strip() or None,
         )
 
-    @staticmethod
-    def _coerce_summary(raw: Any, execution_result: ExecutionResult) -> ThinkingSummary:
+    @classmethod
+    def _coerce_summary(cls, raw: Any, execution_result: ExecutionResult) -> ThinkingSummary:
         if isinstance(raw, ThinkingSummary):
             answer = str(raw.answer or "").strip() or execution_result.summary
-            return ThinkingSummary(answer=answer, episode_note=raw.episode_note)
+            return ThinkingSummary(
+                answer=answer,
+                episode_note=raw.episode_note,
+                task_progress_update=raw.task_progress_update,
+            )
         if isinstance(raw, dict):
             answer = str(raw.get("answer", "") or "").strip() or execution_result.summary
-            return ThinkingSummary(answer=answer, episode_note=raw.get("episode_note"))
+            return ThinkingSummary(
+                answer=answer,
+                episode_note=raw.get("episode_note"),
+                task_progress_update=cls._coerce_task_progress_update(
+                    raw.get("task_progress_update")
+                ),
+            )
         if hasattr(raw, "answer"):
             answer = str(getattr(raw, "answer", "") or "").strip() or execution_result.summary
-            return ThinkingSummary(answer=answer, episode_note=getattr(raw, "episode_note", None))
+            return ThinkingSummary(
+                answer=answer,
+                episode_note=getattr(raw, "episode_note", None),
+                task_progress_update=cls._coerce_task_progress_update(
+                    getattr(raw, "task_progress_update", None)
+                ),
+            )
         return ThinkingSummary(answer=str(raw or "").strip() or execution_result.summary)
 
     def _fallback_answer(self, perception: PerceptionInput) -> str:

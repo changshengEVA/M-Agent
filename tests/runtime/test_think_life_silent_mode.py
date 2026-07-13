@@ -1,7 +1,7 @@
 """Think-life silent planning mode."""
 from __future__ import annotations
 
-from m_agent.layers.thinking.state import (
+from m_agent.layers.thinking.contracts import (
     ThinkingDecision,
     is_execute_mode,
     is_reply_mode,

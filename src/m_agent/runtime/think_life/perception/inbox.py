@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
-from m_agent.runtime.think_life.contracts import Stimulus
+from m_agent.runtime.think_life.contracts import StimulusEnvelope
 
 
 @dataclass(order=True)
@@ -15,7 +15,7 @@ class _QueuedItem:
     priority: int
     occurred_at: str
     counter: int
-    stimulus: Stimulus = field(compare=False)
+    stimulus: StimulusEnvelope = field(compare=False)
 
 
 class StimulusInbox:
@@ -26,7 +26,7 @@ class StimulusInbox:
         self._queues: Dict[str, List[_QueuedItem]] = {}
         self._counter = itertools.count()
 
-    def push(self, stimulus: Stimulus, *, priority: int) -> None:
+    def push(self, stimulus: StimulusEnvelope, *, priority: int) -> None:
         tid = str(stimulus.thread_id or "").strip()
         if not tid:
             raise ValueError("stimulus.thread_id is required")
@@ -39,7 +39,7 @@ class StimulusInbox:
         with self._lock:
             heapq.heappush(self._queues.setdefault(tid, []), item)
 
-    def pop_next(self, thread_id: str) -> Optional[Stimulus]:
+    def pop_next(self, thread_id: str) -> Optional[StimulusEnvelope]:
         tid = str(thread_id or "").strip()
         with self._lock:
             queue = self._queues.get(tid)

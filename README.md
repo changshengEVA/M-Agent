@@ -88,6 +88,10 @@ ALIBABA_EMBED_MODEL=text-embedding-v4
 LANGUAGE=zh
 EMBED_PROVIDER=aliyun
 LLM_PROVIDER=deepseek
+
+# Web search (Tavily / You.com — optional, for the web_search tool)
+YDC_API_KEY=YOUR_YOU_COM_KEY
+TAVILY_API_KEY=YOUR_TAVILY_KEY
 ```
 
 ---
@@ -158,17 +162,21 @@ python -m m_agent.api.chat_api \
 
 ## Episodic memory in this repo (simple RAG)
 
-The **chat stack** uses a lightweight **RAG episodic backend** (`SimpleRagEpisodicBackend`) configured via `config/systems/episodic/rag_default.yaml`. It chunks dialogue, embeds locally, and serves `shallow_recall` / `deep_recall` through the pluggable `systems` layer.
+The **chat stack** uses a **RAG episodic backend** (`SimpleRagEpisodicBackend`) by default, configured via `config/systems/episodic/rag_default.yaml`. It writes to the per-user vector index after each turn and flush, and serves `shallow_recall` / `deep_recall` queries.
 
-With **Think-life**, a separate **Scene log** (chronological, cross-transaction narrative) is stored under `data/memory/chat-api/<user>/scene/<thread_id>.jsonl`, alongside episodic RAG and dialogue archives.
+- **Pluggable subsystem guides:** [docs/systems-plugin/](docs/systems-plugin/) (one Chinese and one English guide for each of WM, episodic memory, and tools)
+- **RAG index:** `data/memory/chat-api/<user>/episodic/` (`chunks.jsonl`, `embeddings.npy`)
+- **Dialogue archive** (flush): `data/memory/chat-api/<user>/dialogues/`
+- **Scene log** (Think-life): `data/memory/chat-api/<user>/scene/<thread_id>.jsonl` — a chronological, cross-transaction record of what was said and done
+- **How this differs from WM:** WM is isolated by **transaction** (Think-life) or conversation segment (legacy) and provides hot in-process context; episodic memory and Scene logs can be retrieved across turns or read chronologically
+
+For persistence details, see **[docs/systems-plugin/episodic.md](docs/systems-plugin/episodic.md)**. `GET .../memory/state` returns `thread_state.episodic_persistence`.
 
 ## WorkspaceMem (full memory stack + benchmarks)
 
-The evidence-driven **MemoryAgent / MemoryCore** implementation and **LoCoMo / LongMemEval / REALTALK** evaluation pipelines live in the sibling repository:
+The evidence-driven **MemoryAgent / MemoryCore** implementation and **LoCoMo / LongMemEval / REALTALK** evaluation pipelines have moved to a standalone repository:
 
 **[F:/AI/WorkspaceMem](F:/AI/WorkspaceMem)** (`workspace_mem` Python package)
-
-Install and run eval from that repo; M-Agent intentionally does not vendor those scripts anymore.
 
 - **[docs/project-structure.md](docs/project-structure.md)** — M-Agent layout
 - **[src/m_agent/systems/README.md](src/m_agent/systems/README.md)** — plug-in contracts

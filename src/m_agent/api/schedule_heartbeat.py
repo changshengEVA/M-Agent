@@ -182,6 +182,9 @@ class ScheduleHeartbeatCoordinator:
                     try:
                         queued = runtime.think_life.enqueue_schedule(
                             thread_id=target_thread_id,
+                            conversation_id=runtime._get_or_create_thread(
+                                target_thread_id
+                            ).conversation_id,
                             schedule_id=schedule_id,
                             text=schedule_prompt,
                             payload=system_context,

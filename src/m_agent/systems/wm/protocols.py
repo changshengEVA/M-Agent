@@ -23,7 +23,13 @@ from typing import Any, Dict, List, Protocol, runtime_checkable
 class WMReader(Protocol):
     """Render the in-conversation WM entries as a string for prompt injection."""
 
-    def render(self, entries: List[Dict[str, Any]], *, language: str) -> str:
+    def render(
+        self,
+        entries: List[Dict[str, Any]],
+        *,
+        language: str,
+        task_progress: Any = None,
+    ) -> str:
         ...
 
 
@@ -47,7 +53,13 @@ class WMWriter(Protocol):
 class WMDisplay(Protocol):
     """Render recent WM entries for optional execution-layer prompt display."""
 
-    def render(self, entries: List[Dict[str, Any]], *, language: str) -> str:
+    def render(
+        self,
+        entries: List[Dict[str, Any]],
+        *,
+        language: str,
+        task_progress: Any = None,
+    ) -> str:
         ...
 
 

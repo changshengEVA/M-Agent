@@ -1,7 +1,7 @@
 """Bridge Think-life contracts to layer PerceptionInput / ThinkContext."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Dict, List, Optional
 
 from m_agent.layers.perception import PerceptionInput, build_perception_input
@@ -9,7 +9,7 @@ from m_agent.runtime.think_life.contracts import (
     SceneActor,
     SceneEntry,
     SceneEntryType,
-    Stimulus,
+    StimulusEnvelope,
     StimulusKind,
     TransactionRecord,
 )
@@ -25,7 +25,7 @@ from m_agent.systems.scene.protocols import SceneReader
 @dataclass
 class ThinkContext:
     transaction: TransactionRecord
-    stimulus: Stimulus
+    stimulus: StimulusEnvelope
     scene_tail: List[SceneEntry]
 
 
@@ -75,14 +75,14 @@ def latest_user_utterance_from_scene(entries: List[SceneEntry]) -> str:
 def build_perception_for_stimulus(
     *,
     transaction: TransactionRecord,
-    stimulus: Stimulus,
+    stimulus: StimulusEnvelope,
     scene_reader: SceneReader,
     scene_context_max_entries: int,
     history_messages: Optional[List[Dict[str, Any]]] = None,
 ) -> PerceptionInput:
     scene_tail = read_scene_segment(
         scene_reader,
-        transaction.thread_id,
+        transaction.conversation_id,
         max_entries=scene_context_max_entries,
     )
     pending_user_request = ""
@@ -92,17 +92,12 @@ def build_perception_for_stimulus(
         stimulus,
         pending_user_request=pending_user_request,
     )
-    system_context: Dict[str, Any] = {
-        "think_life": True,
-        "transaction_id": transaction.transaction_id,
-        "stimulus_kind": stimulus.kind.value,
-        "scene_tail_text": format_scene_tail(scene_tail),
-    }
+    payload = dict(stimulus.payload or {})
     if stimulus.kind == StimulusKind.EXECUTION_FEEDBACK:
         tool_history = stimulus.payload.get("tool_history")
         structured_summary = feedback_summary_from_tool_history(tool_history)
         last_step = extract_last_tool_step(tool_history)
-        system_context["execution_feedback"] = {
+        payload["execution_feedback"] = {
             "delegate_id": stimulus.delegate_id,
             "summary": structured_summary or stimulus.payload.get("summary", ""),
             "llm_summary": stimulus.payload.get("summary", ""),
@@ -111,36 +106,30 @@ def build_perception_for_stimulus(
             "multi_step_request": looks_like_multi_step_request(pending_user_request),
         }
         if pending_user_request:
-            system_context["pending_user_request"] = pending_user_request
-    source = "user"
-    if stimulus.kind == StimulusKind.HEARTBEAT:
-        source = "schedule"
-    elif stimulus.kind == StimulusKind.EXECUTION_FEEDBACK:
-        source = "execution_feedback"
-
+            payload["pending_user_request"] = pending_user_request
     return build_perception_input(
-        message=user_message,
         thread_id=transaction.thread_id,
-        conversation_id=transaction.transaction_id,
+        conversation_id=transaction.conversation_id,
+        transaction_id=transaction.transaction_id,
+        stimulus=replace(stimulus.stimulus, text=user_message, payload=payload),
         history_messages=history_messages,
-        source=source,
-        system_context=system_context,
+        scene_context=format_scene_tail(scene_tail),
     )
 
 
 def _stimulus_user_message(
-    stimulus: Stimulus,
+    stimulus: StimulusEnvelope,
     *,
     pending_user_request: str = "",
 ) -> str:
     if stimulus.kind == StimulusKind.USER_MESSAGE:
-        return str(stimulus.payload.get("text", "") or "").strip()
-    if stimulus.kind == StimulusKind.HEARTBEAT:
-        return str(stimulus.payload.get("text", "") or stimulus.payload.get("prompt", "") or "").strip()
+        return str(stimulus.text or "").strip()
+    if stimulus.kind == StimulusKind.SCHEDULED_PLAN:
+        return str(stimulus.text or stimulus.payload.get("prompt", "") or "").strip()
     if stimulus.kind == StimulusKind.EXECUTION_FEEDBACK:
         return build_feedback_user_message(
             pending_user_request=pending_user_request,
             tool_history=stimulus.payload.get("tool_history"),
             llm_summary=str(stimulus.payload.get("summary", "") or "").strip(),
         )
-    return str(stimulus.payload.get("text", "") or "").strip() or "[stimulus]"
+    return str(stimulus.text or "").strip() or "[stimulus]"

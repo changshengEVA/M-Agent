@@ -5,10 +5,12 @@ from m_agent.layers.perception.assemble import (
     build_perception_input,
     normalize_history_messages,
 )
-from m_agent.layers.perception.contracts import PerceptionInput
+from m_agent.layers.perception.contracts import PerceptionInput, Stimulus, StimulusKind
 
 __all__ = [
     "PerceptionInput",
+    "Stimulus",
+    "StimulusKind",
     "build_perception_input",
     "normalize_history_messages",
 ]

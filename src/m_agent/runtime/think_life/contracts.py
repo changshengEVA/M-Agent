@@ -3,7 +3,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
+from m_agent.layers.perception.contracts import Stimulus, StimulusKind
+
+if TYPE_CHECKING:
+    from m_agent.layers.thinking.contracts import TaskState
+
+
+def _new_task_state() -> "TaskState":
+    from m_agent.layers.thinking.contracts import TaskState
+
+    return TaskState()
 
 
 class TransactionStatus(str, Enum):
@@ -28,12 +39,6 @@ class TransactionKind(str, Enum):
     SCHEDULE = "schedule"
     CONTINUATION = "continuation"
     SYSTEM = "system"
-
-
-class StimulusKind(str, Enum):
-    USER_MESSAGE = "user_message"
-    HEARTBEAT = "heartbeat"
-    EXECUTION_FEEDBACK = "execution_feedback"
 
 
 class SceneEntryType(str, Enum):
@@ -81,11 +86,15 @@ class TransactionCorrelation:
 class TransactionRecord:
     transaction_id: str
     thread_id: str
+    conversation_id: str = ""
     status: TransactionStatus = TransactionStatus.PENDING
     priority: int = 50
     kind: TransactionKind = TransactionKind.USER_TASK
     correlation: TransactionCorrelation = field(default_factory=TransactionCorrelation)
     wm_entries: List[Dict[str, Any]] = field(default_factory=list)
+    task_state: "TaskState" = field(default_factory=_new_task_state)
+    episode_buffer: List[Dict[str, Any]] = field(default_factory=list)
+    turn_count: int = 0
     active_delegate_id: Optional[str] = None
     linked_transaction_ids: List[str] = field(default_factory=list)
     think_rounds: int = 0
@@ -95,24 +104,51 @@ class TransactionRecord:
     terminal_at: Optional[str] = None
     last_error: Optional[str] = None
 
+    def __post_init__(self) -> None:
+        if not str(self.conversation_id or "").strip():
+            self.conversation_id = f"{str(self.thread_id or '').strip()}::0"
+
     def can_accept_wm_write(self) -> bool:
         return self.status in {
             TransactionStatus.RUNNING,
             TransactionStatus.WAITING_EXECUTION,
         }
 
+    @property
+    def task_progress(self) -> "TaskState":
+        """Compatibility alias while prompt code migrates to ``task_state``."""
+        return self.task_state
+
+    @task_progress.setter
+    def task_progress(self, value: "TaskState") -> None:
+        self.task_state = value
+
 
 @dataclass(frozen=True)
-class Stimulus:
+class StimulusEnvelope:
+    """Queue/runtime metadata wrapped around readable stimulus content."""
+
     stimulus_id: str
     thread_id: str
-    kind: StimulusKind
-    payload: Dict[str, Any]
+    conversation_id: str
+    stimulus: Stimulus
     occurred_at: str
-    suggested_transaction_id: Optional[str] = None
+    transaction_id: Optional[str] = None
     delegate_id: Optional[str] = None
     schedule_id: Optional[str] = None
     priority_override: Optional[int] = None
+
+    @property
+    def kind(self) -> StimulusKind:
+        return self.stimulus.kind
+
+    @property
+    def text(self) -> str:
+        return self.stimulus.text
+
+    @property
+    def payload(self) -> Dict[str, Any]:
+        return self.stimulus.payload
 
 
 @dataclass

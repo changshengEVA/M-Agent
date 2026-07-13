@@ -21,7 +21,7 @@ systems:
   tools:    ../../systems/tools/default.yaml
 
 runtime:
-  profile: legacy
+  profile: think_life
   think_life:
     # max_delegates_per_transaction / max_think_rounds: omit or null = unlimited
     scene_context_max_entries: 40
@@ -32,7 +32,3 @@ runtime:
       default_user_priority: 10
       default_feedback_priority: 20
       default_heartbeat_priority: 40
-
-execution:
-  max_executions_per_turn: 1
-  skip_summarize_on_direct_answer: true

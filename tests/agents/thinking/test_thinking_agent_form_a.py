@@ -14,9 +14,11 @@ import pytest
 
 from m_agent.layers.execution.contracts import ExecutionRequest, ExecutionResult
 from m_agent.layers.execution.model_provider import ModelProvider
+from m_agent.layers.perception.contracts import Stimulus, StimulusKind
 from m_agent.layers.thinking import (
     ConversationStateRegistry,
     PerceptionInput,
+    TaskProgressUpdate,
     ThinkingAgent,
     ThinkingDecision,
     ThinkingSummary,
@@ -86,13 +88,21 @@ class _StubExecutionAgent:
 
 
 def _make_perception(**overrides: Any) -> PerceptionInput:
+    text = str(overrides.pop("user_message", "你好"))
+    source = str(overrides.pop("source", "user"))
+    payload = dict(overrides.pop("system_context", {}) or {})
+    history = list(overrides.pop("history_messages", []) or [])
+    kind = {
+        "user": StimulusKind.USER_MESSAGE,
+        "schedule": StimulusKind.SCHEDULED_PLAN,
+        "execution_feedback": StimulusKind.EXECUTION_FEEDBACK,
+    }.get(source, StimulusKind.OBSERVATION_TRIGGER)
     defaults: Dict[str, Any] = dict(
         thread_id="t1",
         conversation_id="t1::0",
-        user_message="你好",
-        history_messages=[],
-        source="user",
-        system_context={},
+        transaction_id="txn-1",
+        stimulus=Stimulus(kind=kind, text=text, payload=payload),
+        dialogue_history=history,
     )
     defaults.update(overrides)
     return PerceptionInput(**defaults)
@@ -105,10 +115,14 @@ def _make_agent(
     execution_result: ExecutionResult,
     wm_config: WorkingMemoryConfig | None = None,
     max_executions_per_turn: int = 1,
+    prompt_language: str = "zh",
+    task_updates: List[TaskProgressUpdate] | None = None,
 ) -> tuple[ThinkingAgent, _StubExecutionAgent, _FakeChatModel]:
     wm_cfg = wm_config or WorkingMemoryConfig(enable=True)
+    task_update_queue = task_updates or [TaskProgressUpdate() for _ in decisions]
     fake_model = _FakeChatModel(
         {
+            TaskProgressUpdate: task_update_queue,
             ThinkingDecision: decisions,
             ThinkingSummary: summaries,
         }
@@ -124,7 +138,7 @@ def _make_agent(
         wm_writer=DefaultWMWriter(wm_cfg),
         episode_recorder=DefaultEpisodeRecorder(),
         state_registry=ConversationStateRegistry(),
-        prompt_language="zh",
+        prompt_language=prompt_language,
         max_executions_per_turn=max_executions_per_turn,
         skip_summarize_on_direct_answer=True,
     )
@@ -145,7 +159,8 @@ def test_answer_directly_skips_execution_and_summarize() -> None:
     assert turn.execution_result is None
     assert turn.summary is None
     assert stub.calls == []
-    # Only the plan LLM call was made; summarize was skipped.
+    # Task-state and decision LLM calls were made; summarize was skipped.
+    assert len(fake_model.structured_calls(TaskProgressUpdate)) == 1
     assert len(fake_model.structured_calls(ThinkingDecision)) == 1
     assert fake_model.structured_calls(ThinkingSummary) == []
 
@@ -169,6 +184,7 @@ def test_silent_mode_skips_fallback_answer() -> None:
     assert turn.answer == ""
     assert turn.execution_result is None
     assert stub.calls == []
+    assert len(fake_model.structured_calls(TaskProgressUpdate)) == 1
     assert len(fake_model.structured_calls(ThinkingDecision)) == 1
 
 
@@ -197,7 +213,8 @@ def test_execute_then_summarize_writes_wm_and_returns_summary_answer() -> None:
     assert len(stub.calls) == 1
     assert "查一下昨天的事" in stub.calls[0].instruction
     assert stub.calls[0].thread_id == "t1"
-    # Both LLM calls happened.
+    # Task-state, decision, and legacy summarize LLM calls happened.
+    assert len(fake_model.structured_calls(TaskProgressUpdate)) == 1
     assert len(fake_model.structured_calls(ThinkingDecision)) == 1
     assert len(fake_model.structured_calls(ThinkingSummary)) == 1
 
@@ -206,6 +223,93 @@ def test_execute_then_summarize_writes_wm_and_returns_summary_answer() -> None:
     assert state is not None
     assert len(state.wm_entries) == 1
     assert state.wm_entries[0]["tool"] == "deep_recall"
+
+
+def test_task_progress_update_is_rendered_in_next_plan_prompt() -> None:
+    decisions = [
+        ThinkingDecision(
+            mode="execute",
+            tool_name="deep_recall",
+            instruction="find the relevant travel detail",
+        ),
+        ThinkingDecision(mode="answer_directly", answer="done"),
+    ]
+    summaries = [
+        ThinkingSummary(
+            answer="I found the travel detail.",
+            task_progress_update=TaskProgressUpdate(
+                completed=["find the relevant travel detail"],
+                remaining=["answer the user"],
+            ),
+        )
+    ]
+    exec_result = ExecutionResult(
+        summary="found travel detail",
+        tool_history=[
+            {
+                "tool_name": "deep_recall",
+                "params": {"question": "travel detail"},
+                "result": {"answer": "train at 9"},
+            }
+        ],
+    )
+    agent, _, fake_model = _make_agent(
+        decisions=decisions,
+        summaries=summaries,
+        execution_result=exec_result,
+        prompt_language="en",
+        task_updates=[
+            TaskProgressUpdate(
+                goal="answer the travel question",
+                remaining=["find the relevant travel detail", "answer the user"],
+            ),
+            TaskProgressUpdate(),
+        ],
+    )
+
+    first = agent.handle(_make_perception(user_message="check my travel detail"))
+    second = agent.handle(_make_perception(user_message="continue"))
+
+    assert first.answer == "I found the travel detail."
+    assert second.answer == "done"
+    state = agent.snapshot_conversation("t1::0")
+    assert state is not None
+    assert state.task_progress.goal == "answer the travel question"
+    assert state.task_progress.completed == ["find the relevant travel detail"]
+    assert state.task_progress.remaining == ["answer the user"]
+
+    second_plan_prompt = fake_model.structured_calls(ThinkingDecision)[1][0]["content"]
+    assert "[Task State]" in second_plan_prompt
+    assert "goal: answer the travel question" in second_plan_prompt
+    assert "find the relevant travel detail" in second_plan_prompt
+    assert "answer the user" in second_plan_prompt
+
+
+def test_current_input_is_rendered_in_task_state_and_decision_prompts() -> None:
+    decisions = [ThinkingDecision(mode="answer_directly", answer="ok")]
+    agent, _, fake_model = _make_agent(
+        decisions=decisions,
+        summaries=[],
+        execution_result=ExecutionResult(summary=""),
+        prompt_language="en",
+        task_updates=[TaskProgressUpdate(goal="handle schedule", remaining=["reply"])],
+    )
+
+    agent.handle(
+        _make_perception(
+            user_message="Reminder fired",
+            source="schedule",
+            system_context={"schedule_id": "sch_1", "trigger_source": "schedule"},
+        )
+    )
+
+    task_prompt = fake_model.structured_calls(TaskProgressUpdate)[0][0]["content"]
+    decision_prompt = fake_model.structured_calls(ThinkingDecision)[0][0]["content"]
+    for prompt in (task_prompt, decision_prompt):
+        assert "[Current Stimulus]" in prompt
+        assert "kind: scheduled_plan" in prompt
+        assert "Reminder fired" in prompt
+        assert '"schedule_id": "sch_1"' not in prompt
 
 
 def test_execute_with_empty_instruction_falls_back_to_direct_answer() -> None:
@@ -256,8 +360,15 @@ def test_event_emitter_receives_plan_only_on_direct_answer() -> None:
     agent.handle(_make_perception(), event_emitter=lambda et, p: events.append((et, p)))
 
     types = [t for t, _ in events]
-    # Direct-answer flow: started -> plan -> completed (no execution_*, no summary)
-    assert types == ["thinking_started", "thinking_plan", "thinking_completed"]
+    # Direct-answer flow: started -> task_state -> plan -> completed (no execution_*, no summary)
+    assert types == [
+        "thinking_started",
+        "thinking_task_state",
+        "thinking_plan",
+        "thinking_completed",
+    ]
+    task_payload = next(p for t, p in events if t == "thinking_task_state")
+    assert task_payload["task_progress"] == {"goal": "", "completed": [], "remaining": []}
     # plan payload exposes mode and reasoning fields
     plan_payload = next(p for t, p in events if t == "thinking_plan")
     assert plan_payload["mode"] == "answer_directly"
@@ -289,6 +400,7 @@ def test_event_emitter_receives_full_phases_on_execute() -> None:
     types = [t for t, _ in events]
     assert types == [
         "thinking_started",
+        "thinking_task_state",
         "thinking_plan",
         "execution_started",
         "execution_completed",

@@ -3,11 +3,12 @@ from __future__ import annotations
 
 import copy
 import re
+from dataclasses import replace
 from typing import Any, Dict, List, Optional
 
 from m_agent.layers.execution.contracts import ParamFillResult
 from m_agent.layers.perception.contracts import PerceptionInput
-from m_agent.runtime.think_life.contracts import Stimulus, StimulusKind
+from m_agent.runtime.think_life.contracts import StimulusEnvelope, StimulusKind
 
 _MULTI_STEP_MARKERS = (
     "一周",
@@ -179,7 +180,7 @@ def param_gap_summary(fill: ParamFillResult) -> str:
 def premature_reply_block_reason(
     *,
     pending_user_request: str,
-    stimulus: Stimulus,
+    stimulus: StimulusEnvelope,
 ) -> Optional[str]:
     """Return a block reason when answer_directly is likely too early."""
     if stimulus.kind != StimulusKind.EXECUTION_FEEDBACK:
@@ -292,17 +293,12 @@ def build_completion_nudge_message(block_reason: str) -> str:
 
 
 def augment_perception_with_nudge(perception: PerceptionInput, nudge: str) -> PerceptionInput:
-    """Copy perception with an appended gate nudge in the user message."""
-    base = str(perception.user_message or "").strip()
+    """Copy perception with an appended gate nudge in readable stimulus text."""
+    base = str(perception.stimulus.text or "").strip()
     merged = f"{base}\n\n{nudge}".strip()
-    ctx = copy.deepcopy(dict(perception.system_context or {}))
-    ctx["completion_gate_nudge"] = str(nudge or "").strip()
-    return PerceptionInput(
-        user_message=merged,
-        thread_id=perception.thread_id,
-        conversation_id=perception.conversation_id,
-        history_messages=list(perception.history_messages or []),
-        source=perception.source,
-        system_context=ctx,
-        attachments=perception.attachments,
+    payload = copy.deepcopy(dict(perception.stimulus.payload or {}))
+    payload["completion_gate_nudge"] = str(nudge or "").strip()
+    return replace(
+        perception,
+        stimulus=replace(perception.stimulus, text=merged, payload=payload),
     )

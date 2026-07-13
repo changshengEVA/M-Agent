@@ -9,16 +9,45 @@ from m_agent.runtime.think_life.contracts import (
     SceneActor,
     SceneEntry,
     SceneEntryType,
-    Stimulus,
+    StimulusEnvelope,
     StimulusKind,
     TransactionKind,
     TransactionStatus,
 )
+from m_agent.layers.perception.contracts import Stimulus
 from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
 from m_agent.runtime.think_life.perception.gateway import PerceptionGateway
 from m_agent.runtime.think_life.perception.inbox import StimulusInbox
 from m_agent.runtime.think_life.transaction_registry import TransactionRegistry
 from m_agent.systems.scene.default.jsonl_store import SceneLogStore, scene_persist_file_stem
+
+
+def _stimulus(
+    *,
+    stimulus_id: str,
+    thread_id: str,
+    kind: StimulusKind,
+    payload: dict,
+    occurred_at: str,
+    text: str = "",
+    transaction_id: str | None = None,
+    delegate_id: str | None = None,
+    priority_override: int | None = None,
+) -> StimulusEnvelope:
+    return StimulusEnvelope(
+        stimulus_id=stimulus_id,
+        thread_id=thread_id,
+        conversation_id=f"{thread_id}::0",
+        stimulus=Stimulus(
+            kind=kind,
+            text=text or str(payload.get("text", "") or payload.get("summary", "") or "stimulus"),
+            payload=payload,
+        ),
+        occurred_at=occurred_at,
+        transaction_id=transaction_id,
+        delegate_id=delegate_id,
+        priority_override=priority_override,
+    )
 
 
 def test_transaction_lifecycle() -> None:
@@ -41,6 +70,15 @@ def test_transaction_wm_isolation() -> None:
     assert a.wm_entries != b.wm_entries
     assert len(reg.get(a.transaction_id).wm_entries) == 1
     assert reg.get(b.transaction_id).wm_entries[0]["tool_name"] == "y"
+
+
+def test_transaction_task_state_isolation() -> None:
+    reg = TransactionRegistry()
+    a = reg.create(thread_id="t1", conversation_id="t1::0", kind=TransactionKind.USER_TASK)
+    b = reg.create(thread_id="t1", conversation_id="t1::0", kind=TransactionKind.USER_TASK)
+    a.task_state.goal = "create schedules"
+    b.task_state.goal = "find a restaurant"
+    assert a.task_state.goal != b.task_state.goal
 
 
 def test_scene_chronological_cross_transaction(tmp_path: Path) -> None:
@@ -72,6 +110,30 @@ def test_scene_chronological_cross_transaction(tmp_path: Path) -> None:
     assert tail[0].transaction_id == "txn_a"
     assert tail[1].transaction_id == "txn_b"
     assert (tmp_path / "thread-1.jsonl").is_file()
+
+
+def test_scene_is_isolated_by_conversation() -> None:
+    store = SceneLogStore(persist_enabled=False)
+    entry = SceneEntry(
+        seq=0,
+        occurred_at="2026-01-01T00:00:01Z",
+        entry_type=SceneEntryType.UTTERANCE,
+        actor=SceneActor.USER,
+        text="first conversation",
+    )
+    store.append("thread-1::0", entry)
+    store.append(
+        "thread-1::1",
+        SceneEntry(
+            seq=0,
+            occurred_at="2026-01-01T00:00:02Z",
+            entry_type=SceneEntryType.UTTERANCE,
+            actor=SceneActor.USER,
+            text="second conversation",
+        ),
+    )
+    assert [item.text for item in store.tail("thread-1::0")] == ["first conversation"]
+    assert [item.text for item in store.tail("thread-1::1")] == ["second conversation"]
 
 
 def test_scene_persist_scoped_thread_id_is_filesystem_safe(tmp_path: Path) -> None:
@@ -210,12 +272,13 @@ def test_execution_feedback_attribution() -> None:
     tx.active_delegate_id = "dlg_1"
     tx.correlation.delegate_id = "dlg_1"
 
-    stim = Stimulus(
+    stim = _stimulus(
         stimulus_id="s1",
         thread_id="t1",
         kind=StimulusKind.EXECUTION_FEEDBACK,
         payload={"tool_history": [], "summary": "done"},
         occurred_at="2026-01-01T00:00:03Z",
+        transaction_id=tx.transaction_id,
         delegate_id="dlg_1",
     )
     resolved, created = attr.resolve(stim)
@@ -226,8 +289,8 @@ def test_execution_feedback_attribution() -> None:
 def test_inbox_priority_order() -> None:
     inbox = StimulusInbox()
 
-    def _stim(sid: str, pri: int) -> Stimulus:
-        return Stimulus(
+    def _stim(sid: str, pri: int) -> StimulusEnvelope:
+        return _stimulus(
             stimulus_id=sid,
             thread_id="t1",
             kind=StimulusKind.USER_MESSAGE,
@@ -258,7 +321,7 @@ def test_user_messages_share_transaction_until_flush() -> None:
     config = ThinkLifeConfig(scheduler=ThinkLifeSchedulerConfig(preempt_enabled=False))
     attr = TransactionAttributor(registry=reg, config=config)
 
-    stim1 = Stimulus(
+    stim1 = _stimulus(
         stimulus_id="s1",
         thread_id="t1",
         kind=StimulusKind.USER_MESSAGE,
@@ -269,7 +332,7 @@ def test_user_messages_share_transaction_until_flush() -> None:
     assert created1 is True
     reg.transition(first.transaction_id, TransactionStatus.RUNNING)
 
-    stim2 = Stimulus(
+    stim2 = _stimulus(
         stimulus_id="s2",
         thread_id="t1",
         kind=StimulusKind.USER_MESSAGE,
@@ -280,11 +343,11 @@ def test_user_messages_share_transaction_until_flush() -> None:
     assert created2 is False
     assert second.transaction_id == first.transaction_id
 
-    closed = reg.complete_active_user_transaction("t1")
+    closed = reg.complete_active_user_transaction("t1::0")
     assert closed == first.transaction_id
     assert reg.get(first.transaction_id).status == TransactionStatus.COMPLETED
 
-    stim3 = Stimulus(
+    stim3 = _stimulus(
         stimulus_id="s3",
         thread_id="t1",
         kind=StimulusKind.USER_MESSAGE,
@@ -304,9 +367,9 @@ def test_preempt_disabled_reuses_active_user_transaction() -> None:
     attr = TransactionAttributor(registry=reg, config=config)
     first = reg.create(thread_id="t1", kind=TransactionKind.USER_TASK)
     reg.transition(first.transaction_id, TransactionStatus.RUNNING)
-    reg.set_active_user_transaction("t1", first.transaction_id)
+    reg.set_active_user_transaction("t1::0", first.transaction_id)
 
-    stim = Stimulus(
+    stim = _stimulus(
         stimulus_id="s2",
         thread_id="t1",
         kind=StimulusKind.USER_MESSAGE,
@@ -317,6 +380,35 @@ def test_preempt_disabled_reuses_active_user_transaction() -> None:
     assert created is False
     assert second.transaction_id == first.transaction_id
     assert reg.get(first.transaction_id).status == TransactionStatus.RUNNING
+
+
+def test_semantic_attribution_can_create_new_transaction() -> None:
+    reg = TransactionRegistry()
+    config = ThinkLifeConfig()
+    first = reg.create(
+        thread_id="t1",
+        conversation_id="t1::0",
+        kind=TransactionKind.USER_TASK,
+    )
+    reg.transition(first.transaction_id, TransactionStatus.RUNNING)
+    reg.set_active_user_transaction("t1::0", first.transaction_id)
+    attr = TransactionAttributor(
+        registry=reg,
+        config=config,
+        semantic_resolver=lambda _stimulus, _candidates: None,
+    )
+    second, created = attr.resolve(
+        _stimulus(
+            stimulus_id="s-new",
+            thread_id="t1",
+            kind=StimulusKind.USER_MESSAGE,
+            text="start an unrelated task",
+            payload={},
+            occurred_at="2026-01-01T00:00:04Z",
+        )
+    )
+    assert created is True
+    assert second.transaction_id != first.transaction_id
 
 
 def test_gateway_submits_user_utterance_to_scene() -> None:
@@ -332,8 +424,8 @@ def test_gateway_submits_user_utterance_to_scene() -> None:
         attributor=attr,
         scene_writer=SceneWriterAdapter(store),
     )
-    gw.submit_user_message(thread_id="t1", text="hi there")
-    tail = store.tail("t1", limit=5)
+    gw.submit_user_message(thread_id="t1", conversation_id="t1::0", text="hi there")
+    tail = store.tail("t1::0", limit=5)
     assert len(tail) == 1
     assert tail[0].entry_type == SceneEntryType.UTTERANCE
     assert tail[0].text == "hi there"
@@ -416,7 +508,7 @@ def test_execution_feedback_perception_includes_pending_user_request() -> None:
     writer = SceneWriterAdapter(store)
     reader = SceneReaderAdapter(store)
     writer.append(
-        "t1",
+        "t1::0",
         SceneEntry(
             seq=0,
             occurred_at="2026-01-01T00:00:00Z",
@@ -427,12 +519,13 @@ def test_execution_feedback_perception_includes_pending_user_request() -> None:
     )
     reg = TransactionRegistry()
     tx = reg.create(thread_id="t1", kind=TransactionKind.USER_TASK)
-    stim = Stimulus(
+    stim = _stimulus(
         stimulus_id="fb1",
         thread_id="t1",
         kind=StimulusKind.EXECUTION_FEEDBACK,
         payload={"summary": "no schedules found", "delegate_id": "dlg_x"},
         occurred_at="2026-01-01T00:00:03Z",
+        transaction_id=tx.transaction_id,
         delegate_id="dlg_x",
     )
     perception = build_perception_for_stimulus(
@@ -441,15 +534,15 @@ def test_execution_feedback_perception_includes_pending_user_request() -> None:
         scene_reader=reader,
         scene_context_max_entries=20,
     )
-    assert perception.system_context.get("pending_user_request") == "今天有什么安排吗"
-    assert "今天有什么安排吗" in perception.user_message
-    assert "no schedules found" in perception.user_message or "Execution note" in perception.user_message
+    assert perception.stimulus.payload.get("pending_user_request") == "今天有什么安排吗"
+    assert "今天有什么安排吗" in perception.stimulus.text
+    assert "no schedules found" in perception.stimulus.text or "Execution note" in perception.stimulus.text
 
 
 def test_gateway_execution_feedback_does_not_schedule_drainer_by_default() -> None:
     scheduled: list[bool] = []
 
-    def _hook(_stimulus: Stimulus, *, schedule_drainer: bool = True) -> None:
+    def _hook(_stimulus: StimulusEnvelope, *, schedule_drainer: bool = True) -> None:
         scheduled.append(schedule_drainer)
 
     inbox = StimulusInbox()
@@ -467,6 +560,7 @@ def test_gateway_execution_feedback_does_not_schedule_drainer_by_default() -> No
     )
     gw.submit_execution_feedback(
         thread_id="t1",
+        conversation_id="t1::0",
         transaction_id="txn_1",
         delegate_id="dlg_1",
         tool_history=[],

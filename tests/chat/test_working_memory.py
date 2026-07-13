@@ -183,7 +183,38 @@ def test_format_prompt_renders_web_search_sources() -> None:
 def test_build_working_memory_api_payload_tail_and_cap() -> None:
     cfg = WorkingMemoryConfig(ui_expose_max_entries=3)
     entries = [{"kind": "recall", "n": i} for i in range(10)]
-    payload = build_working_memory_api_payload(entries, cfg)
+    payload = build_working_memory_api_payload(
+        entries,
+        cfg,
+        task_progress={
+            "goal": "answer a two-step request",
+            "completed": ["found the event"],
+            "remaining": ["reply to user"],
+        },
+    )
     assert payload["stored_entries"] == 10
     assert len(payload["entries"]) == 3
     assert payload["entries"][-1]["n"] == 9
+    assert payload["task_progress"]["goal"] == "answer a two-step request"
+    assert payload["task_progress"]["completed"] == ["found the event"]
+
+
+def test_format_working_memory_prompt_includes_task_progress_without_tool_entries() -> None:
+    cfg = WorkingMemoryConfig()
+    text = format_working_memory_prompt(
+        [],
+        cfg,
+        prompt_language="en",
+        task_progress={
+            "goal": "collect two facts",
+            "completed": ["checked email"],
+            "remaining": ["check calendar"],
+        },
+    )
+
+    assert "[Working memory]" in text
+    assert "[Task progress]" in text
+    assert "goal: collect two facts" in text
+    assert "checked email" in text
+    assert "check calendar" in text
+    assert "[Tool evidence]" not in text

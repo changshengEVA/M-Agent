@@ -1,7 +1,7 @@
 """Think-life single-tool delegate resolution."""
 from __future__ import annotations
 
-from m_agent.layers.thinking.state import ThinkingDecision
+from m_agent.layers.thinking.contracts import ThinkingDecision
 from m_agent.runtime.think_life.scheduler.delegate import (
     REPLY_TOOL_NAME,
     plan_delegate,

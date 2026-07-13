@@ -4,10 +4,10 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from m_agent.layers.execution.contracts import ParamFillResult
-from m_agent.layers.perception.contracts import PerceptionInput
+from m_agent.layers.perception.contracts import PerceptionInput, Stimulus
 from m_agent.runtime.think_life.config import ThinkLifeConfig
 from m_agent.runtime.think_life.contracts import (
-    Stimulus,
+    StimulusEnvelope,
     StimulusKind,
     TransactionKind,
     TransactionStatus,
@@ -54,17 +54,22 @@ def test_delegate_and_wait_submits_feedback_without_invoke_on_param_gap() -> Non
     record = loop.registry.get(record.transaction_id) or record
 
     target = DelegateTarget(tool_name="schedule_create", instruction="提醒我起床")
-    stimulus = Stimulus(
+    stimulus = StimulusEnvelope(
         stimulus_id="s1",
         thread_id="t1",
-        kind=StimulusKind.USER_MESSAGE,
-        payload={"text": "帮我设提醒"},
+        conversation_id=record.conversation_id,
+        stimulus=Stimulus(
+            kind=StimulusKind.USER_MESSAGE,
+            text="帮我设提醒",
+            payload={},
+        ),
         occurred_at="2026-01-01T00:00:00Z",
     )
     perception = PerceptionInput(
         thread_id="t1",
-        conversation_id=record.transaction_id,
-        user_message="帮我设提醒",
+        conversation_id=record.conversation_id,
+        transaction_id=record.transaction_id,
+        stimulus=Stimulus(kind=StimulusKind.USER_MESSAGE, text="帮我设提醒"),
     )
 
     result = loop._delegate_and_wait(

@@ -14,7 +14,12 @@ from m_agent.chat.three_layer_chat_agent import ThreeLayerChatAgent
 from m_agent.config_paths import resolve_config_path
 from m_agent.paths import chat_user_persistence_root, chat_user_slug
 from m_agent.runtime.think_life.config import ThinkLifeConfig, load_think_life_config
-from m_agent.runtime.think_life.contracts import SceneEntry, TransactionRecord, TransactionStatus
+from m_agent.runtime.think_life.contracts import (
+    SceneEntry,
+    TransactionKind,
+    TransactionRecord,
+    TransactionStatus,
+)
 from m_agent.runtime.think_life.drainer import ThreadDrainerService
 from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
 from m_agent.runtime.think_life.perception.gateway import PerceptionGateway
@@ -77,7 +82,11 @@ class ThinkLifeRuntime:
 
         self.registry = TransactionRegistry()
         self.inbox = StimulusInbox()
-        self.attributor = TransactionAttributor(registry=self.registry, config=self.config)
+        self.attributor = TransactionAttributor(
+            registry=self.registry,
+            config=self.config,
+            semantic_resolver=agent.thinking_agent.resolve_transaction,
+        )
         self._reply_lock = threading.Lock()
         self._last_replies: Dict[str, List[str]] = {}
         self._thread_event_emitter: Optional[ThreadEventEmitter] = None
@@ -140,6 +149,8 @@ class ThinkLifeRuntime:
     @staticmethod
     def profile_from_config(config_path: str | Path) -> str:
         path = resolve_config_path(config_path)
+        if not path.is_file():
+            return "legacy"
         with open(path, "r", encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
         block = data.get("chat_controller") if isinstance(data.get("chat_controller"), dict) else data
@@ -177,7 +188,8 @@ class ThinkLifeRuntime:
             {"thread_runtime": snap.to_dict()},
         )
 
-    def _on_scene_appended(self, thread_id: str, entry: SceneEntry) -> None:
+    def _on_scene_appended(self, conversation_id: str, entry: SceneEntry) -> None:
+        thread_id = str(conversation_id or "").rsplit("::", 1)[0]
         self._emit_thread_event(thread_id, "scene_entry_appended", entry.to_dict())
 
     def _on_reply(self, thread_id: str, transaction_id: str, message: str, finalize: bool) -> None:
@@ -295,12 +307,14 @@ class ThinkLifeRuntime:
         self,
         *,
         thread_id: str,
+        conversation_id: Optional[str] = None,
         text: str,
         payload: Optional[dict] = None,
         schedule_drainer: bool = True,
     ) -> str:
         return self.gateway.submit_user_message(
             thread_id=thread_id,
+            conversation_id=str(conversation_id or "").strip() or f"{thread_id}::0",
             text=text,
             payload=payload,
             schedule_drainer=schedule_drainer,
@@ -310,12 +324,14 @@ class ThinkLifeRuntime:
         self,
         *,
         thread_id: str,
+        conversation_id: Optional[str] = None,
         schedule_id: str,
         text: str,
         payload: Optional[dict] = None,
     ) -> str:
         return self.gateway.submit_heartbeat(
             thread_id=thread_id,
+            conversation_id=str(conversation_id or "").strip() or f"{thread_id}::0",
             schedule_id=schedule_id,
             text=text,
             payload=payload,
@@ -325,11 +341,17 @@ class ThinkLifeRuntime:
         self,
         *,
         thread_id: str,
+        conversation_id: Optional[str] = None,
         text: str,
         payload: Optional[dict] = None,
     ) -> Dict[str, Any]:
         """Enqueue a user message and start background drainer if needed."""
-        stimulus_id = self.submit_user_message(thread_id=thread_id, text=text, payload=payload)
+        stimulus_id = self.submit_user_message(
+            thread_id=thread_id,
+            conversation_id=conversation_id,
+            text=text,
+            payload=payload,
+        )
         pending = self.inbox.pending_count(thread_id)
         snap = THREAD_RUNTIME_STATUS.snapshot(thread_id, default_profile="think_life")
         return {
@@ -357,9 +379,11 @@ class ThinkLifeRuntime:
         candidate_ids: List[str] = []
         if in_flight_transaction_id:
             candidate_ids.append(in_flight_transaction_id)
-        active = self.registry.get_active_user_transaction(tid)
-        if active is not None:
-            candidate_ids.append(active.transaction_id)
+        candidate_ids.extend(
+            record.transaction_id
+            for record in self.registry.list_for_thread(tid)
+            if record.kind == TransactionKind.USER_TASK and not record.status.is_terminal()
+        )
         seen: set[str] = set()
         for txn_id in candidate_ids:
             if not txn_id or txn_id in seen:
@@ -401,6 +425,7 @@ class ThinkLifeRuntime:
         self,
         *,
         thread_id: str,
+        conversation_id: Optional[str] = None,
         schedule_id: str,
         text: str,
         payload: Optional[dict] = None,
@@ -415,6 +440,7 @@ class ThinkLifeRuntime:
             body["owner_id"] = owner_id
         stimulus_id = self.submit_heartbeat(
             thread_id=thread_id,
+            conversation_id=conversation_id,
             schedule_id=schedule_id,
             text=text,
             payload=body,
@@ -436,7 +462,14 @@ class ThinkLifeRuntime:
         """Per-transaction WM + status snapshot for UI (Think-life only)."""
         tid = str(thread_id or "").strip()
         records = self.registry.list_for_thread(tid)
-        active = self.registry.get_active_user_transaction(tid)
+        active = next(
+            (
+                record
+                for record in reversed(records)
+                if record.kind == TransactionKind.USER_TASK and not record.status.is_terminal()
+            ),
+            None,
+        )
         active_id = str(active.transaction_id) if active is not None else None
         runtime_snap: ThreadRuntimeSnapshot = THREAD_RUNTIME_STATUS.snapshot(
             tid,
@@ -449,12 +482,14 @@ class ThinkLifeRuntime:
             txn_id = str(record.transaction_id)
             return {
                 "transaction_id": txn_id,
+                "conversation_id": record.conversation_id,
                 "thread_id": record.thread_id,
                 "status": str(record.status.value),
                 "kind": str(record.kind.value),
                 "priority": int(record.priority),
                 "wm_entries": list(record.wm_entries),
                 "wm_entry_count": len(record.wm_entries),
+                "task_state": record.task_state.to_dict(),
                 "think_rounds": int(record.think_rounds),
                 "delegate_count": int(record.delegate_count),
                 "active_delegate_id": record.active_delegate_id,
@@ -486,26 +521,29 @@ class ThinkLifeRuntime:
         self,
         thread_id: str,
         *,
+        conversation_id: Optional[str] = None,
         limit: int = 40,
         before_seq: Optional[int] = None,
         since_flush: bool = True,
     ) -> Dict[str, Any]:
         cap = max(1, min(200, int(limit or 40)))
         tid = str(thread_id or "").strip()
+        cid = str(conversation_id or "").strip() or f"{tid}::0"
         reader = self.scene_system.reader
         if since_flush:
-            self.ensure_scene_thread_loaded(tid)
+            self.ensure_scene_thread_loaded(cid)
             since_fn = getattr(reader, "entries_since_flush", None)
-            entries = list(since_fn(tid)) if callable(since_fn) else []
+            entries = list(since_fn(cid)) if callable(since_fn) else []
             if before_seq is not None:
                 entries = [e for e in entries if e.seq < int(before_seq)]
         else:
-            entries = list(reader.tail(tid, limit=cap + 1, before_seq=before_seq))
+            entries = list(reader.tail(cid, limit=cap + 1, before_seq=before_seq))
         has_more = len(entries) > cap
         if has_more:
             entries = entries[-cap:]
         return {
             "thread_id": thread_id,
+            "conversation_id": cid,
             "entries": [e.to_dict() for e in entries],
             "has_more": has_more,
             "since_flush": bool(since_flush),
@@ -551,7 +589,8 @@ class ThinkLifeRuntime:
     ) -> Dict[str, Any]:
         """Complete the active user transaction when the chat thread is flushed."""
         tid = str(thread_id or "").strip()
-        txn_id = self.registry.complete_active_user_transaction(tid)
+        cid = str(conversation_id or "").strip()
+        txn_id = self.registry.complete_active_user_transaction(cid) if cid else None
         drained: List[Dict[str, Any]] = []
         flush_key = str(conversation_id or "").strip() or txn_id
         if flush_key:
@@ -572,20 +611,23 @@ class ThinkLifeRuntime:
             "episode_notes_drained": len(drained),
         }
 
-    def ensure_scene_thread_loaded(self, thread_id: str) -> None:
-        tid = str(thread_id or "").strip()
-        if not tid:
+    def ensure_scene_thread_loaded(self, conversation_id: str) -> None:
+        cid = str(conversation_id or "").strip()
+        if not cid:
             return
         store = getattr(self.scene_system, "store", None)
         ensure_fn = getattr(store, "ensure_thread_loaded", None)
         if callable(ensure_fn):
-            ensure_fn(tid)
+            ensure_fn(cid)
 
-    def scene_pending_flush_metrics(self, thread_id: str) -> Dict[str, Any]:
+    def scene_pending_flush_metrics(
+        self, thread_id: str, *, conversation_id: Optional[str] = None
+    ) -> Dict[str, Any]:
         """Return Scene-based flush eligibility for thread_state / idle flush."""
         from m_agent.chat.chat_memory_persistence import scene_entry_to_dialogue_turn
 
         tid = str(thread_id or "").strip()
+        cid = str(conversation_id or "").strip() or f"{tid}::0"
         if not tid:
             return {
                 "scene_pending_entries": 0,
@@ -593,10 +635,10 @@ class ThinkLifeRuntime:
                 "active_user_segment": False,
                 "can_flush": False,
             }
-        self.ensure_scene_thread_loaded(tid)
+        self.ensure_scene_thread_loaded(cid)
         reader = self.scene_system.reader
         entries_fn = getattr(reader, "entries_since_flush", None)
-        entries: List[Any] = list(entries_fn(tid)) if callable(entries_fn) else []
+        entries: List[Any] = list(entries_fn(cid)) if callable(entries_fn) else []
         user_name = str(getattr(self.agent, "user_name", "User") or "User")
         assistant_name = str(getattr(self.agent, "assistant_name", "Memory Assistant") or "Memory Assistant")
         pending_turns = sum(
@@ -609,7 +651,11 @@ class ThinkLifeRuntime:
             )
             is not None
         )
-        active_user_segment = self.registry.get_active_user_transaction(tid) is not None
+        active_user_segment = any(
+            record.kind == TransactionKind.USER_TASK and not record.status.is_terminal()
+            for record in self.registry.list_for_thread(tid)
+            if record.conversation_id == cid
+        )
         return {
             "scene_pending_entries": len(entries),
             "scene_pending_turns": pending_turns,
@@ -621,18 +667,20 @@ class ThinkLifeRuntime:
         self,
         thread_id: str,
         *,
+        conversation_id: Optional[str] = None,
         source: str = "chat_api_thread_flush",
     ) -> Optional[Dict[str, Any]]:
         """Export Scene entries since last flush as canonical dialogue JSON (v2)."""
         tid = str(thread_id or "").strip()
+        cid = str(conversation_id or "").strip() or f"{tid}::0"
         if not tid:
             return None
-        self.ensure_scene_thread_loaded(tid)
+        self.ensure_scene_thread_loaded(cid)
         reader = self.scene_system.reader
         entries_fn = getattr(reader, "entries_since_flush", None)
         if not callable(entries_fn):
             return None
-        entries = list(entries_fn(tid))
+        entries = list(entries_fn(cid))
         if not entries:
             return None
 
@@ -662,12 +710,12 @@ class ThinkLifeRuntime:
             assistant_name=assistant_name,
         )
 
-    def mark_scene_flushed(self, thread_id: str, *, through_seq: int) -> None:
-        tid = str(thread_id or "").strip()
-        self.ensure_scene_thread_loaded(tid)
+    def mark_scene_flushed(self, conversation_id: str, *, through_seq: int) -> None:
+        cid = str(conversation_id or "").strip()
+        self.ensure_scene_thread_loaded(cid)
         mark_fn = getattr(self.scene_system.reader, "mark_flushed", None)
         if callable(mark_fn) and int(through_seq) > 0:
-            mark_fn(tid, through_seq=int(through_seq))
+            mark_fn(cid, through_seq=int(through_seq))
 
     def health(self) -> Dict[str, Any]:
         return {

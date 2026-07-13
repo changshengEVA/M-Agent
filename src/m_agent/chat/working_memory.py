@@ -75,18 +75,82 @@ def normalize_working_memory_config(raw: Any) -> WorkingMemoryConfig:
 def build_working_memory_api_payload(
     entries: List[Dict[str, Any]],
     config: WorkingMemoryConfig,
+    *,
+    task_progress: Any = None,
 ) -> Dict[str, Any]:
     """Shape embedded under thread_state.working_memory for HTTP/SSE clients."""
     cap = max(0, int(config.ui_expose_max_entries))
     tail = copy.deepcopy(entries[-cap:]) if cap else []
+    progress_payload = _task_progress_payload(task_progress)
     return {
         "enabled": config.enable,
         "stored_entries": len(entries),
         "inject_max_entries": config.inject_max_entries,
         "max_stored_entries": config.max_stored_entries,
         "ui_expose_max_entries": config.ui_expose_max_entries,
+        "task_progress": progress_payload,
         "entries": tail,
     }
+
+
+def _task_progress_payload(task_progress: Any) -> Dict[str, Any]:
+    if task_progress is None:
+        return {"goal": "", "completed": [], "remaining": []}
+    if hasattr(task_progress, "to_dict"):
+        try:
+            payload = task_progress.to_dict()
+        except Exception:
+            payload = {}
+    elif isinstance(task_progress, dict):
+        payload = task_progress
+    else:
+        payload = {
+            "goal": getattr(task_progress, "goal", ""),
+            "completed": getattr(task_progress, "completed", []),
+            "remaining": getattr(task_progress, "remaining", []),
+        }
+    completed = payload.get("completed", []) if isinstance(payload, dict) else []
+    remaining = payload.get("remaining", []) if isinstance(payload, dict) else []
+    return {
+        "goal": str(payload.get("goal", "") or "").strip() if isinstance(payload, dict) else "",
+        "completed": [
+            str(item or "").strip()
+            for item in (completed if isinstance(completed, list) else [])
+            if str(item or "").strip()
+        ],
+        "remaining": [
+            str(item or "").strip()
+            for item in (remaining if isinstance(remaining, list) else [])
+            if str(item or "").strip()
+        ],
+    }
+
+
+def _task_progress_is_empty(task_progress: Any) -> bool:
+    payload = _task_progress_payload(task_progress)
+    return not (payload["goal"] or payload["completed"] or payload["remaining"])
+
+
+def _format_task_progress(task_progress: Any, *, zh: bool) -> str:
+    payload = _task_progress_payload(task_progress)
+    lines: List[str] = ["[Task progress]"]
+    if zh:
+        lines = ["[浠诲姟杩涘害]"]
+    goal = payload["goal"] or ("(empty)" if not zh else "(绌?)")
+    lines.append(f"goal: {goal}")
+    completed = payload["completed"]
+    remaining = payload["remaining"]
+    lines.append("completed:")
+    if completed:
+        lines.extend(f"- {item}" for item in completed)
+    else:
+        lines.append("- (none)" if not zh else "- (鏃?)")
+    lines.append("remaining:")
+    if remaining:
+        lines.extend(f"- {item}" for item in remaining)
+    else:
+        lines.append("- (none)" if not zh else "- (鏃?)")
+    return "\n".join(lines)
 
 
 def _safe_dict(value: Any) -> Dict[str, Any]:
@@ -493,12 +557,16 @@ def format_working_memory_prompt(
     config: WorkingMemoryConfig,
     *,
     prompt_language: str = "zh",
+    task_progress: Any = None,
 ) -> str:
-    if not config.enable or not entries:
+    if not config.enable:
         return ""
     zh = str(prompt_language or "zh").strip().lower().startswith("zh")
+    has_progress = not _task_progress_is_empty(task_progress)
+    if not entries and not has_progress:
+        return ""
     tail = entries[-config.inject_max_entries :]
-    lines = [_format_entry_line(i + 1, e, zh=zh) for i, e in enumerate(tail)]
+    evidence_header = "[Tool evidence]"
     if zh:
         header = "[工作记忆]"
         guide = (
@@ -508,7 +576,13 @@ def format_working_memory_prompt(
     else:
         header = "[Working memory]"
         guide = (
-            "Concise summaries of recent top-level tool calls for reasoning only; "
+            "Task progress is maintained by the thinking layer; tool evidence is recent tool output for reasoning only. "
             "do not repeat verbatim to the user; if this conflicts with the dialogue, prefer the dialogue."
         )
-    return "\n".join([header, guide, *lines]).strip()
+    sections = [header, guide]
+    if has_progress:
+        sections.append(_format_task_progress(task_progress, zh=zh))
+    if tail:
+        lines = [_format_entry_line(i + 1, e, zh=zh) for i, e in enumerate(tail)]
+        sections.append("\n".join([evidence_header, *lines]))
+    return "\n".join(sections).strip()

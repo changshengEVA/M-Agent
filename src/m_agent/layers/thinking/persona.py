@@ -84,6 +84,28 @@ _DEFAULT_RUNTIME_CONTEXT_GENERIC = {
     ),
 }
 
+_DEFAULT_RUNTIME_CONTEXT = {
+    "zh": (
+        "[隐藏运行时上下文]\n"
+        "source=<source>\n"
+        "runtime_profile=think_life\n"
+        "当前回合可能来自用户消息、日程触发、执行反馈或其他系统刺激。\n"
+        "请根据 source 和 context_json 判断信息来源；除非 source/context 明确表示，"
+        "否则不要暗示用户刚刚主动发送了新消息。\n"
+        "context_json=<context_json>"
+    ),
+    "en": (
+        "[Hidden Runtime Context]\n"
+        "source=<source>\n"
+        "runtime_profile=think_life\n"
+        "This turn may come from a user message, schedule heartbeat, execution feedback, "
+        "or another system stimulus.\n"
+        "Use source and context_json to understand where the information came from; do not imply "
+        "the user just sent a fresh message unless source/context explicitly say so.\n"
+        "context_json=<context_json>"
+    ),
+}
+
 _DEFAULT_CAPABILITY_BOUNDARY_HEADER = {
     "zh": (
         "[可委托能力]\n"
@@ -108,15 +130,15 @@ def build_runtime_context_block(
     source: str,
     system_context: Optional[dict],
     language: str = "zh",
+    template: str = "",
     schedule_template: str = "",
     generic_template: str = "",
 ) -> str:
     """Render the hidden runtime-context block when ``source != 'user'`` or context provided.
 
-    ``schedule_template`` / ``generic_template`` are optional override strings
-    (typically loaded from ``chat_controller_runtime.yaml``) supporting the
-    placeholders ``<source>`` and ``<context_json>``. When either override is
-    empty/None, the built-in default for the current ``language`` is used.
+    ``template`` is the think-life unified override string from YAML and supports
+    ``<source>`` / ``<context_json>``. ``schedule_template`` / ``generic_template``
+    are legacy override strings accepted for older runtime prompt files.
     """
     import json
 
@@ -127,10 +149,14 @@ def build_runtime_context_block(
 
     context_json = json.dumps(safe_context, ensure_ascii=False, sort_keys=True) if safe_context else "{}"
     lang = _lang_key(language)
-    if safe_source == "schedule":
-        template = str(schedule_template or "").strip() or _DEFAULT_RUNTIME_CONTEXT_SCHEDULE[lang]
-    else:
-        template = str(generic_template or "").strip() or _DEFAULT_RUNTIME_CONTEXT_GENERIC[lang]
+    template = str(template or "").strip()
+    if not template and (schedule_template or generic_template):
+        if safe_source == "schedule":
+            template = str(schedule_template or "").strip() or _DEFAULT_RUNTIME_CONTEXT_SCHEDULE[lang]
+        else:
+            template = str(generic_template or "").strip() or _DEFAULT_RUNTIME_CONTEXT_GENERIC[lang]
+    if not template:
+        template = _DEFAULT_RUNTIME_CONTEXT[lang]
 
     return template.replace("<source>", safe_source).replace("<context_json>", context_json).strip()
 

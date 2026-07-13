@@ -32,13 +32,20 @@ class DefaultWMReader:
     def __init__(self, config: WorkingMemoryConfig) -> None:
         self.config = config
 
-    def render(self, entries: List[Dict[str, Any]], *, language: str) -> str:
+    def render(
+        self,
+        entries: List[Dict[str, Any]],
+        *,
+        language: str,
+        task_progress: Any = None,
+    ) -> str:
         if not self.config.enable:
             return ""
         return format_working_memory_prompt(
             entries,
             self.config,
             prompt_language=language,
+            task_progress=task_progress,
         )
 
 
@@ -68,13 +75,20 @@ class DefaultWMDisplay:
     def __init__(self, config: WorkingMemoryConfig) -> None:
         self.config = config
 
-    def render(self, entries: List[Dict[str, Any]], *, language: str) -> str:
+    def render(
+        self,
+        entries: List[Dict[str, Any]],
+        *,
+        language: str,
+        task_progress: Any = None,
+    ) -> str:
         if not self.config.enable:
             return ""
         return format_working_memory_prompt(
             entries,
             self.config,
             prompt_language=language,
+            task_progress=task_progress,
         )
 
 

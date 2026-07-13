@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Sequence, Tuple
 
 from m_agent.layers.execution.contracts import ParamFillResult
-from m_agent.layers.thinking.state import ThinkingDecision, is_execute_mode
+from m_agent.layers.thinking.contracts import ThinkingDecision, is_execute_mode
 from m_agent.layers.execution.core import ExecutionAgent
 from m_agent.runtime.think_life.scheduler.tool_runner import (
     REPLY_TOOL_NAME,

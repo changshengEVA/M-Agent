@@ -14,25 +14,34 @@ def test_compute_runtime_phase_depths() -> None:
 
 
 def test_inbox_peek_next_priority() -> None:
-    from m_agent.runtime.think_life.contracts import Stimulus, StimulusKind
+    from m_agent.layers.perception.contracts import Stimulus, StimulusKind
+    from m_agent.runtime.think_life.contracts import StimulusEnvelope
 
     inbox = StimulusInbox()
     inbox.push(
-        Stimulus(
+        StimulusEnvelope(
             stimulus_id="low",
             thread_id="t1",
-            kind=StimulusKind.HEARTBEAT,
-            payload={},
+            conversation_id="t1::0",
+            stimulus=Stimulus(
+                kind=StimulusKind.SCHEDULED_PLAN,
+                text="scheduled plan",
+                payload={},
+            ),
             occurred_at="2026-01-01T00:00:00Z",
         ),
         priority=40,
     )
     inbox.push(
-        Stimulus(
+        StimulusEnvelope(
             stimulus_id="high",
             thread_id="t1",
-            kind=StimulusKind.USER_MESSAGE,
-            payload={},
+            conversation_id="t1::0",
+            stimulus=Stimulus(
+                kind=StimulusKind.USER_MESSAGE,
+                text="user message",
+                payload={},
+            ),
             occurred_at="2026-01-01T00:00:01Z",
         ),
         priority=10,

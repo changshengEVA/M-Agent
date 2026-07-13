@@ -10,9 +10,10 @@ from m_agent.runtime.think_life.contracts import (
     SceneActor,
     SceneEntry,
     SceneEntryType,
-    Stimulus,
+    StimulusEnvelope,
     StimulusKind,
 )
+from m_agent.layers.perception.contracts import Stimulus
 from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
 from m_agent.runtime.think_life.perception.inbox import StimulusInbox
 from m_agent.systems.scene.protocols import SceneWriter
@@ -36,7 +37,7 @@ class PerceptionGateway:
         self.scene_writer = scene_writer
         self._on_enqueued = on_enqueued
 
-    def submit(self, stimulus: Stimulus, *, schedule_drainer: bool = True) -> str:
+    def submit(self, stimulus: StimulusEnvelope, *, schedule_drainer: bool = True) -> str:
         priority = self.attributor.priority_for(stimulus)
         self._maybe_scene_on_ingress(stimulus)
         self.inbox.push(stimulus, priority=priority)
@@ -53,15 +54,20 @@ class PerceptionGateway:
         self,
         *,
         thread_id: str,
+        conversation_id: str,
         text: str,
         payload: Optional[dict] = None,
         schedule_drainer: bool = True,
     ) -> str:
-        stimulus = Stimulus(
+        stimulus = StimulusEnvelope(
             stimulus_id=f"stim_{uuid.uuid4().hex}",
             thread_id=thread_id,
-            kind=StimulusKind.USER_MESSAGE,
-            payload={"text": str(text or "").strip(), **(payload or {})},
+            conversation_id=conversation_id,
+            stimulus=Stimulus(
+                kind=StimulusKind.USER_MESSAGE,
+                text=str(text or "").strip(),
+                payload=dict(payload or {}),
+            ),
             occurred_at=_now_iso(),
         )
         return self.submit(stimulus, schedule_drainer=schedule_drainer)
@@ -70,24 +76,29 @@ class PerceptionGateway:
         self,
         *,
         thread_id: str,
+        conversation_id: str,
         transaction_id: str,
         delegate_id: str,
         tool_history: list,
         summary: str = "",
         schedule_drainer: bool = False,
     ) -> str:
-        stimulus = Stimulus(
+        readable = str(summary or "").strip() or "Execution finished and returned tool evidence."
+        stimulus = StimulusEnvelope(
             stimulus_id=f"stim_{uuid.uuid4().hex}",
             thread_id=thread_id,
-            kind=StimulusKind.EXECUTION_FEEDBACK,
-            payload={
-                "transaction_id": transaction_id,
-                "delegate_id": delegate_id,
-                "tool_history": tool_history,
-                "summary": str(summary or "").strip(),
-            },
+            conversation_id=conversation_id,
+            stimulus=Stimulus(
+                kind=StimulusKind.EXECUTION_FEEDBACK,
+                text=readable,
+                payload={
+                    "delegate_id": delegate_id,
+                    "tool_history": tool_history,
+                    "summary": str(summary or "").strip(),
+                },
+            ),
             occurred_at=_now_iso(),
-            suggested_transaction_id=transaction_id,
+            transaction_id=transaction_id,
             delegate_id=delegate_id,
         )
         return self.submit(stimulus, schedule_drainer=schedule_drainer)
@@ -96,35 +107,39 @@ class PerceptionGateway:
         self,
         *,
         thread_id: str,
+        conversation_id: str,
         schedule_id: str,
         text: str,
         payload: Optional[dict] = None,
     ) -> str:
         body = dict(payload or {})
-        body.setdefault("text", str(text or "").strip())
         body.setdefault("schedule_id", schedule_id)
-        stimulus = Stimulus(
+        stimulus = StimulusEnvelope(
             stimulus_id=f"stim_{uuid.uuid4().hex}",
             thread_id=thread_id,
-            kind=StimulusKind.HEARTBEAT,
-            payload=body,
+            conversation_id=conversation_id,
+            stimulus=Stimulus(
+                kind=StimulusKind.SCHEDULED_PLAN,
+                text=str(text or "").strip(),
+                payload=body,
+            ),
             occurred_at=_now_iso(),
             schedule_id=schedule_id,
         )
         return self.submit(stimulus)
 
-    def _maybe_scene_on_ingress(self, stimulus: Stimulus) -> None:
+    def _maybe_scene_on_ingress(self, stimulus: StimulusEnvelope) -> None:
         if stimulus.kind == StimulusKind.USER_MESSAGE:
-            text = str(stimulus.payload.get("text", "") or "").strip()
+            text = str(stimulus.text or "").strip()
             if text:
                 self.scene_writer.append(
-                    stimulus.thread_id,
+                    stimulus.conversation_id,
                     SceneEntry(
                         seq=0,
                         occurred_at=stimulus.occurred_at,
                         entry_type=SceneEntryType.UTTERANCE,
                         actor=SceneActor.USER,
                         text=text,
-                        transaction_id=stimulus.suggested_transaction_id,
+                        transaction_id=stimulus.transaction_id,
                     ),
                 )

@@ -33,7 +33,12 @@ from m_agent.agents.email_agent import EmailAgent
 from m_agent.agents.schedule_agent import ScheduleAgent
 from m_agent.layers.execution import ExecutionAgent
 from m_agent.layers.execution.model_provider import build_model_provider_from_config
-from m_agent.layers.perception import PerceptionInput, build_perception_input
+from m_agent.layers.perception import (
+    PerceptionInput,
+    Stimulus,
+    StimulusKind,
+    build_perception_input,
+)
 from m_agent.layers.thinking import (
     ConversationStateRegistry,
     ThinkingAgent,
@@ -176,13 +181,47 @@ class ThreeLayerChatAgent:
             name: self._get_capability_description(name) for name in all_enabled
         }
         thinking_prompts = self._get_runtime_section("thinking", "thinking_layer")
+        resolution_prompts = (
+            thinking_prompts.get("resolve_transaction")
+            if isinstance(thinking_prompts.get("resolve_transaction"), dict)
+            else {}
+        )
+        task_state_prompts = (
+            thinking_prompts.get("pre_gen_task_state")
+            if isinstance(thinking_prompts.get("pre_gen_task_state"), dict)
+            else {}
+        )
+        decision_prompts = (
+            thinking_prompts.get("make_decision")
+            if isinstance(thinking_prompts.get("make_decision"), dict)
+            else {}
+        )
         execution_prompts = self._get_runtime_section("execution", "execution_layer")
         legacy_persona = self._legacy_persona_prompts()
 
         base_prompt = self._nested_runtime_text(
-            thinking_prompts,
+            decision_prompts,
             "base_prompt",
             legacy_keys=("base_role_prompt",),
+        )
+        if not base_prompt:
+            base_prompt = self._nested_runtime_text(
+                thinking_prompts,
+                "base_prompt",
+                legacy_keys=("base_role_prompt",),
+            )
+        if not base_prompt:
+            base_prompt = self._nested_runtime_text(
+                task_state_prompts,
+                "base_prompt",
+            )
+        task_state_base_prompt = self._nested_runtime_text(
+            task_state_prompts,
+            "base_prompt",
+        )
+        task_state_instructions_prompt = self._nested_runtime_text(
+            task_state_prompts,
+            "instructions",
         )
         if not base_prompt:
             base_prompt = self._nested_runtime_text(
@@ -192,7 +231,7 @@ class ThreeLayerChatAgent:
             )
         if not base_prompt:
             raise ValueError(
-                f"`chat_controller.thinking.base_prompt` is required in runtime prompt config: "
+                f"`chat_controller.thinking.make_decision.base_prompt` is required in runtime prompt config: "
                 f"{self.runtime_prompt_config_path}"
             )
 
@@ -301,12 +340,27 @@ class ThreeLayerChatAgent:
             prompt_language=self.prompt_language,
             max_executions_per_turn=max_executions,
             skip_summarize_on_direct_answer=skip_summarize,
-            plan_instructions_prompt=str(thinking_prompts.get("plan_instructions", "") or "").strip(),
+            task_state_base_prompt=task_state_base_prompt,
+            task_state_instructions_prompt=task_state_instructions_prompt,
+            plan_instructions_prompt=(
+                self._nested_runtime_text(decision_prompts, "instructions")
+                or str(thinking_prompts.get("plan_instructions", "") or "").strip()
+            ),
             summarize_instructions_prompt=str(thinking_prompts.get("summarize_instructions", "") or "").strip(),
-            capability_boundary_header=str(thinking_prompts.get("capability_boundary_header", "") or "").strip(),
-            runtime_context_schedule_template=str(thinking_prompts.get("runtime_context_schedule", "") or "").strip(),
-            runtime_context_generic_template=str(thinking_prompts.get("runtime_context_generic", "") or "").strip(),
-            fallback_answer_prompt=str(thinking_prompts.get("fallback_answer", "") or "").strip(),
+            capability_boundary_header=(
+                self._nested_runtime_text(decision_prompts, "capability_boundary_header")
+                or str(thinking_prompts.get("capability_boundary_header", "") or "").strip()
+            ),
+            fallback_answer_prompt=(
+                self._nested_runtime_text(decision_prompts, "fallback_answer")
+                or str(thinking_prompts.get("fallback_answer", "") or "").strip()
+            ),
+            transaction_resolution_base_prompt=self._nested_runtime_text(
+                resolution_prompts, "base_prompt"
+            ),
+            transaction_resolution_instructions_prompt=self._nested_runtime_text(
+                resolution_prompts, "instructions"
+            ),
         )
 
         backend_persistence = getattr(self.systems.episodic.backend, "persistence", None)
@@ -707,14 +761,23 @@ class ThreeLayerChatAgent:
         active_conversation_id = (
             str(conversation_id or "").strip() or f"{active_thread_id}::0"
         )
+        source_value = str(source or "user").strip().lower() or "user"
+        stimulus_kind = {
+            "user": StimulusKind.USER_MESSAGE,
+            "user_message": StimulusKind.USER_MESSAGE,
+            "schedule": StimulusKind.SCHEDULED_PLAN,
+            "scheduled_plan": StimulusKind.SCHEDULED_PLAN,
+            "execution_feedback": StimulusKind.EXECUTION_FEEDBACK,
+        }.get(source_value, StimulusKind.OBSERVATION_TRIGGER)
         perception = build_perception_input(
-            message=message.strip(),
             thread_id=active_thread_id,
             conversation_id=active_conversation_id,
+            stimulus=Stimulus(
+                kind=stimulus_kind,
+                text=message.strip(),
+                payload=dict(system_context or {}),
+            ),
             history_messages=history_messages,
-            source=source,
-            system_context=system_context,
-            attachments=None,
         )
 
         turn_result: ThinkingTurnResult = self.thinking_agent.handle(
@@ -730,7 +793,7 @@ class ThreeLayerChatAgent:
         if should_persist:
             memory_write = self.systems.episodic.backend.persist_round(
                 thread_id=active_thread_id,
-                user_message=perception.user_message,
+                user_message=perception.stimulus.text,
                 assistant_message=answer_text,
                 agent_result=agent_result if isinstance(agent_result, dict) else None,
             )
@@ -745,9 +808,9 @@ class ThreeLayerChatAgent:
             "success": True,
             "thread_id": active_thread_id,
             "conversation_id": active_conversation_id,
-            "question": perception.user_message,
+            "question": perception.stimulus.text,
             "answer": answer_text,
-            "history_messages": list(perception.history_messages),
+            "history_messages": list(perception.dialogue_history),
             "agent_result": agent_result,
             "memory_write": memory_write,
         }
@@ -888,6 +951,12 @@ class ThreeLayerChatAgent:
         if state is None:
             return []
         return list(state.wm_entries)
+
+    def snapshot_task_progress(self, conversation_id: str) -> Dict[str, Any]:
+        state = self.thinking_agent.snapshot_conversation(conversation_id)
+        if state is None:
+            return {"goal": "", "completed": [], "remaining": []}
+        return state.task_progress.to_dict()
 
     # ----------------------------------------------------------------------
     # Helpers
