@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from m_agent.layers.execution.contracts import ExecutionResult
 from m_agent.layers.execution.core import ExecutionAgent
 from m_agent.runtime.think_life.scheduler.execution_feedback import feedback_summary_from_tool_history
+from m_agent.systems.tools.registry import ControllerCapabilityRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +15,8 @@ REPLY_TOOL_NAME = "reply_to_user"
 
 # Think-life: tools that skip the param LLM; think-layer ``instruction`` maps to invoke kwargs.
 # Value = target kwarg name, or ``None`` when the tool takes no instruction-derived args.
-# New skip-param capabilities MUST be registered here (and in docs/systems-plugin/tools*.md).
+# Compatibility fallback for programmatic/legacy registries. File-backed suites
+# declare this behavior through each manifest's input.mode and instruction_arg.
 THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG: Dict[str, Optional[str]] = {
     "get_current_time": None,
     "shallow_recall": "question",
@@ -40,6 +42,7 @@ def build_tool_input(
     *,
     instruction: str = "",
     user_reply_text: Optional[str] = None,
+    registry: Optional[ControllerCapabilityRegistry] = None,
 ) -> Dict[str, Any]:
     """Map skip-param instructions deterministically to one tool payload."""
     name = str(tool_name or "").strip()
@@ -49,6 +52,19 @@ def build_tool_input(
         message = str(user_reply_text or instruction or "").strip()
         if not message:
             message = "Acknowledge the user briefly."
+        return {"message": message, "finalize": True}
+
+    spec = registry.get(name) if registry is not None else None
+    input_mode = str(getattr(spec, "input_mode", "") or "").strip()
+    if input_mode == "no_args":
+        return {}
+    if input_mode == "instruction_arg":
+        instruction_arg = str(getattr(spec, "instruction_arg", "") or "").strip()
+        if not instruction_arg:
+            raise ValueError(f"Tool {name} uses instruction_arg mode without an argument name")
+        return {instruction_arg: text}
+    if input_mode == "reply":
+        message = str(user_reply_text or instruction or "").strip() or "Acknowledge the user briefly."
         return {"message": message, "finalize": True}
 
     skip_arg = THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG.get(name)

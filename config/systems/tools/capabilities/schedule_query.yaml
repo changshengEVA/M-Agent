@@ -1,0 +1,21 @@
+name: schedule_query
+version: 1
+category: schedule
+builder: m_agent.systems.tools.default.capabilities.schedule_ops:_build_schedule_query_tool
+descriptions:
+  en: "Function: search existing time-triggered schedules to check plans, locate an item before deletion, or verify creation. Needs: optional keyword and optional ISO start_at/end_at bounds."
+  zh: "功能：检索已有时间触发日程，用于检查计划、删除前定位或核实创建结果。所需：可选 keyword 及 ISO start_at/end_at 时间边界。"
+input:
+  mode: param_llm
+  schema: inferred_from_tool
+output:
+  schema: builtins:dict
+  feedback_projector: m_agent.runtime.think_life.scheduler.execution_feedback:feedback_summary_from_tool_history
+  memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
+policy:
+  side_effect: read
+dependencies:
+  - schedule_agent
+defaults:
+  timezone_name: Asia/Shanghai
+  limit: 10

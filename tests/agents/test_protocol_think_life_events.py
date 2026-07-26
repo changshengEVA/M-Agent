@@ -20,6 +20,7 @@ from m_agent.api.chat_api_protocol import (
         "thinking_task_state",
         "thinking_plan",
         "thinking_completed",
+        "turn_failed",
     ],
 )
 def test_think_life_planning_events_are_in_protocol_whitelist(
@@ -48,6 +49,7 @@ def test_summarize_thinking_task_state_returns_goal_and_step_counts() -> None:
     payload = {
         "task_progress": {
             "goal": "Plan a trip",
+            "completion_status": "processing",
             "completed": ["pick a city"],
             "remaining": ["book train", "book hotel"],
         }
@@ -56,6 +58,7 @@ def test_summarize_thinking_task_state_returns_goal_and_step_counts() -> None:
     text = _summarize_event_payload("thinking_task_state", payload)
 
     assert "goal=Plan a trip" in text
+    assert "status=processing" in text
     assert "completed=1" in text
     assert "remaining=2" in text
 
@@ -67,3 +70,17 @@ def test_summarize_thinking_completed_lists_plan_phase() -> None:
 
     assert "executed=False" in text
     assert "phases=plan" in text
+
+
+def test_summarize_turn_failed_includes_transaction_and_error() -> None:
+    text = _summarize_event_payload(
+        "turn_failed",
+        {
+            "thread_id": "t1",
+            "transaction_id": "txn-1",
+            "error": "delegate transition failed",
+        },
+    )
+
+    assert "txn=txn-1" in text
+    assert "delegate transition failed" in text

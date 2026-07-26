@@ -18,7 +18,7 @@ One YAML file = one loaded subsystem. The chat controller holds **three pointers
 wm/default.yaml
 episodic/rag_default.yaml
 tools/default.yaml
-tools/runtime_descriptions.yaml
+tools/capabilities/<tool>.yaml
 ```
 
 ## Quick swap

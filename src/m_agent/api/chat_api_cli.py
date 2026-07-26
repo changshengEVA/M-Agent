@@ -80,12 +80,6 @@ def parse_args() -> argparse.Namespace:
         help="Heartbeat scan interval in seconds for due schedules. Default: 10",
     )
     parser.add_argument(
-        "--schedule-enqueue-retry-seconds",
-        type=int,
-        default=5,
-        help="Retry delay in seconds after a schedule enqueue failure. Default: 5",
-    )
-    parser.add_argument(
         "--users-db",
         default="config/users/users.json",
         help="User auth database path. Default: config/users/users.json",
@@ -148,7 +142,6 @@ def main() -> None:
         service_runtime=service_runtime,
         user_access=user_access,
         schedule_beat_seconds=int(args.schedule_beat_seconds),
-        schedule_enqueue_retry_seconds=int(args.schedule_enqueue_retry_seconds),
     )
     url = f"http://{args.host}:{args.port}"
     logger.info("M-Agent chat API listening on %s", url)
@@ -159,9 +152,8 @@ def main() -> None:
         service_runtime.history_max_rounds,
     )
     logger.info(
-        "Schedule heartbeat: beat_interval_seconds=%s enqueue_retry_seconds=%s",
+        "Schedule heartbeat: beat_interval_seconds=%s",
         int(args.schedule_beat_seconds),
-        int(args.schedule_enqueue_retry_seconds),
     )
     if user_access is None:
         logger.info("Auth mode: disabled")

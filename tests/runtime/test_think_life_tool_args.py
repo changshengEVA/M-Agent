@@ -130,6 +130,32 @@ def test_resolve_delegate_tool_input_calls_fill_tool_args() -> None:
     )
 
 
+def test_manifest_input_modes_drive_direct_argument_mapping() -> None:
+    from pathlib import Path
+
+    from m_agent.systems.tools import load_tool_suite_system
+
+    project_root = Path(__file__).resolve().parents[2]
+    system = load_tool_suite_system(project_root / "config" / "systems" / "tools" / "default.yaml")
+
+    recall_target = DelegateTarget(tool_name="shallow_recall", instruction="Where did we meet?")
+    agent = MagicMock()
+    agent.registry = system.registry
+    recall_result = resolve_delegate_tool_input(agent, recall_target, thread_id="t1")
+    assert recall_result.args == {"question": "Where did we meet?"}
+    agent.fill_tool_args.assert_not_called()
+
+    search_target = DelegateTarget(tool_name="web_search", instruction="current weather")
+    agent.fill_tool_args.return_value = ParamFillResult(
+        tool_name="web_search",
+        status="ready",
+        args={"query": "current weather"},
+    )
+    search_result = resolve_delegate_tool_input(agent, search_target, thread_id="t1")
+    assert search_result.args == {"query": "current weather"}
+    agent.fill_tool_args.assert_called_once()
+
+
 def test_resolve_delegate_tool_input_returns_clarify_from_fill_tool_args() -> None:
     agent = MagicMock()
     agent.fill_tool_args.return_value = ParamFillResult(

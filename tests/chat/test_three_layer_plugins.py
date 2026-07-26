@@ -265,8 +265,14 @@ def test_explicit_plugins_override_yaml_in_three_layer_agent(
     assert agent.episode_query_module is explicit_query_module
     # Unspecified slots fell back to defaults:
     assert isinstance(agent.wm_reader, DefaultWMReader)
-    # Capability registry slot empty -> falls back to the process-global default:
-    assert agent.capability_registry is get_default_capability_registry()
+    # Server-owned identity is explicit in the actual model system context.
+    identity_prompt = agent.thinking_agent.system_prompt
+    assert "[服务器提供的会话身份]" in identity_prompt
+    assert '当前用户的名称是 "User"' in identity_prompt
+    assert '助手名称是 "Memory Assistant"' in identity_prompt
+    assert "绝不能把用户名称当作自己的名称" in identity_prompt
+    # The YAML tool suite now builds its registry from one manifest per tool.
+    assert set(agent.capability_registry.names()) == set(get_default_capability_registry().names())
     # The disabled episode-query module must hide recall capabilities upward:
     descriptors = agent.execution_agent.describe_capabilities()
     names = [d.name for d in descriptors]

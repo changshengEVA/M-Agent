@@ -51,7 +51,7 @@
 
 ## WM
 
-`TransactionRecord` 是任务状态的唯一所有者：`task_state` 保存 goal/completed/remaining，`wm_entries` 保存该事务的工具证据。Think 同时读取当前事务状态、当前 conversation 的共享 Scene 与 dialogue history；事务之间不复制 WM。
+`TransactionRecord` 是任务状态的唯一所有者：`task_state` 保存 `goal/completion_status/completed/remaining`，其中 `completion_status` 为 `processing | awaiting_user | completed`；`wm_entries` 保存该事务的工具证据。Think 同时读取当前事务状态、当前 conversation 的共享 Scene 与 dialogue history；事务之间不复制 WM。
 
 ## Think 层（plan-only）
 
@@ -59,7 +59,9 @@
 
 Think 层固定为 **plan-only**：`ThinkingAgent` 不直接执行工具。工具执行与 `reply_to_user` 均由 `ThinkLifeLoop._delegate_and_wait` 委托；**每次 delegate 仅调用一个** `tool_name`，经 **registry 直调**（`invoke_tool_direct`，无 execution-layer ReAct LLM）。参数化阶段使用 structured output（`fill_tool_args`）：可 `invoke`（填齐 args 后直调）或 `clarify`（信息缺失时**不调用工具**，合成 `execution_feedback` 回到感知层）。`get_current_time`、`shallow_recall`、`deep_recall` 等登记在 `THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG` 的工具跳过 param LLM，`instruction` 直接映射为 invoke 参数（recall：`instruction` → `question`）。
 
-**execution_feedback 语义**：user 消息标明「仅完成一个 delegate 步骤」，优先注入 Structured tool result（`count`/`action`/`answer`/`partial`/`needs_clarification`/`stage`/`tool_invoked`）。`stage=param_fill` 且 `tool_invoked=false` 表示参数化短路：思考层可先用其他 tool 补参，无法补参再 `answer_directly` 追问。多步用户诉求下，若 `schedule_create` 返回 `count=1` 或 `partial=true`，Loop 会 **completion gate** 拦截过早的 `answer_directly` 并 nudge 再 plan（最多 2 次）。plan 可选字段 `request_complete`：多步任务未完成时应为 false。
+**execution_feedback 语义**：user 消息标明「仅完成一个 delegate 步骤」，优先注入 Structured tool result（`count`/`action`/`answer`/`partial`/`needs_clarification`/`stage`/`tool_invoked`）。`stage=param_fill` 且 `tool_invoked=false` 表示参数化短路：思考层可先用其他 tool 补参，无法补参再 `answer_directly` 追问。多步用户诉求下，若 `schedule_create` 返回 `count=1` 或 `partial=true`，Loop 会 **completion gate** 拦截过早的 `answer_directly` 并 nudge 再 plan（最多 2 次）。`reply_to_user(finalize=true)` 只结束本条用户可见消息流，也必须生成 `execution_feedback`，不得直接表示任务完成。
+
+`request_complete` 由任务状态派生：`completion_status=completed` 时运行时强制 `silent + request_complete=true`；`awaiting_user` 时强制 `silent + request_complete=false`；`processing` 时所有规划结果均为 `request_complete=false`。工具完成但仍需向用户传达结果时保持 `processing`，澄清问题已发送时进入 `awaiting_user`，完整结果已发送且目标满足后才进入 `completed`。
 
 `execution_feedback` 规划时从 Scene 取最近 user utterance 作为 `pending_user_request`。
 

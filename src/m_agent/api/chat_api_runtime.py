@@ -46,6 +46,17 @@ class _ThinkLifeScheduleLifecycle:
     def _service(self):
         return self._runtime.agent.get_schedule_agent().service
 
+    def _stored_thread_id(self, *, owner_id: str, schedule_id: str, fallback: str) -> str:
+        service = self._service()
+        store = getattr(service, "store", None)
+        finder = getattr(store, "find_by_id", None)
+        if callable(finder):
+            item = finder(schedule_id, owner_id=owner_id)
+            stored_thread_id = str(getattr(item, "thread_id", "") or "").strip()
+            if stored_thread_id:
+                return stored_thread_id
+        return str(fallback or "").strip()
+
     def on_schedule_processing_started(
         self,
         *,
@@ -55,9 +66,14 @@ class _ThinkLifeScheduleLifecycle:
         run_id: str,
         stimulus_id: str,
     ) -> None:
+        stored_thread_id = self._stored_thread_id(
+            owner_id=owner_id,
+            schedule_id=schedule_id,
+            fallback=thread_id,
+        )
         self._service().mark_running(
             owner_id=owner_id,
-            thread_id=thread_id,
+            thread_id=stored_thread_id,
             schedule_id=schedule_id,
         )
         self._runtime._emit_thread_event(
@@ -83,10 +99,15 @@ class _ThinkLifeScheduleLifecycle:
         error: str = "",
         memory_capture: Optional[Dict[str, Any]] = None,
     ) -> None:
+        stored_thread_id = self._stored_thread_id(
+            owner_id=owner_id,
+            schedule_id=schedule_id,
+            fallback=thread_id,
+        )
         if success:
             self._service().mark_done(
                 owner_id=owner_id,
-                thread_id=thread_id,
+                thread_id=stored_thread_id,
                 schedule_id=schedule_id,
                 run_id=run_id,
                 result={"answer": answer, "memory_capture": memory_capture},
@@ -105,7 +126,7 @@ class _ThinkLifeScheduleLifecycle:
             err = str(error or "schedule processing failed").strip() or "schedule processing failed"
             self._service().mark_failed(
                 owner_id=owner_id,
-                thread_id=thread_id,
+                thread_id=stored_thread_id,
                 schedule_id=schedule_id,
                 error=err,
             )
@@ -203,6 +224,9 @@ class ThreadSessionState:
     rounds: List[BufferedRound] = field(default_factory=list)
     created_at: datetime = field(default_factory=_now_utc)
     last_activity_at: datetime = field(default_factory=_now_utc)
+    # Idle flushing is stimulus-driven. A newly created (or freshly flushed)
+    # segment remains unarmed until its first stimulus arrives.
+    idle_timer_started_at: Optional[datetime] = None
     updated_at: datetime = field(default_factory=_now_utc)
     last_flush_at: Optional[datetime] = None
     last_flush_attempt_at: Optional[datetime] = None
@@ -289,11 +313,16 @@ class ChatServiceRuntime:
 
     def _wire_think_life_runtime(self) -> None:
         def _emitter(thread_id: str, event_type: str, payload: Dict[str, Any]) -> None:
+            if event_type == "stimulus_queued":
+                self._record_thread_activity(thread_id, arm_idle_timer=True)
             if event_type == "reply_emitted" and isinstance(payload, dict) and payload.get("finalize"):
+                self._record_thread_activity(thread_id, arm_idle_timer=True)
                 self._capture_think_life_round(
                     thread_id,
                     assistant_message=str(payload.get("message", "") or ""),
                 )
+            elif event_type == "turn_failed":
+                self._discard_pending_think_life_user_turn(thread_id)
             self._emit_thread_event(thread_id, event_type, payload)
 
         self._think_life.set_thread_event_emitter(_emitter)
@@ -306,6 +335,31 @@ class ChatServiceRuntime:
         self._think_life.set_history_provider(_history)
         self._think_life.set_schedule_lifecycle(_ThinkLifeScheduleLifecycle(self))
 
+    def _record_thread_activity(self, thread_id: str, *, arm_idle_timer: bool) -> None:
+        tid = str(thread_id or "").strip()
+        if not tid:
+            return
+        session = self._get_or_create_thread(tid)
+        occurred_at = _now_utc()
+        with self._threads_lock:
+            session.last_activity_at = occurred_at
+            if arm_idle_timer:
+                session.idle_timer_started_at = occurred_at
+            session.updated_at = occurred_at
+
+    def _discard_pending_think_life_user_turn(self, thread_id: str) -> None:
+        """Resolve the FIFO user turn whose processing ended in failure."""
+        tid = str(thread_id or "").strip()
+        if not tid:
+            return
+        with self._threads_lock:
+            queue = self._think_life_pending_users.get(tid)
+            if not queue:
+                return
+            queue.popleft()
+            if not queue:
+                self._think_life_pending_users.pop(tid, None)
+
     def _enqueue_think_life_user_turn(
         self,
         thread_id: str,
@@ -316,15 +370,20 @@ class ChatServiceRuntime:
         tid = str(thread_id or "").strip()
         if not tid:
             return
+        session = self._get_or_create_thread(tid)
+        submitted_at = _now_utc()
         with self._threads_lock:
             queue = self._think_life_pending_users.setdefault(tid, deque())
             queue.append(
                 {
                     "user_message": _normalize_text(user_message),
                     "user_turn": deepcopy(user_turn),
-                    "submitted_at": _now_utc(),
+                    "submitted_at": submitted_at,
                 }
             )
+            session.last_activity_at = submitted_at
+            session.idle_timer_started_at = submitted_at
+            session.updated_at = submitted_at
 
     def _capture_think_life_round(self, thread_id: str, *, assistant_message: str) -> None:
         """Buffer a completed user/assistant round for flush (think_life async path)."""
@@ -509,7 +568,12 @@ class ChatServiceRuntime:
         return (
             transaction.task_state.to_dict()
             if transaction is not None
-            else {"goal": "", "completed": [], "remaining": []}
+            else {
+                "goal": "",
+                "completion_status": "processing",
+                "completed": [],
+                "remaining": [],
+            }
         )
 
     # Allow-list of planning events the runtime forwards from
@@ -522,6 +586,7 @@ class ChatServiceRuntime:
             "thinking_task_state",
             "thinking_plan",
             "thinking_completed",
+            "turn_failed",
         }
     )
 
@@ -654,6 +719,7 @@ class ChatServiceRuntime:
         )
         session.rounds.append(round_item)
         session.last_activity_at = resolved_assistant_at
+        session.idle_timer_started_at = resolved_assistant_at
         session.updated_at = resolved_assistant_at
         self._trim_history(session)
         return round_item
@@ -729,10 +795,6 @@ class ChatServiceRuntime:
     def _thread_state_snapshot(self, session: ThreadSessionState) -> Dict[str, Any]:
         pending_rounds = self._pending_rounds(session)
         pending_turns = len(pending_rounds) * 2
-        idle_deadline_at = None
-        if self.idle_flush_seconds > 0 and pending_rounds and session.mode == "manual":
-            idle_deadline_at = _to_iso(session.last_activity_at + timedelta(seconds=self.idle_flush_seconds))
-
         history_rounds_data = [
             self._serialize_round(item) for item in self._rounds_for_history(session)
         ]
@@ -752,10 +814,33 @@ class ChatServiceRuntime:
             scene_pending_turns = int(scene_metrics.get("scene_pending_turns", 0) or 0)
             active_user_segment = bool(scene_metrics.get("active_user_segment"))
             has_pending_data = has_pending_data or bool(scene_metrics.get("can_flush"))
+            if session.idle_timer_started_at is None and scene_metrics.get(
+                "latest_stimulus_at"
+            ):
+                restored_at = _parse_ts_from_turn(
+                    {
+                        "timestamp": scene_metrics.get("latest_activity_at")
+                        or scene_metrics.get("latest_stimulus_at")
+                    }
+                )
+                if restored_at is not None:
+                    session.idle_timer_started_at = restored_at
+                    session.last_activity_at = restored_at
         except Exception:
             logger.exception(
                 "Think-life scene_pending_flush_metrics failed thread_id=%s",
                 session.thread_id,
+            )
+
+        idle_deadline_at = None
+        if (
+            self.idle_flush_seconds > 0
+            and session.idle_timer_started_at is not None
+            and session.mode == "manual"
+        ):
+            idle_deadline_at = _to_iso(
+                session.idle_timer_started_at
+                + timedelta(seconds=self.idle_flush_seconds)
             )
 
         snapshot: Dict[str, Any] = {
@@ -771,6 +856,12 @@ class ChatServiceRuntime:
             "scene_pending_turns": scene_pending_turns,
             "active_user_segment": active_user_segment,
             "last_activity_at": _to_iso(session.last_activity_at),
+            "idle_timer_armed": session.idle_timer_started_at is not None,
+            "idle_timer_started_at": (
+                _to_iso(session.idle_timer_started_at)
+                if session.idle_timer_started_at is not None
+                else None
+            ),
             "last_flush_at": _to_iso(session.last_flush_at) if session.last_flush_at else None,
             "last_flush_attempt_at": _to_iso(session.last_flush_attempt_at) if session.last_flush_attempt_at else None,
             "last_flush_reason": session.last_flush_reason,
@@ -898,37 +989,16 @@ class ChatServiceRuntime:
 
     @staticmethod
     def _schedule_system_context(schedule_item: Any) -> Dict[str, Any]:
-        action_payload = getattr(schedule_item, "action_payload", None)
-        metadata = getattr(schedule_item, "metadata", None)
         return {
             "trigger_source": "schedule",
             "schedule_id": str(getattr(schedule_item, "schedule_id", "") or "").strip(),
             "due_at_utc": str(getattr(schedule_item, "due_at_utc", "") or "").strip(),
             "timezone_name": str(getattr(schedule_item, "timezone_name", "") or "").strip(),
-            "original_time_text": str(getattr(schedule_item, "original_time_text", "") or "").strip(),
-            "action_type": str(getattr(schedule_item, "action_type", "") or "").strip(),
-            "thread_id": str(getattr(schedule_item, "thread_id", "") or "").strip(),
-            "source_text": str(getattr(schedule_item, "source_text", "") or "").strip(),
-            "action_payload": deepcopy(action_payload) if isinstance(action_payload, dict) else {},
-            "metadata": deepcopy(metadata) if isinstance(metadata, dict) else {},
         }
 
     @staticmethod
     def _schedule_prompt(schedule_item: Any) -> str:
-        action_payload = getattr(schedule_item, "action_payload", None)
-        if isinstance(action_payload, dict):
-            prompt = str(action_payload.get("prompt", "") or "").strip()
-            if prompt:
-                return prompt
-        for candidate in (
-            getattr(schedule_item, "title", None),
-            getattr(schedule_item, "source_text", None),
-            getattr(schedule_item, "original_time_text", None),
-        ):
-            prompt = str(candidate or "").strip()
-            if prompt:
-                return prompt
-        return "Scheduled reminder"
+        return str(getattr(schedule_item, "text", "") or "").strip()
 
     def import_dialogues(
         self,
@@ -1031,8 +1101,96 @@ class ChatServiceRuntime:
             )
             return None
 
+    def _scene_payload_covers_pending_rounds(
+        self,
+        scene_payload: Dict[str, Any],
+        pending_rounds: Sequence[BufferedRound],
+    ) -> bool:
+        """Return whether Scene contains every buffered assistant reply.
+
+        Buffered rounds are the loss-prevention copy of finalized replies.  If
+        a reply tool accidentally writes to a different Scene conversation,
+        exporting the otherwise-valid user-only Scene payload would silently
+        discard those replies.  Prefer the complete buffer in that case.
+        """
+        if not pending_rounds:
+            return True
+        turns = scene_payload.get("turns")
+        if not isinstance(turns, list):
+            return False
+        assistant_name = str(
+            getattr(self.agent, "assistant_name", "Memory Assistant")
+            or "Memory Assistant"
+        ).strip()
+        assistant_turns = sum(
+            1
+            for turn in turns
+            if isinstance(turn, dict)
+            and (
+                str(turn.get("speaker", "") or "").strip() == assistant_name
+                or str(turn.get("actor", "") or "").strip().lower() == "assistant"
+                or str(turn.get("entry_type", "") or "").strip().lower() == "reply"
+            )
+        )
+        meta = scene_payload.get("meta")
+        try:
+            round_count = int(meta.get("round_count", 0) or 0) if isinstance(meta, dict) else 0
+        except (TypeError, ValueError):
+            round_count = 0
+        required = len(pending_rounds)
+        return assistant_turns >= required and round_count >= required
+
+    def _flush_block_reason(self, thread_id: str) -> Optional[str]:
+        """Return why a conversation segment is not safe to flush yet."""
+        tid = str(thread_id or "").strip()
+        snap = THREAD_RUNTIME_STATUS.snapshot(tid)
+        if snap.drainer_active:
+            return "drainer_active"
+        if snap.pending_stimuli > 0:
+            return "stimuli_queued"
+        if snap.in_flight_stimulus_id:
+            return "stimulus_in_flight"
+        with self._threads_lock:
+            if self._think_life_pending_users.get(tid):
+                return "reply_pending"
+        return None
+
+    def _busy_flush_result(
+        self,
+        session: ThreadSessionState,
+        *,
+        reason: str,
+        block_reason: str,
+    ) -> Dict[str, Any]:
+        with self._threads_lock:
+            snapshot = self._thread_state_snapshot(session)
+        return {
+            "success": False,
+            "retryable": True,
+            "thread_id": session.thread_id,
+            "flush_reason": reason,
+            "status": "busy",
+            "message": "thread is still processing; flush was deferred",
+            "block_reason": block_reason,
+            "thread_state": snapshot,
+        }
+
     def flush_thread(self, thread_id: str, *, reason: str = "manual_api") -> Dict[str, Any]:
+        """Flush one thread while excluding concurrent stimulus admission."""
+        tid = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
+        lock = _get_thread_lock(tid)
+        with lock:
+            return self._flush_thread_locked(tid, reason=reason)
+
+    def _flush_thread_locked(self, thread_id: str, *, reason: str) -> Dict[str, Any]:
         session = self._get_or_create_thread(thread_id)
+        block_reason = self._flush_block_reason(session.thread_id)
+        if block_reason:
+            return self._busy_flush_result(
+                session,
+                reason=reason,
+                block_reason=block_reason,
+            )
         operation_id = f"flush_{uuid.uuid4().hex}"
         with self._threads_lock:
             pending_rounds = list(self._pending_rounds(session))
@@ -1044,6 +1202,17 @@ class ChatServiceRuntime:
             scene_flush_through_seq = (
                 self._scene_flush_through_seq(session.conversation_id) if scene_payload else 0
             )
+            if scene_payload and not self._scene_payload_covers_pending_rounds(
+                scene_payload,
+                pending_rounds,
+            ):
+                logger.warning(
+                    "Scene payload is missing buffered assistant replies; "
+                    "using buffered rounds thread_id=%s conversation_id=%s",
+                    session.thread_id,
+                    session.conversation_id,
+                )
+                scene_payload = None
 
             if not scene_payload and not pending_rounds:
                 think_life_segment: Optional[Dict[str, Any]] = None
@@ -1063,6 +1232,7 @@ class ChatServiceRuntime:
                 if think_life_segment and think_life_segment.get("completed_transaction_id"):
                     message = "think_life user segment closed (no pending dialogue turns)"
                     status = "think_life_segment"
+                session.idle_timer_started_at = None
                 result = {
                     "success": True,
                     "thread_id": snapshot["thread_id"],
@@ -1190,8 +1360,9 @@ class ChatServiceRuntime:
                         item.flush_id = flush_id
                 session.last_flush_at = session.last_flush_attempt_at
                 session.flush_count += 1
+                session.idle_timer_started_at = None
 
-                if scene_payload:
+                if scene_flush_through_seq > 0:
                     try:
                         self._think_life.mark_scene_flushed(
                             session.conversation_id,
@@ -1296,12 +1467,15 @@ class ChatServiceRuntime:
                     continue
                 has_buffered_pending = bool(self._pending_rounds(session))
                 has_scene_pending = False
+                scene_metrics: Dict[str, Any] = {}
                 try:
-                    metrics = self._think_life.scene_pending_flush_metrics(
+                    scene_metrics = self._think_life.scene_pending_flush_metrics(
                         thread_id,
                         conversation_id=session.conversation_id,
                     )
-                    has_scene_pending = int(metrics.get("scene_pending_turns", 0) or 0) > 0
+                    has_scene_pending = int(
+                        scene_metrics.get("scene_pending_turns", 0) or 0
+                    ) > 0
                 except Exception:
                     logger.exception(
                         "Idle flush scene metrics failed thread_id=%s",
@@ -1309,7 +1483,23 @@ class ChatServiceRuntime:
                     )
                 if not has_buffered_pending and not has_scene_pending:
                     continue
-                if session.last_activity_at + timedelta(seconds=self.idle_flush_seconds) <= now:
+                if session.idle_timer_started_at is None:
+                    latest_stimulus_at = scene_metrics.get("latest_stimulus_at")
+                    latest_activity_at = scene_metrics.get("latest_activity_at")
+                    if latest_stimulus_at:
+                        restored_at = _parse_ts_from_turn(
+                            {"timestamp": latest_activity_at or latest_stimulus_at}
+                        )
+                        if restored_at is not None:
+                            session.idle_timer_started_at = restored_at
+                            session.last_activity_at = restored_at
+                    if session.idle_timer_started_at is None:
+                        continue
+                if (
+                    session.idle_timer_started_at
+                    + timedelta(seconds=self.idle_flush_seconds)
+                    <= now
+                ):
                     candidates.append(thread_id)
 
         for thread_id in candidates:
@@ -1317,7 +1507,10 @@ class ChatServiceRuntime:
             if not lock.acquire(blocking=False):
                 continue
             try:
-                self.flush_thread(thread_id, reason="idle_timeout")
+                block_reason = self._flush_block_reason(thread_id)
+                if block_reason:
+                    continue
+                self._flush_thread_locked(thread_id, reason="idle_timeout")
             except Exception:
                 logger.exception("Idle flush failed for thread_id=%s", thread_id)
             finally:
@@ -1331,24 +1524,27 @@ class ChatServiceRuntime:
         user_turn: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
-        normalized_user_turn = _normalize_turn_payload(
-            user_turn,
-            fallback_speaker=str(getattr(self.agent, "user_name", "user") or "user").strip() or "user",
-            fallback_text=message,
-        )
-        rendered_message = _render_turn_for_llm(normalized_user_turn)
-        user_text = _normalize_text(normalized_user_turn.get("text")) or rendered_message
-        self._enqueue_think_life_user_turn(
-            active_thread_id,
-            user_message=user_text,
-            user_turn=normalized_user_turn,
-        )
-        return self._think_life.submit_stimulus_async(
-            thread_id=active_thread_id,
-            conversation_id=self._get_or_create_thread(active_thread_id).conversation_id,
-            text=rendered_message,
-            payload={"user_turn": normalized_user_turn},
-        )
+        lock = _get_thread_lock(active_thread_id)
+        with lock:
+            session = self._get_or_create_thread(active_thread_id)
+            normalized_user_turn = _normalize_turn_payload(
+                user_turn,
+                fallback_speaker=str(getattr(self.agent, "user_name", "user") or "user").strip() or "user",
+                fallback_text=message,
+            )
+            rendered_message = _render_turn_for_llm(normalized_user_turn)
+            user_text = _normalize_text(normalized_user_turn.get("text")) or rendered_message
+            self._enqueue_think_life_user_turn(
+                active_thread_id,
+                user_message=user_text,
+                user_turn=normalized_user_turn,
+            )
+            return self._think_life.submit_stimulus_async(
+                thread_id=active_thread_id,
+                conversation_id=session.conversation_id,
+                text=rendered_message,
+                payload={"user_turn": normalized_user_turn},
+            )
 
     def get_scene(
         self,

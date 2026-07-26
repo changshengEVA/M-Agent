@@ -98,7 +98,7 @@ def on_flush(self, *, thread_id: str, conversation_id: str,
 | 暴露面 | 层级 | 说明 |
 |--------|------|------|
 | `shallow_recall` / `deep_recall` | 执行层工具 | `question: str` → `backend.*_recall` |
-| 工具描述 | 执行层 prompt | `runtime_descriptions.yaml` |
+| 工具描述 | 执行层 prompt | `tools/capabilities/<tool>.yaml` |
 | `episode_note` | 思考层字段 | 内置 recorder，LLM 不直接调 recorder |
 | recall 规则 | 执行层 prompt | `chat_controller_runtime.yaml` |
 

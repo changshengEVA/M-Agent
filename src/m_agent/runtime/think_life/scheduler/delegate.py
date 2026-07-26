@@ -89,6 +89,7 @@ def plan_delegate(
     enabled_tools: Sequence[str],
     for_user_reply: bool = False,
     user_reply_text: Optional[str] = None,
+    registry=None,
 ) -> Optional[Tuple[str, Dict[str, Any]]]:
     """Return one tool payload using the deterministic skip-param mapping."""
     target = plan_delegate_target(
@@ -103,14 +104,24 @@ def plan_delegate(
         target.tool_name,
         instruction=target.instruction,
         user_reply_text=target.user_reply_text,
+        registry=registry,
     )
     return target.tool_name, tool_input
 
 
-def uses_param_llm(tool_name: str, *, for_user_reply: bool = False) -> bool:
+def uses_param_llm(
+    tool_name: str,
+    *,
+    for_user_reply: bool = False,
+    registry=None,
+) -> bool:
     if for_user_reply:
         return False
     name = str(tool_name or "").strip()
+    spec = registry.get(name) if registry is not None and name else None
+    input_mode = str(getattr(spec, "input_mode", "") or "").strip()
+    if input_mode in {"param_llm", "instruction_arg", "no_args", "reply"}:
+        return input_mode == "param_llm"
     return bool(name) and name not in SKIP_PARAM_LLM_TOOLS
 
 
@@ -124,11 +135,16 @@ def resolve_delegate_tool_input(
 ) -> ParamFillResult:
     """Fill tool arguments with the param LLM or deterministic skip-param mapping."""
     tool_name = str(target.tool_name or "").strip()
-    if not uses_param_llm(target.tool_name, for_user_reply=target.for_user_reply):
+    if not uses_param_llm(
+        target.tool_name,
+        for_user_reply=target.for_user_reply,
+        registry=execution_agent.registry,
+    ):
         args = build_tool_input(
             target.tool_name,
             instruction=target.instruction,
             user_reply_text=target.user_reply_text,
+            registry=execution_agent.registry,
         )
         return ParamFillResult(tool_name=tool_name, status="ready", args=args)
 

@@ -16,6 +16,7 @@ class _StoredUser:
     role: str
     display_name: str
     config_path: Path
+    canonical_thread_id: str
     created_at: str
     updated_at: str
 
@@ -24,6 +25,7 @@ class _StoredUser:
             username=self.username,
             role=self.role,
             config_path=self.config_path,
+            canonical_thread_id=self.canonical_thread_id,
             created_at=self.created_at,
             updated_at=self.updated_at,
             display_name=self.display_name,
@@ -80,6 +82,7 @@ class FakeUserAccessService:
             role=str(role or "basic").strip().lower() or "basic",
             display_name=str(display_name or safe_username).strip() or safe_username,
             config_path=(self.users_root / safe_username / "chat.yaml"),
+            canonical_thread_id=f"{safe_username}-thread",
             created_at=now,
             updated_at=now,
         )

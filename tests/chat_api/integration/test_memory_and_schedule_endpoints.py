@@ -66,8 +66,7 @@ def test_schedule_crud_endpoints_with_fake_runtime() -> None:
         created = client.post(
             "/v1/chat/threads/schedule-thread/schedules",
             json={
-                "title": "Weekly report",
-                "prompt": "Remind me to submit weekly report",
+                "text": "The scheduled weekly report submission time has arrived; submit the report now.",
                 "due_at": "2026-04-12T09:30",
                 "timezone_name": "Asia/Shanghai",
             },
@@ -75,23 +74,17 @@ def test_schedule_crud_endpoints_with_fake_runtime() -> None:
         assert created.status_code == 201
         created_item = created.json()["item"]
         schedule_id = created_item["schedule_id"]
-        assert created_item["title"] == "Weekly report"
+        assert created_item["text"] == "The scheduled weekly report submission time has arrived; submit the report now."
 
         listed = client.get("/v1/chat/threads/schedule-thread/schedules")
         assert listed.status_code == 200
         assert listed.json()["count"] == 1
 
-        updated = client.patch(
+        update_not_supported = client.patch(
             f"/v1/chat/threads/schedule-thread/schedules/{schedule_id}",
-            json={
-                "title": "Project weekly report",
-                "prompt": "Remind me project report",
-                "due_at": "2026-04-12T10:30",
-                "timezone_name": "Asia/Shanghai",
-            },
+            json={"text": "This update must not be accepted."},
         )
-        assert updated.status_code == 200
-        assert updated.json()["item"]["title"] == "Project weekly report"
+        assert update_not_supported.status_code == 405
 
         detail = client.get(f"/v1/chat/threads/schedule-thread/schedules/{schedule_id}")
         assert detail.status_code == 200

@@ -140,6 +140,7 @@ def test_chat_controller_runtime_yaml_contains_think_life_prompt_sections() -> N
     assert isinstance(pre_gen, dict), "chat_controller.thinking.pre_gen_task_state must be defined"
     for key in ("base_prompt", "instructions"):
         assert isinstance(pre_gen.get(key), str) and pre_gen[key].strip(), f"missing or empty: pre_gen_task_state.{key}"
+    assert "completion_status" in pre_gen["instructions"]
 
     resolver = thinking.get("resolve_transaction")
     assert isinstance(resolver, dict), "chat_controller.thinking.resolve_transaction must be defined"
@@ -155,6 +156,7 @@ def test_chat_controller_runtime_yaml_contains_think_life_prompt_sections() -> N
         "fallback_answer",
     ):
         assert isinstance(decision.get(key), str) and decision[key].strip(), f"missing or empty: make_decision.{key}"
+    assert "completion_status==completed" in decision["instructions"]
 
     assert "base_prompt" not in thinking
     assert "plan_instructions" not in thinking

@@ -226,10 +226,50 @@ class ThinkLifeLoop:
             if self._is_force_stop(cancel_event):
                 return self._handle_force_stop(stimulus, transaction, phase="execute")
             return self._handle_preempt(stimulus, transaction, phase="execute")
+        except Exception as exc:
+            self._handle_processing_failure(stimulus, transaction, exc)
+            raise
         finally:
             THREAD_CPU_STATE.clear_in_flight(tid, stimulus_id=stimulus.stimulus_id)
             THREAD_RUNTIME_STATUS.set_cpu_holder(tid, None)
             self._refresh_pending_stimuli(tid)
+
+    def _handle_processing_failure(
+        self,
+        stimulus: StimulusEnvelope,
+        transaction: TransactionRecord,
+        exc: Exception,
+    ) -> None:
+        current = self.registry.get(transaction.transaction_id) or transaction
+        error = str(exc or "think-life processing failed").strip() or "think-life processing failed"
+        current.last_error = error
+        if not current.status.is_terminal():
+            try:
+                self.registry.transition(current.transaction_id, TransactionStatus.FAILED)
+            except TransactionTransitionError:
+                logger.exception(
+                    "Think-life failure transition failed txn=%s status=%s",
+                    current.transaction_id,
+                    current.status.value,
+                )
+        if self._event_emitter is not None:
+            try:
+                self._event_emitter(
+                    "turn_failed",
+                    {
+                        "thread_id": current.thread_id,
+                        "conversation_id": current.conversation_id,
+                        "transaction_id": current.transaction_id,
+                        "stimulus_id": stimulus.stimulus_id,
+                        "error": error,
+                        "retryable": False,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "Think-life turn_failed emission failed txn=%s",
+                    current.transaction_id,
+                )
 
     def _notify_schedule_started(
         self,
@@ -270,6 +310,30 @@ class ThinkLifeLoop:
         if not owner_id or not schedule_id:
             return
         success = bool(result.get("success", False))
+        answer = str(
+            result.get("replies", [""])[-1]
+            if isinstance(result.get("replies"), list)
+            and result.get("replies")
+            else result.get("answer", "") or ""
+        )
+        if not answer:
+            # Final semantic completion now occurs on the feedback turn, one
+            # turn after reply_to_user emitted the schedule response. Recover
+            # that response from the transaction's Scene entry for lifecycle
+            # reporting instead of losing it on the silent completion turn.
+            for entry in reversed(
+                read_scene_segment(
+                    self.scene_reader,
+                    transaction.conversation_id,
+                    max_entries=self.config.scene_context_max_entries,
+                )
+            ):
+                if (
+                    entry.entry_type == SceneEntryType.REPLY
+                    and entry.transaction_id == transaction.transaction_id
+                ):
+                    answer = str(entry.text or "").strip()
+                    break
         try:
             hook.on_schedule_processing_finished(
                 owner_id=owner_id,
@@ -277,12 +341,7 @@ class ThinkLifeLoop:
                 schedule_id=schedule_id,
                 run_id=run_id,
                 success=success,
-                answer=str(
-                    result.get("replies", [""])[-1]
-                    if isinstance(result.get("replies"), list)
-                    and result.get("replies")
-                    else result.get("answer", "") or ""
-                ),
+                answer=answer,
                 error=str(result.get("error", "") or ""),
             )
         except Exception:
@@ -591,10 +650,7 @@ class ThinkLifeLoop:
         if self._should_yield_to_inbox(record.thread_id, self.attributor.priority_for(stimulus)):
             return self._handle_preempt(stimulus, record, phase="execute")
         delegate_id = f"dlg_{uuid.uuid4().hex}"
-        record.delegate_count += 1
-        record.active_delegate_id = delegate_id
-        record.correlation.delegate_id = delegate_id
-        self.registry.transition(record.transaction_id, TransactionStatus.WAITING_EXECUTION)
+        record = self.registry.begin_delegate(record.transaction_id, delegate_id)
         fill_result = resolve_delegate_tool_input(
             self.execution_agent,
             target,
@@ -644,6 +700,7 @@ class ThinkLifeLoop:
                 think_life_hooks={
                     "delegate_id": delegate_id,
                     "transaction_id": record.transaction_id,
+                    "conversation_id": record.conversation_id,
                     "on_reply": on_reply,
                     "scene_writer": self.scene_writer,
                 },
@@ -652,17 +709,10 @@ class ThinkLifeLoop:
             raise
         self.wm_system.write(record.wm_entries, exec_result.tool_history)
         self._append_tool_scene(record, exec_result.tool_history, delegate_id=delegate_id)
-        if finalized["value"]:
-            record = self.registry.get(record.transaction_id) or record
-            self._complete_transaction_after_turn(record)
-            return {
-                "success": True,
-                "transaction_id": record.transaction_id,
-                "delegate_id": delegate_id,
-                "replies": replies,
-                "completed": True,
-                "answer": replies[-1] if replies else "",
-            }
+        # A finalized reply closes the user-visible message stream, not the
+        # semantic task. Feed its delivery outcome back through perception so
+        # task-state preprocessing can decide completed vs awaiting_user vs
+        # further processing just like it does for every other capability.
         self.gateway.submit_execution_feedback(
             thread_id=record.thread_id,
             conversation_id=record.conversation_id,
@@ -677,6 +727,8 @@ class ThinkLifeLoop:
             "transaction_id": record.transaction_id,
             "delegate_id": delegate_id,
             "waiting_feedback": True,
+            "reply_finalized": bool(finalized["value"]),
+            "replies": replies,
             "summary": exec_result.summary,
         }
 

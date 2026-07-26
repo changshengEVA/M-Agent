@@ -1,0 +1,18 @@
+name: reply_to_user
+version: 1
+category: communication
+builder: m_agent.systems.tools.default.capabilities.reply_to_user:_build_reply_to_user_tool
+descriptions:
+  en: "Function: send a message to the user. Needs: message."
+  zh: "功能：向用户发送消息。所需：message。"
+input:
+  mode: reply
+  instruction_arg: message
+  schema: inferred_from_tool
+output:
+  schema: builtins:dict
+  feedback_projector: m_agent.runtime.think_life.scheduler.execution_feedback:feedback_summary_from_tool_history
+  memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
+policy:
+  side_effect: emit
+dependencies: []

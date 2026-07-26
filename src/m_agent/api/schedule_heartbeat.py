@@ -10,7 +10,7 @@ from m_agent.api.user_access import UserAccessService
 from m_agent.schedule.store import ANONYMOUS_OWNER_ID
 
 from .chat_api_runtime import ChatServiceRuntime, ThreadEventSink
-from .chat_api_shared import _now_iso
+from .chat_api_shared import _now_iso, _scoped_thread_id
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,6 @@ class ScheduleHeartbeatCoordinator:
         user_access: Optional[UserAccessService] = None,
         beat_interval_seconds: int = 10,
         batch_limit: int = 20,
-        enqueue_retry_seconds: int = 5,
         thread_event_sink: ThreadEventSink = None,
         autostart: bool = True,
     ) -> None:
@@ -33,7 +32,6 @@ class ScheduleHeartbeatCoordinator:
         self.user_access = user_access
         self.beat_interval_seconds = max(1, int(beat_interval_seconds or 10))
         self.batch_limit = max(1, min(200, int(batch_limit or 20)))
-        self.enqueue_retry_seconds = max(1, int(enqueue_retry_seconds or 5))
         self.thread_event_sink = thread_event_sink
         self.created_at = _now_iso()
         self._stop_event = threading.Event()
@@ -128,11 +126,20 @@ class ScheduleHeartbeatCoordinator:
             logger.exception("Failed to emit schedule heartbeat event=%s thread_id=%s", event_type, thread_id)
 
     @staticmethod
-    def _schedule_event_payload(schedule_item: Any, *, run_id: str = "", error: str = "") -> Dict[str, Any]:
+    def _schedule_event_payload(
+        schedule_item: Any,
+        *,
+        public_thread_id: str = "",
+        run_id: str = "",
+        error: str = "",
+    ) -> Dict[str, Any]:
         payload = {
-            "thread_id": str(getattr(schedule_item, "thread_id", "") or "").strip(),
+            "thread_id": (
+                str(public_thread_id or "").strip()
+                or str(getattr(schedule_item, "thread_id", "") or "").strip()
+            ),
             "schedule_id": str(getattr(schedule_item, "schedule_id", "") or "").strip(),
-            "title": str(getattr(schedule_item, "title", "") or "").strip(),
+            "text": str(getattr(schedule_item, "text", "") or "").strip(),
             "status": str(getattr(schedule_item, "status", "") or "").strip(),
             "due_at_utc": str(getattr(schedule_item, "due_at_utc", "") or "").strip(),
             "timezone_name": str(getattr(schedule_item, "timezone_name", "") or "").strip(),
@@ -165,12 +172,29 @@ class ScheduleHeartbeatCoordinator:
             total_leased += len(leased_items)
 
             for schedule_item in leased_items:
-                target_thread_id = str(getattr(schedule_item, "thread_id", "") or "").strip() or runtime.default_thread_id
-                payload = self._schedule_event_payload(schedule_item)
+                stored_thread_id = (
+                    str(getattr(schedule_item, "thread_id", "") or "").strip()
+                    or runtime.default_thread_id
+                )
+                target_thread_id = stored_thread_id
+                public_thread_id = stored_thread_id
+                if owner_id != ANONYMOUS_OWNER_ID and self.user_access is not None:
+                    user = self.user_access.get_user(username=owner_id)
+                    if user is not None:
+                        configured_thread_id = str(
+                            getattr(user, "canonical_thread_id", "") or ""
+                        ).strip()
+                        if configured_thread_id:
+                            public_thread_id = configured_thread_id
+                            target_thread_id = _scoped_thread_id(user, configured_thread_id)
+                payload = self._schedule_event_payload(
+                    schedule_item,
+                    public_thread_id=public_thread_id,
+                )
                 self._emit_thread_event(target_thread_id, "schedule_due", payload)
 
                 run_id = f"schedule_run_{uuid.uuid4().hex}"
-                item_owner_id = str(getattr(schedule_item, "owner_id", "") or owner_id)
+                item_owner_id = owner_id
                 schedule_id = str(getattr(schedule_item, "schedule_id", "") or "")
                 schedule_prompt = runtime._schedule_prompt(schedule_item)
                 system_context = runtime._schedule_system_context(schedule_item)
@@ -207,16 +231,9 @@ class ScheduleHeartbeatCoordinator:
                         schedule_id,
                     )
                     error_text = str(exc or "schedule enqueue failed").strip() or "schedule enqueue failed"
-                    schedule_service.release_lease(
-                        owner_id=item_owner_id,
-                        thread_id=target_thread_id,
-                        schedule_id=schedule_id,
-                        reason="enqueue_failed",
-                        retry_after_seconds=self.enqueue_retry_seconds,
-                    )
                     schedule_service.mark_failed(
                         owner_id=item_owner_id,
-                        thread_id=target_thread_id,
+                        thread_id=stored_thread_id,
                         schedule_id=schedule_id,
                         error=error_text,
                     )
@@ -224,7 +241,12 @@ class ScheduleHeartbeatCoordinator:
                     self._emit_thread_event(
                         target_thread_id,
                         "schedule_failed",
-                        self._schedule_event_payload(schedule_item, run_id=run_id, error=error_text),
+                        self._schedule_event_payload(
+                            schedule_item,
+                            public_thread_id=public_thread_id,
+                            run_id=run_id,
+                            error=error_text,
+                        ),
                     )
 
         beat_finished_at = _now_iso()
@@ -266,7 +288,6 @@ class ScheduleHeartbeatCoordinator:
                     "beat_interval_seconds": self.beat_interval_seconds,
                     "interval_seconds": self.beat_interval_seconds,
                     "batch_limit": self.batch_limit,
-                    "enqueue_retry_seconds": self.enqueue_retry_seconds,
                     "next_beat_due_at": self._next_beat_due_at(),
                 },
                 "counters": {

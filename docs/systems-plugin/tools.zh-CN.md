@@ -1,85 +1,83 @@
-# Tools 子系统 — 可插拔说明
+# Tools 子系统——插件指南
 
 > English: [tools.md](./tools.md) · 总索引：[systems-plugin-development.zh-CN.md](../systems-plugin-development.zh-CN.md)
 
 ## 职责
 
-注册执行层 **LangChain 工具**（capability），管理白名单、默认参数与工具描述。Recall 类工具 **必须** 用 `context.get_episodic_backend()`，见 [episodic.zh-CN.md](./episodic.zh-CN.md)。
+Tools 子系统向执行层暴露 LangChain capability。默认工具集采用**每个工具一个 YAML 清单**，使注册、提示词、默认参数、参数路由和集成元数据集中在一个位置。
 
-## 挂载与切换
+## 目录结构
 
-| 项 | 值 |
-|----|-----|
-| Chat 指针 | `systems.tools` → `config/systems/tools/*.yaml` |
-| 默认 | `default.yaml` + `runtime_descriptions.yaml` |
-| 源码 | `src/m_agent/systems/tools/default/capabilities/` |
+```text
+config/systems/tools/
+├── default.yaml                 # 工具集组合及跨工具策略
+└── capabilities/
+    ├── web_search.yaml          # 一个工具的一份完整描述
+    ├── schedule_create.yaml
+    └── ...
+```
+
+Chat controller 仍然只挂载一个工具集：
 
 ```yaml
 systems:
-  tools: ../../systems/tools/my_toolset.yaml
+  tools: ../../systems/tools/default.yaml
 ```
 
-## 可插拔与配置
+`default.yaml` 指向清单目录，并控制启用白名单：
 
-| YAML 字段 | 类型 | 作用 |
-|-----------|------|------|
-| `registry` | `path` → `ControllerCapabilityRegistry` | 注册 capability 工厂（**主要 path 槽位**） |
-| `enabled` | 字符串列表 | 暴露给 LLM 的工具白名单 |
-| `defaults` | 映射 | 每工具 kwargs；`__controller__.max_calls_per_turn`；`memory_recall.max_calls_per_turn` |
-| `runtime_descriptions` / `_path` | 内联或路径 | 工具描述（zh/en 按 `prompt_language`） |
+```yaml
+system: tools
+capabilities_dir: ./capabilities
+enabled: [reply_to_user, get_current_time, web_search]
+defaults:
+  __controller__:
+    max_calls_per_turn: 12
+```
 
-描述优先级：`runtime_descriptions` > legacy `chat_controller_runtime.yaml` 内 `tools.*.description`。
+如果省略 `enabled`，则启用 `capabilities_dir` 下的全部清单。旧版第三方工具集仍可继续使用 `registry` 和 `runtime_descriptions_path`。
 
-## 暴露给 LLM
+## 工具清单
 
-| 暴露面 | 说明 |
-|--------|------|
-| `enabled` 内各工具 | `@tool`：recall、reply、email、schedule 等 |
-| `runtime_descriptions` | capability 区块中的自然语言说明 |
-| `defaults` 调用上限 | 单工具及 `memory_recall` 分组 |
+每份清单可包含以下字段：
 
-## 实现要点
+| 字段 | 运行时含义 |
+|---|---|
+| `name` | 规划、调用、日志和记忆共同使用的稳定工具名 |
+| `version` | 大于零的契约版本 |
+| `category` | capability descriptor 对外暴露的分类 |
+| `builder` | 构建 LangChain 工具的可导入 callable；路径错误会在启动时失败 |
+| `descriptions` | 注入思考层 capability 列表的多语言描述 |
+| `input.mode` | `param_llm`、`instruction_arg`、`no_args` 或 `reply` |
+| `input.instruction_arg` | 直接映射思考层 instruction 时使用的参数名 |
+| `input.schema` | 输入 schema 来源；`inferred_from_tool` 表示从 LangChain 工具推导 |
+| `output.*` | 保存在 `ControllerCapabilitySpec` 上的输出契约和投影元数据 |
+| `policy.max_calls_per_turn` | 通过现有默认参数和限流机制执行 |
+| `policy.side_effect` | 审查与安全元数据，如 `read`、`write`、`send` |
+| `dependencies` | 所需后端、服务或认证资源 |
+| `defaults` | 该工具的默认运行参数 |
 
-- 每个 capability = `ControllerCapabilitySpec(name=..., build_tool=...)`
-- `build_tool(context, description)` 返回 LangChain `@tool`
-- 必须走 `start_tool_call` / `finish_tool_call` / `check_tool_call_limits`
+目前 `side_effect`、`dependencies` 和输出 projector 路径属于描述性元数据。工具仍需通过 `ControllerCapabilityContext` 获取依赖；复杂结果仍需在 `src/m_agent/chat/working_memory.py` 中接入专用投影。
 
-**扩展方式：**
+## 参数模式
 
-| 方式 | 适用 |
-|------|------|
-| 改 `tools/default/` + `enabled` | 扩展官方工具集 |
-| 新包 + `build_my_registry()` | 第三方（**推荐**） |
+| 模式 | 行为 |
+|---|---|
+| `param_llm` | 从工具 schema 生成结构化参数 |
+| `instruction_arg` | 将思考层 instruction 直接写入指定参数 |
+| `no_args` | 使用 `{}` 调用工具 |
+| `reply` | 直接构建 `reply_to_user` 参数，不运行参数 LLM |
 
-**禁止：** 全局 `register_capability()` 污染 default registry；recall 绕过 `get_episodic_backend()`。
+通过 `capabilities_dir` 加载的工具集以清单为准。旧的跳过参数表只作为程序化 legacy registry 的兼容回退。
 
-## Think-life 参数化跳过声明（`THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG`）
+## 新增工具
 
-Think-life 对部分工具**不走 param LLM**，而是把思考层本轮的 `instruction` 直接映射为 invoke 参数（见 `src/m_agent/runtime/think_life/scheduler/tool_runner.py`）。
-
-新增或调整「单字符串 / 无参」类能力时，若应跳过 param LLM，必须在 **`THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG`** 中登记：
-
-| 字段含义 | 说明 |
-|----------|------|
-| 键 | capability 名（与 `ControllerCapabilitySpec.name` 一致） |
-| 值 | 思考层 `instruction` 写入的工具参数字段名；`None` 表示无参（如 `get_current_time`） |
-
-当前登记示例：
-
-| 工具 | `instruction` 映射字段 |
-|------|------------------------|
-| `get_current_time` | （无，`{}`） |
-| `shallow_recall` | `question` |
-| `deep_recall` | `question` |
-
-`reply_to_user` 单独处理，不在此表中。其余工具（如 `email_send`、`schedule_create`、`schedule_query`、`schedule_delete`）仍走 param LLM 结构化填参。
-
-## 交付
-
-1. 实现 capability + registry 工厂
-2. 复制 `config/systems/tools/default.yaml`
-3. 改 `systems.tools` 指针
+1. 在 `src/m_agent/systems/tools/default/capabilities/` 或其他可导入包中实现 builder。
+2. 在 `config/systems/tools/capabilities/` 下新增且只新增一份工具清单。
+3. 如果工具集使用显式白名单，将工具名加入 `default.yaml` 的 `enabled`。
+4. 按需增加依赖注入、工作记忆投影和专用执行反馈。
+5. 测试清单加载、参数路由、调用、限流和记忆投影。
 
 ```bash
-pytest tests/systems/ tests/test_chat_controller_tool_limits.py
+pytest tests/systems/ tests/runtime/test_think_life_tool_args.py tests/test_chat_controller_tool_limits.py
 ```

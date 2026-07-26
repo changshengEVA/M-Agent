@@ -88,7 +88,7 @@ Shared rules: [zh-CN guide §4](./systems-plugin-development.zh-CN.md). Per-subs
 | `config/systems/wm/default.yaml` | WM reader/writer/display + `config:` block |
 | `config/systems/episodic/rag_default.yaml` | RAG backend kwargs |
 | `config/systems/tools/default.yaml` | registry, enabled, defaults |
-| `config/systems/tools/runtime_descriptions.yaml` | execution-layer tool descriptions |
+| `config/systems/tools/capabilities/<tool>.yaml` | one executable descriptor per tool |
 
 ---
 

@@ -12,7 +12,9 @@ from m_agent.chat.three_layer_chat_agent import ThreeLayerChatAgent
 from m_agent.paths import chat_user_persistence_root, chat_user_slug
 from m_agent.runtime.think_life.config import ThinkLifeConfig, load_think_life_config
 from m_agent.runtime.think_life.contracts import (
+    SceneActor,
     SceneEntry,
+    SceneEntryType,
     TransactionKind,
     TransactionRecord,
     TransactionStatus,
@@ -257,6 +259,7 @@ class ThinkLifeRuntime:
                 "thinking_task_state",
                 "thinking_plan",
                 "thinking_completed",
+                "turn_failed",
             }
         )
 
@@ -609,6 +612,8 @@ class ThinkLifeRuntime:
                 "scene_pending_entries": 0,
                 "scene_pending_turns": 0,
                 "active_user_segment": False,
+                "latest_stimulus_at": None,
+                "latest_activity_at": None,
                 "can_flush": False,
             }
         self.ensure_scene_thread_loaded(cid)
@@ -632,10 +637,28 @@ class ThinkLifeRuntime:
             for record in self.registry.list_for_thread(tid)
             if record.conversation_id == cid
         )
+        stimulus_entries = [
+            entry
+            for entry in entries
+            if entry.actor == SceneActor.USER
+            or entry.entry_type == SceneEntryType.UTTERANCE
+        ]
+        visible_entries = [
+            entry
+            for entry in entries
+            if entry.actor in {SceneActor.USER, SceneActor.ASSISTANT}
+            or entry.entry_type in {SceneEntryType.UTTERANCE, SceneEntryType.REPLY}
+        ]
         return {
             "scene_pending_entries": len(entries),
             "scene_pending_turns": pending_turns,
             "active_user_segment": active_user_segment,
+            "latest_stimulus_at": (
+                stimulus_entries[-1].occurred_at if stimulus_entries else None
+            ),
+            "latest_activity_at": (
+                visible_entries[-1].occurred_at if visible_entries else None
+            ),
             "can_flush": pending_turns > 0 or active_user_segment,
         }
 

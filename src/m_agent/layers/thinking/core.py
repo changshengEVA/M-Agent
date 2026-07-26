@@ -14,16 +14,20 @@ from m_agent.layers.execution.core import ExecutionAgent
 from m_agent.layers.execution.model_provider import ModelProvider
 from m_agent.systems.episodic import DefaultEpisodeRecorder, EpisodeRecorder
 from m_agent.systems.wm import WMReader
-from m_agent.layers.perception.contracts import PerceptionInput
+from m_agent.layers.perception.contracts import PerceptionInput, StimulusKind
 from m_agent.layers.thinking.persona import (
     build_capability_boundary_block,
 )
 from m_agent.layers.thinking.contracts import (
+    TASK_COMPLETION_AWAITING_USER,
+    TASK_COMPLETION_COMPLETED,
+    TASK_COMPLETION_PROCESSING,
     TaskProgress,
     TaskProgressUpdate,
     TransactionResolution,
     ThinkingDecision,
     is_silent_mode,
+    normalize_task_completion_status,
     normalize_thinking_mode,
 )
 from m_agent.layers.thinking.state import ConversationState, ConversationStateRegistry
@@ -101,10 +105,17 @@ class ThinkingAgent:
             "with transaction_id=null. Do not merge unrelated tasks."
         )
         candidate_lines = []
-        for record in candidates:
+        candidate_ids: Dict[str, str] = {}
+        for index, record in enumerate(candidates, start=1):
+            # The model only needs a turn-local selector.  Keep durable runtime
+            # transaction ids on the server and map an opaque ordinal back to
+            # the selected record after structured output is returned.
+            candidate_label = f"candidate_{index}"
+            candidate_ids[candidate_label] = record.transaction_id
             state = record.task_state
             candidate_lines.append(
-                f"- {record.transaction_id}: status={record.status.value}; "
+                f"- {candidate_label}: status={record.status.value}; "
+                f"completion_status={normalize_task_completion_status(state.completion_status)}; "
                 f"goal={state.goal or '(empty)'}; remaining={state.remaining}"
             )
         sections = [
@@ -147,9 +158,8 @@ class ThinkingAgent:
         else:
             action = str(getattr(raw, "action", "") or "").strip().lower()
             transaction_id = str(getattr(raw, "transaction_id", "") or "").strip()
-        valid_ids = {record.transaction_id for record in candidates}
-        if action == "continue" and transaction_id in valid_ids:
-            return transaction_id
+        if action == "continue" and transaction_id in candidate_ids:
+            return candidate_ids[transaction_id]
         return None
 
     # ------------------------------------------------------------------
@@ -175,6 +185,11 @@ class ThinkingAgent:
                 thread_id=perception.thread_id,
             )
         state.turn_count += 1
+        if perception.stimulus.kind == StimulusKind.USER_MESSAGE:
+            # Transaction attribution has already selected the relevant task
+            # (or created a new one). A user continuation re-opens that task
+            # before the preprocessor evaluates the new evidence.
+            state.task_progress.completion_status = TASK_COMPLETION_PROCESSING
         turn_meta = {
             "thread_id": perception.thread_id,
             "conversation_id": perception.conversation_id,
@@ -200,7 +215,26 @@ class ThinkingAgent:
             self._task_state_event_payload(task_progress_update, perception, state),
         )
 
-        decision = self._plan(perception, state)
+        completion_status = normalize_task_completion_status(
+            state.task_progress.completion_status
+        )
+        if completion_status == TASK_COMPLETION_COMPLETED:
+            decision = ThinkingDecision(
+                mode="silent",
+                request_complete=True,
+                reasoning="Task state confirms that the complete request is fulfilled.",
+            )
+        elif completion_status == TASK_COMPLETION_AWAITING_USER:
+            decision = ThinkingDecision(
+                mode="silent",
+                request_complete=False,
+                reasoning="Task state is waiting for additional user input.",
+            )
+        else:
+            decision = self._plan(perception, state)
+            # Completion is an evidence-backed task-state fact, not an
+            # implication of the action selected by the planning model.
+            decision.request_complete = False
         emit("thinking_plan", self._decision_event_payload(decision, perception, state))
 
         mode = normalize_thinking_mode(decision.mode)
@@ -330,6 +364,10 @@ class ThinkingAgent:
             state, "task_progress", TaskProgress()
         )
         lines = ["[Task State]", f"goal: {str(task_state.goal or '').strip() or '(empty)'}"]
+        lines.append(
+            "completion_status: "
+            f"{normalize_task_completion_status(task_state.completion_status)}"
+        )
         lines.append("completed:")
         lines.extend(f"- {item}" for item in task_state.completed) if task_state.completed else lines.append("- (none)")
         lines.append("remaining:")
@@ -345,6 +383,10 @@ class ThinkingAgent:
             return
         if update.goal is not None:
             state.task_progress.goal = str(update.goal or "").strip()
+        if update.completion_status is not None:
+            state.task_progress.completion_status = normalize_task_completion_status(
+                update.completion_status
+            )
         if update.completed is not None:
             state.task_progress.completed = [
                 str(item or "").strip() for item in update.completed if str(item or "").strip()
@@ -435,22 +477,31 @@ class ThinkingAgent:
             return (
                 "[输出字段]\n"
                 "- goal: 可选；用户当前整体任务，保持稳定，除非任务真的变化。\n"
+                "- completion_status: 只能是 processing、awaiting_user 或 completed。\n"
                 "- completed: 可选；已经由对话或执行反馈确认完成的步骤。省略表示不变，空数组表示清空。\n"
                 "- remaining: 可选；仍未完成的步骤。省略表示不变，空数组表示已无剩余步骤。\n"
                 "[约束]\n"
                 "- 只输出任务状态更新，不要输出 mode/tool_name/instruction/answer。\n"
                 "- 不要把原始工具结果复制进状态；只写短、可读、可执行的任务步骤。\n"
-                "- 当前刺激为 execution_feedback 时，优先根据可读反馈和可见工具证据更新 completed/remaining。"
+                "- 新的用户请求必须是 processing，即使它可以直接回答。\n"
+                "- 当前刺激为 execution_feedback 时，根据可读反馈和证据更新 completion_status/completed/remaining。\n"
+                "- 工具结果尚需告知用户时仍是 processing；已发送澄清问题时是 awaiting_user。\n"
+                "- 只有整个请求及必要的用户回复均已完成时，才使用 completed。"
             )
         return (
             "[Output Fields]\n"
             "- goal: optional; the user's overall current task. Keep stable unless the task really changes.\n"
+            "- completion_status: processing, awaiting_user, or completed.\n"
             "- completed: optional; steps confirmed complete by dialogue or execution feedback. Omit to keep unchanged; [] clears it.\n"
             "- remaining: optional; unfinished steps. Omit to keep unchanged; [] means no remaining steps.\n"
             "[Constraints]\n"
             "- Output only task-state updates; do not output mode/tool_name/instruction/answer.\n"
             "- Do not copy raw tool results into state; write short, readable, actionable steps.\n"
-            "- For execution_feedback, update completed/remaining from readable feedback and visible tool evidence."
+            "- A new user request is processing even when it can be answered directly.\n"
+            "- For execution_feedback, update completion_status/completed/remaining from readable feedback and visible evidence.\n"
+            "- Tool execution alone is not completed when its result still needs to be communicated to the user.\n"
+            "- A delivered clarification question is awaiting_user, not completed.\n"
+            "- Mark completed only after the full request, including required user communication, is fulfilled."
         )
 
     @staticmethod
@@ -464,9 +515,6 @@ class ThinkingAgent:
         lines = [
             "[Current Stimulus]",
             f"kind: {perception.stimulus.kind.value}",
-            f"thread_id: {perception.thread_id}",
-            f"conversation_id: {perception.conversation_id}",
-            f"transaction_id: {perception.transaction_id or '(unresolved)'}",
             "text:",
             self._truncate_prompt_value(perception.stimulus.text, 2000) or "(empty)",
         ]
@@ -573,13 +621,16 @@ class ThinkingAgent:
                 "- answer: 当 mode==answer_directly 时直接给出最终回复；silent/execute 时留空或填 null。\n"
                 "- episode_note: 可选；写下你认为以后值得记住的一两句话，不要把工具结果原样塞进去。\n"
                 "- tool_name: 当 mode==execute 时必填，且只能填一个已启用能力名（本轮只执行这一个工具）。\n"
-                "- request_complete: 仅当用户原始请求已全部完成时填 true；否则 false 并继续 execute。\n"
+                "- request_complete: 由任务状态决定；仅当 completion_status==completed 时为 true。\n"
                 "- capability_hint: 可选；已废弃，请优先使用 tool_name。\n"
                 "- reasoning: 可选；简要说明本轮选择 mode 的理由，便于审计。\n"
                 "[硬约束]\n"
                 "- 你本身没有工具权限，所有外部动作只能通过 execute 委托，且每轮最多一个 tool_name。\n"
                 "- 多步任务：以 feedback 中 Structured tool result 的 count 为准；未完成时 request_complete=false。\n"
                 "- 当 mode==execute 时，不要在 answer 中给出最终回复，让执行层先工作。\n"
+                "- completion_status==processing 时 request_complete=false；answer_directly 后等待 execution_feedback。\n"
+                "- completion_status==awaiting_user 时用 silent 且 request_complete=false。\n"
+                "- completion_status==completed 时用 silent 且 request_complete=true，不要继续行动。\n"
                 "- 闲聊、致谢、与可委托能力无关的请求，用 answer_directly；纯附和/无需回复时用 silent。\n"
                 "- mode==silent：不 delegate、不 reply，仅记录 reasoning/episode_note，等待后续刺激。\n"
                 "- 不要在指令中重复用户原话，要写明你希望执行层做什么。"
@@ -592,7 +643,7 @@ class ThinkingAgent:
             "- answer: required when mode==answer_directly; leave empty for silent/execute.\n"
             "- episode_note: optional short text worth remembering; do not dump raw tool output here.\n"
             "- tool_name: required when mode==execute; exactly one enabled capability (one tool this round).\n"
-            "- request_complete: true only when the original user request is fully done; else false and continue execute.\n"
+            "- request_complete: derived from task state; true only when completion_status==completed.\n"
             "- capability_hint: optional compatibility field; tool_name is authoritative.\n"
             "- reasoning: optional short rationale for the chosen mode (for auditing).\n"
             "[Hard Constraints]\n"
@@ -600,6 +651,9 @@ class ThinkingAgent:
             "- Multi-step tasks: trust Structured tool result count on feedback; request_complete=false until done.\n"
             "- Read [Current Stimulus], [Scene Context], [Task State], and [Working Memory] before deciding.\n"
             "- When mode==execute, leave answer empty and let the execution layer work first.\n"
+            "- When completion_status==processing, request_complete=false; answer_directly must be followed by execution feedback.\n"
+            "- When completion_status==awaiting_user, use silent with request_complete=false.\n"
+            "- When completion_status==completed, use silent with request_complete=true and take no further action.\n"
             "- For small talk or delegable-unrelated requests, choose answer_directly; use silent for acks that need no reply.\n"
             "- mode==silent: no delegate, no reply; record reasoning/episode_note and wait for further stimulus.\n"
             "- Don't echo the user; in the instruction state explicitly what you want the execution layer to do."
@@ -642,6 +696,7 @@ class ThinkingAgent:
         if isinstance(raw, TaskProgress):
             update = TaskProgressUpdate(
                 goal=raw.goal,
+                completion_status=raw.completion_status,
                 completed=list(raw.completed),
                 remaining=list(raw.remaining),
             )
@@ -649,15 +704,30 @@ class ThinkingAgent:
         if isinstance(raw, dict):
             update = TaskProgressUpdate(
                 goal=str(raw.get("goal", "") or "").strip() if "goal" in raw else None,
+                completion_status=(
+                    normalize_task_completion_status(raw.get("completion_status"))
+                    if "completion_status" in raw
+                    else None
+                ),
                 completed=cls._coerce_string_list(raw.get("completed")) if "completed" in raw else None,
                 remaining=cls._coerce_string_list(raw.get("remaining")) if "remaining" in raw else None,
             )
             return update if not update.is_empty() else None
-        if any(hasattr(raw, name) for name in ("goal", "completed", "remaining")):
+        if any(
+            hasattr(raw, name)
+            for name in ("goal", "completion_status", "completed", "remaining")
+        ):
             update = TaskProgressUpdate(
                 goal=(
                     str(getattr(raw, "goal", "") or "").strip()
                     if hasattr(raw, "goal")
+                    else None
+                ),
+                completion_status=(
+                    normalize_task_completion_status(
+                        getattr(raw, "completion_status", None)
+                    )
+                    if hasattr(raw, "completion_status")
                     else None
                 ),
                 completed=(

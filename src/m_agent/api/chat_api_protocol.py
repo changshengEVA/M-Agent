@@ -42,6 +42,7 @@ _PROTOCOL_SSE_EVENTS = frozenset({
     "thinking_task_state",
     "thinking_plan",
     "thinking_completed",
+    "turn_failed",
 })
 
 
@@ -124,6 +125,7 @@ def _summarize_event_payload(event_type: str, payload: Dict[str, Any]) -> str:
         progress = payload.get("task_progress") if isinstance(payload.get("task_progress"), dict) else {}
         return (
             f"goal={_short_text(progress.get('goal'))} "
+            f"status={progress.get('completion_status') or 'processing'} "
             f"completed={len(progress.get('completed') or [])} "
             f"remaining={len(progress.get('remaining') or [])}"
         )
@@ -140,6 +142,12 @@ def _summarize_event_payload(event_type: str, payload: Dict[str, Any]) -> str:
         phases = payload.get("phases") or []
         phase_text = ",".join(str(p) for p in phases) if isinstance(phases, list) else ""
         return f"executed={payload.get('executed')} phases={phase_text or '-'}"
+    if event_type == "turn_failed":
+        return (
+            f"thread={payload.get('thread_id')} "
+            f"txn={payload.get('transaction_id')} "
+            f"error={_short_text(payload.get('error'))}"
+        )
     return ""
 
 

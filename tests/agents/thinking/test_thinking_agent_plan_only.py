@@ -17,7 +17,9 @@ from m_agent.layers.thinking import (
     TaskProgressUpdate,
     ThinkingAgent,
     ThinkingDecision,
+    TransactionResolution,
 )
+from m_agent.runtime.think_life.contracts import TransactionRecord, TransactionStatus
 from m_agent.systems.episodic import DefaultEpisodeRecorder
 
 
@@ -86,6 +88,7 @@ def _make_agent(
     *,
     decisions: List[ThinkingDecision],
     task_updates: List[TaskProgressUpdate] | None = None,
+    transaction_resolutions: List[TransactionResolution] | None = None,
     prompt_language: str = "en",
 ) -> tuple[ThinkingAgent, _FakeChatModel]:
     updates = (
@@ -97,6 +100,7 @@ def _make_agent(
         {
             TaskProgressUpdate: updates,
             ThinkingDecision: decisions,
+            TransactionResolution: list(transaction_resolutions or []),
         }
     )
     agent = ThinkingAgent(
@@ -118,6 +122,7 @@ def test_answer_directly_returns_answer_and_buffers_episode_note() -> None:
                 mode="answer_directly",
                 answer="Hello!",
                 episode_note="user greeted the assistant",
+                request_complete=True,
             )
         ]
     )
@@ -126,6 +131,7 @@ def test_answer_directly_returns_answer_and_buffers_episode_note() -> None:
 
     assert turn.answer == "Hello!"
     assert turn.mode == "answer_directly"
+    assert turn.request_complete is False
     assert len(fake_model.structured_calls(TaskProgressUpdate)) == 1
     assert len(fake_model.structured_calls(ThinkingDecision)) == 1
     state = agent.snapshot_conversation("t1::0")
@@ -177,6 +183,7 @@ def test_task_progress_update_is_rendered_in_next_plan_prompt() -> None:
         task_updates=[
             TaskProgressUpdate(
                 goal="answer the travel question",
+                completion_status="processing",
                 completed=["identify the trip"],
                 remaining=["find the departure time"],
             ),
@@ -192,14 +199,82 @@ def test_task_progress_update_is_rendered_in_next_plan_prompt() -> None:
     state = agent.snapshot_conversation("t1::0")
     assert state is not None
     assert state.task_progress.goal == "answer the travel question"
+    assert state.task_progress.completion_status == "processing"
     assert state.task_progress.completed == ["identify the trip"]
     assert state.task_progress.remaining == ["find the departure time"]
 
     second_plan_prompt = fake_model.structured_calls(ThinkingDecision)[1][0]["content"]
     assert "[Task State]" in second_plan_prompt
     assert "goal: answer the travel question" in second_plan_prompt
+    assert "completion_status: processing" in second_plan_prompt
     assert "identify the trip" in second_plan_prompt
     assert "find the departure time" in second_plan_prompt
+
+
+def test_completed_task_state_short_circuits_plan_to_silent_completion() -> None:
+    agent, fake_model = _make_agent(
+        decisions=[],
+        task_updates=[
+            TaskProgressUpdate(
+                goal="answer the network question",
+                completion_status="completed",
+                completed=["deliver the final answer"],
+                remaining=[],
+            )
+        ],
+    )
+
+    turn = agent.handle(
+        _make_perception(
+            user_message="tool=reply_to_user; finalize=true",
+            source="execution_feedback",
+        )
+    )
+
+    assert turn.mode == "silent"
+    assert turn.request_complete is True
+    assert turn.answer is None
+    assert fake_model.structured_calls(ThinkingDecision) == []
+
+
+def test_awaiting_user_task_state_short_circuits_plan_without_completion() -> None:
+    agent, fake_model = _make_agent(
+        decisions=[],
+        task_updates=[
+            TaskProgressUpdate(
+                goal="schedule a reminder",
+                completion_status="awaiting_user",
+                completed=["ask for the reminder time"],
+                remaining=["receive the reminder time"],
+            )
+        ],
+    )
+
+    turn = agent.handle(
+        _make_perception(
+            user_message="tool=reply_to_user; finalize=true",
+            source="execution_feedback",
+        )
+    )
+
+    assert turn.mode == "silent"
+    assert turn.request_complete is False
+    assert fake_model.structured_calls(ThinkingDecision) == []
+
+
+def test_new_user_stimulus_reopens_completed_task_before_preprocessing() -> None:
+    agent, _ = _make_agent(
+        decisions=[ThinkingDecision(mode="silent", request_complete=True)],
+        task_updates=[TaskProgressUpdate()],
+    )
+    state = agent.state_registry.get_or_create("t1::0", thread_id="t1")
+    state.task_progress.completion_status = "completed"
+
+    turn = agent.handle(_make_perception(user_message="One more thing"))
+
+    assert state.task_progress.completion_status == "processing"
+    assert turn.mode == "silent"
+    assert turn.request_complete is False
 
 
 def test_current_stimulus_is_rendered_in_both_thinking_prompts() -> None:
@@ -222,7 +297,50 @@ def test_current_stimulus_is_rendered_in_both_thinking_prompts() -> None:
         assert "[Current Stimulus]" in prompt
         assert "kind: scheduled_plan" in prompt
         assert "Reminder fired" in prompt
+        assert "thread_id:" not in prompt
+        assert "conversation_id:" not in prompt
+        assert "transaction_id:" not in prompt
+        assert "t1::0" not in prompt
+        assert "txn-1" not in prompt
         assert '"schedule_id": "sch_1"' not in prompt
+
+
+def test_transaction_resolver_uses_turn_local_labels_instead_of_runtime_ids() -> None:
+    agent, fake_model = _make_agent(
+        decisions=[],
+        transaction_resolutions=[
+            TransactionResolution(action="continue", transaction_id="candidate_2")
+        ],
+    )
+    candidates = [
+        TransactionRecord(
+            transaction_id="txn-private-alpha",
+            thread_id="account::canonical-thread",
+            conversation_id="account::canonical-thread::4",
+            status=TransactionStatus.RUNNING,
+        ),
+        TransactionRecord(
+            transaction_id="txn-private-beta",
+            thread_id="account::canonical-thread",
+            conversation_id="account::canonical-thread::4",
+            status=TransactionStatus.SUSPENDED,
+        ),
+    ]
+    candidates[0].task_state.goal = "first task"
+    candidates[1].task_state.goal = "second task"
+
+    selected = agent.resolve_transaction(
+        Stimulus(kind=StimulusKind.USER_MESSAGE, text="continue the second task"),
+        candidates,
+    )
+
+    assert selected == "txn-private-beta"
+    prompt = fake_model.structured_calls(TransactionResolution)[0][0]["content"]
+    assert "candidate_1" in prompt
+    assert "candidate_2" in prompt
+    assert "txn-private-alpha" not in prompt
+    assert "txn-private-beta" not in prompt
+    assert "account::canonical-thread" not in prompt
 
 
 def test_on_flush_drops_standalone_state_and_returns_episode_notes() -> None:

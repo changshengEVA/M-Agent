@@ -236,6 +236,7 @@ class AuthenticatedUser:
     username: str
     role: str
     config_path: Path
+    canonical_thread_id: str
     created_at: str
     updated_at: str
     display_name: str
@@ -254,6 +255,7 @@ class AuthenticatedUser:
             "display_name": self.display_name,
             "role": self.role,
             "config_path": str(self.config_path),
+            "canonical_thread_id": self.canonical_thread_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "editable_fields": self.editable_fields,
@@ -318,6 +320,13 @@ class UserAccountStore:
     def _to_authenticated_user(self, *, username: str, record: Dict[str, Any]) -> AuthenticatedUser:
         role = _normalize_role(record.get("role", "basic"))
         config_path = self._resolve_user_config_path(record)
+        chat_config = _load_yaml(config_path)
+        canonical_thread_id = str(chat_config.get("thread_id", "") or "").strip()
+        if not canonical_thread_id:
+            # User bundles created by current versions always contain thread_id.
+            # Keep older bundles usable while still assigning one server-owned
+            # canonical thread instead of trusting a request-supplied id.
+            canonical_thread_id = f"{_safe_slug(username, fallback='user')}-thread"
         display_name = str(record.get("display_name", "") or "").strip() or username
         created_at = str(record.get("created_at", "") or "").strip() or _now_iso()
         updated_at = str(record.get("updated_at", "") or "").strip() or created_at
@@ -325,6 +334,7 @@ class UserAccountStore:
             username=username,
             role=role,
             config_path=config_path,
+            canonical_thread_id=canonical_thread_id,
             created_at=created_at,
             updated_at=updated_at,
             display_name=display_name,

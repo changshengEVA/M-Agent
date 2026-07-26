@@ -20,7 +20,6 @@ from .chat_api_models import (
     ChatRunCreateRequest,
     ChatImageAttachment,
     ScheduleCreateRequest,
-    ScheduleUpdateRequest,
     DialogueImportRequest,
     ThreadMemoryFlushRequest,
     ThreadMemoryModeRequest,
@@ -143,7 +142,6 @@ def _normalize_schedule_due_at(raw_due_at: Any, timezone_name: Optional[str]) ->
         "due_at_utc": _iso_utc(local_dt),
         "due_at_local": local_dt.isoformat(),
         "due_display": local_dt.strftime("%Y-%m-%d %H:%M"),
-        "original_time_text": local_dt.strftime("%Y-%m-%d %H:%M"),
     }
 
 
@@ -259,7 +257,6 @@ def create_app(
     service_runtime: ChatServiceRuntime,
     user_access: Optional[UserAccessService] = None,
     schedule_beat_seconds: int = 10,
-    schedule_enqueue_retry_seconds: int = 5,
 ) -> FastAPI:
     wire_runtime_event_sink(service_runtime)
     image_store = ChatImageStore(
@@ -270,7 +267,6 @@ def create_app(
         service_runtime=service_runtime,
         user_access=user_access,
         beat_interval_seconds=max(1, int(schedule_beat_seconds or 10)),
-        enqueue_retry_seconds=max(1, int(schedule_enqueue_retry_seconds or 5)),
         thread_event_sink=_THREAD_EVENTS.append_event,
     )
 
@@ -342,21 +338,69 @@ def create_app(
             return False
         return str(record.user_id or "").strip() == user.username
 
-    def _runtime_thread_id(user: Optional[AuthenticatedUser], public_thread_id: str) -> str:
+    def _public_thread_id(user: Optional[AuthenticatedUser], requested_thread_id: str) -> str:
+        requested = str(requested_thread_id or "").strip()
         if user is None:
-            return public_thread_id
-        return _scoped_thread_id(user, public_thread_id)
+            return requested
+        canonical = str(getattr(user, "canonical_thread_id", "") or "").strip()
+        if canonical:
+            return canonical
+        # AuthenticatedUser normally always carries the configured thread id. Keep
+        # a deterministic account-owned fallback for older custom auth adapters.
+        username = str(user.username or "").strip()
+        return f"{username}-thread" if username else requested
+
+    def _runtime_thread_id(user: Optional[AuthenticatedUser], public_thread_id: str) -> str:
+        resolved_public_thread_id = _public_thread_id(user, public_thread_id)
+        if user is None:
+            return resolved_public_thread_id
+        return _scoped_thread_id(user, resolved_public_thread_id)
+
+    def _with_canonical_dialogue_thread_fields(
+        payload: Any,
+        *,
+        user: Optional[AuthenticatedUser],
+    ) -> Any:
+        if user is None:
+            return payload
+        canonical_thread_id = _public_thread_id(user, "")
+
+        def _rewrite(value: Any) -> Any:
+            if isinstance(value, dict):
+                rewritten: Dict[str, Any] = {}
+                for key, item in value.items():
+                    if key == "thread_id_internal":
+                        continue
+                    if key == "thread_id":
+                        rewritten[key] = canonical_thread_id
+                    else:
+                        rewritten[key] = _rewrite(item)
+                return rewritten
+            if isinstance(value, list):
+                return [_rewrite(item) for item in value]
+            return value
+
+        return _rewrite(payload)
 
     def _schedule_owner_id(user: Optional[AuthenticatedUser]) -> str:
         if user is None:
             return ANONYMOUS_OWNER_ID
         return str(user.username or "").strip() or ANONYMOUS_OWNER_ID
 
-    def _serialize_schedule_item(schedule_agent: Any, item: Any, *, owner_id: str) -> Dict[str, Any]:
-        return _public_schedule_item(
+    def _serialize_schedule_item(
+        schedule_agent: Any,
+        item: Any,
+        *,
+        owner_id: str,
+        public_thread_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload = _public_schedule_item(
             schedule_agent.service.serialize_item(item),
             owner_id=owner_id,
         )
+        if public_thread_id is not None:
+            payload["thread_id"] = public_thread_id
+        return payload
 
     def _serialize_schedule_heartbeat(
         thread_id: str,
@@ -537,19 +581,27 @@ def create_app(
         file: UploadFile = File(...),
         thread_id: Optional[str] = Form(default=None),
     ) -> JSONResponse | FileResponse:
-        user, _, auth_error = _resolve_user_and_runtime(request)
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
         if file is None:
             return _error_response(status_code=400, message="image file is required")
         try:
             content = await file.read()
+            requested_thread_id = str(thread_id or "").strip()
+            public_thread_id = _public_thread_id(user, requested_thread_id)
+            if user is not None and not public_thread_id:
+                public_thread_id = _public_thread_id(user, active_runtime.default_thread_id)
             metadata = image_store.save_upload(
                 content=content,
                 content_type=str(file.content_type or "").strip(),
                 original_filename=str(file.filename or "").strip(),
                 username=user.username if user is not None else None,
-                thread_id=_runtime_thread_id(user, str(thread_id or "").strip()) if thread_id else None,
+                thread_id=(
+                    _runtime_thread_id(user, public_thread_id)
+                    if public_thread_id
+                    else None
+                ),
             )
         except ValueError as exc:
             return _error_response(status_code=400, message=str(exc))
@@ -557,7 +609,10 @@ def create_app(
             return _error_response(status_code=503, message=str(exc))
         except Exception as exc:
             return _error_response(status_code=500, message=f"failed to store image upload: {exc}")
-        return JSONResponse(content=metadata)
+        response_metadata = deepcopy(metadata)
+        if user is not None:
+            response_metadata["thread_id"] = public_thread_id
+        return JSONResponse(content=response_metadata)
 
     @app.get("/v1/chat/uploads/images/{upload_id}/content", response_model=None)
     def get_chat_image_content(upload_id: str, request: Request) -> JSONResponse | FileResponse:
@@ -594,7 +649,8 @@ def create_app(
                 },
             )
 
-        thread_id = str(body.thread_id or active_runtime.default_thread_id).strip() or active_runtime.default_thread_id
+        requested_thread_id = str(body.thread_id or active_runtime.default_thread_id).strip()
+        thread_id = _public_thread_id(user, requested_thread_id) or active_runtime.default_thread_id
         runtime_thread_id = _runtime_thread_id(user, thread_id)
         attachments = list(body.attachments or [])
         message = str(body.message or "").strip()
@@ -638,7 +694,7 @@ def create_app(
             limit=limit,
             offset=offset,
         )
-        return JSONResponse(content=payload)
+        return JSONResponse(content=_with_canonical_dialogue_thread_fields(payload, user=user))
 
     @app.get("/v1/chat/dialogues/{dialogue_id}")
     def get_chat_dialogue(dialogue_id: str, request: Request) -> JSONResponse:
@@ -660,7 +716,7 @@ def create_app(
             )
         except FileNotFoundError:
             return _error_response(status_code=404, message=f"dialogue not found: {dialogue_id}")
-        return JSONResponse(content=payload)
+        return JSONResponse(content=_with_canonical_dialogue_thread_fields(payload, user=user))
 
     @app.post("/v1/chat/dialogues/import")
     def import_chat_dialogues(body: DialogueImportRequest, request: Request) -> JSONResponse:
@@ -676,7 +732,7 @@ def create_app(
             copy_files=bool(body.copy_files),
             dialogue_ids=list(body.dialogue_ids or []) or None,
         )
-        return JSONResponse(content=result)
+        return JSONResponse(content=_with_canonical_dialogue_thread_fields(result, user=user))
 
     @app.post("/v1/chat/dialogues/upload", response_class=StreamingResponse, response_model=None)
     async def upload_chat_dialogues(
@@ -727,7 +783,8 @@ def create_app(
                     rebuild_rag=bool(rebuild_rag),
                     index_rag=bool(index_rag),
                 ):
-                    yield _encode_sse(event)
+                    public_event = _with_canonical_dialogue_thread_fields(event, user=user)
+                    yield _encode_sse(public_event)
             except Exception as exc:
                 yield _encode_sse(
                     {
@@ -778,7 +835,15 @@ def create_app(
                             if await request.is_disconnected():
                                 return
                             current_seq = max(current_seq, int(event.get("seq", 0) or 0))
-                            yield _encode_sse(event)
+                            public_event = (
+                                _with_public_thread_event(
+                                    event,
+                                    public_thread_id=record.thread_id,
+                                )
+                                if user is not None
+                                else event
+                            )
+                            yield _encode_sse(public_event)
                     else:
                         yield b": keep-alive\n\n"
                     if done and not events:
@@ -802,10 +867,11 @@ def create_app(
 
     @app.get("/v1/chat/threads/{thread_id}/events", response_class=StreamingResponse, response_model=None)
     async def stream_thread_events(thread_id: str, request: Request, after_seq: int = -1):
-        user, _, auth_error = _resolve_user_and_runtime(request)
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
+        runtime_thread_id = _runtime_thread_id(user, public_thread_id)
         record = _THREAD_EVENTS.get_or_create(runtime_thread_id)
 
         async def event_stream():
@@ -820,7 +886,7 @@ def create_app(
                             if await request.is_disconnected():
                                 return
                             current_seq = max(current_seq, int(event.get("seq", 0) or 0))
-                            public_event = _with_public_thread_event(event, public_thread_id=thread_id)
+                            public_event = _with_public_thread_event(event, public_thread_id=public_thread_id)
                             yield _encode_sse(public_event)
                     else:
                         yield b": keep-alive\n\n"
@@ -842,9 +908,10 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
+        runtime_thread_id = _runtime_thread_id(user, public_thread_id)
         payload = active_runtime.get_think_life_transactions(runtime_thread_id)
-        payload["thread_id"] = thread_id
+        payload["thread_id"] = public_thread_id
         return JSONResponse(content=payload)
 
     @app.get("/v1/chat/threads/{thread_id}/scene")
@@ -858,14 +925,15 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
+        runtime_thread_id = _runtime_thread_id(user, public_thread_id)
         payload = active_runtime.get_scene(
             runtime_thread_id,
             limit=limit,
             before_seq=before_seq,
             since_flush=since_flush,
         )
-        payload["thread_id"] = thread_id
+        payload["thread_id"] = public_thread_id
         return JSONResponse(content=payload)
 
     @app.post("/v1/chat/threads/{thread_id}/stimuli")
@@ -877,7 +945,8 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
+        runtime_thread_id = _runtime_thread_id(user, public_thread_id)
         attachments = list(body.attachments or [])
         message = str(body.text or "").strip()
         if not message and not _has_effective_attachment(attachments):
@@ -888,7 +957,7 @@ def create_app(
             message=message,
             user_turn=user_turn,
         )
-        result["thread_id"] = thread_id
+        result["thread_id"] = public_thread_id
         return JSONResponse(status_code=202, content=result)
 
     @app.post("/v1/chat/threads/{thread_id}/thinking/stop")
@@ -896,16 +965,20 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
+        runtime_thread_id = _runtime_thread_id(user, public_thread_id)
         result = active_runtime.force_stop_thread(runtime_thread_id)
         result = deepcopy(result)
-        result["thread_id"] = thread_id
+        result["thread_id"] = public_thread_id
         if isinstance(result.get("thread_state"), dict):
-            result["thread_state"] = _with_public_thread_state(result.get("thread_state"), public_thread_id=thread_id)
+            result["thread_state"] = _with_public_thread_state(
+                result.get("thread_state"),
+                public_thread_id=public_thread_id,
+            )
         if isinstance(result.get("thread_runtime"), dict):
             result["thread_runtime"] = _with_public_thread_state(
                 result.get("thread_runtime"),
-                public_thread_id=thread_id,
+                public_thread_id=public_thread_id,
             )
         return JSONResponse(content=result)
 
@@ -914,16 +987,18 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
+        runtime_thread_id = _runtime_thread_id(user, public_thread_id)
         state = active_runtime.get_thread_state(runtime_thread_id)
-        return JSONResponse(content=_with_public_thread_state(state, public_thread_id=thread_id))
+        return JSONResponse(content=_with_public_thread_state(state, public_thread_id=public_thread_id))
 
     @app.post("/v1/chat/threads/{thread_id}/memory/mode")
     def set_thread_mode(thread_id: str, body: ThreadMemoryModeRequest, request: Request) -> JSONResponse:
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
+        runtime_thread_id = _runtime_thread_id(user, public_thread_id)
         mode = _normalize_memory_mode(body.mode, fallback="manual")
         thread_lock = _get_thread_lock(runtime_thread_id)
         with thread_lock:
@@ -933,9 +1008,12 @@ def create_app(
                 discard_pending=bool(body.discard_pending),
             )
         result = deepcopy(result)
-        result["thread_id"] = thread_id
+        result["thread_id"] = public_thread_id
         if isinstance(result.get("thread_state"), dict):
-            result["thread_state"] = _with_public_thread_state(result.get("thread_state"), public_thread_id=thread_id)
+            result["thread_state"] = _with_public_thread_state(
+                result.get("thread_state"),
+                public_thread_id=public_thread_id,
+            )
         return JSONResponse(content=result)
 
     @app.post("/v1/chat/threads/{thread_id}/memory/flush")
@@ -943,16 +1021,19 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
+        runtime_thread_id = _runtime_thread_id(user, public_thread_id)
         reason = str(body.reason or "manual_api").strip() or "manual_api"
-        thread_lock = _get_thread_lock(runtime_thread_id)
-        with thread_lock:
-            result = active_runtime.flush_thread(runtime_thread_id, reason=reason)
+        result = active_runtime.flush_thread(runtime_thread_id, reason=reason)
         result = deepcopy(result)
-        result["thread_id"] = thread_id
+        result["thread_id"] = public_thread_id
         if isinstance(result.get("thread_state"), dict):
-            result["thread_state"] = _with_public_thread_state(result.get("thread_state"), public_thread_id=thread_id)
-        return JSONResponse(content=result)
+            result["thread_state"] = _with_public_thread_state(
+                result.get("thread_state"),
+                public_thread_id=public_thread_id,
+            )
+        status_code = 409 if result.get("status") == "busy" else 200
+        return JSONResponse(status_code=status_code, content=result)
 
     @app.get("/v1/chat/threads/{thread_id}/schedules")
     def list_thread_schedules(
@@ -966,6 +1047,7 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
         owner_id = _schedule_owner_id(user)
         try:
             schedule_agent = _resolve_schedule_agent(active_runtime)
@@ -979,7 +1061,12 @@ def create_app(
                 limit=max(1, min(100, int(limit or 20))),
             )
             serialized = [
-                _serialize_schedule_item(schedule_agent, item, owner_id=owner_id)
+                _serialize_schedule_item(
+                    schedule_agent,
+                    item,
+                    owner_id=owner_id,
+                    public_thread_id=public_thread_id if user is not None else None,
+                )
                 for item in items
             ]
         except ValueError as exc:
@@ -988,7 +1075,7 @@ def create_app(
             return _error_response(status_code=500, message=f"failed to list schedules: {exc}")
         return JSONResponse(
             content={
-                "thread_id": thread_id,
+                "thread_id": public_thread_id,
                 "scope": "owner",
                 "owner_id": owner_id,
                 "count": len(serialized),
@@ -1005,10 +1092,11 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
+        runtime_thread_id = _runtime_thread_id(user, public_thread_id)
         return JSONResponse(
             content=_serialize_schedule_heartbeat(
-                thread_id,
+                public_thread_id,
                 runtime_thread_id=runtime_thread_id,
             )
         )
@@ -1018,6 +1106,7 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
         owner_id = _schedule_owner_id(user)
         try:
             schedule_agent = _resolve_schedule_agent(active_runtime)
@@ -1032,8 +1121,13 @@ def create_app(
             return _error_response(status_code=500, message=f"failed to get schedule: {exc}")
         return JSONResponse(
             content={
-                "thread_id": thread_id,
-                "item": _serialize_schedule_item(schedule_agent, item, owner_id=owner_id),
+                "thread_id": public_thread_id,
+                "item": _serialize_schedule_item(
+                    schedule_agent,
+                    item,
+                    owner_id=owner_id,
+                    public_thread_id=public_thread_id if user is not None else None,
+                ),
             }
         )
 
@@ -1042,43 +1136,33 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
-        runtime_thread_id = _runtime_thread_id(user, thread_id)
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
+        runtime_thread_id = _runtime_thread_id(user, public_thread_id)
         owner_id = _schedule_owner_id(user)
-        title = str(body.title or "").strip()
-        prompt = str(body.prompt or "").strip()
-        source_text = str(body.source_text or "").strip()
-        effective_title = title or prompt or source_text
-        if not effective_title:
-            return _error_response(status_code=400, message="title or prompt is required")
+        text = str(body.text or "").strip()
+        if not text:
+            return _error_response(status_code=400, message="text is required")
         try:
             schedule_agent = _resolve_schedule_agent(active_runtime)
             normalized_due = _normalize_schedule_due_at(body.due_at, body.timezone_name)
-            original_time_text = str(body.original_time_text or "").strip() or normalized_due["original_time_text"]
             item = schedule_agent.service.create_schedule(
                 owner_id=owner_id,
                 thread_id=runtime_thread_id,
-                title=effective_title,
                 due_at_utc=normalized_due["due_at_utc"],
                 timezone_name=normalized_due["timezone_name"],
-                original_time_text=original_time_text,
-                action_type="chat_prompt",
-                action_payload={
-                    "prompt": prompt or effective_title,
-                    "source": "schedule_api",
-                    "hidden_context": {
-                        "trigger_kind": "time_due",
-                        "created_via": "chat_api_web",
-                    },
-                },
-                source_text=source_text or effective_title,
-                metadata=dict(body.metadata or {}),
+                text=text,
             )
-            serialized = _serialize_schedule_item(schedule_agent, item, owner_id=owner_id)
+            serialized = _serialize_schedule_item(
+                schedule_agent,
+                item,
+                owner_id=owner_id,
+                public_thread_id=public_thread_id if user is not None else None,
+            )
             _THREAD_EVENTS.append_event(
                 runtime_thread_id,
                 "schedule_created",
                 {
-                    "thread_id": thread_id,
+                    "thread_id": public_thread_id,
                     "schedule": serialized,
                 },
             )
@@ -1090,89 +1174,9 @@ def create_app(
             status_code=201,
             content={
                 "success": True,
-                "thread_id": thread_id,
+                "thread_id": public_thread_id,
                 "item": serialized,
             },
-        )
-
-    @app.patch("/v1/chat/threads/{thread_id}/schedules/{schedule_id}")
-    def update_thread_schedule(
-        schedule_id: str,
-        thread_id: str,
-        body: ScheduleUpdateRequest,
-        request: Request,
-    ) -> JSONResponse:
-        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
-        if auth_error is not None:
-            return auth_error
-        owner_id = _schedule_owner_id(user)
-        try:
-            schedule_agent = _resolve_schedule_agent(active_runtime)
-            existing = _load_thread_schedule_item(
-                schedule_agent=schedule_agent,
-                owner_id=owner_id,
-                schedule_id=schedule_id,
-            )
-            due_at_utc = None
-            timezone_name = None
-            original_time_text = None
-            if body.due_at is not None:
-                effective_timezone_name = str(body.timezone_name or existing.timezone_name or "").strip() or None
-                normalized_due = _normalize_schedule_due_at(body.due_at, effective_timezone_name)
-                due_at_utc = normalized_due["due_at_utc"]
-                timezone_name = normalized_due["timezone_name"]
-                original_time_text = (
-                    str(body.original_time_text or "").strip() or normalized_due["original_time_text"]
-                )
-            elif body.timezone_name is not None:
-                _, timezone_name, _ = resolve_timezone(body.timezone_name)
-                if body.original_time_text is not None:
-                    original_time_text = str(body.original_time_text or "").strip()
-            elif body.original_time_text is not None:
-                original_time_text = str(body.original_time_text or "").strip()
-
-            action_payload_patch: Dict[str, Any] = {}
-            if body.prompt is not None:
-                safe_prompt = str(body.prompt or "").strip()
-                if not safe_prompt:
-                    return _error_response(status_code=400, message="prompt cannot be empty")
-                action_payload_patch["prompt"] = safe_prompt
-
-            metadata_patch = dict(body.metadata or {}) if body.metadata is not None else None
-            updated = schedule_agent.service.update_schedule(
-                owner_id=owner_id,
-                thread_id=None,
-                schedule_id=schedule_id,
-                title=str(body.title or "").strip() if body.title is not None else None,
-                due_at_utc=due_at_utc,
-                timezone_name=timezone_name,
-                original_time_text=original_time_text,
-                action_payload_patch=action_payload_patch or None,
-                metadata_patch=metadata_patch,
-                source_text=str(body.source_text or "").strip() if body.source_text is not None else None,
-            )
-            serialized = _serialize_schedule_item(schedule_agent, updated, owner_id=owner_id)
-            event_thread_id = str(getattr(updated, "thread_id", "") or "").strip() or _runtime_thread_id(user, thread_id)
-            _THREAD_EVENTS.append_event(
-                event_thread_id,
-                "schedule_updated",
-                {
-                    "thread_id": thread_id,
-                    "schedule": serialized,
-                },
-            )
-        except FileNotFoundError:
-            return _error_response(status_code=404, message=f"schedule not found: {schedule_id}")
-        except ValueError as exc:
-            return _error_response(status_code=400, message=str(exc))
-        except Exception as exc:
-            return _error_response(status_code=500, message=f"failed to update schedule: {exc}")
-        return JSONResponse(
-            content={
-                "success": True,
-                "thread_id": thread_id,
-                "item": serialized,
-            }
         )
 
     @app.delete("/v1/chat/threads/{thread_id}/schedules/{schedule_id}")
@@ -1180,6 +1184,8 @@ def create_app(
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
+        public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
+        runtime_thread_id = _runtime_thread_id(user, public_thread_id)
         owner_id = _schedule_owner_id(user)
         try:
             schedule_agent = _resolve_schedule_agent(active_runtime)
@@ -1192,15 +1198,23 @@ def create_app(
                 owner_id=owner_id,
                 thread_id=None,
                 schedule_id=schedule_id,
-                source_text="schedule_api_cancel",
             )
-            serialized = _serialize_schedule_item(schedule_agent, canceled, owner_id=owner_id)
-            event_thread_id = str(getattr(canceled, "thread_id", "") or "").strip() or _runtime_thread_id(user, thread_id)
+            serialized = _serialize_schedule_item(
+                schedule_agent,
+                canceled,
+                owner_id=owner_id,
+                public_thread_id=public_thread_id if user is not None else None,
+            )
+            event_thread_id = (
+                runtime_thread_id
+                if user is not None
+                else str(getattr(canceled, "thread_id", "") or "").strip() or runtime_thread_id
+            )
             _THREAD_EVENTS.append_event(
                 event_thread_id,
                 "schedule_canceled",
                 {
-                    "thread_id": thread_id,
+                    "thread_id": public_thread_id,
                     "schedule": serialized,
                 },
             )
@@ -1211,7 +1225,7 @@ def create_app(
         return JSONResponse(
             content={
                 "success": True,
-                "thread_id": thread_id,
+                "thread_id": public_thread_id,
                 "item": serialized,
             }
         )
@@ -1224,12 +1238,10 @@ def create_handler(
     service_runtime: ChatServiceRuntime,
     user_access: Optional[UserAccessService] = None,
     schedule_beat_seconds: int = 10,
-    schedule_enqueue_retry_seconds: int = 5,
 ) -> FastAPI:
     """Backward-compatible alias for the old stdlib server entrypoint."""
     return create_app(
         service_runtime=service_runtime,
         user_access=user_access,
         schedule_beat_seconds=schedule_beat_seconds,
-        schedule_enqueue_retry_seconds=schedule_enqueue_retry_seconds,
     )

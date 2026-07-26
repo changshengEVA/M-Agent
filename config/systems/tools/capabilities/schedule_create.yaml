@@ -1,0 +1,20 @@
+name: schedule_create
+version: 1
+category: schedule
+builder: m_agent.systems.tools.default.capabilities.schedule_ops:_build_schedule_create_tool
+descriptions:
+  en: "Create one time-triggered future stimulus. Provide an ISO due time and self-contained system-like text for the agent: say that the scheduled time has arrived and what context now matters; do not copy the user's command or use relative-time wording."
+  zh: "创建一条定时未来刺激。提供 ISO 到期时间，以及届时发送给智能体的自包含系统式文本：说明预定时间已经到达及当前相关事项；不要复制用户命令，也不要使用相对时间表述。"
+input:
+  mode: param_llm
+  schema: inferred_from_tool
+output:
+  schema: builtins:dict
+  feedback_projector: m_agent.runtime.think_life.scheduler.execution_feedback:feedback_summary_from_tool_history
+  memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
+policy:
+  side_effect: write
+dependencies:
+  - schedule_agent
+defaults:
+  timezone_name: Asia/Shanghai

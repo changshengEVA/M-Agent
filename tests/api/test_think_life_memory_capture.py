@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
 from m_agent.api.chat_api_runtime import BufferedRound, ChatServiceRuntime, ThreadSessionState
+from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS
 from m_agent.runtime.think_life.contracts import SceneActor, SceneEntry, SceneEntryType
 from m_agent.systems.scene.default.jsonl_store import SceneLogStore
 
@@ -15,9 +16,15 @@ def _minimal_runtime() -> ChatServiceRuntime:
     rt._threads_lock = threading.Lock()
     rt._threads = {}
     rt._think_life_pending_users = {}
+    rt._operation_lock = threading.Lock()
+    rt._stats_lock = threading.Lock()
+    rt._flushes_started = 0
+    rt._flushes_completed = 0
+    rt._flushes_failed = 0
     rt._think_life = MagicMock()
     rt._think_life.registry.get_active_user_transaction.return_value = None
     rt._think_life.scene_pending_flush_metrics.return_value = {}
+    rt._think_life.build_dialogue_flush_payload.return_value = None
     rt._thread_event_sink = None
     rt.idle_flush_seconds = 0
     rt.history_max_rounds = 12
@@ -27,7 +34,179 @@ def _minimal_runtime() -> ChatServiceRuntime:
         working_memory_config=None,
     )
     rt._agent.describe_episodic_persistence.return_value = {}
+    rt._agent.persist_dialogue.return_value = {
+        "success": True,
+        "dialogue_id": "dialogue-test",
+    }
+    rt._agent.on_flush.return_value = []
     return rt
+
+
+def test_idle_timer_is_unarmed_until_first_stimulus() -> None:
+    rt = _minimal_runtime()
+    tid = "think_life_test::timer-arm"
+    session = rt._get_or_create_thread(tid)
+    session.last_activity_at = datetime(2020, 1, 1, tzinfo=timezone.utc)
+
+    assert session.idle_timer_started_at is None
+
+    rt._enqueue_think_life_user_turn(
+        tid,
+        user_message="hello",
+        user_turn={"speaker": "think_life_test", "text": "hello"},
+    )
+
+    assert session.idle_timer_started_at is not None
+    assert session.last_activity_at == session.idle_timer_started_at
+
+
+def test_any_queued_stimulus_arms_idle_timer() -> None:
+    rt = _minimal_runtime()
+    tid = "think_life_test::scheduled-stimulus"
+    session = rt._get_or_create_thread(tid)
+    rt._wire_think_life_runtime()
+    emitter = rt._think_life.set_thread_event_emitter.call_args.args[0]
+
+    emitter(tid, "stimulus_queued", {"kind": "scheduled_plan"})
+
+    assert session.idle_timer_started_at is not None
+
+
+def test_turn_failed_resolves_pending_user_reply_obligation() -> None:
+    rt = _minimal_runtime()
+    tid = "think_life_test::failed-turn"
+    rt._enqueue_think_life_user_turn(
+        tid,
+        user_message="hello",
+        user_turn={"speaker": "think_life_test", "text": "hello"},
+    )
+    rt._wire_think_life_runtime()
+    emitter = rt._think_life.set_thread_event_emitter.call_args.args[0]
+
+    emitter(tid, "turn_failed", {"error": "boom"})
+
+    assert tid not in rt._think_life_pending_users
+    assert rt._flush_block_reason(tid) is None
+
+
+def test_finalized_reply_resets_idle_timer() -> None:
+    rt = _minimal_runtime()
+    tid = "think_life_test::timer-reset"
+    rt._enqueue_think_life_user_turn(
+        tid,
+        user_message="hello",
+        user_turn={"speaker": "think_life_test", "text": "hello"},
+    )
+    session = rt._threads[tid]
+    stimulus_at = session.idle_timer_started_at
+
+    rt._capture_think_life_round(tid, assistant_message="hello back")
+
+    assert stimulus_at is not None
+    assert session.idle_timer_started_at is not None
+    assert session.idle_timer_started_at >= stimulus_at
+    assert session.last_activity_at == session.idle_timer_started_at
+
+
+def test_idle_flush_skips_active_drainer_even_after_deadline() -> None:
+    rt = _minimal_runtime()
+    rt.idle_flush_seconds = 1
+    tid = "think_life_test::busy-idle-flush"
+    rt._enqueue_think_life_user_turn(
+        tid,
+        user_message="hello",
+        user_turn={"speaker": "think_life_test", "text": "hello"},
+    )
+    rt._capture_think_life_round(tid, assistant_message="hello back")
+    session = rt._threads[tid]
+    session.idle_timer_started_at = datetime.now(timezone.utc) - timedelta(seconds=5)
+    rt._flush_thread_locked = MagicMock()  # type: ignore[method-assign]
+    THREAD_RUNTIME_STATUS.set_drainer_active(tid, True)
+    try:
+        rt.flush_idle_threads()
+    finally:
+        THREAD_RUNTIME_STATUS.set_drainer_active(tid, False)
+
+    rt._flush_thread_locked.assert_not_called()
+
+
+def test_manual_flush_is_retryable_while_reply_is_pending() -> None:
+    rt = _minimal_runtime()
+    tid = "think_life_test::reply-pending-flush"
+    rt._enqueue_think_life_user_turn(
+        tid,
+        user_message="hello",
+        user_turn={"speaker": "think_life_test", "text": "hello"},
+    )
+
+    result = rt.flush_thread(tid)
+
+    assert result["success"] is False
+    assert result["retryable"] is True
+    assert result["status"] == "busy"
+    assert result["block_reason"] == "reply_pending"
+    rt._agent.persist_dialogue.assert_not_called()
+
+
+def test_flush_cannot_interleave_half_admitted_stimulus() -> None:
+    rt = _minimal_runtime()
+    tid = "think_life_test::submit-flush-race"
+    submit_entered = threading.Event()
+    release_submit = threading.Event()
+    submit_result: dict = {}
+    flush_result: dict = {}
+
+    def _submit_stimulus_async(**_: object) -> dict:
+        submit_entered.set()
+        assert release_submit.wait(timeout=2)
+        return {"accepted": True, "stimulus_id": "s-race"}
+
+    rt._think_life.submit_stimulus_async.side_effect = _submit_stimulus_async
+
+    submit_thread = threading.Thread(
+        target=lambda: submit_result.update(
+            rt.submit_stimulus(thread_id=tid, message="hello")
+        )
+    )
+    submit_thread.start()
+    assert submit_entered.wait(timeout=2)
+
+    flush_thread = threading.Thread(
+        target=lambda: flush_result.update(rt.flush_thread(tid))
+    )
+    flush_thread.start()
+    flush_thread.join(timeout=0.1)
+    assert flush_thread.is_alive()
+
+    release_submit.set()
+    submit_thread.join(timeout=2)
+    flush_thread.join(timeout=2)
+
+    assert not submit_thread.is_alive()
+    assert not flush_thread.is_alive()
+    assert submit_result["accepted"] is True
+    assert flush_result["status"] == "busy"
+    assert flush_result["block_reason"] == "reply_pending"
+
+
+def test_successful_flush_disarms_idle_timer() -> None:
+    rt = _minimal_runtime()
+    tid = "think_life_test::flush-disarms"
+    rt._enqueue_think_life_user_turn(
+        tid,
+        user_message="hello",
+        user_turn={"speaker": "think_life_test", "text": "hello"},
+    )
+    rt._capture_think_life_round(tid, assistant_message="hello back")
+    session = rt._threads[tid]
+    assert session.idle_timer_started_at is not None
+
+    result = rt.flush_thread(tid)
+
+    assert result["success"] is True
+    assert result["status"] == "written"
+    assert session.idle_timer_started_at is None
+    assert result["thread_state"]["idle_timer_armed"] is False
 
 
 def test_capture_think_life_round_buffers_pending_for_flush() -> None:
@@ -108,6 +287,33 @@ def test_capture_think_life_round_uses_real_timestamps_not_fixed_offset() -> Non
     round_item = rt._pending_rounds(session)[0]
     assert round_item.user_at == submitted
     assert round_item.assistant_at >= submitted
+
+
+def test_scene_payload_missing_assistant_uses_buffer_as_loss_prevention() -> None:
+    rt = _minimal_runtime()
+    tid = "think_life_test::scene-fallback"
+    rt._enqueue_think_life_user_turn(
+        tid,
+        user_message="hello",
+        user_turn={"speaker": "think_life_test", "text": "hello"},
+    )
+    rt._capture_think_life_round(tid, assistant_message="hello back")
+    pending = rt._pending_rounds(rt._threads[tid])
+
+    user_only_payload = {
+        "meta": {"round_count": 0},
+        "turns": [{"speaker": "think_life_test", "text": "hello"}],
+    }
+    complete_payload = {
+        "meta": {"round_count": 1},
+        "turns": [
+            {"speaker": "think_life_test", "text": "hello"},
+            {"speaker": "Memory Assistant", "text": "hello back"},
+        ],
+    }
+
+    assert rt._scene_payload_covers_pending_rounds(user_only_payload, pending) is False
+    assert rt._scene_payload_covers_pending_rounds(complete_payload, pending) is True
 
 
 def test_thread_state_restores_visible_messages_from_persisted_scene() -> None:

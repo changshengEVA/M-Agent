@@ -31,7 +31,6 @@ def build_test_app(
     service_runtime: FakeRuntime | None = None,
     user_access: FakeUserAccessService | None = None,
     schedule_beat_seconds: int = 60,
-    schedule_enqueue_retry_seconds: int = 5,
 ) -> FastAPI:
     runtime = service_runtime or build_test_runtime()
     active_user_access = user_access
@@ -43,5 +42,4 @@ def build_test_app(
         service_runtime=runtime,
         user_access=active_user_access,
         schedule_beat_seconds=schedule_beat_seconds,
-        schedule_enqueue_retry_seconds=schedule_enqueue_retry_seconds,
     )

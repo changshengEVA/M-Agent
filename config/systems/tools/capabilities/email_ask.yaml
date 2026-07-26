@@ -1,0 +1,21 @@
+name: email_ask
+version: 1
+category: email
+builder: m_agent.systems.tools.default.capabilities.email_ops:_build_email_ask_tool
+descriptions:
+  en: "Function: search Gmail and return an evidence index. Needs: optional short keyword tokens and whether to search unread or all mail."
+  zh: "功能：搜索 Gmail 并返回证据索引。所需：可选的简短关键词，以及检索未读邮件还是全部邮件。"
+input:
+  mode: param_llm
+  schema: inferred_from_tool
+output:
+  schema: builtins:dict
+  feedback_projector: m_agent.runtime.think_life.scheduler.execution_feedback:feedback_summary_from_tool_history
+  memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
+policy:
+  side_effect: read
+dependencies:
+  - email_agent
+  - gmail_credentials
+defaults:
+  mail_scope: unread

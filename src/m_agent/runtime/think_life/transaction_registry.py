@@ -91,15 +91,41 @@ class TransactionRegistry:
 
     def complete_active_user_transaction(self, conversation_id: str) -> Optional[str]:
         """End the flush-bounded user task segment (clears active pointer)."""
-        active = self.get_active_user_transaction(conversation_id)
-        if active is None:
-            return None
-        tx_id = active.transaction_id
-        if active.status == TransactionStatus.WAITING_EXECUTION:
-            active = self.transition(tx_id, TransactionStatus.RUNNING)
-        if not active.status.is_terminal():
-            self.transition(tx_id, TransactionStatus.COMPLETED)
-        return tx_id
+        cid = str(conversation_id or "").strip()
+        with self._lock:
+            active_id = self._active_by_conversation.get(cid)
+            active = self._by_id.get(active_id) if active_id else None
+            if active is None or active.kind != TransactionKind.USER_TASK:
+                return None
+            if active.status.is_terminal() or active.status == TransactionStatus.SUSPENDED:
+                return None
+            tx_id = active.transaction_id
+            if active.status == TransactionStatus.WAITING_EXECUTION:
+                active = self.transition(tx_id, TransactionStatus.RUNNING)
+            if not active.status.is_terminal():
+                self.transition(tx_id, TransactionStatus.COMPLETED)
+            return tx_id
+
+    def begin_delegate(self, transaction_id: str, delegate_id: str) -> TransactionRecord:
+        """Atomically attach a delegate and enter WAITING_EXECUTION."""
+        tx_id = str(transaction_id or "").strip()
+        did = str(delegate_id or "").strip()
+        if not did:
+            raise TransactionTransitionError("delegate_id is required")
+        with self._lock:
+            record = self._by_id.get(tx_id)
+            if record is None:
+                raise TransactionTransitionError(f"unknown transaction: {tx_id}")
+            if record.status != TransactionStatus.RUNNING:
+                raise TransactionTransitionError(
+                    f"cannot begin delegate while transaction is {record.status.value}"
+                )
+            record.status = TransactionStatus.WAITING_EXECUTION
+            record.delegate_count += 1
+            record.active_delegate_id = did
+            record.correlation.delegate_id = did
+            record.updated_at = _now_iso()
+            return record
 
     def transition(self, transaction_id: str, new_status: TransactionStatus) -> TransactionRecord:
         tx_id = str(transaction_id or "").strip()

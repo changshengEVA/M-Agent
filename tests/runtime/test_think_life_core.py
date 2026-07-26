@@ -4,6 +4,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from m_agent.runtime.think_life.config import ThinkLifeConfig, ThinkLifeSchedulerConfig
 from m_agent.runtime.think_life.contracts import (
     SceneActor,
@@ -18,7 +20,10 @@ from m_agent.layers.perception.contracts import Stimulus
 from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
 from m_agent.runtime.think_life.perception.gateway import PerceptionGateway
 from m_agent.runtime.think_life.perception.inbox import StimulusInbox
-from m_agent.runtime.think_life.transaction_registry import TransactionRegistry
+from m_agent.runtime.think_life.transaction_registry import (
+    TransactionRegistry,
+    TransactionTransitionError,
+)
 from m_agent.systems.scene.default.jsonl_store import SceneLogStore, scene_persist_file_stem
 
 
@@ -59,6 +64,29 @@ def test_transaction_lifecycle() -> None:
     reg.transition(tx.transaction_id, TransactionStatus.RUNNING)
     reg.transition(tx.transaction_id, TransactionStatus.COMPLETED)
     assert reg.get(tx.transaction_id).status == TransactionStatus.COMPLETED
+
+
+def test_begin_delegate_is_atomic_and_rejects_terminal_transaction() -> None:
+    reg = TransactionRegistry()
+    tx = reg.create(thread_id="t1", kind=TransactionKind.USER_TASK)
+    reg.transition(tx.transaction_id, TransactionStatus.RUNNING)
+
+    delegated = reg.begin_delegate(tx.transaction_id, "dlg_1")
+
+    assert delegated.status == TransactionStatus.WAITING_EXECUTION
+    assert delegated.delegate_count == 1
+    assert delegated.active_delegate_id == "dlg_1"
+    assert delegated.correlation.delegate_id == "dlg_1"
+
+    reg.transition(tx.transaction_id, TransactionStatus.RUNNING)
+    reg.transition(tx.transaction_id, TransactionStatus.COMPLETED)
+    with pytest.raises(TransactionTransitionError, match="cannot begin delegate"):
+        reg.begin_delegate(tx.transaction_id, "dlg_2")
+
+    terminal = reg.get(tx.transaction_id)
+    assert terminal is not None
+    assert terminal.delegate_count == 1
+    assert terminal.active_delegate_id == "dlg_1"
 
 
 def test_transaction_wm_isolation() -> None:

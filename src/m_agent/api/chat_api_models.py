@@ -61,16 +61,6 @@ class DialogueImportRequest(BaseModel):
     dialogue_ids: Optional[list[str]] = None
 
 
-class ScheduleCreateRequest(BaseModel):
-    title: Optional[str] = None
-    prompt: Optional[str] = None
-    due_at: Optional[str] = None
-    timezone_name: Optional[str] = None
-    original_time_text: Optional[str] = None
-    source_text: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None
-
-
 class ThreadStimulusRequest(BaseModel):
     kind: Optional[str] = "user_message"
     text: Optional[str] = None
@@ -78,11 +68,7 @@ class ThreadStimulusRequest(BaseModel):
     priority_override: Optional[int] = None
 
 
-class ScheduleUpdateRequest(BaseModel):
-    title: Optional[str] = None
-    prompt: Optional[str] = None
+class ScheduleCreateRequest(BaseModel):
+    text: Optional[str] = None
     due_at: Optional[str] = None
     timezone_name: Optional[str] = None
-    original_time_text: Optional[str] = None
-    source_text: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = None

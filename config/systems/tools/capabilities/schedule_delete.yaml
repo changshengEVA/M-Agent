@@ -1,0 +1,18 @@
+name: schedule_delete
+version: 1
+category: schedule
+builder: m_agent.systems.tools.default.capabilities.schedule_ops:_build_schedule_delete_tool
+descriptions:
+  en: "Function: delete (cancel) one schedule. Needs: schedule_id from schedule_create or schedule_query; never invent the ID."
+  zh: "功能：删除（取消）一条日程。所需：来自 schedule_create 或 schedule_query 的 schedule_id；不得编造 ID。"
+input:
+  mode: param_llm
+  schema: inferred_from_tool
+output:
+  schema: builtins:dict
+  feedback_projector: m_agent.runtime.think_life.scheduler.execution_feedback:feedback_summary_from_tool_history
+  memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
+policy:
+  side_effect: write
+dependencies:
+  - schedule_agent

@@ -410,8 +410,12 @@ class ExecutionAgent:
             lines.append(f"- `{name}`: {description}")
         return "\n".join(lines)
 
-    @staticmethod
-    def _capability_category(name: str) -> str:
+    def _capability_category(self, name: str) -> str:
+        spec = self.registry.get(name)
+        if spec is not None:
+            category = str(getattr(spec, "category", "") or "").strip()
+            if category and category != "general":
+                return category
         if name in {"shallow_recall", "deep_recall"}:
             return "episode_query"
         if name in {"email_ask", "email_read", "email_send"}:

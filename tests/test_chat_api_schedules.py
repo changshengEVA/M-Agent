@@ -49,7 +49,6 @@ def _build_schedule_agent(tmp_path: Path) -> ScheduleAgent:
                 "execution": {
                     "query_limit_default": 10,
                     "query_limit_max": 50,
-                    "target_candidate_limit": 5,
                 },
             },
             allow_unicode=True,
@@ -79,8 +78,7 @@ def test_schedule_crud_endpoints(tmp_path: Path) -> None:
         created = client.post(
             "/v1/chat/threads/demo-thread/schedules",
             json={
-                "title": "交周报",
-                "prompt": "提醒我交周报",
+                "text": "预定的周报提交时间已到，请检查并提交本周周报。",
                 "due_at": "2026-04-06T09:30",
                 "timezone_name": "Asia/Shanghai",
             },
@@ -88,7 +86,7 @@ def test_schedule_crud_endpoints(tmp_path: Path) -> None:
         assert created.status_code == 201
         created_item = created.json()["item"]
         assert created_item["thread_id"] == "demo-thread"
-        assert created_item["title"] == "交周报"
+        assert created_item["text"] == "预定的周报提交时间已到，请检查并提交本周周报。"
         assert created_item["status"] == "pending"
 
         listed = client.get("/v1/chat/threads/demo-thread/schedules")
@@ -96,18 +94,11 @@ def test_schedule_crud_endpoints(tmp_path: Path) -> None:
         assert listed.json()["count"] == 1
 
         schedule_id = created_item["schedule_id"]
-        updated = client.patch(
+        update_not_supported = client.patch(
             f"/v1/chat/threads/demo-thread/schedules/{schedule_id}",
-            json={
-                "title": "交项目周报",
-                "due_at": "2026-04-06T10:15",
-                "timezone_name": "Asia/Shanghai",
-            },
+            json={"text": "This update must not be accepted."},
         )
-        assert updated.status_code == 200
-        updated_item = updated.json()["item"]
-        assert updated_item["title"] == "交项目周报"
-        assert updated_item["due_display"] == "2026-04-06 10:15"
+        assert update_not_supported.status_code == 405
 
         detail = client.get(f"/v1/chat/threads/demo-thread/schedules/{schedule_id}")
         assert detail.status_code == 200
@@ -136,8 +127,7 @@ def test_schedule_endpoints_share_items_across_threads_for_same_owner(tmp_path: 
         created = client.post(
             "/v1/chat/threads/work-thread/schedules",
             json={
-                "title": "开组会",
-                "prompt": "提醒我开组会",
+                "text": "预定的组会时间已到，请准备参加组会。",
                 "due_at": "2026-04-06T14:00",
                 "timezone_name": "Asia/Shanghai",
             },

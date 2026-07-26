@@ -5,8 +5,8 @@ call ``context.get_episodic_backend()``, which returns the configured
 :class:`~m_agent.systems.episodic.protocols.EpisodicMemoryBackend`.
 
 Think-life: both tools are registered in
-``THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG`` (``instruction`` → ``question``);
-see ``tool_runner.py`` and docs/systems-plugin/tools*.md.
+their capability manifests (``instruction`` → ``question``); legacy registries
+fall back to ``THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG`` in ``tool_runner.py``.
 """
 from __future__ import annotations
 

@@ -27,7 +27,7 @@ Runtime configuration for the **M-Agent chat stack**. MemoryAgent / LoCoMo eval 
 agents/chat/chat_controller.yaml
   → systems/wm/default.yaml
   → systems/episodic/rag_default.yaml
-  → systems/tools/default.yaml (+ runtime_descriptions.yaml)
+  → systems/tools/default.yaml (+ one manifest per tool under capabilities/)
   → chat_model.yaml, runtime/chat_controller_runtime.yaml
 ```
 

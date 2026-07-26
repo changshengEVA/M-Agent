@@ -49,13 +49,8 @@ class ScheduleStore:
                 return []
             items = self._load_items_from_file(legacy_path)
             if items:
-                migrated_items = []
-                for item in items:
-                    migrated_item = ScheduleItem.from_dict(item.to_dict())
-                    migrated_item.owner_id = normalized_owner_id
-                    migrated_items.append(migrated_item)
-                self.save_thread_items(normalized_owner_id, thread_id, migrated_items)
-                return migrated_items
+                self.save_thread_items(normalized_owner_id, thread_id, items)
+                return items
             return []
         return self._load_items_from_file(path)
 
@@ -100,12 +95,10 @@ class ScheduleStore:
         normalized_items: List[ScheduleItem] = []
         for item in items:
             copied = ScheduleItem.from_dict(item.to_dict())
-            copied.owner_id = normalized_owner_id
             copied.thread_id = str(thread_id or "").strip()
             normalized_items.append(copied)
         serialized = [item.to_dict() for item in sorted(normalized_items, key=lambda x: (x.due_at_utc, x.schedule_id))]
         payload = {
-            "owner_id": normalized_owner_id,
             "thread_id": str(thread_id or "").strip(),
             "item_count": len(serialized),
             "items": serialized,
@@ -128,30 +121,15 @@ class ScheduleStore:
         if not by_thread_root.exists():
             return items
         for path in by_thread_root.glob("*/schedules.json"):
-            try:
-                with open(path, "r", encoding="utf-8") as f:
-                    payload = json.load(f) or {}
-            except Exception:
-                continue
-            items_raw = payload.get("items", []) if isinstance(payload, dict) else []
-            for item in items_raw:
-                if not isinstance(item, dict):
-                    continue
-                try:
-                    migrated = ScheduleItem.from_dict(item)
-                    migrated.owner_id = ANONYMOUS_OWNER_ID
-                    items.append(migrated)
-                except Exception:
-                    continue
+            items.extend(self._load_items_from_file(path))
         return items
 
     def find_by_id(self, schedule_id: str, *, owner_id: str | None = None) -> ScheduleItem | None:
         target_id = str(schedule_id or "").strip()
         if not target_id:
             return None
-        for item in self.iter_all_items():
-            if owner_id is not None and item.owner_id != self._normalize_owner_id(owner_id):
-                continue
+        candidates = self.iter_owner_items(owner_id) if owner_id is not None else self.iter_all_items()
+        for item in candidates:
             if item.schedule_id == target_id:
                 return item
         return None

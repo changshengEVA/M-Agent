@@ -26,6 +26,7 @@ from .registry import (
     build_controller_tools,
     resolve_enabled_controller_capability_names,
 )
+from .manifest import ToolCapabilityManifest, load_tool_capability_manifest
 from .system import (
     ToolSuiteSystem,
     build_default_tool_suite_system,
@@ -48,10 +49,12 @@ __all__ = [
     "SCHEDULE_QUERY_CAPABILITY",
     "SHALLOW_RECALL_CAPABILITY",
     "ToolSuiteSystem",
+    "ToolCapabilityManifest",
     "build_controller_tools",
     "build_default_tool_suite_system",
     "get_default_capability_registry",
     "load_tool_suite_system",
+    "load_tool_capability_manifest",
     "register_capability",
     "resolve_enabled_controller_capability_names",
 ]

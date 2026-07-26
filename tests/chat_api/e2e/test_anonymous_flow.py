@@ -58,8 +58,7 @@ def test_anonymous_chat_run_memory_flush_and_schedule_flow() -> None:
         schedule_created = client.post(
             "/v1/chat/threads/e2e-thread/schedules",
             json={
-                "title": "E2E reminder",
-                "prompt": "Check e2e flow",
+                "text": "The scheduled E2E flow check time has arrived; check the flow now.",
                 "due_at": "2026-04-12T11:00",
                 "timezone_name": "Asia/Shanghai",
             },

@@ -1,0 +1,23 @@
+name: web_search
+version: 1
+category: information
+builder: m_agent.systems.tools.default.capabilities.web_search_ops:_build_web_search_tool
+descriptions:
+  en: "Function: search the public web by query/title or inspect a known webpage URL for detailed page content. Needs: query and/or url; optional max_results, include_content, provider=auto|youcom|tavily."
+  zh: "功能：按查询词搜索公开网络，或读取指定网页 URL 的详细内容。所需：query 和/或 url；可选 max_results、include_content、provider。"
+input:
+  mode: param_llm
+  schema: inferred_from_tool
+output:
+  schema: builtins:dict
+  feedback_projector: m_agent.runtime.think_life.scheduler.execution_feedback:feedback_summary_from_tool_history
+  memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
+policy:
+  side_effect: read
+  max_calls_per_turn: 3
+dependencies:
+  - web_search_client
+  - api_credentials
+defaults:
+  provider: auto
+  max_results: 5

@@ -1,0 +1,19 @@
+name: email_send
+version: 1
+category: email
+builder: m_agent.systems.tools.default.capabilities.email_ops:_build_email_send_tool
+descriptions:
+  en: "Function: send one email. Needs: recipient address, subject, and body content."
+  zh: "功能：发送一封邮件。所需：收件人地址、主题和正文内容。"
+input:
+  mode: param_llm
+  schema: inferred_from_tool
+output:
+  schema: builtins:dict
+  feedback_projector: m_agent.runtime.think_life.scheduler.execution_feedback:feedback_summary_from_tool_history
+  memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
+policy:
+  side_effect: send
+dependencies:
+  - email_agent
+  - gmail_credentials

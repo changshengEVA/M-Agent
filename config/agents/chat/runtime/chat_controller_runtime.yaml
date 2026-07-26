@@ -9,7 +9,7 @@
 # execution.capability_block_header only labels the capability list included
 # in the decision prompt; tool invocation itself is direct and prompt-free.
 #
-# Per-tool descriptions live in config/systems/tools/runtime_descriptions.yaml.
+# Per-tool descriptions live in config/systems/tools/capabilities/<tool>.yaml.
 
 chat_controller:
   thinking:
@@ -81,25 +81,47 @@ chat_controller:
         zh: |
           [输出字段]
           - goal: 可选；用户当前整体任务，保持稳定，除非任务真的变化。
+          - completion_status: 可选；只能是 processing、awaiting_user 或 completed。省略表示不变。
           - completed: 可选；已经由对话、执行反馈或工具证据确认完成的步骤。省略表示不变，空数组表示清空。
           - remaining: 可选；仍未完成的步骤。省略表示不变，空数组表示已无剩余步骤。
 
           [硬约束]
           - 只输出任务状态更新，不要输出 mode/tool_name/instruction/answer。
           - 不要把原始工具结果复制进状态；只写短、可读、可执行的任务步骤。
-          - 当刺激种类为 execution_feedback 时，优先根据可读反馈、会话场景和工具证据更新 completed/remaining。
+          - 新的用户请求必须是 processing，即使它可以直接回答。
+          - 当刺激种类为 execution_feedback 时，优先根据可读反馈、会话场景和工具证据更新 completion_status/completed/remaining。
+          - 工具执行完成但结果仍需告知用户时，任务仍是 processing。
+          - 已发送澄清问题并等待用户补充信息时，使用 awaiting_user。
+          - 只有整个请求均已满足且必要回复已成功发送后，才使用 completed。
+          - reply_to_user 成功只证明消息已送达；必须判断该消息是否真正完成 goal。
           - 如果当前输入只是普通闲聊或无明确多步任务，可以全部省略。
+
+          [输出示例]
+          - 收到新的用户任务：{"goal":"回答网络协议问题","completion_status":"processing","completed":[],"remaining":["形成并发送完整回答"]}
+          - 最终回答的 delivery feedback 证明 goal 已满足：{"completion_status":"completed","completed":["形成并发送完整回答"],"remaining":[]}
+          - 澄清问题已发送且必须等待用户：{"completion_status":"awaiting_user","completed":["询问缺失信息"],"remaining":["等待用户补充信息"]}
         en: |
           [Output Fields]
           - goal: optional; the user's overall current task. Keep stable unless the task really changes.
+          - completion_status: optional; processing, awaiting_user, or completed. Omit to keep unchanged.
           - completed: optional; steps confirmed complete by dialogue, execution feedback, or tool evidence. Omit to keep unchanged; [] clears it.
           - remaining: optional; unfinished steps. Omit to keep unchanged; [] means no remaining steps.
 
           [Hard Constraints]
           - Output only task-state updates; do not output mode/tool_name/instruction/answer.
           - Do not copy raw tool results into state; write short, readable, actionable steps.
-          - For execution_feedback, update completed/remaining from readable feedback, conversation scene, and tool evidence.
+          - A new user request is processing even when it can be answered directly.
+          - For execution_feedback, update completion_status/completed/remaining from readable feedback, conversation scene, and tool evidence.
+          - Tool execution alone is still processing when its result must be communicated to the user.
+          - Use awaiting_user after a clarification question was delivered and more user input is required.
+          - Use completed only after the full request is fulfilled and every required reply was successfully delivered.
+          - reply_to_user success proves delivery only; judge whether the delivered message actually fulfilled the goal.
           - If the current input is small talk or has no clear multi-step task, omit every field.
+
+          [Output Examples]
+          - New user task: {"goal":"answer the network protocol question","completion_status":"processing","completed":[],"remaining":["compose and deliver a complete answer"]}
+          - Final-answer delivery feedback proves the goal was fulfilled: {"completion_status":"completed","completed":["compose and deliver a complete answer"],"remaining":[]}
+          - A clarification was delivered and user input is required: {"completion_status":"awaiting_user","completed":["ask for missing information"],"remaining":["wait for the user's information"]}
 
     make_decision:
       base_prompt:
@@ -125,7 +147,7 @@ chat_controller:
           - answer: 当 mode==answer_directly 时给出最终回复；silent/execute 时留空或 null。
           - episode_note: 可选；写下以后值得记住的一两句话，不要塞入原始工具结果。
           - capability_hint: 可选遗留字段；优先使用 tool_name。
-          - request_complete: 仅当用户原始请求已经全部完成时为 true；否则 false。
+          - request_complete: 由任务状态决定；仅当 completion_status==completed 时为 true，否则为 false。
           - reasoning: 可选；简短说明本轮选择 mode 的理由，便于审计。
 
           [硬约束]
@@ -133,10 +155,42 @@ chat_controller:
           - 思考层没有工具权限；mode==execute 时每轮只能指定一个 tool_name，由执行层调用。
           - 多步任务每轮只委托一个当前步骤；未完成时 request_complete=false。
           - 当 mode==execute 时，不要在 answer 中给出最终回复。
+          - 当 completion_status==processing 时，request_complete=false；answer_directly 发送回复后必须等待 execution_feedback 复核任务状态。
+          - 当 completion_status==awaiting_user 时，用 silent 且 request_complete=false，等待新的用户输入。
+          - 当 completion_status==completed 时，用 silent 且 request_complete=true；不要再次回复或调用工具。
           - 闲聊、致谢、与可委托能力无关且需要回应的请求，用 answer_directly。
           - 纯附和、等待更多信息、或不需要对用户说话时，用 silent。
           - 邮件/日程：tool_name 选对应能力；schedule_create 每次只创建 1 条；删除用 schedule_delete(schedule_id)。
           - 若 feedback 中 stage=param_fill 且 tool_invoked=false：目标工具未被调用。优先用其他 tool_name 从上下文补参；无法补参再 answer_directly 追问。
+
+          [输出示例]
+          示例1：
+          {
+            "reasoning": "普通知识问答，不需要调用外部工具。",
+            "mode": "answer_directly",
+            "tool_name": null,
+            "instruction": null,
+            "answer": "天空通常呈蓝色，主要是因为...",
+            "request_complete": false
+          }
+          示例2：
+          {
+            "reasoning": "要求查看邮箱中的未读邮件，需要调用外部工具",
+            "mode": "execute",
+            "tool_name": "email_ask",
+            "instruction": "查询邮箱中的所有未读邮件。",
+            "answer": null,
+            "request_complete": false
+          }
+          示例3（最终回复的 execution_feedback 已确认任务完成）：
+          {
+            "reasoning": "最终回复已成功发送，并且完整满足了任务目标。",
+            "mode": "silent",
+            "tool_name": null,
+            "instruction": null,
+            "answer": null,
+            "request_complete": true
+          }
         en: |
           [Decision Output Fields]
           - mode: must be "execute", "answer_directly", or "silent".
@@ -145,7 +199,7 @@ chat_controller:
           - answer: required when mode==answer_directly; leave empty for silent/execute.
           - episode_note: optional short text worth remembering; do not dump raw tool output here.
           - capability_hint: optional compatibility field; tool_name is authoritative.
-          - request_complete: true only when the original user request is fully done; otherwise false.
+          - request_complete: derived from task state; true only when completion_status==completed, otherwise false.
           - reasoning: optional short rationale for the chosen mode, for auditing.
 
           [Hard Constraints]
@@ -153,11 +207,42 @@ chat_controller:
           - The thinking layer has no direct tools; mode==execute must name exactly one tool_name per round.
           - Multi-step requests delegate only one current step per round; request_complete=false until done.
           - When mode==execute, leave answer empty.
+          - When completion_status==processing, request_complete=false; after answer_directly sends a reply, wait for execution_feedback to reassess task state.
+          - When completion_status==awaiting_user, use silent with request_complete=false and wait for a new user stimulus.
+          - When completion_status==completed, use silent with request_complete=true; do not reply or invoke another tool.
           - For small talk or non-delegable requests that need a reply, use answer_directly.
           - Use silent for acks, waiting for more input, or when no user-visible reply is needed.
           - For email/schedule, pick the matching tool_name only; schedule_create creates one item per call; delete uses schedule_delete(schedule_id).
           - When feedback has stage=param_fill and tool_invoked=false: the target tool was NOT invoked. Prefer other tool_name values to fill gaps from context; if still unavailable, answer_directly to ask the user.
 
+          [Output Examples]
+          Case1：
+          {
+            "reasoning": "For general knowledge Q&A, there is no need to call on external tools.",
+            "mode": "answer_directly",
+            "tool_name": null,
+            "instruction": null,
+            "answer": "The sky is usually blue, mainly because...",
+            "request_complete": false
+          }
+          Case2：
+          {
+            "reasoning": "To view unread emails in the mailbox, an external tool needs to be invoked",
+            "mode": "execute",
+            "tool_name": "email_ask",
+            "instruction": "Check all unread emails in the mailbox.",
+            "answer": null,
+            "request_complete": false
+          }
+          Case3 (execution_feedback confirmed that the final reply completed the task):
+          {
+            "reasoning": "The final reply was delivered and fully satisfied the task goal.",
+            "mode": "silent",
+            "tool_name": null,
+            "instruction": null,
+            "answer": null,
+            "request_complete": true
+          }
       capability_boundary_header:
         zh: |
           [可委托能力]

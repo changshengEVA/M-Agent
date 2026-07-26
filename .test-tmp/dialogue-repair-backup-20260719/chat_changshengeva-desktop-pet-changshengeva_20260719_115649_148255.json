@@ -1,0 +1,27 @@
+{
+  "dialogue_id": "chat_changshengeva-desktop-pet-changshengeva_20260719_115649_148255",
+  "user_id": "changshengeva",
+  "participants": [
+    "changshengeva",
+    "Memory Assistant"
+  ],
+  "meta": {
+    "start_time": "2026-07-19T11:56:49.148255Z",
+    "end_time": "2026-07-19T11:56:49.148255Z",
+    "language": "zh",
+    "platform": "chat_api",
+    "version": 1,
+    "thread_id": "changshengeva::desktop-pet-changshengeva",
+    "source": "chat_api_thread_flush",
+    "round_count": 0,
+    "trace_summary": {}
+  },
+  "turns": [
+    {
+      "speaker": "changshengeva",
+      "text": "晚上好",
+      "timestamp": "2026-07-19T11:56:49.148255Z",
+      "turn_id": 0
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+name: get_current_time
+version: 1
+category: time
+builder: m_agent.systems.tools.default.capabilities.time_context:_build_get_current_time_tool
+descriptions:
+  en: "Function: current date, time, weekday, and relative days such as today, yesterday, and tomorrow. Needs: none."
+  zh: "功能：获取当前日期、时间、星期及今天、昨天、明天等相对日期。所需：无。"
+input:
+  mode: no_args
+  schema: inferred_from_tool
+output:
+  schema: builtins:dict
+  feedback_projector: m_agent.runtime.think_life.scheduler.execution_feedback:feedback_summary_from_tool_history
+  memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
+policy:
+  side_effect: read
+dependencies: []
+defaults:
+  timezone_name: Asia/Shanghai

@@ -7,4 +7,3 @@ storage_dir: "../../../data/schedules"
 execution:
   query_limit_default: 10
   query_limit_max: 50
-  target_candidate_limit: 5

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import yaml
 
 from m_agent.agents.schedule_agent import ScheduleAgent
+from m_agent.schedule.models import ScheduleItem
 
 
 def _write_yaml(path: Path, payload: dict) -> None:
@@ -24,7 +26,6 @@ def _build_agent(tmp_path: Path) -> ScheduleAgent:
             "execution": {
                 "query_limit_default": 10,
                 "query_limit_max": 50,
-                "target_candidate_limit": 5,
             },
         },
     )
@@ -44,19 +45,19 @@ def test_schedule_create_query_delete_flow(tmp_path: Path) -> None:
     created = agent.handle_create_command(
         thread_id=thread_id,
         due_at="2026-04-06T09:00:00+08:00",
-        action="开会",
+        text="预定的会议时间已到，请准备参加会议。",
         timezone_name="Asia/Shanghai",
         now_context=_fixed_now_context(),
     )
     assert created["success"] is True
     assert created["action"] == "create"
     assert created["schedule_id"].startswith("sch_")
-    assert created["item"]["title"] == "开会"
+    assert created["item"]["text"] == "预定的会议时间已到，请准备参加会议。"
     assert created["item"]["status"] == "pending"
 
     queried = agent.handle_query_command(
         thread_id=thread_id,
-        keyword="开会",
+        keyword="会议",
         start_at="2026-04-06T00:00:00+08:00",
         end_at="2026-04-06T23:59:59+08:00",
         timezone_name="Asia/Shanghai",
@@ -75,19 +76,19 @@ def test_schedule_create_query_delete_flow(tmp_path: Path) -> None:
 
     empty = agent.handle_query_command(
         thread_id=thread_id,
-        keyword="开会",
+        keyword="会议",
         timezone_name="Asia/Shanghai",
     )
     assert empty["success"] is True
     assert empty["count"] == 0
 
 
-def test_schedule_create_marks_partial_for_bulk_action(tmp_path: Path) -> None:
+def test_schedule_create_marks_partial_for_bulk_text(tmp_path: Path) -> None:
     agent = _build_agent(tmp_path)
     result = agent.handle_create_command(
         thread_id="demo-thread",
         due_at="2026-04-06T06:00:00+08:00",
-        action="每天6点起床一周",
+        text="每天6点的起床时间已到，请开始新的一天；持续一周。",
         timezone_name="Asia/Shanghai",
         now_context=_fixed_now_context(),
     )
@@ -97,23 +98,23 @@ def test_schedule_create_marks_partial_for_bulk_action(tmp_path: Path) -> None:
     assert result.get("schedule_id", "").startswith("sch_")
 
 
-def test_schedule_create_requires_due_at_and_action(tmp_path: Path) -> None:
+def test_schedule_create_requires_due_at_and_text(tmp_path: Path) -> None:
     agent = _build_agent(tmp_path)
     missing_due = agent.handle_create_command(
         thread_id="demo-thread",
         due_at="",
-        action="开会",
+        text="预定的会议时间已到，请准备参加会议。",
     )
     assert missing_due["success"] is False
     assert missing_due["needs_clarification"] is True
 
-    missing_action = agent.handle_create_command(
+    missing_text = agent.handle_create_command(
         thread_id="demo-thread",
         due_at="2026-04-06T09:00:00+08:00",
-        action="",
+        text="",
     )
-    assert missing_action["success"] is False
-    assert missing_action["needs_clarification"] is True
+    assert missing_text["success"] is False
+    assert missing_text["needs_clarification"] is True
 
 
 def test_schedule_delete_invalid_or_missing_id(tmp_path: Path) -> None:
@@ -131,3 +132,47 @@ def test_schedule_delete_invalid_or_missing_id(tmp_path: Path) -> None:
     )
     assert missing["success"] is False
     assert missing["needs_clarification"] is True
+
+
+def test_schedule_persists_only_minimal_fields(tmp_path: Path) -> None:
+    agent = _build_agent(tmp_path)
+    created = agent.handle_create_command(
+        thread_id="demo-thread",
+        due_at="2026-04-06T09:00:00+08:00",
+        text="预定的会议时间已到，请准备参加会议。",
+        timezone_name="Asia/Shanghai",
+        now_context=_fixed_now_context(),
+    )
+    assert created["success"] is True
+
+    schedule_path = next((agent.store.storage_root / "by_user").rglob("schedules.json"))
+    payload = json.loads(schedule_path.read_text(encoding="utf-8"))
+    assert set(payload["items"][0]) == {
+        "schedule_id",
+        "thread_id",
+        "due_at_utc",
+        "timezone_name",
+        "text",
+        "status",
+        "created_at",
+    }
+
+
+def test_legacy_schedule_prompt_migrates_to_text() -> None:
+    item = ScheduleItem.from_dict(
+        {
+            "schedule_id": "sch_legacy123456",
+            "owner_id": "agent",
+            "thread_id": "demo-thread",
+            "title": "legacy title",
+            "due_at_utc": "2026-04-06T01:00:00Z",
+            "timezone_name": "Asia/Shanghai",
+            "action_payload": {"prompt": "The legacy scheduled time has arrived."},
+            "status": "pending",
+            "created_at": "2026-04-05T00:00:00Z",
+            "updated_at": "2026-04-05T01:00:00Z",
+        }
+    )
+    assert item.text == "The legacy scheduled time has arrived."
+    assert "owner_id" not in item.to_dict()
+    assert "updated_at" not in item.to_dict()

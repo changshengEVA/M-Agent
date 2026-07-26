@@ -188,6 +188,7 @@ def test_build_working_memory_api_payload_tail_and_cap() -> None:
         cfg,
         task_progress={
             "goal": "answer a two-step request",
+            "completion_status": "processing",
             "completed": ["found the event"],
             "remaining": ["reply to user"],
         },
@@ -196,6 +197,7 @@ def test_build_working_memory_api_payload_tail_and_cap() -> None:
     assert len(payload["entries"]) == 3
     assert payload["entries"][-1]["n"] == 9
     assert payload["task_progress"]["goal"] == "answer a two-step request"
+    assert payload["task_progress"]["completion_status"] == "processing"
     assert payload["task_progress"]["completed"] == ["found the event"]
 
 
@@ -207,6 +209,7 @@ def test_format_working_memory_prompt_includes_task_progress_without_tool_entrie
         prompt_language="en",
         task_progress={
             "goal": "collect two facts",
+            "completion_status": "processing",
             "completed": ["checked email"],
             "remaining": ["check calendar"],
         },
@@ -215,6 +218,7 @@ def test_format_working_memory_prompt_includes_task_progress_without_tool_entrie
     assert "[Working memory]" in text
     assert "[Task progress]" in text
     assert "goal: collect two facts" in text
+    assert "completion_status: processing" in text
     assert "checked email" in text
     assert "check calendar" in text
     assert "[Tool evidence]" not in text

@@ -95,7 +95,12 @@ def build_working_memory_api_payload(
 
 def _task_progress_payload(task_progress: Any) -> Dict[str, Any]:
     if task_progress is None:
-        return {"goal": "", "completed": [], "remaining": []}
+        return {
+            "goal": "",
+            "completion_status": "processing",
+            "completed": [],
+            "remaining": [],
+        }
     if hasattr(task_progress, "to_dict"):
         try:
             payload = task_progress.to_dict()
@@ -106,6 +111,9 @@ def _task_progress_payload(task_progress: Any) -> Dict[str, Any]:
     else:
         payload = {
             "goal": getattr(task_progress, "goal", ""),
+            "completion_status": getattr(
+                task_progress, "completion_status", "processing"
+            ),
             "completed": getattr(task_progress, "completed", []),
             "remaining": getattr(task_progress, "remaining", []),
         }
@@ -113,6 +121,11 @@ def _task_progress_payload(task_progress: Any) -> Dict[str, Any]:
     remaining = payload.get("remaining", []) if isinstance(payload, dict) else []
     return {
         "goal": str(payload.get("goal", "") or "").strip() if isinstance(payload, dict) else "",
+        "completion_status": (
+            str(payload.get("completion_status", "processing") or "processing").strip()
+            if isinstance(payload, dict)
+            else "processing"
+        ),
         "completed": [
             str(item or "").strip()
             for item in (completed if isinstance(completed, list) else [])
@@ -128,7 +141,12 @@ def _task_progress_payload(task_progress: Any) -> Dict[str, Any]:
 
 def _task_progress_is_empty(task_progress: Any) -> bool:
     payload = _task_progress_payload(task_progress)
-    return not (payload["goal"] or payload["completed"] or payload["remaining"])
+    return not (
+        payload["goal"]
+        or payload["completion_status"] != "processing"
+        or payload["completed"]
+        or payload["remaining"]
+    )
 
 
 def _format_task_progress(task_progress: Any, *, zh: bool) -> str:
@@ -138,6 +156,7 @@ def _format_task_progress(task_progress: Any, *, zh: bool) -> str:
         lines = ["[浠诲姟杩涘害]"]
     goal = payload["goal"] or ("(empty)" if not zh else "(绌?)")
     lines.append(f"goal: {goal}")
+    lines.append(f"completion_status: {payload['completion_status']}")
     completed = payload["completed"]
     remaining = payload["remaining"]
     lines.append("completed:")
@@ -306,7 +325,7 @@ def _project_schedule(tool_name: str, params: Dict[str, Any], result: Dict[str, 
         extra = _truncate(f"{kw}|{start}|{end}".strip("|"), 200)
     elif tool_name == "schedule_create":
         extra = _truncate(
-            f"{params.get('due_at', '')} {params.get('action', '')}".strip(),
+            f"{params.get('due_at', '')} {params.get('text', '')}".strip(),
             200,
         )
     elif tool_name == "schedule_delete":

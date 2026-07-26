@@ -101,7 +101,7 @@ config/
 ├── systems/
 │   ├── wm/default.yaml
 │   ├── episodic/rag_default.yaml
-│   └── tools/default.yaml, runtime_descriptions.yaml
+│   └── tools/default.yaml, capabilities/<tool>.yaml
 ├── prompts/examples/     示例（非对话栈必需）
 ├── integrations/         如 neo4j.yaml
 └── users/                按用户生成；勿在仓库内手改他人目录

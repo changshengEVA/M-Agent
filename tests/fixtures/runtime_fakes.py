@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 import threading
@@ -42,25 +42,20 @@ def _normalize_turn_payload(
 @dataclass
 class FakeScheduleItem:
     schedule_id: str
-    owner_id: str
     thread_id: str
-    title: str
     due_at_utc: str
     timezone_name: str
-    original_time_text: str
-    action_type: str
-    action_payload: Dict[str, Any]
-    source_text: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    text: str
     status: str = "pending"
+    created_at: str = ""
 
 
 class FakeScheduleStore:
     def __init__(self) -> None:
         self._items: dict[tuple[str, str], FakeScheduleItem] = {}
 
-    def upsert(self, item: FakeScheduleItem) -> FakeScheduleItem:
-        self._items[(item.owner_id, item.schedule_id)] = item
+    def upsert(self, owner_id: str, item: FakeScheduleItem) -> FakeScheduleItem:
+        self._items[(owner_id, item.schedule_id)] = item
         return item
 
     def find_by_id(self, schedule_id: str, *, owner_id: str) -> Optional[FakeScheduleItem]:
@@ -78,18 +73,14 @@ class FakeScheduleService:
     def serialize_item(item: FakeScheduleItem) -> Dict[str, Any]:
         return {
             "schedule_id": item.schedule_id,
-            "owner_id": item.owner_id,
             "thread_id": item.thread_id,
-            "title": item.title,
-            "status": item.status,
             "due_at_utc": item.due_at_utc,
             "timezone_name": item.timezone_name,
-            "original_time_text": item.original_time_text,
-            "due_display": item.original_time_text,
-            "source_text": item.source_text,
-            "action_type": item.action_type,
-            "action_payload": deepcopy(item.action_payload),
-            "metadata": deepcopy(item.metadata),
+            "text": item.text,
+            "status": item.status,
+            "created_at": item.created_at,
+            "due_at_local": item.due_at_utc,
+            "due_display": item.due_at_utc,
         }
 
     def list_schedules(
@@ -113,7 +104,7 @@ class FakeScheduleService:
                 continue
             if status_filter and item.status.lower() not in status_filter:
                 continue
-            if normalized_keyword and normalized_keyword not in item.title.lower():
+            if normalized_keyword and normalized_keyword not in item.text.lower():
                 continue
             filtered.append(item)
         return filtered[: max(1, int(limit or 20))]
@@ -123,63 +114,20 @@ class FakeScheduleService:
         *,
         owner_id: str,
         thread_id: str,
-        title: str,
         due_at_utc: str,
         timezone_name: str,
-        original_time_text: str,
-        action_type: str,
-        action_payload: Dict[str, Any],
-        source_text: str,
-        metadata: Dict[str, Any] | None = None,
+        text: str,
     ) -> FakeScheduleItem:
         item = FakeScheduleItem(
             schedule_id=f"sch_{uuid4().hex[:10]}",
-            owner_id=owner_id,
             thread_id=thread_id,
-            title=title,
             due_at_utc=due_at_utc,
             timezone_name=timezone_name,
-            original_time_text=original_time_text,
-            action_type=action_type,
-            action_payload=deepcopy(action_payload),
-            source_text=source_text,
-            metadata=deepcopy(metadata or {}),
+            text=text,
             status="pending",
+            created_at=_now_iso(),
         )
-        return self.store.upsert(item)
-
-    def update_schedule(
-        self,
-        *,
-        owner_id: str,
-        thread_id: str | None,
-        schedule_id: str,
-        title: str | None,
-        due_at_utc: str | None,
-        timezone_name: str | None,
-        original_time_text: str | None,
-        action_payload_patch: Dict[str, Any] | None,
-        metadata_patch: Dict[str, Any] | None,
-        source_text: str | None,
-    ) -> FakeScheduleItem:
-        item = self.store.find_by_id(schedule_id, owner_id=owner_id)
-        if item is None:
-            raise FileNotFoundError(f"schedule not found: {schedule_id}")
-        if title is not None:
-            item.title = title
-        if due_at_utc is not None:
-            item.due_at_utc = due_at_utc
-        if timezone_name is not None:
-            item.timezone_name = timezone_name
-        if original_time_text is not None:
-            item.original_time_text = original_time_text
-        if action_payload_patch:
-            item.action_payload.update(action_payload_patch)
-        if metadata_patch is not None:
-            item.metadata = metadata_patch
-        if source_text is not None:
-            item.source_text = source_text
-        return self.store.upsert(item)
+        return self.store.upsert(owner_id, item)
 
     def cancel_schedule(
         self,
@@ -187,30 +135,17 @@ class FakeScheduleService:
         owner_id: str,
         thread_id: str | None,
         schedule_id: str,
-        source_text: str,
     ) -> FakeScheduleItem:
+        del thread_id
         item = self.store.find_by_id(schedule_id, owner_id=owner_id)
         if item is None:
             raise FileNotFoundError(f"schedule not found: {schedule_id}")
         item.status = "canceled"
-        item.source_text = source_text
-        return self.store.upsert(item)
+        return self.store.upsert(owner_id, item)
 
     def lease_due_schedules(self, *, owner_id: str, limit: int) -> list[FakeScheduleItem]:
         del owner_id, limit
         return []
-
-    def release_lease(
-        self,
-        *,
-        owner_id: str,
-        thread_id: str,
-        schedule_id: str,
-        reason: str,
-        retry_after_seconds: int,
-    ) -> None:
-        del owner_id, thread_id, schedule_id, reason, retry_after_seconds
-        return None
 
     def mark_running(self, *, owner_id: str, thread_id: str, schedule_id: str) -> None:
         item = self.store.find_by_id(schedule_id, owner_id=owner_id)

@@ -35,6 +35,16 @@ def _normalize_positive_int(value: Any) -> Optional[int]:
 class ControllerCapabilitySpec:
     name: str
     build_tool: ControllerToolBuilder
+    version: int = 1
+    category: str = "general"
+    input_mode: str = "param_llm"
+    instruction_arg: Optional[str] = None
+    input_schema: Optional[str] = None
+    output_schema: Optional[str] = None
+    feedback_projector: Optional[str] = None
+    memory_projector: Optional[str] = None
+    side_effect: str = "unspecified"
+    dependencies: tuple[str, ...] = ()
 
 
 @dataclass

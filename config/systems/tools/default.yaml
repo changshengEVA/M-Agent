@@ -1,10 +1,9 @@
 # Default Tool-Suite subsystem.
-# Owns the top-level capability registry, the enabled-tools whitelist,
-# and per-tool defaults / runtime description prompts.
+# Each tool owns one manifest under ./capabilities/. This file only composes
+# the suite and contains policy that spans multiple tools.
 system: tools
 
-registry:
-  path: m_agent.systems.tools.default.registry:get_default_capability_registry
+capabilities_dir: ./capabilities
 
 enabled:
   - shallow_recall
@@ -24,21 +23,3 @@ defaults:
     max_calls_per_turn: 12
   memory_recall:
     max_calls_per_turn: 8
-  get_current_time:
-    timezone_name: Asia/Shanghai
-  web_search:
-    provider: auto
-    max_results: 5
-    max_calls_per_turn: 3
-  schedule_create:
-    timezone_name: Asia/Shanghai
-  schedule_query:
-    timezone_name: Asia/Shanghai
-    limit: 10
-  email_ask:
-    mail_scope: unread
-
-# Pulled out of chat_controller_runtime.yaml so the tool-suite system
-# carries its own prompt assets. Loader resolves the path relative to
-# this file.
-runtime_descriptions_path: ./runtime_descriptions.yaml

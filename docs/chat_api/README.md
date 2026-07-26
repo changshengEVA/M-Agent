@@ -6,6 +6,8 @@
 >
 > Scope / 范围: HTTP JSON APIs, SSE streams, auth, user config, chat runs, dialogue archives, thread memory, and schedules
 
+> Production-readiness notice / 生产就绪提示: this reference documents the API as it exists today. Items marked **gap** in section 4 are not contractual features and must not be assumed by a production browser client. / 本文描述当前真实实现；第 4 节标为 **gap** 的能力尚不是稳定契约，生产浏览器客户端不得依赖。
+
 ## 1. Overview / 总览
 
 This document replaces the old single-file `docs/chat_api.md` and is written against the current FastAPI implementation in:
@@ -57,9 +59,10 @@ In the current implementation:
 | User config | `GET /v1/users/me/config/schema` `PATCH /v1/users/me/config` | 当前用户可编辑配置元数据与更新接口 | Editable config metadata and patch API |
 | Chat runs | `POST /v1/chat/runs` `GET /v1/chat/runs/{run_id}` `GET /v1/chat/runs/{run_id}/events` | 创建对话、获取结果、订阅 run 级事件 | Create run, fetch final result, subscribe to run events |
 | Thread events | `GET /v1/chat/threads/{thread_id}/events` | 线程级事件流 | Thread-level SSE stream |
+| Thread runtime | `GET /v1/chat/threads/{thread_id}/transactions` `GET /v1/chat/threads/{thread_id}/scene` `POST /v1/chat/threads/{thread_id}/stimuli` `POST /v1/chat/threads/{thread_id}/thinking/stop` | 事务、场景、刺激入队与线程级停止 | Transactions, scene, stimulus enqueue, and thread-level stop |
 | Thread memory | `GET /v1/chat/threads/{thread_id}/memory/state` `POST /v1/chat/threads/{thread_id}/memory/mode` `POST /v1/chat/threads/{thread_id}/memory/flush` | 查看线程记忆状态、切换模式、手动 flush | Inspect thread state, switch memory mode, manually flush |
 | Dialogues | `GET /v1/chat/dialogues` `GET /v1/chat/dialogues/{dialogue_id}` `POST /v1/chat/dialogues/import` `POST /v1/chat/dialogues/upload` | 已归档对话列表/详情；迁移旧目录布局或批量上传 JSON 并建 RAG 索引（上传为 SSE 进度） | Dialogue list/detail; old-layout import; multipart upload + SSE progress |
-| Schedules | `GET/POST/PATCH/DELETE /v1/chat/threads/{thread_id}/schedules...` | 日程提醒查询、创建、更新、取消 | Schedule query, create, update, cancel |
+| Schedules | `GET/POST/DELETE /v1/chat/threads/{thread_id}/schedules...` | 日程刺激查询、创建、取消 | Schedule stimulus query, create, cancel |
 
 ## 3. Startup / 启动方式
 
@@ -74,7 +77,6 @@ python -m m_agent.api.chat_api `
   --idle-flush-seconds 1800 `
   --history-max-rounds 12 `
   --schedule-beat-seconds 10 `
-  --schedule-enqueue-retry-seconds 5 `
   --users-db config/users/users.json `
   --session-ttl-seconds 43200
 ```
@@ -89,7 +91,6 @@ python -m m_agent.api.chat_api `
 | `--idle-flush-seconds` | `1800` | `manual` 模式下 pending buffer 的空闲自动 flush 时间 | Idle timeout before pending manual memory is auto-flushed |
 | `--history-max-rounds` | `12` | 每个线程在服务内保留的最大轮次数 | Max in-memory rounds retained per thread |
 | `--schedule-beat-seconds` | `10` | 日程心跳扫描周期 | Schedule heartbeat scan interval |
-| `--schedule-enqueue-retry-seconds` | `5` | 日程刺激入队失败后的 lease 重试延迟 | Lease retry delay after a schedule stimulus fails to enqueue |
 | `--users-db` | `config/users/users.json` | 用户数据库路径 | User database path |
 | `--session-ttl-seconds` | `43200` | 登录会话有效期，单位秒 | Session TTL in seconds |
 | `--disable-auth` | off | 关闭注册/登录与 Bearer 校验，进入匿名模式 | Disable auth and run in anonymous mode |
@@ -153,6 +154,126 @@ When auth is enabled:
 - public API responses usually convert the thread id back to the public form
 
 认证开启后，调用方仍使用公开线程 ID，但服务内部会自动做用户隔离。
+
+### 4.4 Front-end contract status / 前端契约状态
+
+The table below is normative for browser integrations. “Available” means the current implementation and this reference agree. “Gap” means the requirement is a release blocker or follow-up item, not a feature a client may rely on.
+
+下表是浏览器集成的规范性状态表。“Available” 表示当前实现与本文一致；“Gap” 表示仍需实现，客户端不能把它当作已有能力。
+
+| Requirement | Current status | Front-end rule |
+| --- | --- | --- |
+| IR-01 Browser SSE auth | **Available with `fetch()`** | Send `Authorization: Bearer`; never put a session token in a URL. Native `EventSource` is not supported for authenticated streams because it cannot set this header. |
+| IR-02 Structured error envelope | **Gap** | Branch on HTTP status. Treat response bodies as diagnostic data; do not parse `error` text for program logic. |
+| IR-03 Versioned/durable SSE replay | **Gap** | Deduplicate by `seq` during one server lifetime and reconnect with `after_seq`; no replay survives a server restart, and automated reconnect/replay contract coverage is not yet published. |
+| IR-04 Run idempotency | **Gap** | `POST /v1/chat/runs` creates a new run every time. Do not automatically retry an ambiguous submission. |
+| IR-04 Run-specific cancellation | **Gap** | Only a best-effort, thread-wide thinking stop exists; it is not a run-cancel contract. |
+| IR-05 Progressive answer deltas | **Not provided** | Render the answer only from `assistant_message` or `run_completed`; no `answer_delta` event is defined. |
+| IR-06 Response-data minimization | **Gap** | Current payloads can contain internal paths/diagnostics. Do not expose these fields in end-user UI or browser telemetry. |
+| IR-07 Schedule scope | **Available, owner-scoped** | Use `item.thread_id` as the actual binding; the path `thread_id` does not filter list/get/cancel operations. |
+| IR-08 Published rate/concurrency/retention limits | **Gap** | Apply client-side timeouts/backoff and coordinate production limits with the deployment owner. |
+| IR-09 Maintained browser SDK | **Reference client only** | Use `browser_client.ts` as an example, not as a versioned npm package. |
+
+### 4.5 Browser authentication and CORS / 浏览器鉴权与跨域
+
+For both authenticated streams:
+
+- use streaming `fetch()` with `Authorization: Bearer <token>`; `X-Session-Token` is accepted but is the fallback header
+- do not use `?token=...`, because query strings can enter browser history, access logs, analytics, referrers, and screenshots
+- do not use native `EventSource` when auth is enabled; its constructor cannot attach the required session header
+- on `401`, stop reconnecting, obtain a new session through the login flow, then resume with the last processed `seq`
+- on logout, abort all stream `AbortController`s before calling `POST /v1/auth/logout`; logout invalidates future authentication, but an already-authorized stream is not re-authenticated event by event
+
+两个鉴权 SSE 端点都应使用带 Bearer header 的流式 `fetch()`。禁止把 token 放入 URL。注销时应先在浏览器端主动中止所有流，再调用 logout。
+
+The application currently enables wildcard CORS origins, methods, headers, and exposed headers without credentialed-cookie mode. Private-network preflights are also accepted. Bearer tokens are therefore the supported cross-origin credential. This permissive policy is an implementation fact, not a production allowlist: deploy behind TLS, restrict origins at the reverse proxy, preserve `Authorization`, disable proxy buffering for SSE, and set upstream idle timeouts longer than the keep-alive interval.
+
+当前应用允许通配跨域 header/method/origin，但不启用 cookie credentials。生产部署应在 TLS 反向代理处收紧 origin 白名单、透传 `Authorization`、关闭 SSE 缓冲，并把上游空闲超时设置得长于 keep-alive 周期。
+
+A working TypeScript client with authenticated streaming, parsing, reconnection, and sequence deduplication is provided in [`browser_client.ts`](./browser_client.ts).
+
+### 4.6 Current error contract / 当前错误契约
+
+Most application-generated failures use:
+
+```json
+{
+  "error": "message text"
+}
+```
+
+This is not yet a stable machine-readable error model. Some failures add fields such as `config_path`; framework validation can use FastAPI's separate `detail` shape; and a failed run can currently carry backend exception text in `run_failed.payload.error` and `RunSnapshot.error`. Until the server adopts a common `code`, `message`, `status`, `request_id`, `retryable`, and optional `field_errors` envelope:
+
+- use the HTTP status for control flow
+- treat `401` as re-authentication, `404` as unavailable/not visible, `429` as retryable only when actually returned, and other `4xx` responses as request failures
+- retry `5xx` only for idempotent reads, unless the operation has a documented idempotency contract
+- never render raw `error`, `detail`, `config_path`, stack traces, or unknown response fields directly to an end user
+- preserve a sanitized client correlation id in front-end logs; the server does not currently return `request_id`
+
+当前错误正文不稳定。前端应以 HTTP status 做分支，不解析人类可读文本，也不要直接显示内部路径、堆栈或未知诊断字段。
+
+Target error shape (planned, not currently returned):
+
+```json
+{
+  "code": "validation_failed",
+  "message": "One or more fields are invalid.",
+  "status": 400,
+  "request_id": "req_...",
+  "retryable": false,
+  "field_errors": [{"field": "message", "code": "required"}]
+}
+```
+
+### 4.7 SSE delivery, recovery, and answer rendering / SSE 交付、恢复与答案渲染
+
+The current SSE envelope is unversioned. Within one server process and one stream record, `seq` is strictly increasing and the SSE `id` line equals the JSON `seq`. Delivery after a reconnect can contain duplicates, so process an event only when `event.seq > lastProcessedSeq`.
+
+当前 SSE envelope 尚未版本化。同一服务进程、同一流记录内，`seq` 严格递增，SSE `id` 与 JSON `seq` 相同；重连后仍应按 `seq` 去重。
+
+Recovery algorithm:
+
+1. Persist the highest event `seq` only after the event has been applied successfully.
+2. Reconnect to the same stream with `?after_seq=<lastProcessedSeq>`.
+3. Ignore keep-alive comment frames and duplicate events (`seq <= lastProcessedSeq`).
+4. Ignore unknown event types after recording sanitized telemetry; never fail the whole stream solely because an additive event type appears.
+5. If the reconnect receives `401`, re-authenticate before any further retry. If it receives `404`, stop: the run is absent or not visible to this user.
+6. Use bounded exponential backoff with jitter for network failures and retryable `5xx` responses.
+
+`Last-Event-ID` is **not consumed by the server**. A client or proxy must translate its saved id into the `after_seq` query parameter. Event history and run records are held in process memory with no configured expiry or size cap; restart loses them, and no minimum retention window is promised.
+
+Run streams send `: keep-alive` after about 10 seconds without an event. They end after `run_completed` or `run_failed`. Thread streams use the same keep-alive behavior and remain open until the client disconnects or the connection fails.
+
+Answer delivery is final-only:
+
+- `assistant_message.payload.answer` is the first defined user-facing final answer
+- a successful run then emits `run_completed`, whose `payload.answer` and `payload.result.answer` contain the same final answer contract
+- no `answer_delta` event is defined; clients must not infer deltas from trace, planning, tool, or `reply_emitted` events
+- a run that fails or is force-stopped before `assistant_message` has no defined partial answer; discard any speculative UI text and show a local failure/canceled state
+
+### 4.8 Submission retries and stopping / 提交重试与停止
+
+Run creation does not accept `Idempotency-Key` or a client request id. Every accepted `POST /v1/chat/runs` allocates a new `run_id`. If the client receives `201`, retain that id and retry only the subsequent GET/SSE reads. If the connection fails before the response is known, do not silently submit again; ask the user or use an application-level draft/submission ledger until server idempotency is implemented.
+
+`POST /v1/chat/threads/{thread_id}/thinking/stop` requests a best-effort stop for the active thread and clears queued Think-life user turns. It can affect work beyond one `run_id`, can race with completion, and does not define a dedicated `canceled` run status. Treat a resulting `run_failed` as terminal and reconcile with `GET /v1/chat/runs/{run_id}`. This endpoint must not be presented as precise run cancellation.
+
+### 4.9 Security, limits, and deployment / 安全、限制与部署
+
+Current public/basic responses are not minimized for an untrusted production browser. Examples include `healthz.root`, user/run `config_path`, dialogue `dialogue_file`, `thread_id_internal`, and backend exception text. Keep the API behind a trusted boundary until these fields are removed or permission-gated. Redact authorization headers, session tokens, sensitive prompts, internal paths, and raw errors from browser analytics and support captures.
+
+当前 public/basic 响应仍可能暴露内部路径或诊断信息；在字段最小化和权限隔离完成前，不应把 API 直接暴露到不可信网络。
+
+Published limits in the current implementation:
+
+| Resource | Current behavior |
+| --- | --- |
+| Dialogue upload | At most 100 `.json` files per request; at most 5 MiB per file |
+| Schedule list | `limit` is clamped to `1..100`; default `20` |
+| Dialogue list | Default `limit=30`, `offset=0`; see endpoint section for current pagination behavior |
+| SSE idle keep-alive | Approximately 10 seconds |
+| Session lifetime | Startup-configured; CLI default is 43,200 seconds |
+
+No contractual maximum is currently published for chat message length, general request body size, concurrent runs, concurrent SSE connections, run duration, HTTP timeout, event retention, or rate limits. The application does not currently define a `429`/`Retry-After` policy. Production operators must set and publish these values at the gateway, test long-lived connections under load, and keep gateway/client values synchronized with this reference.
 
 ## 5. Shared Schemas / 公共对象模型
 
@@ -251,13 +372,15 @@ The `result` object inside a completed run snapshot.
 | `pending_rounds` | `integer` | 尚未 flush 的轮次数 | Pending round count |
 | `pending_turns` | `integer` | 尚未 flush 的 turn 数 | Pending turn count |
 | `has_pending_data` | `boolean` | 是否存在待写回数据 | Whether pending data exists |
-| `last_activity_at` | `string` | 最近一轮 assistant 完成时间 | Last assistant activity time |
+| `last_activity_at` | `string` | 最近一次刺激或最终回复活动时间 | Latest stimulus or finalized-reply activity time |
+| `idle_timer_armed` | `boolean` | 当前对话段是否已由至少一个刺激启动空闲计时器 | Whether at least one stimulus has armed the current segment's idle timer |
+| `idle_timer_started_at` | `string \| null` | 当前空闲计时起点；新建或刚 flush 的对话段为 `null` | Current idle-timer origin; `null` for a new or freshly flushed segment |
 | `last_flush_at` | `string \| null` | 最近一次成功 flush 时间 | Last successful flush time |
 | `last_flush_attempt_at` | `string \| null` | 最近一次尝试 flush 时间 | Last flush attempt time |
 | `last_flush_reason` | `string \| null` | 最近一次 flush 的 reason | Last flush reason |
 | `last_flush_success` | `boolean \| null` | 最近一次 flush 是否成功 | Whether the last flush succeeded |
 | `idle_flush_seconds` | `integer` | 当前线程使用的空闲 flush 配置 | Idle flush timeout |
-| `idle_flush_deadline` | `string \| null` | 如存在 pending 数据，则给出预计自动 flush 时间 | Planned idle-flush deadline when pending data exists |
+| `idle_flush_deadline` | `string \| null` | 计时器已由刺激启动时的预计自动 flush 时间 | Planned automatic-flush deadline after a stimulus arms the timer |
 | `history_rounds_data` | `array[object]` | 当前线程历史轮次明细 | Detailed retained rounds |
 | `history_preview` | `array[object]` | 最近 3 条轮次预览 | Last 3 retained rounds |
 
@@ -316,21 +439,18 @@ Each `turns[]` item contains:
 | Field | Type | 中文说明 | English description |
 | --- | --- | --- | --- |
 | `schedule_id` | `string` | 日程 ID，形如 `sch_xxx` | Schedule id, usually `sch_xxx` |
-| `owner_id` | `string` | 日程归属 owner | Schedule owner id |
 | `thread_id` | `string` | 该日程真正绑定的公开线程 ID | Actual public thread id bound to this schedule |
-| `title` | `string` | 日程标题 | Schedule title |
-| `status` | `string` | `pending` / `leased` / `running` / `done` / `failed` / `canceled` | Schedule status |
 | `due_at_utc` | `string` | UTC 到期时间 | UTC due time |
-| `due_at_local` | `string` | 本地时区时间 | Local due time |
-| `due_display` | `string` | 适合 UI 显示的本地时间 | UI-friendly local time |
 | `timezone_name` | `string` | IANA 时区名 | IANA timezone name |
-| `original_time_text` | `string` | 用户原始时间文本或标准化文本 | Original or normalized time text |
-| `action_type` | `string` | 当前 API 创建的任务固定为 `chat_prompt` | Current API creates `chat_prompt` actions |
-| `action_payload` | `object` | 执行动作负载 | Execution payload |
+| `text` | `string` | 到期时发送给智能体的自包含系统式刺激文本 | Self-contained, system-like stimulus delivered to the agent when due |
+| `status` | `string` | `pending` / `leased` / `running` / `done` / `failed` / `canceled` | Schedule status |
 | `created_at` | `string` | 创建时间 | Creation time |
-| `updated_at` | `string` | 更新时间 | Update time |
-| `source_text` | `string` | 来源文本 | Source text |
-| `metadata` | `object` | 扩展元数据 | Extra metadata |
+| `due_at_local` | `string` | 响应中派生的本地时区时间 | Response-only derived local due time |
+| `due_display` | `string` | 适合 UI 显示的派生本地时间 | UI-friendly derived local time |
+
+持久化记录只包含前七个字段；`due_at_local` 与 `due_display` 仅在序列化响应时派生。owner 隔离由存储路径和 API 作用域承担，不重复写入每条日程。
+
+The durable record contains only the first seven fields. `due_at_local` and `due_display` are derived for responses. Owner isolation lives in the storage namespace and API scope, not in each schedule item.
 
 ### 5.11 `ScheduleHeartbeat`
 
@@ -343,7 +463,6 @@ Each `turns[]` item contains:
 | `scheduler.beat_interval_seconds` | `integer` | 扫描周期 | Scan interval |
 | `scheduler.interval_seconds` | `integer` | 与 `beat_interval_seconds` 等价 | Same as `beat_interval_seconds` |
 | `scheduler.batch_limit` | `integer` | 单次心跳最大 lease 数 | Max leases per beat |
-| `scheduler.enqueue_retry_seconds` | `integer` | 入队失败后的 lease 重试延迟 | Lease retry delay after an enqueue failure |
 | `scheduler.next_beat_due_at` | `string \| null` | 下一次扫描时间 | Next scheduled beat time |
 | `counters.beats_total` | `integer` | 已执行心跳次数 | Total beats executed |
 | `counters.schedule_leased_total` | `integer` | 已 lease 的任务总数 | Total leased items |
@@ -389,6 +508,12 @@ Common fields:
 | `timestamp` | `string` | 事件生成时间 | Event timestamp |
 | `type` | `string` | 事件类型 | Event type |
 | `payload` | `object` | 事件主体 | Event payload |
+
+Compatibility note / 兼容性说明:
+
+- the envelope has no `schema_version` today; consumers must tolerate unknown top-level and payload fields
+- `type` is the discriminator, but the payload variants are not yet published as versioned JSON Schemas or an OpenAPI discriminated union
+- the recovery and compatibility rules in section 4.7 are the current client contract
 
 ## 6. Endpoint Reference / 端点说明
 
@@ -728,6 +853,8 @@ Behavior notes / 行为说明:
 
 - if `config` is provided and non-empty, the server returns `400`
 - successful creation returns only run metadata, not the final answer
+- the operation is not idempotent: each accepted request creates a new `run_id`, and `Idempotency-Key` is not supported
+- after receiving `201`, retry GET/SSE reads by `run_id`; do not automatically repeat an ambiguous POST
 
 Example request:
 
@@ -830,6 +957,33 @@ Important note / 重要说明:
 - schedule CRUD events
 - schedule execution events
 
+### 6.11a `GET /v1/chat/threads/{thread_id}/transactions`
+
+- Returns Think-life transaction state for the public thread, including `transactions`, `active_transaction_id`, `cpu_transaction_id`, and `transaction_count`.
+- 返回该公开线程的 Think-life 事务状态。
+
+### 6.11b `GET /v1/chat/threads/{thread_id}/scene`
+
+Query parameters:
+
+| Param | Type | Default | Description |
+| --- | --- | --- | --- |
+| `limit` | `integer` | `40` | Maximum entries requested for this page |
+| `before_seq` | `integer \| null` | `null` | Return entries before this scene sequence |
+| `since_flush` | `boolean` | `true` | Limit the scene to entries after the current conversation's last flush boundary |
+
+The response is a chronological Scene log with `entries` and pagination state. Use the returned entry sequence with `before_seq`; do not confuse Scene entry sequences with run/thread SSE sequences.
+
+### 6.11c `POST /v1/chat/threads/{thread_id}/stimuli`
+
+Queues a user stimulus and returns `202`. Request fields are `kind` (currently defaults to `user_message`), `text`, optional `attachments`, and optional `priority_override`. At least `text` or one effective attachment is required. Acceptance means queued, not completed; observe the thread stream and runtime state for subsequent processing.
+
+### 6.11d `POST /v1/chat/threads/{thread_id}/thinking/stop`
+
+Requests a best-effort stop for the active thread, clears queued Think-life work, and returns the resulting thread/runtime snapshot. Authorization is thread-owner scoped when auth is enabled.
+
+This is thread-wide control, not `run_id` cancellation. It can race with natural completion, may affect queued work as well as the active run, and does not introduce a `canceled` run status. See section 4.8.
+
 ### 6.12 `GET /v1/chat/threads/{thread_id}/memory/state`
 
 用途 / Purpose:
@@ -902,7 +1056,9 @@ Success response fields:
 | `success` | `boolean` | flush 是否成功 | Whether flush succeeded |
 | `thread_id` | `string` | 公开线程 ID | Public thread id |
 | `flush_reason` | `string` | flush reason | Flush reason |
-| `status` | `string` | `noop` / `written` / `failed` | Flush status |
+| `status` | `string` | `noop` / `written` / `failed` / `busy` | Flush status |
+| `retryable` | `boolean \| null` | `busy` 时表示客户端可稍后重试 | For `busy`, indicates that the client may retry later |
+| `block_reason` | `string \| null` | 阻止 flush 的运行时原因 | Runtime reason that prevented the flush |
 | `message` | `string \| null` | 无待写回时的提示文本 | Message for noop cases |
 | `rounds_flushed` | `integer` | 本次写入轮次数 | Number of flushed rounds |
 | `turns_flushed` | `integer` | 本次写入 turn 数 | Number of flushed turns |
@@ -913,6 +1069,7 @@ Success response fields:
 Notes / 说明:
 
 - if there are no pending rounds, the endpoint returns `success: true` and `status: "noop"`
+- if the thread is processing or still owes a user-visible reply, the endpoint returns HTTP `409`, `status: "busy"`, and does not close the transaction
 - flush progress is also emitted to the thread SSE stream
 
 ### 6.15 `GET /v1/chat/dialogues`
@@ -1062,15 +1219,6 @@ Success response fields:
 | `items` | `array[ScheduleItem]` | 日程列表 | Schedule items |
 | `heartbeat` | `ScheduleHeartbeat` | 当前心跳状态摘要 | Current heartbeat summary |
 
-### 6.17a `GET /v1/chat/threads/{thread_id}/scene`
-
-- 返回跨事务、按时间序的 Scene 日志（分页 `limit` / `before_seq`）
-- Returns chronological Scene log across transactions
-
-### 6.17b `POST /v1/chat/threads/{thread_id}/stimuli`
-
-- **202**：用户消息入队；后台 `ThreadDrainer` 消费
-
 ### 6.18 `GET /v1/chat/threads/{thread_id}/schedules/heartbeat`
 
 用途 / Purpose:
@@ -1122,6 +1270,7 @@ Important note / 重要说明:
 - lookup is owner-scoped by `schedule_id`
 - the wrapper `thread_id` comes from the request path
 - the actual bound thread is `item.thread_id`
+- a path/item thread mismatch is currently allowed and does not produce `403` or `404`; `404` means the schedule id is absent or not visible in the current owner scope
 
 Success response:
 
@@ -1131,7 +1280,7 @@ Success response:
   "item": {
     "schedule_id": "sch_abc123",
     "thread_id": "work-thread",
-    "title": "Weekly report",
+    "text": "The scheduled weekly report time has arrived; submit the report now.",
     "status": "pending"
   }
 }
@@ -1141,8 +1290,8 @@ Success response:
 
 用途 / Purpose:
 
-- 创建一个聊天提醒型日程
-- Create a chat-prompt schedule
+- 创建一个会在未来进入感知层的时间刺激
+- Create a time-triggered stimulus that will enter the perception layer later
 
 Auth / 鉴权:
 
@@ -1152,20 +1301,16 @@ Request body:
 
 | Field | Type | Required | 中文说明 | English description |
 | --- | --- | --- | --- | --- |
-| `title` | `string` | conditional | 标题；与 `prompt` 至少二选一 | Title; required unless `prompt` or `source_text` is present |
-| `prompt` | `string` | conditional | 到点时发给 chat 的提示文本 | Prompt sent to chat when due |
+| `text` | `string` | yes | 到点时发送给智能体的自包含系统式信息 | Self-contained, system-like information delivered to the agent when due |
 | `due_at` | `string` | yes | ISO datetime 字符串 | ISO datetime string |
 | `timezone_name` | `string` | no | 时区名；无 offset 时间会按该时区解释 | Timezone name used when `due_at` has no offset |
-| `original_time_text` | `string` | no | 原始时间文本 | Original time text |
-| `source_text` | `string` | no | 来源文本 | Source text |
-| `metadata` | `object` | no | 扩展元数据 | Extra metadata |
 
 Rules / 规则:
 
-- if both `title` and `prompt` are empty, the server also tries `source_text`
+- `text` describes the state at activation time: say that the scheduled time has arrived and what context now matters
+- `text` must not copy the user's original order or depend on relative wording such as “tomorrow”
 - `due_at` must be a valid ISO datetime string
 - if `due_at` has no timezone offset, the server applies `timezone_name`
-- the created `action_type` is fixed as `chat_prompt`
 
 Success response:
 
@@ -1176,7 +1321,7 @@ Success response:
   "item": {
     "schedule_id": "sch_abc123",
     "thread_id": "demo-thread",
-    "title": "交周报",
+    "text": "预定的周报提交时间已到，请检查并提交本周周报。",
     "status": "pending",
     "due_at_utc": "2026-04-06T01:30:00Z",
     "due_at_local": "2026-04-06T09:30:00+08:00",
@@ -1186,40 +1331,7 @@ Success response:
 }
 ```
 
-### 6.21 `PATCH /v1/chat/threads/{thread_id}/schedules/{schedule_id}`
-
-用途 / Purpose:
-
-- 更新日程字段
-- Update schedule fields
-
-Auth / 鉴权:
-
-- same auth visibility as the current user
-
-Request body:
-
-All fields are optional.
-
-所有字段都可选。
-
-| Field | Type | 中文说明 | English description |
-| --- | --- | --- | --- |
-| `title` | `string` | 新标题 | New title |
-| `prompt` | `string` | 更新 action payload 里的 prompt | Update the prompt inside action payload |
-| `due_at` | `string` | 新到期时间 | New due datetime |
-| `timezone_name` | `string` | 新时区 | New timezone |
-| `original_time_text` | `string` | 新的原始时间文本 | New original time text |
-| `source_text` | `string` | 新来源文本 | New source text |
-| `metadata` | `object` | 要 merge 的 metadata | Metadata patch to merge |
-
-Rules / 规则:
-
-- if `prompt` is present, it cannot be empty
-- if `due_at` is updated, the server normalizes timezone fields again
-- update is owner-scoped by `schedule_id`
-
-### 6.22 `DELETE /v1/chat/threads/{thread_id}/schedules/{schedule_id}`
+### 6.21 `DELETE /v1/chat/threads/{thread_id}/schedules/{schedule_id}`
 
 用途 / Purpose:
 
@@ -1233,7 +1345,6 @@ Auth / 鉴权:
 Behavior / 行为:
 
 - the item status becomes `canceled`
-- `metadata.canceled_at` is recorded
 - cancellation is owner-scoped by `schedule_id`
 
 Success response:
@@ -1275,6 +1386,9 @@ Important notes / 重要说明:
 
 - `run_completed.payload.result` already contains the final business result, so many clients do not need an extra `GET /v1/chat/runs/{run_id}` call
 - `tool_call` and `tool_result` are live traces from direct capability invocation; planning events are published on the thread stream
+- `assistant_message` is a final answer, not a text delta; there is no progressive answer event in the current contract
+- after either terminal event, the stream closes once all queued events have been sent
+- `run_failed.payload.error` is diagnostic text and may contain sensitive backend detail; do not render or send it to browser telemetry unchanged
 
 ### 7.2 Thread stream events / Thread 级事件
 
@@ -1289,9 +1403,8 @@ The following event types may appear on `GET /v1/chat/threads/{thread_id}/events
 | `flush_stage` | flush 各阶段进度 | Flush stage progress | `operation_id`, `thread_id`, `flush_reason`, `stage`, `stage_label`, `status`, optional `result`, optional `error` |
 | `flush_completed` | flush 完成 | Flush completed | `operation_id`, `thread_id`, `flush_reason`, `success`, `status`, `rounds_flushed`, `turns_flushed`, optional `memory_write`, optional `error`, `thread_state` |
 | `schedule_created` | 手动创建日程 | Schedule created | `thread_id`, `schedule` |
-| `schedule_updated` | 手动更新日程 | Schedule updated | `thread_id`, `schedule` |
 | `schedule_canceled` | 手动取消日程 | Schedule canceled | `thread_id`, `schedule` |
-| `schedule_due` | 心跳发现到点任务 | A due schedule was leased by heartbeat | `thread_id`, `schedule_id`, `title`, `status`, `due_at_utc`, `timezone_name` |
+| `schedule_due` | 心跳发现到点任务 | A due schedule was leased by heartbeat | `thread_id`, `schedule_id`, `text`, `status`, `due_at_utc`, `timezone_name` |
 | `schedule_queued` | 到点任务进入 Think-life inbox | Due schedule enqueued in the Think-life inbox | `thread_id`, `schedule_id`, `run_id`, `stimulus_id`, `pending_count`, `runtime_phase` |
 | `schedule_started` | 到点任务开始执行 | Due schedule execution started | `thread_id`, `schedule_id`, `run_id` |
 | `schedule_completed` | 到点任务执行完成 | Due schedule execution completed | `thread_id`, `schedule_id`, `run_id`, `status`, `answer` |
@@ -1301,11 +1414,16 @@ The following event types may appear on `GET /v1/chat/threads/{thread_id}/events
 | `scene_entry_appended` | Scene 时间轴新增条目 | Scene timeline entry appended | `seq`, `occurred_at`, `entry_type`, `actor`, `text`, `transaction_id` |
 | `thread_runtime_updated` | 单线程运行时 busy/队列快照 | Per-thread runtime busy/queue snapshot | `thread_runtime` |
 | `thinking_*` | 思考层规划事件 | Thinking-layer planning events | varies |
+| `turn_failed` | 刺激处理在交付回复前失败 | Stimulus processing failed before reply delivery | `thread_id`, `conversation_id`, `transaction_id`, `stimulus_id`, `error`, `retryable` |
 
 Notes / 说明:
 
 - thread streams do not automatically terminate like run streams
 - `thread_id` inside thread SSE payload is converted back to the public thread id
+- `thinking_completed` means planning completed; only `reply_emitted` with `finalize=true` confirms user-visible delivery
+- idle flushing is stimulus-armed and is deferred while stimuli are queued, executing, awaiting feedback, or awaiting a user-visible reply
+- unknown `type` values are backward-compatible additions and must be ignored after optional sanitized telemetry
+- both stream types use `after_seq`, not the `Last-Event-ID` request header; see the exact recovery algorithm in section 4.7
 
 ## 8. Testing Recommendations / 测试建议
 
@@ -1340,6 +1458,7 @@ Use the request collection in:
 请配合下面这个请求集合文件使用：
 
 - `docs/chat_api/testing.http`
+- `docs/chat_api/browser_client.ts` for browser-safe authenticated SSE and reconnect behavior
 
 It contains ready-to-edit requests for:
 
@@ -1349,7 +1468,7 @@ It contains ready-to-edit requests for:
 - create run / get run
 - memory state / mode / flush
 - dialogue list / detail
-- schedule list / create / update / cancel
+- schedule list / create / cancel
 
 ## 9. Change Notes / 变更说明
 
@@ -1364,3 +1483,6 @@ Compared with the old `docs/chat_api.md`, the new reference explicitly documents
 - thread events versus run events
 - schedule heartbeat and owner-scoped schedule behavior
 - current request/response shapes from the actual implementation
+- browser-safe SSE authentication and TypeScript reference code
+- explicit replay, deduplication, keep-alive, terminal-event, and final-only answer rules
+- honest production gaps for structured errors, idempotency, run cancellation, data minimization, and operational limits

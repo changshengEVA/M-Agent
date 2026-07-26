@@ -1,0 +1,19 @@
+name: deep_recall
+version: 1
+category: episode_query
+builder: m_agent.systems.tools.default.capabilities.recall:_build_deep_recall_tool
+descriptions:
+  en: "Function: complex episodic lookup when the system lacks information (compare, count, multi-hop, summarize, temporal chains). Needs: one complete question."
+  zh: "功能：在系统缺少信息时进行复杂情节记忆检索（比较、计数、多跳、总结、时间链）。所需：一个完整问题。"
+input:
+  mode: instruction_arg
+  instruction_arg: question
+  schema: inferred_from_tool
+output:
+  schema: builtins:dict
+  feedback_projector: m_agent.runtime.think_life.scheduler.execution_feedback:feedback_summary_from_tool_history
+  memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
+policy:
+  side_effect: read
+dependencies:
+  - episodic_backend

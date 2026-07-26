@@ -77,6 +77,8 @@ def extract_last_tool_step(tool_history: Any) -> Dict[str, Any]:
             facts["answer"] = str(
                 result.get("answer", result.get("message", "")) or ""
             ).strip() or None
+            if "finalize" in result:
+                facts["finalize"] = bool(result.get("finalize"))
             facts["needs_clarification"] = bool(result.get("needs_clarification"))
             facts["partial"] = bool(result.get("partial"))
             stage = str(result.get("stage", "") or "").strip()
@@ -122,6 +124,8 @@ def feedback_summary_from_tool_history(tool_history: Any) -> str:
         parts.append(f"content_chars={step['content_chars']}")
     if step.get("success") is False:
         parts.append("success=false")
+    if step.get("finalize") is not None:
+        parts.append(f"finalize={str(bool(step['finalize'])).lower()}")
     if step.get("needs_clarification") is True:
         parts.append("needs_clarification=true")
     if step.get("partial") is True:
@@ -275,7 +279,7 @@ def build_completion_nudge_message(block_reason: str) -> str:
         "schedule_create_created_only_one": (
             "[System gate] schedule_create only created count=1, but the user asked for a multi-day "
             "or repeating schedule. Do NOT answer_directly. Plan mode=execute with tool_name=schedule_create "
-            "to create the next single item (due_at + action per call), or schedule_query to verify."
+            "to create the next single item (due_at + system-like text per call), or schedule_query to verify."
         ),
         "schedule_query_empty_while_creating": (
             "[System gate] Schedules are not created yet for this multi-step request. "

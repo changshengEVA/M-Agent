@@ -27,6 +27,10 @@ def _build_reply_to_user_tool(context: ControllerCapabilityContext, description:
         scene_writer = hooks.get("scene_writer")
         transaction_id = str(hooks.get("transaction_id", "") or "").strip()
         delegate_id = str(hooks.get("delegate_id", "") or "").strip()
+        conversation_id = (
+            str(hooks.get("conversation_id", "") or "").strip()
+            or context.active_thread_id
+        )
 
         if callable(on_reply):
             on_reply(text, finalize=bool(finalize))
@@ -40,7 +44,7 @@ def _build_reply_to_user_tool(context: ControllerCapabilityContext, description:
             )
 
             scene_writer.append(
-                context.active_thread_id,
+                conversation_id,
                 SceneEntry(
                     seq=0,
                     occurred_at=_now_iso(),

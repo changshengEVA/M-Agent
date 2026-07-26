@@ -69,13 +69,11 @@ class ScheduleAgent:
         defaults = {
             "query_limit_default": 10,
             "query_limit_max": 50,
-            "target_candidate_limit": 5,
         }
         if isinstance(raw, dict):
             defaults.update(raw)
         defaults["query_limit_default"] = max(1, int(defaults.get("query_limit_default", 10) or 10))
         defaults["query_limit_max"] = max(1, int(defaults.get("query_limit_max", 50) or 50))
-        defaults["target_candidate_limit"] = max(1, int(defaults.get("target_candidate_limit", 5) or 5))
         return defaults
 
     def handle_create_command(
@@ -83,13 +81,13 @@ class ScheduleAgent:
         *,
         thread_id: str,
         due_at: str,
-        action: str,
+        text: str,
         owner_id: Optional[str] = None,
         timezone_name: Optional[str] = None,
         now_context: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         safe_due_at = str(due_at or "").strip()
-        safe_action = str(action or "").strip()
+        safe_text = str(text or "").strip()
         if not safe_due_at:
             return self._result(
                 success=False,
@@ -98,12 +96,12 @@ class ScheduleAgent:
                 answer="请提供 due_at（ISO-8601 时间）。",
                 needs_clarification=True,
             )
-        if not safe_action:
+        if not safe_text:
             return self._result(
                 success=False,
                 tool="schedule_create",
                 action="create",
-                answer="请提供 action（到点要做的具体动作）。",
+                answer="请提供 text：日程到期时发送给智能体的、自包含的系统式刺激信息。",
                 needs_clarification=True,
             )
 
@@ -128,34 +126,18 @@ class ScheduleAgent:
                 },
             )
 
-        title = safe_action
-        source_text = f"{safe_due_at} {safe_action}".strip()
-        action_prompt = title
         item = self.service.create_schedule(
             owner_id=scope["owner_id"],
             thread_id=scope["thread_id"],
-            title=title,
             due_at_utc=parsed_due.due_local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
             timezone_name=effective_timezone,
-            original_time_text=parsed_due.matched_text or safe_due_at,
-            action_type="chat_prompt",
-            action_payload={
-                "prompt": action_prompt,
-                "source": "schedule",
-                "hidden_context": {
-                    "created_from_due_at": safe_due_at,
-                    "created_from_action": safe_action,
-                    "trigger_kind": "time_due",
-                },
-            },
-            source_text=source_text,
-            metadata={"schedule_kind": "time_due"},
+            text=safe_text,
         )
         serialized = self.service.serialize_item(item)
-        answer = f"已创建日程：{serialized['due_display']} {serialized['title']}。"
+        answer = f"已创建日程：{serialized['due_display']} {serialized['text']}。"
         if parsed_due.assumed_date:
             answer += " 我默认使用了最近的这个日期。"
-        partial = self._text_looks_bulk(safe_action)
+        partial = self._text_looks_bulk(safe_text)
         if partial:
             answer += " 本次仅创建 1 条日程；若用户要求多条/重复，请继续逐条创建。"
         return self._result(
@@ -299,7 +281,6 @@ class ScheduleAgent:
                 owner_id=scope["owner_id"],
                 thread_id=None,
                 schedule_id=safe_id,
-                source_text=f"schedule_delete:{safe_id}",
             )
         except FileNotFoundError:
             return self._result(
@@ -315,7 +296,7 @@ class ScheduleAgent:
             success=True,
             tool="schedule_delete",
             action="delete",
-            answer=f"已删除日程：{serialized['due_display']} {serialized['title']}。",
+            answer=f"已删除日程：{serialized['due_display']} {serialized['text']}。",
             item=serialized,
             count=1,
             schedule_id=serialized["schedule_id"],

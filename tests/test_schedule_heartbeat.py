@@ -69,14 +69,15 @@ class _HeartbeatRuntime:
 
     @staticmethod
     def _schedule_prompt(schedule_item: ScheduleItem) -> str:
-        return str(schedule_item.action_payload.get("prompt") or schedule_item.title)
+        return schedule_item.text
 
     @staticmethod
     def _schedule_system_context(schedule_item: ScheduleItem) -> dict[str, Any]:
         return {
             "trigger_source": "schedule",
             "schedule_id": schedule_item.schedule_id,
-            "action_payload": dict(schedule_item.action_payload),
+            "due_at_utc": schedule_item.due_at_utc,
+            "timezone_name": schedule_item.timezone_name,
         }
 
     @staticmethod
@@ -85,6 +86,25 @@ class _HeartbeatRuntime:
 
     def shutdown(self) -> None:
         return None
+
+
+class _HeartbeatUserAccess:
+    def __init__(self, runtime: _HeartbeatRuntime) -> None:
+        self.runtime = runtime
+        self.user = SimpleNamespace(
+            username="alice",
+            canonical_thread_id="alice-thread",
+        )
+
+    def list_usernames(self) -> list[str]:
+        return ["alice"]
+
+    def get_user(self, *, username: str):
+        return self.user if username == "alice" else None
+
+    def get_runtime(self, *, user):
+        assert user is self.user
+        return self.runtime
 
 
 def _build_schedule_agent(tmp_path: Path) -> ScheduleAgent:
@@ -99,7 +119,6 @@ def _build_schedule_agent(tmp_path: Path) -> ScheduleAgent:
                 "execution": {
                     "query_limit_default": 10,
                     "query_limit_max": 50,
-                    "target_candidate_limit": 5,
                 },
             },
             allow_unicode=True,
@@ -121,14 +140,9 @@ def test_heartbeat_queues_due_schedule(tmp_path: Path) -> None:
     created = schedule_agent.service.create_schedule(
         owner_id=ANONYMOUS_OWNER_ID,
         thread_id="demo-thread",
-        title="team sync",
         due_at_utc=_past_due_iso(),
         timezone_name="Asia/Shanghai",
-        original_time_text="now",
-        action_type="chat_prompt",
-        action_payload={"prompt": "team sync"},
-        source_text="team sync",
-        metadata={},
+        text="The scheduled team sync time has arrived; prepare to join the meeting.",
     )
 
     coordinator = ScheduleHeartbeatCoordinator(
@@ -148,7 +162,7 @@ def test_heartbeat_queues_due_schedule(tmp_path: Path) -> None:
     assert queued["thread_id"] == "demo-thread"
     assert queued["conversation_id"] == "conversation-demo-thread"
     assert queued["schedule_id"] == created.schedule_id
-    assert queued["text"] == "team sync"
+    assert queued["text"] == "The scheduled team sync time has arrived; prepare to join the meeting."
     assert queued["payload"]["trigger_source"] == "schedule"
     assert result["leased"] == 1
     assert result["started"] == 1
@@ -161,6 +175,43 @@ def test_heartbeat_queues_due_schedule(tmp_path: Path) -> None:
     assert "schedule_completed" not in event_types
 
 
+def test_authenticated_heartbeat_routes_legacy_schedule_to_canonical_thread(tmp_path: Path) -> None:
+    schedule_agent = _build_schedule_agent(tmp_path)
+    runtime = _HeartbeatRuntime(schedule_agent, config_path=tmp_path / "chat.yaml")
+    user_access = _HeartbeatUserAccess(runtime)
+    events: list[tuple[str, str, dict[str, Any]]] = []
+    created = schedule_agent.service.create_schedule(
+        owner_id="alice",
+        thread_id="alice::client-supplied-thread",
+        due_at_utc=_past_due_iso(),
+        timezone_name="Asia/Shanghai",
+        text="Route this legacy reminder through the account's canonical thread.",
+    )
+    coordinator = ScheduleHeartbeatCoordinator(
+        service_runtime=runtime,
+        user_access=user_access,
+        thread_event_sink=lambda thread_id, event_type, payload: events.append(
+            (thread_id, event_type, dict(payload))
+        ),
+        autostart=False,
+    )
+
+    result = coordinator.beat_once()
+
+    assert result["leased"] == 1
+    assert result["started"] == 1
+    assert len(runtime.think_life.enqueued_schedules) == 1
+    queued = runtime.think_life.enqueued_schedules[0]
+    assert queued["thread_id"] == "alice::alice-thread"
+    assert queued["conversation_id"] == "conversation-alice::alice-thread"
+    assert {thread_id for thread_id, _, _ in events} == {"alice::alice-thread"}
+    assert {payload["thread_id"] for _, _, payload in events} == {"alice-thread"}
+    stored = schedule_agent.store.find_by_id(created.schedule_id, owner_id="alice")
+    assert stored is not None
+    assert stored.thread_id == "alice::client-supplied-thread"
+    assert stored.status == "leased"
+
+
 def test_heartbeat_enqueues_while_thread_lock_is_held(tmp_path: Path) -> None:
     schedule_agent = _build_schedule_agent(tmp_path)
     runtime = _HeartbeatRuntime(schedule_agent, config_path=tmp_path / "chat.yaml")
@@ -168,14 +219,9 @@ def test_heartbeat_enqueues_while_thread_lock_is_held(tmp_path: Path) -> None:
     created = schedule_agent.service.create_schedule(
         owner_id=ANONYMOUS_OWNER_ID,
         thread_id="demo-thread",
-        title="lock-safe enqueue",
         due_at_utc=_past_due_iso(),
         timezone_name="Asia/Shanghai",
-        original_time_text="now",
-        action_type="chat_prompt",
-        action_payload={"prompt": "lock-safe enqueue"},
-        source_text="lock-safe enqueue",
-        metadata={},
+        text="The scheduled lock-safe enqueue check is now due.",
     )
 
     coordinator = ScheduleHeartbeatCoordinator(
@@ -183,7 +229,6 @@ def test_heartbeat_enqueues_while_thread_lock_is_held(tmp_path: Path) -> None:
         user_access=None,
         thread_event_sink=lambda thread_id, event_type, payload: events.append((thread_id, event_type, dict(payload))),
         autostart=False,
-        enqueue_retry_seconds=7,
     )
 
     thread_lock = _get_thread_lock("demo-thread")

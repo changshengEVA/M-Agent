@@ -6,6 +6,7 @@
 @runId = run_xxx
 @dialogueId = chat_xxx
 @scheduleId = sch_xxx
+@afterSeq = 0
 
 ### Health
 GET {{baseUrl}}/healthz
@@ -80,17 +81,23 @@ GET {{baseUrl}}/v1/chat/runs/{{runId}}
 Authorization: Bearer {{accessToken}}
 
 ### SSE note
-### Open in browser, curl, or an SSE client.
+### Use streaming fetch() in an authenticated browser; native EventSource cannot set Authorization.
+### Never put accessToken in the URL. The server ignores Last-Event-ID; reconnect with after_seq.
 ### curl -N -H "Authorization: Bearer <token>" "{{baseUrl}}/v1/chat/runs/{{runId}}/events"
 
-GET {{baseUrl}}/v1/chat/runs/{{runId}}/events
+GET {{baseUrl}}/v1/chat/runs/{{runId}}/events?after_seq={{afterSeq}}
 Authorization: Bearer {{accessToken}}
 
 ### Thread events
 ### This stream is for memory flush and schedule lifecycle events.
 ### curl -N -H "Authorization: Bearer <token>" "{{baseUrl}}/v1/chat/threads/{{threadId}}/events?after_seq=0"
 
-GET {{baseUrl}}/v1/chat/threads/{{threadId}}/events?after_seq=0
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/events?after_seq={{afterSeq}}
+Authorization: Bearer {{accessToken}}
+
+### Best-effort thread-wide stop (not run-specific cancellation)
+
+POST {{baseUrl}}/v1/chat/threads/{{threadId}}/thinking/stop
 Authorization: Bearer {{accessToken}}
 
 ### Thread memory
@@ -164,34 +171,15 @@ Authorization: Bearer {{accessToken}}
 Content-Type: application/json
 
 {
-  "title": "Weekly report",
-  "prompt": "Remind me to submit the weekly report",
+  "text": "The scheduled weekly report submission time has arrived; submit the report now.",
   "due_at": "2026-04-06T09:30",
-  "timezone_name": "Asia/Shanghai",
-  "source_text": "manual testing create"
+  "timezone_name": "Asia/Shanghai"
 }
 
 ###
 
 GET {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules/{{scheduleId}}
 Authorization: Bearer {{accessToken}}
-
-###
-
-PATCH {{baseUrl}}/v1/chat/threads/{{threadId}}/schedules/{{scheduleId}}
-Authorization: Bearer {{accessToken}}
-Content-Type: application/json
-
-{
-  "title": "Project weekly report",
-  "prompt": "Remind me to submit the project weekly report",
-  "due_at": "2026-04-06T10:15",
-  "timezone_name": "Asia/Shanghai",
-  "source_text": "manual testing update",
-  "metadata": {
-    "updated_by": "testing.http"
-  }
-}
 
 ###
 

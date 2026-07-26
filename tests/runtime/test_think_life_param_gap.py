@@ -1,12 +1,16 @@
 """Think-life param gap short-circuit in delegate loop."""
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 from m_agent.layers.execution.contracts import ParamFillResult
 from m_agent.layers.perception.contracts import PerceptionInput, Stimulus
 from m_agent.runtime.think_life.config import ThinkLifeConfig
 from m_agent.runtime.think_life.contracts import (
+    SceneActor,
+    SceneEntry,
+    SceneEntryType,
     StimulusEnvelope,
     StimulusKind,
     TransactionKind,
@@ -90,3 +94,177 @@ def test_delegate_and_wait_submits_feedback_without_invoke_on_param_gap() -> Non
     history = call_kwargs["tool_history"]
     assert history[0]["result"]["stage"] == "param_fill"
     assert history[0]["result"]["tool_invoked"] is False
+
+
+def test_delegate_passes_scene_conversation_id_to_reply_tool() -> None:
+    execution_agent = MagicMock()
+    execution_agent.invoke_tool_direct.return_value.tool_history = []
+    execution_agent.invoke_tool_direct.return_value.summary = ""
+    loop = _minimal_loop(execution_agent=execution_agent)
+
+    record = loop.registry.create(
+        thread_id="owner::thread",
+        conversation_id="owner::thread::7",
+        kind=TransactionKind.USER_TASK,
+    )
+    loop.registry.transition(record.transaction_id, TransactionStatus.RUNNING)
+    record = loop.registry.get(record.transaction_id) or record
+    stimulus = StimulusEnvelope(
+        stimulus_id="s-reply",
+        thread_id=record.thread_id,
+        conversation_id=record.conversation_id,
+        stimulus=Stimulus(kind=StimulusKind.USER_MESSAGE, text="hello", payload={}),
+        occurred_at="2026-01-01T00:00:00Z",
+    )
+    perception = PerceptionInput(
+        thread_id=record.thread_id,
+        conversation_id=record.conversation_id,
+        transaction_id=record.transaction_id,
+        stimulus=Stimulus(kind=StimulusKind.USER_MESSAGE, text="hello"),
+    )
+
+    loop._delegate_and_wait(
+        record,
+        target=DelegateTarget(
+            tool_name="reply_to_user",
+            for_user_reply=True,
+            user_reply_text="Hello back",
+        ),
+        pending_user_request="hello",
+        perception=perception,
+        stimulus=stimulus,
+    )
+
+    hooks = execution_agent.invoke_tool_direct.call_args.kwargs["think_life_hooks"]
+    assert hooks["conversation_id"] == "owner::thread::7"
+
+
+def test_finalized_reply_submits_feedback_instead_of_completing_task() -> None:
+    execution_agent = MagicMock()
+
+    def _invoke_reply(**kwargs):
+        kwargs["think_life_hooks"]["on_reply"]("The answer", finalize=True)
+        return SimpleNamespace(
+            tool_history=[
+                {
+                    "tool_name": "reply_to_user",
+                    "result": {
+                        "success": True,
+                        "message": "The answer",
+                        "finalize": True,
+                    },
+                }
+            ],
+            summary="",
+        )
+
+    execution_agent.invoke_tool_direct.side_effect = _invoke_reply
+    loop = _minimal_loop(execution_agent=execution_agent)
+    record = loop.registry.create(thread_id="t1", kind=TransactionKind.USER_TASK)
+    loop.registry.transition(record.transaction_id, TransactionStatus.RUNNING)
+    record = loop.registry.get(record.transaction_id) or record
+    stimulus = StimulusEnvelope(
+        stimulus_id="s-reply-feedback",
+        thread_id="t1",
+        conversation_id=record.conversation_id,
+        stimulus=Stimulus(kind=StimulusKind.USER_MESSAGE, text="answer me", payload={}),
+        occurred_at="2026-01-01T00:00:00Z",
+    )
+    perception = PerceptionInput(
+        thread_id="t1",
+        conversation_id=record.conversation_id,
+        transaction_id=record.transaction_id,
+        stimulus=Stimulus(kind=StimulusKind.USER_MESSAGE, text="answer me"),
+    )
+
+    result = loop._delegate_and_wait(
+        record,
+        target=DelegateTarget(
+            tool_name="reply_to_user",
+            for_user_reply=True,
+            user_reply_text="The answer",
+        ),
+        pending_user_request="answer me",
+        perception=perception,
+        stimulus=stimulus,
+    )
+
+    assert result["waiting_feedback"] is True
+    assert result["reply_finalized"] is True
+    assert result["replies"] == ["The answer"]
+    loop.gateway.submit_execution_feedback.assert_called_once()
+    feedback = loop.gateway.submit_execution_feedback.call_args.kwargs
+    assert feedback["tool_history"][0]["tool_name"] == "reply_to_user"
+    assert "finalize=true" in feedback["summary"]
+    current = loop.registry.get(record.transaction_id)
+    assert current is not None
+    assert current.status == TransactionStatus.WAITING_EXECUTION
+
+
+def test_schedule_feedback_completion_recovers_previously_emitted_reply() -> None:
+    loop = _minimal_loop(execution_agent=MagicMock())
+    lifecycle = MagicMock()
+    loop._schedule_lifecycle = lifecycle
+    record = loop.registry.create(
+        thread_id="t1",
+        conversation_id="t1::0",
+        kind=TransactionKind.SCHEDULE,
+    )
+    record.correlation.schedule_owner_id = "owner"
+    record.correlation.schedule_id = "schedule-1"
+    record.correlation.schedule_run_id = "run-1"
+    loop.scene_reader.entries_since_flush.return_value = [
+        SceneEntry(
+            seq=1,
+            occurred_at="2026-01-01T00:00:00Z",
+            entry_type=SceneEntryType.REPLY,
+            actor=SceneActor.ASSISTANT,
+            text="Reminder delivered",
+            transaction_id=record.transaction_id,
+        )
+    ]
+
+    loop._notify_schedule_finished(
+        record,
+        {"success": True, "completed": True, "silent": True},
+    )
+
+    call = lifecycle.on_schedule_processing_finished.call_args.kwargs
+    assert call["answer"] == "Reminder delivered"
+
+
+def test_processing_failure_marks_transaction_failed_and_emits_terminal_event() -> None:
+    loop = _minimal_loop(execution_agent=MagicMock())
+    events: list[tuple[str, dict]] = []
+    loop._event_emitter = lambda event_type, payload: events.append(
+        (event_type, payload)
+    )
+    record = loop.registry.create(thread_id="t1", kind=TransactionKind.USER_TASK)
+    loop.registry.transition(record.transaction_id, TransactionStatus.RUNNING)
+    stimulus = StimulusEnvelope(
+        stimulus_id="s-failed",
+        thread_id="t1",
+        conversation_id=record.conversation_id,
+        stimulus=Stimulus(kind=StimulusKind.USER_MESSAGE, text="hello", payload={}),
+        occurred_at="2026-01-01T00:00:00Z",
+    )
+
+    loop._handle_processing_failure(stimulus, record, RuntimeError("boom"))
+
+    failed = loop.registry.get(record.transaction_id)
+    assert failed is not None
+    assert failed.status == TransactionStatus.FAILED
+    assert failed.last_error == "boom"
+    assert events == [
+        (
+            "turn_failed",
+            {
+                "thread_id": "t1",
+                "conversation_id": record.conversation_id,
+                "transaction_id": record.transaction_id,
+                "stimulus_id": "s-failed",
+                "error": "boom",
+                "retryable": False,
+            },
+        )
+    ]

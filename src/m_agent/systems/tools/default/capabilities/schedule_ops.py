@@ -18,23 +18,29 @@ def _build_schedule_create_tool(context: ControllerCapabilityContext, descriptio
             str,
             Field(description="ISO-8601 due time (UTC Z or offset), e.g. 2026-05-30T08:00:00+08:00"),
         ],
-        action: Annotated[
+        text: Annotated[
             str,
-            Field(description="Concrete action or reminder text at due time (becomes schedule title)"),
+            Field(
+                description=(
+                    "Self-contained, system-like information delivered to the agent when the due time arrives. "
+                    "State that the scheduled time has arrived and what context now matters; use absolute facts, "
+                    "not the user's original command or relative-time wording."
+                )
+            ),
         ],
         timezone_name: Annotated[
             Optional[str],
             Field(description="IANA timezone; omit to use configured default"),
         ] = None,
     ) -> Dict[str, Any]:
-        """Create one schedule with explicit due time and action."""
+        """Create one schedule with an explicit due time and future stimulus text."""
 
         effective_timezone_name = (
             str(timezone_name or context.tool_default("schedule_create", "timezone_name") or "").strip() or None
         )
         params = {
             "due_at": str(due_at or "").strip(),
-            "action": str(action or "").strip(),
+            "text": str(text or "").strip(),
             "timezone_name": effective_timezone_name,
         }
         call_id = context.start_tool_call("schedule_create", params)
@@ -46,7 +52,7 @@ def _build_schedule_create_tool(context: ControllerCapabilityContext, descriptio
             result = context.get_schedule_agent().handle_create_command(
                 thread_id=context.active_thread_id,
                 due_at=params["due_at"],
-                action=params["action"],
+                text=params["text"],
                 timezone_name=effective_timezone_name,
                 now_context=get_current_time_context(effective_timezone_name),
             )
@@ -68,7 +74,7 @@ def _build_schedule_query_tool(context: ControllerCapabilityContext, description
             str,
             Field(
                 default="",
-                description="Optional keyword matched against title/source_text; empty matches all titles",
+                description="Optional keyword matched against schedule text or schedule id; empty matches all schedules",
             ),
         ] = "",
         start_at: Annotated[

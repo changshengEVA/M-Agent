@@ -1,0 +1,19 @@
+name: email_read
+version: 1
+category: email
+builder: m_agent.systems.tools.default.capabilities.email_ops:_build_email_read_tool
+descriptions:
+  en: "Function: read the full body of one email. Needs: message_id or thread_id copied exactly from the email_ask evidence index."
+  zh: "功能：读取一封邮件的完整正文。所需：从 email_ask 证据索引原样复制的 message_id 或 thread_id。"
+input:
+  mode: param_llm
+  schema: inferred_from_tool
+output:
+  schema: builtins:dict
+  feedback_projector: m_agent.runtime.think_life.scheduler.execution_feedback:feedback_summary_from_tool_history
+  memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
+policy:
+  side_effect: read
+dependencies:
+  - email_agent
+  - gmail_credentials

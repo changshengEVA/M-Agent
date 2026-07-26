@@ -88,13 +88,44 @@ def test_tools_default_yaml_loads_and_descriptions_resolved() -> None:
     assert path.exists(), f"missing tools yaml: {path}"
     system = load_tool_suite_system(path)
     assert isinstance(system, ToolSuiteSystem)
-    # 8 default tools enabled
+    # Built-in tools are enabled by the suite whitelist.
     assert "shallow_recall" in system.enabled
     assert "email_send" in system.enabled
-    # Per-tool descriptions pulled in from the sibling YAML.
+    # Per-tool descriptions are pulled from individual manifests.
     assert "shallow_recall" in system.runtime_descriptions
     assert "deep_recall" in system.runtime_descriptions
     assert "get_current_time" in system.runtime_descriptions
+    # Each built-in is loaded from its own executable manifest.
+    assert len(system.manifests) == 11
+    assert system.manifests["web_search"].category == "information"
+    assert system.registry.get("web_search").input_mode == "param_llm"
+    assert system.registry.get("shallow_recall").instruction_arg == "question"
+    assert "system-like text" in system.manifests["schedule_create"].descriptions["en"]
+    assert system.defaults["web_search"]["max_results"] == 5
+    assert system.defaults["web_search"]["max_calls_per_turn"] == 3
+
+
+def test_tool_manifest_rejects_instruction_mode_without_argument(tmp_path: Path) -> None:
+    from m_agent.systems.loader import SystemsConfigError
+    from m_agent.systems.tools import load_tool_capability_manifest
+
+    path = tmp_path / "broken.yaml"
+    path.write_text(
+        "\n".join(
+            [
+                "name: broken_tool",
+                "builder: m_agent.systems.tools.default.capabilities.time_context:_build_get_current_time_tool",
+                "descriptions:",
+                "  en: Broken test tool",
+                "input:",
+                "  mode: instruction_arg",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemsConfigError, match="input.instruction_arg"):
+        load_tool_capability_manifest(path)
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,36 @@
+{
+  "dialogue_id": "chat_changshengeva-changshengeva-thread_20260719_140304_027463",
+  "user_id": "changshengeva",
+  "participants": [
+    "changshengeva",
+    "Memory Assistant"
+  ],
+  "meta": {
+    "start_time": "2026-07-19T14:03:04.027463Z",
+    "end_time": "2026-07-19T14:03:08.887229Z",
+    "language": "zh",
+    "platform": "chat_api",
+    "version": 1,
+    "thread_id": "changshengeva::changshengeva-thread",
+    "source": "chat_api_thread_flush",
+    "round_count": 1,
+    "trace_summary": {
+      "tool_call_count": 0,
+      "recall_modes": []
+    }
+  },
+  "turns": [
+    {
+      "speaker": "changshengeva",
+      "text": "晚上好",
+      "timestamp": "2026-07-19T14:03:04.027463Z",
+      "turn_id": 0
+    },
+    {
+      "speaker": "Memory Assistant",
+      "text": "晚上好，主人。欢迎回来～今晚有什么需要我帮忙的吗？",
+      "timestamp": "2026-07-19T14:03:08.887229Z",
+      "turn_id": 1
+    }
+  ]
+}

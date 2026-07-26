@@ -91,7 +91,7 @@ Recall payloads need at least `answer`. Framework calls `persist_*`; they are no
 | Surface | Layer | Notes |
 |---------|-------|-------|
 | `shallow_recall` / `deep_recall` | Execution tools | `question: str` → `backend.*_recall` |
-| Tool descriptions | Execution prompt | `runtime_descriptions.yaml` |
+| Tool descriptions | Execution prompt | `tools/capabilities/<tool>.yaml` |
 | `episode_note` | Thinking output | Internal recorder; LLM does not call recorder |
 | Recall rules | Execution prompt | `chat_controller_runtime.yaml` |
 

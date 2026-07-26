@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional, cast
 
 
 SILENT_MODES = frozenset({"silent", "wait", "defer"})
@@ -32,20 +32,54 @@ def is_reply_mode(mode: Any) -> bool:
     return normalize_thinking_mode(mode) == "answer_directly"
 
 
+TaskCompletionStatus = Literal["processing", "awaiting_user", "completed"]
+TASK_COMPLETION_PROCESSING: TaskCompletionStatus = "processing"
+TASK_COMPLETION_AWAITING_USER: TaskCompletionStatus = "awaiting_user"
+TASK_COMPLETION_COMPLETED: TaskCompletionStatus = "completed"
+_TASK_COMPLETION_STATUSES = frozenset(
+    {
+        TASK_COMPLETION_PROCESSING,
+        TASK_COMPLETION_AWAITING_USER,
+        TASK_COMPLETION_COMPLETED,
+    }
+)
+
+
+def normalize_task_completion_status(
+    value: Any,
+    *,
+    default: TaskCompletionStatus = TASK_COMPLETION_PROCESSING,
+) -> TaskCompletionStatus:
+    normalized = str(value or "").strip().lower()
+    if normalized in _TASK_COMPLETION_STATUSES:
+        return cast(TaskCompletionStatus, normalized)
+    return default
+
+
 @dataclass
 class TaskState:
     """Authoritative readable task state owned by one transaction."""
 
     goal: str = ""
+    completion_status: TaskCompletionStatus = TASK_COMPLETION_PROCESSING
     completed: List[str] = field(default_factory=list)
     remaining: List[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
-        return not (str(self.goal or "").strip() or self.completed or self.remaining)
+        return not (
+            str(self.goal or "").strip()
+            or normalize_task_completion_status(self.completion_status)
+            != TASK_COMPLETION_PROCESSING
+            or self.completed
+            or self.remaining
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "goal": str(self.goal or "").strip(),
+            "completion_status": normalize_task_completion_status(
+                self.completion_status
+            ),
             "completed": list(self.completed),
             "remaining": list(self.remaining),
         }
@@ -56,16 +90,26 @@ class TaskStateUpdate:
     """Partial task-state update; ``None`` leaves a field unchanged."""
 
     goal: Optional[str] = None
+    completion_status: Optional[TaskCompletionStatus] = None
     completed: Optional[List[str]] = None
     remaining: Optional[List[str]] = None
 
     def is_empty(self) -> bool:
-        return self.goal is None and self.completed is None and self.remaining is None
+        return (
+            self.goal is None
+            and self.completion_status is None
+            and self.completed is None
+            and self.remaining is None
+        )
 
     def to_dict(self) -> Dict[str, Any]:
         data: Dict[str, Any] = {}
         if self.goal is not None:
             data["goal"] = str(self.goal or "").strip()
+        if self.completion_status is not None:
+            data["completion_status"] = normalize_task_completion_status(
+                self.completion_status
+            )
         if self.completed is not None:
             data["completed"] = list(self.completed)
         if self.remaining is not None:

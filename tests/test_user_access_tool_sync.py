@@ -104,6 +104,8 @@ def test_verify_credentials_syncs_tool_related_user_configs(tmp_path: Path) -> N
         password="password123",
         role="advanced",
     )
+    assert created_user.canonical_thread_id == "alice-thread"
+    assert created_user.to_payload()["canonical_thread_id"] == "alice-thread"
     user_chat_path = created_user.config_path
     user_runtime_path = user_chat_path.parent / "runtime" / "chat_runtime.yaml"
 
@@ -152,6 +154,7 @@ def test_verify_credentials_syncs_tool_related_user_configs(tmp_path: Path) -> N
     assert "email_read" in runtime_tools
     assert "email_send" in runtime_tools
     assert refreshed_user.updated_at != created_user.updated_at
+    assert refreshed_user.canonical_thread_id == "alice-thread"
 
 
 def test_register_user_rewrites_email_agent_config_path_for_user_dir(tmp_path: Path) -> None:
@@ -170,6 +173,8 @@ def test_register_user_rewrites_email_agent_config_path_for_user_dir(tmp_path: P
         role="basic",
     )
     user_chat = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    assert user.canonical_thread_id == "bob-thread"
+    assert user_chat["thread_id"] == "bob-thread"
     resolved_email_path = resolve_related_config_path(
         user.config_path,
         user_chat.get("email_agent_config_path"),
@@ -180,6 +185,12 @@ def test_register_user_rewrites_email_agent_config_path_for_user_dir(tmp_path: P
         user_chat.get("schedule_agent_config_path"),
     )
     assert resolved_schedule_path.exists()
+
+    user_chat["thread_id"] = "configured-public-thread"
+    _write_yaml(user.config_path, user_chat)
+    refreshed_user = store.get_user(username="bob")
+    assert refreshed_user is not None
+    assert refreshed_user.canonical_thread_id == "configured-public-thread"
 
 
 def test_get_user_config_schema_exposes_field_metadata(tmp_path: Path) -> None:
