@@ -6,9 +6,9 @@ Runtime configuration for the **M-Agent chat stack**. MemoryAgent / LoCoMo eval 
 
 **Subsystem plug-ins:**
 
-- [docs/systems-plugin-development.zh-CN.md](../docs/systems-plugin-development.zh-CN.md) — 总索引（中文）
+- [docs/systems-plugin/README.zh-CN.md](../docs/systems-plugin/README.zh-CN.md) — 总索引（中文）
 - [docs/systems-plugin/](../docs/systems-plugin/) — WM / episodic / tools 专题（各中英一篇，共 6 篇）
-- [docs/systems-plugin-development.md](../docs/systems-plugin-development.md) — index (English)
+- [docs/systems-plugin/README.md](../docs/systems-plugin/README.md) — index (English)
 
 ## Directories
 

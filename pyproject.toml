@@ -9,11 +9,24 @@ description = "M-Agent: a multi-dimensional memory agent for long-term dialogue 
 readme = "README.md"
 requires-python = ">=3.10"
 
+[project.optional-dependencies]
+acceptance = [
+    "pytest>=8.0",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+]
+
+[project.scripts]
+m-agent-acceptance = "m_agent.acceptance.cli:main"
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"m_agent.acceptance" = ["ui/*.html", "ui/*.css", "ui/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -24,4 +37,5 @@ markers = [
     "contract: api contract tests",
     "e2e: end-to-end flow tests",
     "slow: long-running tests",
+    "acceptance: deterministic runtime semantic acceptance tests",
 ]

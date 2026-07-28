@@ -1,6 +1,6 @@
 # Episodic Subsystem — Plug-in Guide
 
-> 中文版：[episodic.zh-CN.md](./episodic.zh-CN.md) · Index: [systems-plugin-development.md](../systems-plugin-development.md)
+> 中文版：[episodic.zh-CN.md](./episodic.zh-CN.md) · Index: [README.md](./README.md)
 
 ## Role
 

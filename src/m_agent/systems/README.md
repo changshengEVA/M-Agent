@@ -1,6 +1,6 @@
 # `m_agent.systems`
 
-Pluggable chat subsystems. **Index:** [docs/systems-plugin-development.md](../../../docs/systems-plugin-development.md)
+Pluggable chat subsystems. **Index:** [docs/systems-plugin/README.md](../../../docs/systems-plugin/README.md)
 
 **Subsystem guides (6 files):** [docs/systems-plugin/](../../../docs/systems-plugin/)
 

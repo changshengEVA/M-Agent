@@ -2,7 +2,7 @@
 
 One YAML file = one loaded subsystem. The chat controller holds **three pointers** (`systems.wm` / `episodic` / `tools`).
 
-**Index:** [docs/systems-plugin-development.zh-CN.md](../../docs/systems-plugin-development.zh-CN.md)
+**Index:** [docs/systems-plugin/README.zh-CN.md](../../docs/systems-plugin/README.zh-CN.md)
 
 **Plug-in guides (6 files):** [docs/systems-plugin/](../../docs/systems-plugin/)
 

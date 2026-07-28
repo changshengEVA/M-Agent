@@ -1,6 +1,6 @@
 # WM Subsystem — Plug-in Guide
 
-> 中文版：[wm.zh-CN.md](./wm.zh-CN.md) · Index: [systems-plugin-development.md](../systems-plugin-development.md)
+> 中文版：[wm.zh-CN.md](./wm.zh-CN.md) · Index: [README.md](./README.md)
 
 ## Role
 

@@ -12,7 +12,7 @@
 
 Run the agent as a **long-lived HTTP / SSE service** (`python -m m_agent.api.chat_api`). You create a run per user message, subscribe to the event stream, and read the final result while the server keeps **thread-level** session state.
 
-**Think-life is the sole product runtime.** Stimuli go through a **perception bus**, WM is isolated by transaction, the **Scene log** records a chronological timeline, and user-visible text is emitted only through the **`reply_to_user`** tool. Schedule heartbeat and execution feedback use the same runtime path. See **[docs/think-life-runtime-spec.zh-CN.md](docs/think-life-runtime-spec.zh-CN.md)**.
+**Think-life is the sole product runtime.** Stimuli go through a **perception bus**, WM is isolated by transaction, the **Scene log** records a chronological timeline, and user-visible text is emitted only through the **`reply_to_user`** tool. Schedule heartbeat and execution feedback use the same runtime path. See the **[current runtime specification](docs/runtime/think-life-runtime-spec.zh-CN.md)**.
 
 ### Client side
 
@@ -25,7 +25,7 @@ Run the agent as a **long-lived HTTP / SSE service** (`python -m m_agent.api.cha
 
 Core source code lives under `src/m_agent/`, runnable entry scripts under `scripts/`, automated tests under `tests/`, examples under `examples/`, and experimental integrations under `experiments/`. Configuration lives under `config/`, while runtime artifacts mostly land in `data/` and `log/`.
 
-For a fuller directory layout and design conventions, see: **[docs/project-structure.md](docs/project-structure.md)**.
+For a fuller directory layout and design conventions, see the **[project structure guide](docs/development/project-structure.md)**.
 
 ---
 
@@ -147,7 +147,7 @@ The evidence-driven **MemoryAgent / MemoryCore** implementation and **LoCoMo / L
 
 **[F:/AI/WorkspaceMem](F:/AI/WorkspaceMem)** (`workspace_mem` Python package)
 
-- **[docs/project-structure.md](docs/project-structure.md)** — M-Agent layout
+- **[docs/development/project-structure.md](docs/development/project-structure.md)** — M-Agent layout
 - **[src/m_agent/systems/README.md](src/m_agent/systems/README.md)** — plug-in contracts
 
 ---
@@ -167,10 +167,11 @@ For markers and policy, see `[tool.pytest.ini_options]` in `pyproject.toml`.
 
 | Document | Content |
 | --- | --- |
-| [docs/project-structure.md](docs/project-structure.md) | Directory conventions and common commands |
-| [scripts/run_locomo/README.md](scripts/run_locomo/README.md) | LoCoMo configuration and per-script reference |
+| [docs/README.md](docs/README.md) | Documentation index and reading order |
+| [docs/development/project-structure.md](docs/development/project-structure.md) | Directory conventions and common commands |
 | [docs/chat_api/README.md](docs/chat_api/README.md) | Full Chat API reference |
-| [docs/think-life-runtime-spec.zh-CN.md](docs/think-life-runtime-spec.zh-CN.md) | Think-life runtime spec (Chinese) |
+| [docs/runtime/think-life-runtime-spec.zh-CN.md](docs/runtime/think-life-runtime-spec.zh-CN.md) | Current Think-life runtime spec (Chinese) |
+| [docs/architecture/README.md](docs/architecture/README.md) | Target architecture and migration documents |
 | [tools/M-Agent-UI/API.md](tools/M-Agent-UI/API.md) | Frontend integration API |
 
 ---

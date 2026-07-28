@@ -10,7 +10,7 @@
 
 ## 1. Overview / 总览
 
-This document replaces the old single-file `docs/chat_api.md` and is written against the current FastAPI implementation in:
+This reference is maintained against the current FastAPI implementation in:
 
 - `src/m_agent/api/chat_api_web.py`
 - `src/m_agent/api/chat_api_runtime.py`
@@ -1470,11 +1470,11 @@ It contains ready-to-edit requests for:
 - dialogue list / detail
 - schedule list / create / cancel
 
-## 9. Change Notes / 变更说明
+## 9. Coverage Notes / 覆盖范围
 
-Compared with the old `docs/chat_api.md`, the new reference explicitly documents:
+This reference covers the following implementation details:
 
-相较旧版 `docs/chat_api.md`，这份新文档明确补齐了这些当前实现细节：
+本文覆盖以下当前实现细节：
 
 - auth endpoints and auth-disabled behavior
 - per-user runtime scoping

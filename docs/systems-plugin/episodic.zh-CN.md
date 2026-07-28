@@ -1,6 +1,6 @@
 # Episodic 子系统（情景记忆）— 可插拔说明
 
-> English: [episodic.md](./episodic.md) · 总索引：[systems-plugin-development.zh-CN.md](../systems-plugin-development.zh-CN.md)
+> English: [episodic.md](./episodic.md) · 总索引：[README.zh-CN.md](./README.zh-CN.md)
 
 ## 职责
 

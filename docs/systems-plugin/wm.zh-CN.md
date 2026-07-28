@@ -1,6 +1,6 @@
 # WM 子系统 — 可插拔说明
 
-> English: [wm.md](./wm.md) · 总索引：[systems-plugin-development.zh-CN.md](../systems-plugin-development.zh-CN.md)
+> English: [wm.md](./wm.md) · 总索引：[README.zh-CN.md](./README.zh-CN.md)
 
 ## 职责
 

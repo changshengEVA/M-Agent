@@ -1,0 +1,346 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; connect-src 'self'; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; base-uri 'none'; form-action 'none'"
+    />
+    <meta name="color-scheme" content="dark" />
+    <meta
+      name="description"
+      content="M-Agent 本地运行时关键语义验收仪表盘"
+    />
+    <title>M-Agent Semantic Gate</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script src="./app.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">跳到主要内容</a>
+    <div class="page-glow page-glow-one" aria-hidden="true"></div>
+    <div class="page-glow page-glow-two" aria-hidden="true"></div>
+
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true">
+          <span></span><span></span><span></span>
+        </div>
+        <div>
+          <p class="eyebrow">M-Agent Runtime</p>
+          <h1>Semantic Gate</h1>
+        </div>
+      </div>
+      <div class="environment-badge" title="页面只连接当前同源服务">
+        <span class="status-dot" aria-hidden="true"></span>
+        本地验收环境
+      </div>
+    </header>
+
+    <main id="main-content" class="page-shell">
+      <section class="safety-banner" aria-labelledby="safety-title">
+        <div class="safety-icon" aria-hidden="true">✓</div>
+        <div class="safety-copy">
+          <p class="eyebrow" id="safety-title">安全执行边界</p>
+          <p>
+            仅运行服务端 allowlist 中的测试；隔离子进程、单 worker，不接受命令或路径输入。
+          </p>
+        </div>
+        <ul class="safety-points" aria-label="安全约束">
+          <li>Allowlist</li>
+          <li>Subprocess</li>
+          <li>No real side effects</li>
+        </ul>
+      </section>
+
+      <section
+        id="verdictPanel"
+        class="verdict-panel verdict-ready"
+        aria-labelledby="verdictTitle"
+        aria-live="polite"
+      >
+        <div class="verdict-copy">
+          <p id="verdictKicker" class="eyebrow">Phase 0 · Ready to run</p>
+          <div class="verdict-title-row">
+            <h2 id="verdictTitle">载入关键语义目录…</h2>
+            <span id="verdictBadge" class="verdict-badge">准备中</span>
+          </div>
+          <p id="verdictDescription">
+            结果会按“领域 → 语义不变量 → 测试证据”逐层汇总。
+          </p>
+        </div>
+        <div class="verdict-metrics" aria-label="验收结论指标">
+          <div>
+            <strong id="metricSemantics">—</strong>
+            <span>语义项</span>
+          </div>
+          <div>
+            <strong id="metricCases">—</strong>
+            <span id="metricCasesLabel">Gate 用例</span>
+          </div>
+          <div>
+            <strong id="metricPassed">—</strong>
+            <span>语义通过</span>
+          </div>
+          <div>
+            <strong id="metricAttention">—</strong>
+            <span>缺口 / 失败</span>
+          </div>
+        </div>
+      </section>
+
+      <div class="dashboard-grid">
+        <section class="card control-card" aria-labelledby="control-title">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">Run configuration</p>
+              <h2 id="control-title">验收配置</h2>
+            </div>
+            <span id="catalogState" class="quiet-badge">读取目录</span>
+          </div>
+
+          <div class="suite-line">
+            <div>
+              <span class="field-label">当前套件</span>
+              <strong id="suiteTitle">正在载入语义目录…</strong>
+            </div>
+            <span id="suiteMeta" class="field-help">请稍候</span>
+          </div>
+
+          <fieldset class="profile-fieldset">
+            <legend class="field-label">验收档位</legend>
+            <div class="profile-options">
+              <label class="profile-option">
+                <input
+                  id="profileGate"
+                  type="radio"
+                  name="profile"
+                  value="gate"
+                  checked
+                />
+                <span>
+                  <span class="profile-heading">
+                    <strong>Gate</strong>
+                    <b id="gateProfileCount">14 语义 / 20 用例</b>
+                  </span>
+                  <small>最小阻断证据，适合提交前检查</small>
+                </span>
+              </label>
+              <label class="profile-option">
+                <input
+                  id="profileFull"
+                  type="radio"
+                  name="profile"
+                  value="full"
+                />
+                <span>
+                  <span class="profile-heading">
+                    <strong>Semantic Full</strong>
+                    <b id="fullProfileCount">14 语义 / 36 用例</b>
+                  </span>
+                  <small>Gate + Supporting，适合里程碑验收</small>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="selection-summary">
+            <div>
+              <span class="field-label">本次范围</span>
+              <strong id="selectionCount">0 / 14 项语义</strong>
+              <span id="selectedCaseCount" class="field-help">0 个 Gate 用例</span>
+            </div>
+            <div class="selection-actions">
+              <button id="selectAllButton" class="text-button" type="button">
+                全选
+              </button>
+              <button id="clearSelectionButton" class="text-button" type="button">
+                清空
+              </button>
+            </div>
+          </div>
+
+          <div class="run-actions">
+            <button id="runButton" class="primary-button" type="button" disabled>
+              <span aria-hidden="true">▶</span>
+              <span id="runButtonLabel">运行 Gate</span>
+            </button>
+            <button
+              id="cancelButton"
+              class="secondary-button danger-button"
+              type="button"
+              hidden
+            >
+              取消运行
+            </button>
+          </div>
+          <p id="controlHint" class="field-help control-hint">
+            Gate 聚焦 14 项关键路径语义的最小阻断证据。
+          </p>
+        </section>
+
+        <section class="card run-card" aria-labelledby="run-title">
+          <div class="card-heading">
+            <div>
+              <p class="eyebrow">Current run</p>
+              <h2 id="run-title">运行状态</h2>
+            </div>
+            <span id="runState" class="status-chip status-idle">待运行</span>
+          </div>
+
+          <div id="idleRunState" class="run-empty-state">
+            <div class="idle-symbol" aria-hidden="true">◎</div>
+            <div>
+              <strong>尚未运行</strong>
+              <p>选择范围后启动；异常领域会自动展开。</p>
+            </div>
+          </div>
+
+          <div id="activeRunState" hidden>
+            <div class="run-identity">
+              <div>
+                <span class="field-label">Run ID</span>
+                <code id="runIdValue">—</code>
+              </div>
+              <button
+                id="copyRunIdButton"
+                class="icon-button"
+                type="button"
+                title="复制 Run ID"
+                aria-label="复制 Run ID"
+              >
+                ⧉
+              </button>
+            </div>
+
+            <div class="progress-heading">
+              <strong id="progressValue">0%</strong>
+              <span id="progressMeta">等待用例启动</span>
+            </div>
+            <div
+              id="progressTrack"
+              class="progress-track"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+            >
+              <span id="progressBar"></span>
+            </div>
+
+            <div class="run-facts">
+              <div>
+                <span>档位</span>
+                <strong id="runProfileValue">Gate</strong>
+              </div>
+              <div>
+                <span>结果归档</span>
+                <strong id="completedCasesValue">0 / 0</strong>
+              </div>
+              <div>
+                <span>耗时 / 更新</span>
+                <strong id="runUpdatedAt">—</strong>
+              </div>
+            </div>
+
+            <nav
+              id="artifactLinks"
+              class="artifact-links"
+              aria-label="运行产物"
+              hidden
+            ></nav>
+          </div>
+        </section>
+      </div>
+
+      <section class="card matrix-card" aria-labelledby="matrix-title">
+        <div class="matrix-heading">
+          <div>
+            <p class="eyebrow">Semantic evidence tree</p>
+            <h2 id="matrix-title">关键语义分层验收</h2>
+            <p id="matrixSubtitle" class="section-description">
+              5 个领域组，逐层查看原则、验收条件、风险、测试证据与 trace。
+            </p>
+          </div>
+          <span id="visibleSummary" class="quiet-badge">载入中</span>
+        </div>
+
+        <div class="filter-bar" aria-label="语义筛选">
+          <label class="problem-toggle">
+            <input id="problemFilter" type="checkbox" />
+            <span>仅看问题</span>
+          </label>
+          <label>
+            <span class="visually-hidden">按状态筛选</span>
+            <select id="statusFilter" aria-label="按状态筛选">
+              <option value="all">全部状态</option>
+              <option value="passed">已通过</option>
+              <option value="gap">Known Gap</option>
+              <option value="failed">新增失败</option>
+              <option value="active">运行中</option>
+              <option value="not_run">未运行</option>
+            </select>
+          </label>
+          <label>
+            <span class="visually-hidden">按领域筛选</span>
+            <select id="groupFilter" aria-label="按领域筛选">
+              <option value="all">全部领域</option>
+            </select>
+          </label>
+          <button id="clearFiltersButton" class="text-button" type="button">
+            清除筛选
+          </button>
+          <button
+            id="retryCatalogButton"
+            class="secondary-button"
+            type="button"
+            hidden
+          >
+            重试读取
+          </button>
+        </div>
+
+        <div id="catalogError" class="inline-error" role="alert" hidden></div>
+        <div id="matrixSkeleton" class="matrix-skeleton" aria-label="正在读取语义目录">
+          <div></div><div></div><div></div>
+        </div>
+        <div id="invariantList" class="domain-list"></div>
+        <div id="noFilterResults" class="results-empty" hidden>
+          当前筛选条件下没有语义项。
+        </div>
+      </section>
+
+      <section
+        id="diagnosticsSection"
+        class="card diagnostics-card"
+        aria-labelledby="diagnostics-title"
+      >
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">Run diagnostics</p>
+            <h2 id="diagnostics-title">需要关注的结果</h2>
+            <p class="section-description">
+              Known Gap 使用琥珀色；新增失败、错误或 XPASS 使用红色。
+            </p>
+          </div>
+          <span id="diagnosticsCount" class="quiet-badge">暂无结果</span>
+        </div>
+        <div id="diagnosticsEmpty" class="diagnostics-empty">
+          运行后，这里只汇总需要处理的语义；完整证据仍保留在上方对应层级中。
+        </div>
+        <div id="diagnosticsList" class="diagnostics-list" hidden></div>
+      </section>
+    </main>
+
+    <footer class="page-footer">
+      <span>M-Agent Semantic Acceptance</span>
+      <span>同源 API · 无第三方资源 · 本地优先</span>
+    </footer>
+
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+
+    <noscript>
+      <div class="noscript-warning">该仪表盘需要启用 JavaScript。</div>
+    </noscript>
+  </body>
+</html>

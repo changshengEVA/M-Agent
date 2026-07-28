@@ -12,7 +12,7 @@
 
 使用 **`python -m m_agent.api.chat_api`** 以 **HTTP / SSE 长驻服务** 方式运行智能体：为每条用户消息创建 run、订阅事件流、读取最终结果，服务端维护 **thread 级** 会话状态。
 
-**Think-life 是唯一的产品运行时。** 刺激经 **感知总线** 入队，WM 按事务隔离，**Scene log** 按时间序记录完整时间线，用户可见回复仅通过 **`reply_to_user`** 工具发出；日程心跳与执行反馈也走同一运行时路径。规格见 **[docs/think-life-runtime-spec.zh-CN.md](docs/think-life-runtime-spec.zh-CN.md)**。
+**Think-life 是唯一的产品运行时。** 刺激经 **感知总线** 入队，WM 按事务隔离，**Scene log** 按时间序记录完整时间线，用户可见回复仅通过 **`reply_to_user`** 工具发出；日程心跳与执行反馈也走同一运行时路径。规格见 **[当前 Runtime 说明](docs/runtime/think-life-runtime-spec.zh-CN.md)**。
 
 ### 应用端
 
@@ -25,7 +25,7 @@
 
 主代码位于 `src/m_agent/`，可执行入口集中在 `scripts/`，自动化测试在 `tests/`，示例在 `examples/`，实验性集成在 `experiments/`。配置在 `config/`，运行产物多在 `data/` 与 `log/`。
 
-更完整的目录说明与设计约定见：**[docs/project-structure.md](docs/project-structure.md)**。
+更完整的目录说明与设计约定见：**[项目结构说明](docs/development/project-structure.md)**。
 
 ---
 
@@ -147,7 +147,7 @@ Chat 栈默认使用 **RAG 情景后端**（`SimpleRagEpisodicBackend`），配�
 
 **[F:/AI/WorkspaceMem](F:/AI/WorkspaceMem)**（`workspace_mem` 包）
 
-- **[docs/project-structure.md](docs/project-structure.md)** — M-Agent 目录约定
+- **[docs/development/project-structure.md](docs/development/project-structure.md)** — M-Agent 目录约定
 - **[src/m_agent/systems/README.zh-CN.md](src/m_agent/systems/README.zh-CN.md)** — 可插拔子系统说明
 
 ---
@@ -167,10 +167,11 @@ pytest
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/project-structure.md](docs/project-structure.md) | 目录约定与常用命令 |
-| [scripts/run_locomo/README.md](scripts/run_locomo/README.md) | LoCoMo 配置与各子脚本详解 |
+| [docs/README.md](docs/README.md) | 文档索引与阅读顺序 |
+| [docs/development/project-structure.md](docs/development/project-structure.md) | 目录约定与常用命令 |
 | [docs/chat_api/README.md](docs/chat_api/README.md) | Chat API 完整参考 |
-| [docs/think-life-runtime-spec.zh-CN.md](docs/think-life-runtime-spec.zh-CN.md) | Think-life 运行时规格 |
+| [docs/runtime/think-life-runtime-spec.zh-CN.md](docs/runtime/think-life-runtime-spec.zh-CN.md) | 当前 Think-life 运行时规格 |
+| [docs/architecture/README.md](docs/architecture/README.md) | 目标架构与迁移文档 |
 | [tools/M-Agent-UI/API.md](tools/M-Agent-UI/API.md) | 前端对接 API 说明 |
 
 ---

@@ -1,6 +1,6 @@
 # Tools 子系统——插件指南
 
-> English: [tools.md](./tools.md) · 总索引：[systems-plugin-development.zh-CN.md](../systems-plugin-development.zh-CN.md)
+> English: [tools.md](./tools.md) · 总索引：[README.zh-CN.md](./README.zh-CN.md)
 
 ## 职责
 

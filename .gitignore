@@ -5,6 +5,7 @@ venv/
 **/__pycache__/
 *.py[cod]
 .pytest_cache/
+.acceptance-runs/
 .mypy_cache/
 .ruff_cache/
 

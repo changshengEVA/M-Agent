@@ -1,6 +1,6 @@
 # `m_agent.systems`
 
-对话栈可插拔子系统。**总索引：** [docs/systems-plugin-development.zh-CN.md](../../../docs/systems-plugin-development.zh-CN.md)
+对话栈可插拔子系统。**总索引：** [docs/systems-plugin/README.zh-CN.md](../../../docs/systems-plugin/README.zh-CN.md)
 
 **子系统专题（6 篇）：** [docs/systems-plugin/](../../../docs/systems-plugin/)
 

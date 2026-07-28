@@ -1,6 +1,6 @@
 # Tools Subsystem — Plug-in Guide
 
-> Chinese: [tools.zh-CN.md](./tools.zh-CN.md) · Index: [systems-plugin-development.md](../systems-plugin-development.md)
+> Chinese: [tools.zh-CN.md](./tools.zh-CN.md) · Index: [README.md](./README.md)
 
 ## Role
 
