@@ -9,6 +9,66 @@ from .contracts import TaskState
 
 
 @dataclass
+class ThinkingScratch:
+    """Ephemeral think-side buffers that must not live on TransactionRecord."""
+
+    episode_buffer: List[Dict[str, Any]] = field(default_factory=list)
+    turn_count: int = 0
+
+    def reset(self) -> None:
+        self.episode_buffer.clear()
+        self.turn_count = 0
+
+
+@dataclass
+class TransactionBoundState:
+    """Bind a TransactionRecord's task/WM with think-side scratch buffers."""
+
+    record: Any
+    scratch: ThinkingScratch
+
+    @property
+    def task_state(self) -> TaskState:
+        return self.record.task_state
+
+    @task_state.setter
+    def task_state(self, value: TaskState) -> None:
+        self.record.task_state = value
+
+    @property
+    def task_progress(self) -> TaskState:
+        return self.record.task_state
+
+    @task_progress.setter
+    def task_progress(self, value: TaskState) -> None:
+        self.record.task_state = value
+
+    @property
+    def episode_buffer(self) -> List[Dict[str, Any]]:
+        return self.scratch.episode_buffer
+
+    @property
+    def turn_count(self) -> int:
+        return self.scratch.turn_count
+
+    @turn_count.setter
+    def turn_count(self, value: int) -> None:
+        self.scratch.turn_count = int(value)
+
+    @property
+    def wm_entries(self) -> List[Dict[str, Any]]:
+        return list(getattr(self.record, "wm_entries", []) or [])
+
+    @property
+    def reply_finalized_in_activation(self) -> bool:
+        return bool(getattr(self.record, "reply_finalized_in_activation", False))
+
+    @property
+    def state(self) -> Any:
+        return getattr(self.record, "state", None)
+
+
+@dataclass
 class ConversationState:
     """Conversation-level compatibility state for direct thinking calls.
 

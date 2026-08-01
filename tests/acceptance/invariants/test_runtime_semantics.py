@@ -25,12 +25,13 @@ from m_agent.layers.execution.model_provider import ModelProvider
 from m_agent.layers.perception.contracts import Stimulus, StimulusKind
 from m_agent.runtime.think_life.config import ThinkLifeConfig, ThinkLifeSchedulerConfig
 from m_agent.runtime.think_life.contracts import (
+    DelegateStatus,
     SceneActor,
     SceneEntry,
     SceneEntryType,
     StimulusEnvelope,
     TransactionKind,
-    TransactionStatus,
+    TransactionState,
 )
 from m_agent.runtime.think_life.drainer import ThreadDrainerService
 from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
@@ -50,6 +51,7 @@ def _stimulus(
     kind: StimulusKind,
     transaction_id: str | None = None,
     delegate_id: str | None = None,
+    activation_id: str | None = None,
     conversation_id: str = "thread-1::0",
 ) -> StimulusEnvelope:
     return StimulusEnvelope(
@@ -60,6 +62,7 @@ def _stimulus(
         occurred_at="2026-07-26T00:00:00Z",
         transaction_id=transaction_id,
         delegate_id=delegate_id,
+        activation_id=activation_id,
     )
 
 
@@ -92,7 +95,12 @@ def test_inv_01_all_stimuli_enter_inbox_before_processing(request: Any) -> None:
     trace = SemanticTrace(scenario_id="INV-01")
 
     class _RecordingInbox(StimulusInbox):
-        def push(self, stimulus: StimulusEnvelope, *, priority: int) -> None:
+        def push(
+            self,
+            stimulus: StimulusEnvelope,
+            *,
+            priority: int,
+        ) -> StimulusEnvelope:
             trace.record(
                 "stimulus.queued",
                 phase="ingress",
@@ -100,7 +108,7 @@ def test_inv_01_all_stimuli_enter_inbox_before_processing(request: Any) -> None:
                 stimulus_id=stimulus.stimulus_id,
                 stimulus_kind=stimulus.kind.value,
             )
-            super().push(stimulus, priority=priority)
+            return super().push(stimulus, priority=priority)
 
     class _RecordingSceneWriter:
         def append(self, conversation_id: str, entry: SceneEntry) -> SceneEntry:
@@ -145,21 +153,22 @@ def test_inv_01_all_stimuli_enter_inbox_before_processing(request: Any) -> None:
     )
     trace.attach(request)
 
-    assert inbox.pending_count("thread-1") == 3
-    assert registry.count_all() == 0, "transaction attribution must happen after dequeue"
-    queued_user = next(
-        event
+    # The feedback names a transaction that was never created, so it has no
+    # causal source and is expected-discarded at admission instead of queued.
+    queued_kinds = [
+        event.data.get("stimulus_kind")
         for event in trace.events
         if event.event_type == "stimulus.queued"
-        and event.data.get("stimulus_id") == "stim#1"
-    )
-    scene_user = next(event for event in trace.events if event.event_type == "scene.appended")
-    if scene_user.seq < queued_user.seq:
-        pytest.xfail(
-            "Known gap: user Scene append currently occurs before inbox admission; "
-            "a Scene failure can prevent the stimulus from being queued."
-        )
-    assert queued_user.seq < scene_user.seq
+    ]
+    assert queued_kinds == [
+        StimulusKind.USER_MESSAGE.value,
+        StimulusKind.SCHEDULED_PLAN.value,
+    ]
+    assert inbox.pending_count("thread-1") == 2
+    assert registry.count_all() == 0, "transaction attribution must happen after dequeue"
+    assert not [
+        event for event in trace.events if event.event_type == "scene.appended"
+    ], "a sourceless utterance must not touch Scene before inbox admission"
     assert user_id
 
 
@@ -282,12 +291,12 @@ def test_inv_03_feedback_bypasses_semantic_reattribution(request: Any) -> None:
         conversation_id="thread-1::0",
         kind=TransactionKind.USER_TASK,
     )
-    registry.transition(transaction.transaction_id, TransactionStatus.RUNNING)
     registry.set_active_user_transaction(
         transaction.conversation_id,
         transaction.transaction_id,
     )
-    registry.begin_delegate(transaction.transaction_id, "delegate-1")
+    # Only pause/complete lines are semantic match candidates.
+    registry.pause(transaction.transaction_id)
     calls = {"semantic": 0}
 
     def semantic_resolver(_stimulus: StimulusEnvelope, _candidates: list[Any], **_kwargs: Any) -> str:
@@ -307,12 +316,16 @@ def test_inv_03_feedback_bypasses_semantic_reattribution(request: Any) -> None:
     assert created is False
     calls_before_feedback = calls["semantic"]
 
+    # Delegate under the activation the restore just opened, so the Feedback is
+    # causally valid and the test isolates "did the resolver run again?".
+    delegated = registry.begin_delegate(transaction.transaction_id, "delegate-1")
     selected_feedback, feedback_created = attributor.resolve(
         _stimulus(
             stimulus_id="feedback-1",
             kind=StimulusKind.EXECUTION_FEEDBACK,
             transaction_id=transaction.transaction_id,
             delegate_id="delegate-1",
+            activation_id=delegated.current_activation_id,
         )
     )
     trace.record(
@@ -336,8 +349,8 @@ def test_inv_04_feedback_requires_transaction_and_active_delegate(request: Any) 
         conversation_id="thread-1::0",
         kind=TransactionKind.USER_TASK,
     )
-    registry.transition(transaction.transaction_id, TransactionStatus.RUNNING)
-    registry.begin_delegate(transaction.transaction_id, "delegate-active")
+    delegated = registry.begin_delegate(transaction.transaction_id, "delegate-active")
+    activation_id = delegated.current_activation_id
     attributor = TransactionAttributor(registry=registry, config=ThinkLifeConfig())
 
     valid, created = attributor.resolve(
@@ -346,6 +359,7 @@ def test_inv_04_feedback_requires_transaction_and_active_delegate(request: Any) 
             kind=StimulusKind.EXECUTION_FEEDBACK,
             transaction_id=transaction.transaction_id,
             delegate_id="delegate-active",
+            activation_id=activation_id,
         )
     )
     trace.record(
@@ -360,18 +374,27 @@ def test_inv_04_feedback_requires_transaction_and_active_delegate(request: Any) 
             stimulus_id="feedback-missing-tx",
             kind=StimulusKind.EXECUTION_FEEDBACK,
             delegate_id="delegate-active",
+            activation_id=activation_id,
+        ),
+        _stimulus(
+            stimulus_id="feedback-missing-activation",
+            kind=StimulusKind.EXECUTION_FEEDBACK,
+            transaction_id=transaction.transaction_id,
+            delegate_id="delegate-active",
         ),
         _stimulus(
             stimulus_id="feedback-unknown-tx",
             kind=StimulusKind.EXECUTION_FEEDBACK,
             transaction_id="missing",
             delegate_id="delegate-active",
+            activation_id=activation_id,
         ),
         _stimulus(
             stimulus_id="feedback-wrong-delegate",
             kind=StimulusKind.EXECUTION_FEEDBACK,
             transaction_id=transaction.transaction_id,
             delegate_id="delegate-stale",
+            activation_id=activation_id,
         ),
     )
     for stimulus in invalid:
@@ -385,7 +408,7 @@ def test_inv_04_feedback_requires_transaction_and_active_delegate(request: Any) 
     trace.attach(request)
 
     assert trace.count("feedback.accepted") == 1
-    assert trace.count("feedback.rejected") == 3
+    assert trace.count("feedback.rejected") == 4
 
 
 def test_inv_05_transaction_runtime_state_is_isolated(request: Any) -> None:
@@ -403,25 +426,25 @@ def test_inv_05_transaction_runtime_state_is_isolated(request: Any) -> None:
     )
     first.task_state.goal = "first goal"
     first.wm_entries.append({"tool_name": "one"})
-    first.turn_count = 3
-    first.episode_buffer.append({"note": "first"})
     trace.record(
         "transaction.state_mutated",
         transaction_id=first.transaction_id,
-        fields=["task_state", "wm_entries", "turn_count", "episode_buffer"],
+        fields=["task_state", "wm_entries"],
     )
     trace.attach(request)
 
     assert first.task_state is not second.task_state
     assert first.wm_entries is not second.wm_entries
-    assert first.episode_buffer is not second.episode_buffer
     assert second.task_state.goal == ""
     assert second.wm_entries == []
-    assert second.turn_count == 0
-    assert second.episode_buffer == []
+    assert not hasattr(first, "episode_buffer")
+    assert not hasattr(first, "turn_count")
+    assert first.pause_reason is None
+    assert not hasattr(first, "linked_transaction_ids")
 
 
-def test_inv_05_flush_drains_the_transaction_episode_owner(request: Any) -> None:
+def test_inv_05_episode_buffer_is_not_transaction_payload(request: Any) -> None:
+    """Episode notes are think-side scratch, not TransactionRecord fields."""
     trace = SemanticTrace(scenario_id="INV-05-episode-owner")
     registry = TransactionRegistry()
     record = registry.create(
@@ -429,34 +452,18 @@ def test_inv_05_flush_drains_the_transaction_episode_owner(request: Any) -> None
         conversation_id="thread-episode::0",
         kind=TransactionKind.USER_TASK,
     )
-    registry.transition(record.transaction_id, TransactionStatus.RUNNING)
-    registry.set_active_user_transaction(record.conversation_id, record.transaction_id)
-    record.episode_buffer.append({"note": "transaction-owned episode"})
-
-    runtime = ThinkLifeRuntime.__new__(ThinkLifeRuntime)
-    runtime.registry = registry
-    runtime.agent = SimpleNamespace(
-        thinking_agent=MagicMock(on_flush=MagicMock(return_value=[]))
-    )
-    runtime._emit_runtime_updated = MagicMock()  # type: ignore[method-assign]
-    result = runtime.on_flush_segment(
-        record.thread_id,
-        conversation_id=record.conversation_id,
-    )
+    payload = record.to_dict()
     trace.record(
-        "flush.completed",
+        "transaction.payload_keys",
         transaction_id=record.transaction_id,
-        episode_notes_reported=result["episode_notes_drained"],
-        episode_notes_remaining=len(record.episode_buffer),
+        has_episode_buffer="episode_buffer" in payload,
+        has_turn_count="turn_count" in payload,
     )
     trace.attach(request)
-
-    if record.episode_buffer:
-        pytest.xfail(
-            "Known gap: on_flush_segment drains ThinkingAgent's legacy state "
-            "registry instead of TransactionRecord.episode_buffer."
-        )
-    assert result["episode_notes_drained"] == 1
+    assert "episode_buffer" not in payload
+    assert "turn_count" not in payload
+    assert payload["pause_reason"] is None
+    assert "linked_transaction_ids" not in payload
 
 
 def test_inv_06_scene_is_one_monotonic_conversation_timeline(
@@ -525,7 +532,6 @@ def test_inv_08_delegate_invokes_at_most_one_capability(request: Any) -> None:
         gateway=gateway,
     )
     record = registry.create(thread_id="thread-1", kind=TransactionKind.USER_TASK)
-    registry.transition(record.transaction_id, TransactionStatus.RUNNING)
     stimulus = _stimulus(
         stimulus_id="user-tool",
         kind=StimulusKind.USER_MESSAGE,
@@ -615,7 +621,7 @@ def test_inv_10_reply_uses_capability_and_audit_path(request: Any) -> None:
     assert result.tool_call_count == 1
 
 
-def test_inv_12_preemption_suspends_and_requeues_at_boundary(request: Any) -> None:
+def test_inv_12_preemption_keeps_state_and_requeues_at_boundary(request: Any) -> None:
     trace = SemanticTrace(scenario_id="INV-12")
     registry = TransactionRegistry()
     inbox = StimulusInbox()
@@ -639,7 +645,6 @@ def test_inv_12_preemption_suspends_and_requeues_at_boundary(request: Any) -> No
         kind=TransactionKind.USER_TASK,
         priority=50,
     )
-    registry.transition(record.transaction_id, TransactionStatus.RUNNING)
     registry.set_active_user_transaction(record.conversation_id, record.transaction_id)
     stimulus = _stimulus(
         stimulus_id="preempted",
@@ -666,7 +671,9 @@ def test_inv_12_preemption_suspends_and_requeues_at_boundary(request: Any) -> No
     trace.attach(request)
 
     assert result["preempted"] is True
-    assert registry.get(record.transaction_id).status == TransactionStatus.SUSPENDED
+    current = registry.get(record.transaction_id)
+    assert current is not None
+    assert current.state == TransactionState.CONTINUE
     assert requeued.stimulus_id == stimulus.stimulus_id
     assert requeued.payload["_preempt_count"] == 1
     if resumed.transaction_id != record.transaction_id:
@@ -685,44 +692,50 @@ def test_inv_13_duplicate_feedback_is_consumed_once(request: Any) -> None:
         conversation_id="thread-1::0",
         kind=TransactionKind.USER_TASK,
     )
-    registry.transition(record.transaction_id, TransactionStatus.RUNNING)
-    registry.begin_delegate(record.transaction_id, "delegate-once")
+    delegated = registry.begin_delegate(record.transaction_id, "delegate-once")
     attributor = TransactionAttributor(registry=registry, config=ThinkLifeConfig())
     feedback = _stimulus(
         stimulus_id="feedback-duplicate",
         kind=StimulusKind.EXECUTION_FEEDBACK,
         transaction_id=record.transaction_id,
         delegate_id="delegate-once",
+        activation_id=delegated.current_activation_id,
     )
 
     first, created = attributor.resolve(feedback)
     assert created is False
-    registry.transition(first.transaction_id, TransactionStatus.RUNNING)
+    # consume_feedback already resumes the transaction; no manual transition.
+    assert first.state == TransactionState.CONTINUE
+    assert first.active_delegate_id is None
     trace.record(
         "feedback.consumed",
         transaction_id=record.transaction_id,
         delegate_id="delegate-once",
     )
-    try:
-        attributor.resolve(feedback)
-    except ValueError:
-        trace.record(
-            "feedback.duplicate_rejected",
-            transaction_id=record.transaction_id,
-            delegate_id="delegate-once",
-        )
-        trace.attach(request)
-        return
+    consumed_once = registry.store.load_delegate("delegate-once")
+    assert consumed_once is not None
+    assert consumed_once.status == DelegateStatus.CONSUMED
+
+    # A replayed Feedback carries the same ingress identity, so it resolves to
+    # the same transaction instead of being rejected. Consumption itself stays
+    # single: the delegate is already CONSUMED and is not consumed again.
+    replayed, replay_created = attributor.resolve(feedback)
     trace.record(
-        "feedback.duplicate_accepted",
+        "feedback.duplicate_absorbed",
         transaction_id=record.transaction_id,
         delegate_id="delegate-once",
     )
     trace.attach(request)
-    pytest.xfail(
-        "Known gap: feedback consumption does not clear or persist the active "
-        "delegate key, so an identical feedback can be accepted twice."
-    )
+
+    assert replay_created is False
+    assert replayed.transaction_id == record.transaction_id
+    still_consumed = registry.store.load_delegate("delegate-once")
+    assert still_consumed is not None
+    assert still_consumed.status == DelegateStatus.CONSUMED
+    assert still_consumed.consumed_at == consumed_once.consumed_at
+    settled = registry.get(record.transaction_id)
+    assert settled.revision == first.revision, "replay must not mutate the record"
+    assert settled.delegate_count == 1
 
 
 def test_inv_14_flush_gate_covers_every_unresolved_obligation(request: Any) -> None:

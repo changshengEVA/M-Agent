@@ -15,6 +15,12 @@ acceptance = [
     "fastapi>=0.110",
     "uvicorn>=0.29",
 ]
+langgraph = [
+    "langgraph>=1.0.10",
+    "langgraph-checkpoint>=4.0.1",
+    "langgraph-checkpoint-sqlite>=3.0.1",
+    "langgraph-prebuilt>=1.0.8",
+]
 
 [project.scripts]
 m-agent-acceptance = "m_agent.acceptance.cli:main"
@@ -38,4 +44,5 @@ markers = [
     "e2e: end-to-end flow tests",
     "slow: long-running tests",
     "acceptance: deterministic runtime semantic acceptance tests",
+    "p2_foundation: deterministic P2 transaction and Scene foundation gate",
 ]

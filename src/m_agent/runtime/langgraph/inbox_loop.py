@@ -1,0 +1,535 @@
+"""Inbox drain loop for the LangGraph production runtime.
+
+Two drain modes share the same claim/attribution/CPU bookkeeping:
+
+* the R2 turn loop, where each stimulus advances the transaction graph through
+  thinking → delegate → Feedback;
+* the R1 MVP step, which only records progress and never delegates. It stays as
+  the rollback target for :data:`M_AGENT_LANGGRAPH_TURN_LOOP`.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Callable, Dict, List, Optional
+
+from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS
+from m_agent.runtime.langgraph.engine import TransactionGraphEngine
+from m_agent.runtime.langgraph.fake_effects import FakeEffectIntent
+from m_agent.runtime.langgraph.turn_graph import (
+    PHASE_AWAITING_FEEDBACK,
+    PHASE_COMPLETED,
+    PHASE_ERROR,
+    TransactionTurnEngine,
+)
+from m_agent.runtime.routing import LANGGRAPH_RUNTIME_ENGINE
+from m_agent.runtime.think_life.contracts import (
+    SceneActor,
+    SceneEntry,
+    SceneEntryType,
+    StimulusEnvelope,
+    StimulusKind,
+    TransactionRecord,
+)
+from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
+from m_agent.runtime.think_life.perception.inbox import StimulusInbox
+from m_agent.runtime.think_life.perception.matcher_scene_view import (
+    is_user_visible_scene_interaction,
+)
+from m_agent.runtime.think_life.scheduler.cpu_state import THREAD_CPU_STATE
+from m_agent.runtime.think_life.scheduler.think_context import read_scene_segment
+from m_agent.runtime.think_life.transaction_registry import TransactionRegistry
+from m_agent.runtime.think_life.transaction.store import StaleClaimError
+from m_agent.runtime.think_life.transaction.predicates import (
+    is_open_continue,
+    is_runnable_record,
+)
+from m_agent.systems.scene.protocols import SceneReader, SceneWriter
+
+logger = logging.getLogger(__name__)
+
+class LangGraphInboxLoop:
+    """Drain one conversation inbox and advance LangGraph-owned transactions."""
+
+    def __init__(
+        self,
+        *,
+        registry: TransactionRegistry,
+        inbox: StimulusInbox,
+        attributor: TransactionAttributor,
+        graph_engine: TransactionGraphEngine,
+        scene_writer: SceneWriter,
+        scene_reader: SceneReader,
+        scene_context_max_entries: int = 40,
+        turn_engine: Optional[TransactionTurnEngine] = None,
+        on_runtime_updated: Optional[Callable[[str], None]] = None,
+    ) -> None:
+        self.registry = registry
+        self.inbox = inbox
+        self.attributor = attributor
+        self.graph_engine = graph_engine
+        self.scene_writer = scene_writer
+        self.scene_reader = scene_reader
+        self.scene_context_max_entries = max(
+            1,
+            int(scene_context_max_entries or 40),
+        )
+        self.turn_engine = turn_engine
+        self._on_runtime_updated = on_runtime_updated
+
+    @property
+    def turn_loop_enabled(self) -> bool:
+        return self.turn_engine is not None
+
+    def drain_thread(
+        self,
+        thread_id: str,
+        *,
+        history_messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> List[Dict[str, Any]]:
+        results: List[Dict[str, Any]] = []
+        while self.inbox.has_pending(thread_id):
+            stimulus = self.inbox.pop_next(thread_id)
+            if stimulus is None:
+                break
+            self._refresh_pending_stimuli(thread_id)
+            try:
+                result = self._process_one(
+                    stimulus,
+                    history_messages=history_messages,
+                )
+                results.append(result)
+                if result.get("success"):
+                    self._finalize_claim(stimulus, disposition="consumed")
+            except Exception as exc:
+                logger.exception(
+                    "LangGraph inbox processing failed thread_id=%s",
+                    thread_id,
+                )
+                current = self._load_stimulus_disposition(
+                    stimulus.stimulus_id
+                )
+                if current not in {"aborted", "expected_discard"}:
+                    self._mark_stimulus_disposition(
+                        stimulus,
+                        disposition="failed",
+                        stage="final",
+                        reason=str(exc),
+                    )
+                results.append(
+                    {
+                        "success": False,
+                        "error": str(exc),
+                        "stimulus_id": stimulus.stimulus_id,
+                    }
+                )
+        return results
+
+    def _process_one(
+        self,
+        stimulus: StimulusEnvelope,
+        *,
+        history_messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        routing_scene = read_scene_segment(
+            self.scene_reader,
+            stimulus.conversation_id,
+            max_entries=self.scene_context_max_entries,
+            entry_filter=is_user_visible_scene_interaction,
+        )
+        transaction, _created = self.attributor.resolve(
+            stimulus,
+            dialogue_history=history_messages,
+            scene_entries=routing_scene,
+        )
+        transaction, deleted_at_binding = self._bind_attributed_stimulus(
+            stimulus,
+            transaction,
+        )
+        if deleted_at_binding:
+            return self._handle_transaction_deleted(
+                stimulus,
+                transaction,
+            )
+        self._bind_deferred_user_scene(stimulus, transaction)
+        if not str(stimulus.transaction_id or "").strip():
+            object.__setattr__(
+                stimulus,
+                "transaction_id",
+                transaction.transaction_id,
+            )
+        if transaction.runtime_engine != LANGGRAPH_RUNTIME_ENGINE:
+            raise ValueError(
+                "transaction runtime_engine mismatch: "
+                f"{transaction.runtime_engine!r}"
+            )
+        transaction = self.registry.get(transaction.transaction_id) or transaction
+        if transaction.deleted:
+            return self._handle_transaction_deleted(
+                stimulus,
+                transaction,
+            )
+        activation = (
+            self.registry.store.load_activation(transaction.current_activation_id)
+            if transaction.current_activation_id
+            else None
+        )
+        if not is_runnable_record(transaction, activation):
+            if transaction.deleted:
+                return self._handle_transaction_deleted(
+                    stimulus,
+                    transaction,
+                )
+            raise ValueError(
+                "attributed transaction is not runnable: "
+                f"{transaction.transaction_id}"
+            )
+        tid = transaction.thread_id
+        txn_id = transaction.transaction_id
+        cancel_event = THREAD_CPU_STATE.set_in_flight(
+            tid,
+            stimulus_id=stimulus.stimulus_id,
+            transaction_id=txn_id,
+            priority=self.attributor.priority_for(stimulus),
+        )
+        THREAD_RUNTIME_STATUS.set_cpu_holder(tid, txn_id)
+        self._refresh_pending_stimuli(tid)
+        try:
+            if self.turn_engine is not None:
+                result = self._run_turn(
+                    stimulus,
+                    transaction,
+                    history_messages=history_messages,
+                )
+            else:
+                result = self._run_mvp_step(stimulus, transaction)
+            current = self.registry.store.load_transaction(txn_id)
+            if (
+                str(
+                    getattr(cancel_event, "cancel_reason", "") or ""
+                ).strip()
+                == "transaction_deleted"
+                or (current is not None and current.deleted)
+            ):
+                return self._handle_transaction_deleted(
+                    stimulus,
+                    transaction,
+                )
+            return result
+        except Exception as exc:
+            current = self.registry.get(txn_id) or transaction
+            if current.deleted:
+                return self._handle_transaction_deleted(
+                    stimulus,
+                    current,
+                )
+            if is_open_continue(current):
+                self.registry.fail(
+                    txn_id,
+                    error=(
+                        str(exc or "langgraph processing failed").strip()
+                        or "langgraph processing failed"
+                    ),
+                )
+            raise
+        finally:
+            THREAD_CPU_STATE.clear_in_flight(
+                tid,
+                stimulus_id=stimulus.stimulus_id,
+            )
+            THREAD_RUNTIME_STATUS.set_cpu_holder(tid, None)
+            self._refresh_pending_stimuli(tid)
+
+    def _load_stimulus_disposition(
+        self,
+        stimulus_id: str,
+    ) -> Optional[str]:
+        store = getattr(self.inbox, "store", None)
+        if store is None:
+            return None
+        current = store.load_stimulus(stimulus_id)
+        return current.disposition if current is not None else None
+
+    def _bind_attributed_stimulus(
+        self,
+        stimulus: StimulusEnvelope,
+        transaction: TransactionRecord,
+    ) -> tuple[TransactionRecord, bool]:
+        """Persist attribution before Scene/graph work and fence deletion."""
+
+        with self.registry._lock:
+            inbox_store = getattr(self.inbox, "store", None)
+            bound = None
+            bind = getattr(inbox_store, "bind_stimulus_target", None)
+            if callable(bind):
+                bound = bind(
+                    stimulus.stimulus_id,
+                    transaction_id=transaction.transaction_id,
+                )
+            durable = self.registry.store.load_transaction(
+                transaction.transaction_id
+            )
+            if durable is not None:
+                transaction = self.registry.refresh_from_store(
+                    transaction.transaction_id
+                ) or durable
+            deleted = bool(
+                (bound is not None and bound.disposition == "aborted")
+                or (durable is not None and durable.deleted)
+            )
+            return transaction, deleted
+
+    def _handle_transaction_deleted(
+        self,
+        stimulus: StimulusEnvelope,
+        transaction: TransactionRecord,
+    ) -> Dict[str, Any]:
+        refreshed = self.registry.refresh_from_store(
+            transaction.transaction_id
+        )
+        if isinstance(refreshed, TransactionRecord):
+            transaction = refreshed
+        current = self._load_stimulus_disposition(stimulus.stimulus_id)
+        if current in {"ready", "claimed"}:
+            self._mark_stimulus_disposition(
+                stimulus,
+                disposition="aborted",
+                stage="transaction_delete",
+                reason="transaction_deleted",
+            )
+        return {
+            "success": False,
+            "cancelled": True,
+            "deleted": True,
+            "thread_id": transaction.thread_id,
+            "transaction_id": transaction.transaction_id,
+            "stimulus_id": stimulus.stimulus_id,
+        }
+
+    def _run_turn(
+        self,
+        stimulus: StimulusEnvelope,
+        transaction: TransactionRecord,
+        *,
+        history_messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> Dict[str, Any]:
+        assert self.turn_engine is not None
+        txn_id = transaction.transaction_id
+        turn = self.turn_engine.run_turn(
+            record=transaction,
+            stimulus=stimulus,
+            history_messages=history_messages,
+        )
+        state = turn.state
+        updated = self.registry.get(txn_id) or transaction
+        if not turn.success and is_open_continue(updated):
+            updated = self.registry.fail(
+                txn_id,
+                error=(
+                    str(state.get("last_error", "") or "").strip()
+                    or "langgraph turn failed"
+                ),
+            )
+        decision = dict(state.get("decision") or {})
+        pending = dict(state.get("pending_delegate_intent") or {})
+        result: Dict[str, Any] = {
+            "success": turn.success,
+            "thread_id": transaction.thread_id,
+            "transaction_id": txn_id,
+            "runtime_engine": updated.runtime_engine,
+            "graph_phase": turn.graph_phase,
+            "revision": int(updated.revision),
+            "turn_index": int(state.get("turn_index", 0) or 0),
+            "turn_kind": str(state.get("turn_kind", "") or ""),
+            "decision_mode": str(decision.get("mode", "") or ""),
+            "waiting_feedback": turn.graph_phase == PHASE_AWAITING_FEEDBACK,
+            "completed": turn.graph_phase == PHASE_COMPLETED,
+            "delegate_id": str(pending.get("delegate_id") or ""),
+            "stimulus_id": stimulus.stimulus_id,
+        }
+        if turn.graph_phase == PHASE_ERROR:
+            result["error"] = str(state.get("last_error", "") or "turn failed")
+        return result
+
+    def _run_mvp_step(
+        self,
+        stimulus: StimulusEnvelope,
+        transaction: TransactionRecord,
+    ) -> Dict[str, Any]:
+        """R1 fallback: record progress only, never delegate."""
+
+        txn_id = transaction.transaction_id
+        user_text = str(stimulus.text or "").strip() or "user stimulus"
+        graph_result = self.graph_engine.run_script(
+            conversation_id=transaction.conversation_id,
+            transaction_id=txn_id,
+            script=[
+                {
+                    "action": "record_progress",
+                    "transition_id": (
+                        f"lg-host:{stimulus.stimulus_id}:progress"
+                    ),
+                    "wm_entries": [{"utterance": user_text}],
+                    "goal": user_text[:240],
+                }
+            ],
+            thread_id=txn_id,
+        )
+        self._append_work_scene(
+            conversation_id=transaction.conversation_id,
+            transaction_id=txn_id,
+            text=f"processed via LangGraph: {user_text[:120]}",
+        )
+        updated = self.registry.get(txn_id) or transaction
+        return {
+            "success": graph_result.state.get("graph_phase") != PHASE_ERROR,
+            "thread_id": transaction.thread_id,
+            "transaction_id": txn_id,
+            "runtime_engine": updated.runtime_engine,
+            "graph_phase": graph_result.state.get("graph_phase"),
+            "revision": int(updated.revision),
+        }
+
+    def _append_work_scene(
+        self,
+        *,
+        conversation_id: str,
+        transaction_id: str,
+        text: str,
+    ) -> None:
+        current = self.registry.store.load_transaction(transaction_id)
+        if current is not None and current.deleted:
+            return
+        self.scene_writer.append(
+            conversation_id,
+            SceneEntry(
+                seq=0,
+                occurred_at="",
+                entry_type=SceneEntryType.ACTION,
+                actor=SceneActor.WORK,
+                text=text,
+                transaction_id=transaction_id,
+            ),
+        )
+
+    def _bind_deferred_user_scene(
+        self,
+        stimulus: StimulusEnvelope,
+        record: TransactionRecord,
+    ) -> None:
+        current = self.registry.store.load_transaction(
+            record.transaction_id
+        )
+        if current is not None and current.deleted:
+            return
+        if stimulus.kind != StimulusKind.USER_MESSAGE:
+            return
+        if str(stimulus.transaction_id or "").strip():
+            return
+        body = str(stimulus.text or "").strip()
+        if not body:
+            return
+        append_id = str(stimulus.stimulus_id or "").strip() or None
+        entry = SceneEntry(
+            seq=0,
+            occurred_at=stimulus.occurred_at,
+            entry_type=SceneEntryType.UTTERANCE,
+            actor=SceneActor.USER,
+            text=body,
+            append_id=append_id,
+            transaction_id=record.transaction_id,
+        )
+        if append_id is not None:
+            try:
+                self.scene_writer.append(
+                    record.conversation_id,
+                    entry,
+                    append_id=append_id,
+                )
+                return
+            except TypeError:
+                pass
+        self.scene_writer.append(record.conversation_id, entry)
+
+    def _refresh_pending_stimuli(self, thread_id: str) -> None:
+        tid = str(thread_id or "").strip()
+        THREAD_RUNTIME_STATUS.set_pending_stimuli(
+            tid,
+            self.inbox.pending_count(tid),
+        )
+        if self._on_runtime_updated is not None:
+            try:
+                self._on_runtime_updated(tid)
+            except Exception:
+                logger.exception(
+                    "LangGraph on_runtime_updated failed thread_id=%s",
+                    tid,
+                )
+
+    def _finalize_claim(
+        self,
+        stimulus: StimulusEnvelope,
+        *,
+        disposition: str,
+    ) -> None:
+        store = getattr(self.inbox, "store", None)
+        if store is None or not stimulus.claimed_by:
+            return
+        try:
+            store.finalize_stimulus(
+                stimulus_id=stimulus.stimulus_id,
+                claim_token={
+                    "claimed_by": stimulus.claimed_by,
+                    "consumer_epoch": stimulus.consumer_epoch,
+                    "claim_epoch": stimulus.claim_epoch,
+                },
+                disposition=disposition,
+                transition_id=(
+                    f"stimulus-finalize:{stimulus.stimulus_id}:"
+                    f"{stimulus.claim_epoch}"
+                ),
+                command_digest=disposition,
+            )
+        except StaleClaimError:
+            logger.info(
+                "stale stimulus claim ignored stimulus_id=%s",
+                stimulus.stimulus_id,
+            )
+
+    def _mark_stimulus_disposition(
+        self,
+        stimulus: StimulusEnvelope,
+        *,
+        disposition: str,
+        stage: str,
+        reason: str = "",
+    ) -> None:
+        store = getattr(self.inbox, "store", None)
+        if store is None:
+            return
+        store.set_stimulus_disposition(
+            stimulus.stimulus_id,
+            disposition=disposition,
+            stage=stage,
+            reason=reason,
+        )
+
+
+def relay_fake_feedback(
+    gateway: Any,
+    intent: FakeEffectIntent,
+) -> str:
+    thread_id = intent.conversation_id.split("::", 1)[0]
+    return gateway.submit_execution_feedback(
+        thread_id=thread_id,
+        conversation_id=intent.conversation_id,
+        transaction_id=intent.transaction_id,
+        delegate_id=intent.delegate_id,
+        activation_id=intent.activation_id,
+        tool_history=[],
+        summary=intent.result_summary,
+        schedule_drainer=False,
+    )
+
+
+__all__ = ["LangGraphInboxLoop", "relay_fake_feedback"]

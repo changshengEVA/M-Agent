@@ -12,6 +12,7 @@ from m_agent.acceptance.models import (
 )
 from m_agent.acceptance.runner import AcceptanceRunner
 from m_agent.acceptance.catalog import get_invariants
+from m_agent.acceptance.scenario_runner import ScenarioAcceptanceRunner
 
 
 def test_runner_command_contains_only_fixed_pytest_controls_and_nodeids(
@@ -135,3 +136,76 @@ def test_case_annotation_preserves_all_invariant_evidence_for_shared_node() -> N
         },
     ]
     assert CaseResult.from_dict(case.to_dict()) == case
+
+
+def test_scenario_runner_executes_tx_01_and_persists_passed_result(
+    tmp_path: Path,
+) -> None:
+    project_root = Path(__file__).resolve().parents[2]
+    runner = ScenarioAcceptanceRunner(
+        project_root=project_root,
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    result = runner.run_contract(
+        scenario_ids=["TX-01"],
+        runtime_id="think_life_v1",
+        layers=("core",),
+        timeout_seconds=60,
+    )
+
+    assert result.result_kind == "scenario_contract"
+    assert result.suite == "p1-contract"
+    assert result.status == "passed"
+    assert result.runtime_id == "think_life_v1"
+    assert result.scenario_ids == ["TX-01"]
+    assert len(result.scenarios) == 1
+    scenario = result.scenarios[0]
+    assert scenario.status == "passed"
+    assert scenario.variants[0].status == "passed"
+    assert scenario.variants[0].cases[0].outcome == "passed"
+    observation = scenario.variants[0].cases[0].observation
+    assert observation["scenario_id"] == "TX-01"
+    assert observation["variant_id"] == "TX-01/core"
+    assert observation["runtime_id"] == "think_life_v1"
+    assert observation["data"]["facts"]
+    assert observation["data"]["checks"]
+    assert observation["data"]["summary"]["total_checks"] == len(
+        observation["data"]["checks"]
+    )
+    failures = [
+        check
+        for check in observation["data"]["checks"]
+        if check["passed"] is not True
+    ]
+    assert failures == []
+
+    persisted = runner.store.load_result(result.run_id)
+    assert persisted is not None
+    assert persisted.result_kind == "scenario_contract"
+    assert persisted.scenarios[0].variants[0].cases[0].observation == observation
+
+
+def test_scenario_runner_runs_langgraph_p6_core_slice(
+    tmp_path: Path,
+) -> None:
+    runner = ScenarioAcceptanceRunner(
+        project_root=Path(__file__).resolve().parents[2],
+        artifact_root=tmp_path / "artifacts",
+    )
+
+    result = runner.run_contract(
+        scenario_ids=["TX-01"],
+        runtime_id="langgraph_v1",
+        layers=("core", "poc"),
+    )
+
+    assert result.status == "passed"
+    assert result.pytest_exit_code == 0
+    assert result.scenarios[0].status == "passed"
+    passed_variants = {
+        item.variant_id
+        for item in result.scenarios[0].variants
+        if item.status == "passed"
+    }
+    assert "TX-01/core" in passed_variants

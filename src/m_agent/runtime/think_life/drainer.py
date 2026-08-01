@@ -57,11 +57,25 @@ class ThreadDrainerService:
             return sum(1 for worker in self._active.values() if worker.is_alive())
 
     def _run_loop(self, thread_id: str) -> None:
+        exited_cleanly = False
         try:
-            while self._get_pending(thread_id) > 0:
+            while True:
+                if self._get_pending(thread_id) <= 0:
+                    # Close the lost-wakeup window: recheck pending under the
+                    # same lock that gates ensure_running before unregistering.
+                    with self._lock:
+                        if self._get_pending(thread_id) <= 0:
+                            self._active.pop(thread_id, None)
+                            exited_cleanly = True
+                            break
+                    continue
                 emitter = self._build_emitter(thread_id)
                 history = self._get_history(thread_id)
-                self._drain_fn(thread_id, history_messages=history, event_emitter=emitter)
+                self._drain_fn(
+                    thread_id,
+                    history_messages=history,
+                    event_emitter=emitter,
+                )
                 THREAD_RUNTIME_STATUS.set_pending_stimuli(
                     thread_id,
                     self._get_pending(thread_id),
@@ -75,8 +89,9 @@ class ThreadDrainerService:
                 thread_id,
                 self._get_pending(thread_id),
             )
-            with self._lock:
-                self._active.pop(thread_id, None)
+            if not exited_cleanly:
+                with self._lock:
+                    self._active.pop(thread_id, None)
             self._emit_runtime(thread_id)
 
     def _emit_runtime(self, thread_id: str) -> None:

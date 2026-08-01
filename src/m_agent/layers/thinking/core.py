@@ -30,7 +30,12 @@ from m_agent.layers.thinking.contracts import (
     normalize_task_completion_status,
     normalize_thinking_mode,
 )
-from m_agent.layers.thinking.state import ConversationState, ConversationStateRegistry
+from m_agent.layers.thinking.state import (
+    ConversationState,
+    ConversationStateRegistry,
+    ThinkingScratch,
+    TransactionBoundState,
+)
 from m_agent.utils.api_error_utils import is_network_api_error
 
 
@@ -70,6 +75,7 @@ class ThinkingAgent:
         self.wm_reader = wm_reader
         self.episode_recorder: EpisodeRecorder = episode_recorder or DefaultEpisodeRecorder()
         self.state_registry = state_registry or ConversationStateRegistry()
+        self._scratches: Dict[str, ThinkingScratch] = {}
         self.prompt_language = str(prompt_language or "zh").strip().lower() or "zh"
 
         # YAML-overridable prompt fragments. Empty/None means "use built-in default".
@@ -93,50 +99,84 @@ class ThinkingAgent:
         dialogue_history: Optional[List[dict]] = None,
         scene_context: str = "",
     ) -> Optional[str]:
-        """Return an existing transaction id, or ``None`` to create a new one."""
-        if not candidates:
-            return None
-        base = self._transaction_resolution_base_override or (
-            "You route one incoming stimulus to an existing task transaction only when it "
-            "clearly continues that task. Otherwise choose create."
+        """Return a turn-local candidate ref / durable id, or ``None`` to create."""
+        use_zh = self.prompt_language.startswith("zh")
+        default_base = (
+            "你是 think-life 的事务归属解析器。只根据当前 conversation 中按时间顺序"
+            "排列、带事务来源标签的用户可见交互，判断 CURRENT 是否明确承接某个 "
+            "candidate_N；不要仅凭主题、关键词或措辞相似强行匹配，也不要检索其他 "
+            "conversation 的事务。"
+            if use_zh
+            else (
+                "You are the think-life transaction resolver. Use only the chronological, "
+                "transaction-labeled, user-visible interactions from the current "
+                "conversation to decide whether CURRENT clearly continues one candidate_N. "
+                "Do not force a match from topic, keyword, or wording similarity alone, and "
+                "do not search transactions from another conversation."
+            )
         )
-        instructions = self._transaction_resolution_instructions_override or (
-            "Output action='continue' with one listed transaction_id, or action='create' "
-            "with transaction_id=null. Do not merge unrelated tasks."
+        default_instructions = (
+            "仅当 CURRENT 明确且唯一地承接某个 candidate_N 时输出 action='continue'，"
+            "并将 transaction_id 设为该 candidate_N；否则输出 action='create' 且 "
+            "transaction_id=null。context_N 和 unbound 不可选择。只判断归属，不执行任务。"
+            if use_zh
+            else (
+                "Output action='continue' with that candidate_N as transaction_id only "
+                "when CURRENT clearly and uniquely continues it. Otherwise output "
+                "action='create' with transaction_id=null. context_N and unbound are not "
+                "selectable. Route only; do not perform the task."
+            )
+        )
+        base = self._transaction_resolution_base_override or default_base
+        instructions = (
+            self._transaction_resolution_instructions_override
+            or default_instructions
         )
         candidate_lines = []
         candidate_ids: Dict[str, str] = {}
-        for index, record in enumerate(candidates, start=1):
+        for index, item in enumerate(candidates, start=1):
             # The model only needs a turn-local selector.  Keep durable runtime
             # transaction ids on the server and map an opaque ordinal back to
             # the selected record after structured output is returned.
+            if isinstance(item, dict):
+                candidate_label = str(item.get("ref") or f"candidate_{index}")
+                candidate_ids[candidate_label] = candidate_label
+                candidate_lines.append(f"- {candidate_label}")
+                continue
             candidate_label = f"candidate_{index}"
-            candidate_ids[candidate_label] = record.transaction_id
-            state = record.task_state
-            candidate_lines.append(
-                f"- {candidate_label}: status={record.status.value}; "
-                f"completion_status={normalize_task_completion_status(state.completion_status)}; "
-                f"goal={state.goal or '(empty)'}; remaining={state.remaining}"
+            candidate_ids[candidate_label] = getattr(
+                item,
+                "transaction_id",
+                candidate_label,
             )
-        sections = [
-                base,
-                instructions,
-                f"[Current Stimulus]\nkind: {stimulus.kind.value}\ntext: {stimulus.text}",
-                "[Candidate Transactions]\n" + "\n".join(candidate_lines),
+            candidate_lines.append(f"- {candidate_label}")
+        routing_context = str(scene_context or "").strip()
+        has_transaction_timeline = routing_context.startswith(
+            "[Transaction-aware user interaction"
+        )
+        system_sections = [
+            base,
+            instructions,
+            (
+                "[Selectable Candidate Transactions / 可选候选事务]\n"
+                + "\n".join(candidate_lines)
+            ),
         ]
-        history = list(dialogue_history or [])[-6:]
-        if history:
-            lines = ["[Dialogue History]"]
-            for item in history:
-                if isinstance(item, dict):
-                    lines.append(
-                        f"- {str(item.get('role', '') or 'unknown')}: "
-                        f"{self._truncate_prompt_value(item.get('content', ''), 500)}"
-                    )
-            sections.append("\n".join(lines))
-        if str(scene_context or "").strip():
-            sections.append(f"[Scene Context]\n{str(scene_context).strip()}")
-        prompt = "\n\n".join(sections)
+        if has_transaction_timeline:
+            # The matcher-specific view already appends CURRENT with tx=?, so
+            # do not duplicate the stimulus or inject unlabelled dialogue.
+            user_context = routing_context
+        else:
+            user_sections = [
+                "[Current Stimulus / 当前刺激]\n"
+                f"kind: {stimulus.kind.value}\ntext: {stimulus.text}"
+            ]
+            if routing_context:
+                user_sections.append(
+                    "[Scene Context / 场景上下文]\n" + routing_context
+                )
+            user_context = "\n\n".join(user_sections)
+        system_prompt = "\n\n".join(system_sections)
         try:
             model = self.model_provider.model.with_structured_output(
                 TransactionResolution, include_raw=False
@@ -146,12 +186,16 @@ class ThinkingAgent:
         try:
             raw = self._invoke_structured(
                 model,
-                messages=[{"role": "system", "content": prompt}],
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_context},
+                ],
                 call_name="thinking.resolve_transaction",
             )
         except Exception:
             logger.exception("semantic transaction resolution failed")
-            return candidates[-1].transaction_id if len(candidates) == 1 else None
+            # P4: matcher exception/timeout always falls back to create.
+            return None
         if isinstance(raw, dict):
             action = str(raw.get("action", "") or "").strip().lower()
             transaction_id = str(raw.get("transaction_id", "") or "").strip()
@@ -178,8 +222,13 @@ class ThinkingAgent:
         if not str(perception.stimulus.text or "").strip():
             raise ValueError("PerceptionInput.stimulus.text must be a non-empty string")
 
-        state = transaction_state
-        if state is None:
+        if transaction_state is not None:
+            scratch = self._scratch_for(perception.conversation_id)
+            state: Any = TransactionBoundState(
+                record=transaction_state,
+                scratch=scratch,
+            )
+        else:
             state = self.state_registry.get_or_create(
                 perception.conversation_id,
                 thread_id=perception.thread_id,
@@ -210,6 +259,8 @@ class ThinkingAgent:
 
         task_progress_update = self._pre_gen_task_state(perception, state)
         self._apply_task_progress_update(state, task_progress_update)
+        self._force_processing_on_param_gap(perception, state)
+        self._coerce_awaiting_user_without_reply(state)
         emit(
             "thinking_task_state",
             self._task_state_event_payload(task_progress_update, perception, state),
@@ -218,17 +269,30 @@ class ThinkingAgent:
         completion_status = normalize_task_completion_status(
             state.task_progress.completion_status
         )
-        if completion_status == TASK_COMPLETION_COMPLETED:
+        tx_state = getattr(state, "state", None)
+        tx_state_value = (
+            tx_state.value if hasattr(tx_state, "value") else str(tx_state or "")
+        ).strip().lower()
+        # Action planning is gated by domain lifecycle / macro status, not by
+        # stuffing pause into ThinkingDecision.mode.
+        if tx_state_value == "pause":
+            decision = ThinkingDecision(
+                mode="silent",
+                request_complete=False,
+                reasoning="Transaction is paused waiting for user collaboration.",
+            )
+        elif completion_status == TASK_COMPLETION_COMPLETED:
             decision = ThinkingDecision(
                 mode="silent",
                 request_complete=True,
                 reasoning="Task state confirms that the complete request is fulfilled.",
             )
         elif completion_status == TASK_COMPLETION_AWAITING_USER:
+            # Macro wait-for-user: skip action plan; runtime maps this to pause.
             decision = ThinkingDecision(
                 mode="silent",
                 request_complete=False,
-                reasoning="Task state is waiting for additional user input.",
+                reasoning="Task state is awaiting user collaboration.",
             )
         else:
             decision = self._plan(perception, state)
@@ -258,6 +322,14 @@ class ThinkingAgent:
             },
         )
         return decision
+
+    def _scratch_for(self, conversation_id: str) -> ThinkingScratch:
+        key = str(conversation_id or "").strip()
+        scratch = self._scratches.get(key)
+        if scratch is None:
+            scratch = ThinkingScratch()
+            self._scratches[key] = scratch
+        return scratch
 
     @staticmethod
     def _make_safe_emitter(
@@ -307,7 +379,6 @@ class ThinkingAgent:
             "reasoning": decision.reasoning,
             "tool_name": decision.tool_name,
             "request_complete": decision.request_complete,
-            "capability_hint": list(decision.capability_hint or []),
             "episode_note": decision.episode_note,
             "task_progress": state.task_progress.to_dict(),
         }
@@ -395,6 +466,44 @@ class ThinkingAgent:
             state.task_progress.remaining = [
                 str(item or "").strip() for item in update.remaining if str(item or "").strip()
             ]
+
+    @staticmethod
+    def _force_processing_on_param_gap(
+        perception: PerceptionInput,
+        state: ConversationState,
+    ) -> None:
+        """Param-fill short-circuits must not enter wait-for-user semantics."""
+
+        if perception.stimulus.kind != StimulusKind.EXECUTION_FEEDBACK:
+            return
+        payload = perception.stimulus.payload if isinstance(
+            perception.stimulus.payload, dict
+        ) else {}
+        history = payload.get("tool_history")
+        if not isinstance(history, list) or not history:
+            return
+        step = history[-1] if isinstance(history[-1], dict) else {}
+        result = step.get("result") if isinstance(step.get("result"), dict) else {}
+        is_param_gap = (
+            bool(result.get("needs_clarification"))
+            or str(result.get("stage", "") or "").strip() == "param_fill"
+            or result.get("tool_invoked") is False
+        )
+        if is_param_gap:
+            state.task_progress.completion_status = TASK_COMPLETION_PROCESSING
+
+    @staticmethod
+    def _coerce_awaiting_user_without_reply(state: ConversationState) -> None:
+        """Awaiting user requires a prior visible reply in this activation."""
+
+        if (
+            normalize_task_completion_status(state.task_progress.completion_status)
+            != TASK_COMPLETION_AWAITING_USER
+        ):
+            return
+        if bool(getattr(state, "reply_finalized_in_activation", False)):
+            return
+        state.task_progress.completion_status = TASK_COMPLETION_PROCESSING
 
     # ------------------------------------------------------------------
     # Task-state pre-generation pass (LLM #1 in think-life)
@@ -485,7 +594,8 @@ class ThinkingAgent:
                 "- 不要把原始工具结果复制进状态；只写短、可读、可执行的任务步骤。\n"
                 "- 新的用户请求必须是 processing，即使它可以直接回答。\n"
                 "- 当前刺激为 execution_feedback 时，根据可读反馈和证据更新 completion_status/completed/remaining。\n"
-                "- 工具结果尚需告知用户时仍是 processing；已发送澄清问题时是 awaiting_user。\n"
+                "- 工具结果尚需告知用户、参数缺口可改用其他工具补参时，一律保持 processing。\n"
+                "- 澄清问题已通过 reply 发给用户、仍需用户协作时，completion_status 用 awaiting_user（宏观决策）；运行时会 pause，本轮不再做动作规划。\n"
                 "- 只有整个请求及必要的用户回复均已完成时，才使用 completed。"
             )
         return (
@@ -499,8 +609,8 @@ class ThinkingAgent:
             "- Do not copy raw tool results into state; write short, readable, actionable steps.\n"
             "- A new user request is processing even when it can be answered directly.\n"
             "- For execution_feedback, update completion_status/completed/remaining from readable feedback and visible evidence.\n"
-            "- Tool execution alone is not completed when its result still needs to be communicated to the user.\n"
-            "- A delivered clarification question is awaiting_user, not completed.\n"
+            "- Keep processing when tool results still need a user reply, or when a param gap can be filled by another tool.\n"
+            "- After a clarification reply is delivered and you still need the user, set completion_status=awaiting_user (macro decision); runtime will pause and skip action planning this turn.\n"
             "- Mark completed only after the full request, including required user communication, is fulfilled."
         )
 
@@ -616,35 +726,33 @@ class ThinkingAgent:
             return (
                 "[规划要求]\n"
                 "请按以下结构化字段输出本轮的决策：\n"
-                "- mode: 仅可填 \"execute\"、\"answer_directly\" 或 \"silent\"。\n"
+                "- mode: 仅可填 \"execute\"、\"answer_directly\" 或 \"silent\"（动作决策，不写 transaction 生命周期）。\n"
                 "- instruction: 当 mode==execute 时，写一条自然语言指令交给执行层；否则留空或填 null。\n"
                 "- answer: 当 mode==answer_directly 时直接给出最终回复；silent/execute 时留空或填 null。\n"
                 "- episode_note: 可选；写下你认为以后值得记住的一两句话，不要把工具结果原样塞进去。\n"
                 "- tool_name: 当 mode==execute 时必填，且只能填一个已启用能力名（本轮只执行这一个工具）。\n"
                 "- request_complete: 由任务状态决定；仅当 completion_status==completed 时为 true。\n"
-                "- capability_hint: 可选；已废弃，请优先使用 tool_name。\n"
                 "- reasoning: 可选；简要说明本轮选择 mode 的理由，便于审计。\n"
                 "[硬约束]\n"
                 "- 你本身没有工具权限，所有外部动作只能通过 execute 委托，且每轮最多一个 tool_name。\n"
                 "- 多步任务：以 feedback 中 Structured tool result 的 count 为准；未完成时 request_complete=false。\n"
                 "- 当 mode==execute 时，不要在 answer 中给出最终回复，让执行层先工作。\n"
                 "- completion_status==processing 时 request_complete=false；answer_directly 后等待 execution_feedback。\n"
-                "- completion_status==awaiting_user 时用 silent 且 request_complete=false。\n"
+                "- 等用户协作由宏观任务状态 awaiting_user 表达，不在 mode 里表达 pause。\n"
                 "- completion_status==completed 时用 silent 且 request_complete=true，不要继续行动。\n"
                 "- 闲聊、致谢、与可委托能力无关的请求，用 answer_directly；纯附和/无需回复时用 silent。\n"
-                "- mode==silent：不 delegate、不 reply，仅记录 reasoning/episode_note，等待后续刺激。\n"
+                "- mode==silent：不 delegate、不 reply；仅记录 reasoning/episode_note，等待后续刺激。\n"
                 "- 不要在指令中重复用户原话，要写明你希望执行层做什么。"
             )
         return (
             "[Planning Requirements]\n"
             "Emit the structured decision for this turn:\n"
-            "- mode: must be \"execute\", \"answer_directly\", or \"silent\".\n"
+            "- mode: must be \"execute\", \"answer_directly\", or \"silent\" (action decision only; not transaction lifecycle).\n"
             "- instruction: required when mode==execute; a single natural-language directive for the execution layer.\n"
             "- answer: required when mode==answer_directly; leave empty for silent/execute.\n"
             "- episode_note: optional short text worth remembering; do not dump raw tool output here.\n"
             "- tool_name: required when mode==execute; exactly one enabled capability (one tool this round).\n"
             "- request_complete: derived from task state; true only when completion_status==completed.\n"
-            "- capability_hint: optional compatibility field; tool_name is authoritative.\n"
             "- reasoning: optional short rationale for the chosen mode (for auditing).\n"
             "[Hard Constraints]\n"
             "- You hold no tools yourself; delegate via execute with at most one tool_name per round.\n"
@@ -652,7 +760,7 @@ class ThinkingAgent:
             "- Read [Current Stimulus], [Scene Context], [Task State], and [Working Memory] before deciding.\n"
             "- When mode==execute, leave answer empty and let the execution layer work first.\n"
             "- When completion_status==processing, request_complete=false; answer_directly must be followed by execution feedback.\n"
-            "- When completion_status==awaiting_user, use silent with request_complete=false.\n"
+            "- Waiting for the user is expressed by macro task status awaiting_user, not by a pause mode.\n"
             "- When completion_status==completed, use silent with request_complete=true and take no further action.\n"
             "- For small talk or delegable-unrelated requests, choose answer_directly; use silent for acks that need no reply.\n"
             "- mode==silent: no delegate, no reply; record reasoning/episode_note and wait for further stimulus.\n"
@@ -755,7 +863,6 @@ class ThinkingAgent:
                 instruction=raw.get("instruction"),
                 answer=raw.get("answer"),
                 episode_note=raw.get("episode_note"),
-                capability_hint=list(raw["capability_hint"]) if isinstance(raw.get("capability_hint"), list) else None,
                 request_complete=raw.get("request_complete"),
                 reasoning=raw.get("reasoning"),
             )
@@ -766,7 +873,6 @@ class ThinkingAgent:
                 instruction=getattr(raw, "instruction", None),
                 answer=getattr(raw, "answer", None),
                 episode_note=getattr(raw, "episode_note", None),
-                capability_hint=getattr(raw, "capability_hint", None),
                 request_complete=getattr(raw, "request_complete", None),
                 reasoning=getattr(raw, "reasoning", None),
             )

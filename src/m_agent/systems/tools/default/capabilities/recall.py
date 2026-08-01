@@ -133,11 +133,13 @@ def _build_deep_recall_tool(context: ControllerCapabilityContext, description: s
 SHALLOW_RECALL_CAPABILITY = ControllerCapabilitySpec(
     name="shallow_recall",
     build_tool=_build_shallow_recall_tool,
+    delivery_guarantee="idempotent",
 )
 
 DEEP_RECALL_CAPABILITY = ControllerCapabilitySpec(
     name="deep_recall",
     build_tool=_build_deep_recall_tool,
+    delivery_guarantee="idempotent",
 )
 
 

@@ -5,8 +5,9 @@ import hashlib
 import json
 import re
 import threading
+import uuid
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from m_agent.runtime.think_life.contracts import SceneEntry
 
@@ -31,11 +32,19 @@ def scene_persist_file_stem(conversation_id: str) -> str:
 class SceneLogStore:
     """Conversation-scoped chronological Scene log (cross-transaction)."""
 
-    def __init__(self, *, persist_dir: Optional[Path] = None, persist_enabled: bool = True) -> None:
+    def __init__(
+        self,
+        *,
+        persist_dir: Optional[Path] = None,
+        persist_enabled: bool = True,
+        runtime_store: Optional[Any] = None,
+    ) -> None:
         self._persist_dir = persist_dir
         self._persist_enabled = bool(persist_enabled and persist_dir is not None)
+        self._runtime_store = runtime_store
         self._lock = threading.RLock()
         self._entries: Dict[str, List[SceneEntry]] = {}
+        self._entries_by_append_id: Dict[str, Dict[str, SceneEntry]] = {}
         self._seq: Dict[str, int] = {}
         self._flush_seq: Dict[str, int] = {}
         self._loaded_threads: set[str] = set()
@@ -94,7 +103,12 @@ class SceneLogStore:
         payload = {"conversation_seq": max(0, int(conversation_seq))}
         with self._lock:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+            temporary = path.with_suffix(path.suffix + ".tmp")
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            temporary.replace(path)
 
     def _persist_flush_meta(self, thread_id: str) -> None:
         path = self._meta_path(thread_id)
@@ -103,7 +117,12 @@ class SceneLogStore:
         tid = str(thread_id or "").strip()
         payload = {"flush_seq": int(self._flush_seq.get(tid, 0))}
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
 
     def _load_flush_meta(self, thread_id: str) -> None:
         path = self._meta_path(thread_id)
@@ -128,12 +147,23 @@ class SceneLogStore:
 
     def flush_watermark(self, thread_id: str) -> int:
         tid = str(thread_id or "").strip()
+        if self._runtime_store is not None:
+            self.ensure_thread_loaded(tid)
+            state = self._runtime_store.load_conversation_state(tid)
+            return int(state.get("flush_watermark", 0))
         self.ensure_thread_loaded(tid)
         with self._lock:
             return int(self._flush_seq.get(tid, 0))
 
     def entries_since_flush(self, thread_id: str) -> List[SceneEntry]:
         tid = str(thread_id or "").strip()
+        if self._runtime_store is not None:
+            self.ensure_thread_loaded(tid)
+            state = self._runtime_store.load_conversation_state(tid)
+            return self._runtime_store.read_scene(
+                tid,
+                after_seq=int(state.get("flush_watermark", 0)),
+            )
         self.ensure_thread_loaded(tid)
         with self._lock:
             watermark = int(self._flush_seq.get(tid, 0))
@@ -143,10 +173,19 @@ class SceneLogStore:
         tid = str(thread_id or "").strip()
         if not tid:
             return
+        if self._runtime_store is not None:
+            self.ensure_thread_loaded(tid)
+            self._runtime_store.mark_scene_flushed(
+                tid,
+                through_seq=through_seq,
+            )
+            return
         self.ensure_thread_loaded(tid)
         with self._lock:
             current = int(self._flush_seq.get(tid, 0))
-            self._flush_seq[tid] = max(current, int(through_seq))
+            latest = int(self._seq.get(tid, 0))
+            bounded = min(max(0, int(through_seq)), latest)
+            self._flush_seq[tid] = max(current, bounded)
         self._persist_flush_meta(tid)
 
     def _next_seq(self, thread_id: str) -> int:
@@ -155,12 +194,35 @@ class SceneLogStore:
         self._seq[thread_id] = nxt
         return nxt
 
-    def append(self, thread_id: str, entry: SceneEntry) -> SceneEntry:
+    def append(
+        self,
+        thread_id: str,
+        entry: SceneEntry,
+        *,
+        append_id: Optional[str] = None,
+    ) -> SceneEntry:
         tid = str(thread_id or "").strip()
         if not tid:
             raise ValueError("thread_id is required for Scene append")
+        if self._runtime_store is not None:
+            self.ensure_thread_loaded(tid)
+            return self._runtime_store.append_scene_entry(
+                tid,
+                entry,
+                append_id=append_id,
+            )
         self.ensure_thread_loaded(tid)
         with self._lock:
+            stable_append_id = (
+                str(append_id or entry.append_id or "").strip()
+                or f"append_{uuid.uuid4().hex}"
+            )
+            existing = self._entries_by_append_id.setdefault(
+                tid,
+                {},
+            ).get(stable_append_id)
+            if existing is not None:
+                return existing
             seq = self._next_seq(tid)
             stored = SceneEntry(
                 seq=seq,
@@ -168,12 +230,14 @@ class SceneLogStore:
                 entry_type=entry.entry_type,
                 actor=entry.actor,
                 text=entry.text,
+                append_id=stable_append_id,
                 transaction_id=entry.transaction_id,
                 delegate_id=entry.delegate_id,
                 tool_name=entry.tool_name,
                 payload_ref=entry.payload_ref,
             )
             self._entries.setdefault(tid, []).append(stored)
+            self._entries_by_append_id[tid][stable_append_id] = stored
             if self._persist_enabled and self._persist_dir is not None:
                 self._persist_dir.mkdir(parents=True, exist_ok=True)
                 path = self._persist_dir / f"{scene_persist_file_stem(tid)}.jsonl"
@@ -190,6 +254,13 @@ class SceneLogStore:
     ) -> List[SceneEntry]:
         tid = str(thread_id or "").strip()
         cap = max(1, int(limit or 40))
+        if self._runtime_store is not None:
+            self.ensure_thread_loaded(tid)
+            items = self._runtime_store.read_scene(
+                tid,
+                before_seq=before_seq,
+            )
+            return items[-cap:]
         self.ensure_thread_loaded(tid)
         with self._lock:
             items = list(self._entries.get(tid, []))
@@ -198,21 +269,51 @@ class SceneLogStore:
         return items[-cap:]
 
     @staticmethod
-    def _normalize_loaded_entries(loaded: List[SceneEntry]) -> List[SceneEntry]:
+    def _normalize_loaded_entries(
+        thread_id: str,
+        loaded: List[SceneEntry],
+    ) -> List[SceneEntry]:
         if not loaded:
             return loaded
-        seen_seq = {entry.seq for entry in loaded}
-        if len(seen_seq) == len(loaded):
-            return loaded
         normalized: List[SceneEntry] = []
+        seen_append_ids: set[str] = set()
         for index, entry in enumerate(loaded, start=1):
+            append_id = str(entry.append_id or "").strip()
+            if not append_id:
+                digest_input = json.dumps(
+                    {
+                        "conversation_id": thread_id,
+                        "legacy_seq": entry.seq,
+                        "index": index,
+                        "occurred_at": entry.occurred_at,
+                        "entry_type": entry.entry_type.value,
+                        "actor": entry.actor.value,
+                        "text": entry.text,
+                        "transaction_id": entry.transaction_id,
+                        "delegate_id": entry.delegate_id,
+                        "tool_name": entry.tool_name,
+                        "payload_ref": entry.payload_ref,
+                    },
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+                append_id = (
+                    "legacy_"
+                    + hashlib.sha256(
+                        digest_input.encode("utf-8")
+                    ).hexdigest()
+                )
+            if append_id in seen_append_ids:
+                continue
+            seen_append_ids.add(append_id)
             normalized.append(
                 SceneEntry(
-                    seq=index,
+                    seq=len(normalized) + 1,
                     occurred_at=entry.occurred_at,
                     entry_type=entry.entry_type,
                     actor=entry.actor,
                     text=entry.text,
+                    append_id=append_id,
                     transaction_id=entry.transaction_id,
                     delegate_id=entry.delegate_id,
                     tool_name=entry.tool_name,
@@ -239,10 +340,53 @@ class SceneLogStore:
                         except (json.JSONDecodeError, TypeError, ValueError):
                             continue
                         loaded.append(entry)
-        loaded = self._normalize_loaded_entries(loaded)
+        loaded = self._normalize_loaded_entries(tid, loaded)
+        if self._runtime_store is not None:
+            existing = self._runtime_store.read_scene(tid)
+            if not existing:
+                for entry in loaded:
+                    self._runtime_store.append_scene_entry(
+                        tid,
+                        entry,
+                        append_id=entry.append_id,
+                    )
+                legacy_watermark = 0
+                meta_path = self._meta_path(tid)
+                if meta_path is not None and meta_path.is_file():
+                    try:
+                        meta = json.loads(
+                            meta_path.read_text(encoding="utf-8")
+                        )
+                        legacy_watermark = int(
+                            meta.get("flush_seq", 0) or 0
+                        )
+                    except (
+                        AttributeError,
+                        json.JSONDecodeError,
+                        OSError,
+                        TypeError,
+                        ValueError,
+                    ):
+                        legacy_watermark = 0
+                if legacy_watermark:
+                    self._runtime_store.mark_scene_flushed(
+                        tid,
+                        through_seq=legacy_watermark,
+                    )
+            with self._lock:
+                self._loaded_threads.add(tid)
+            return
         with self._lock:
             self._entries[tid] = loaded
-            self._seq[tid] = len(loaded)
+            self._entries_by_append_id[tid] = {
+                str(entry.append_id): entry
+                for entry in loaded
+                if entry.append_id
+            }
+            self._seq[tid] = max(
+                (int(entry.seq) for entry in loaded),
+                default=0,
+            )
             if tid not in self._flush_seq:
                 self._flush_seq[tid] = 0
             self._loaded_threads.add(tid)
@@ -253,8 +397,18 @@ class SceneWriterAdapter:
     def __init__(self, store: SceneLogStore) -> None:
         self._store = store
 
-    def append(self, thread_id: str, entry: SceneEntry) -> SceneEntry:
-        return self._store.append(thread_id, entry)
+    def append(
+        self,
+        thread_id: str,
+        entry: SceneEntry,
+        *,
+        append_id: Optional[str] = None,
+    ) -> SceneEntry:
+        return self._store.append(
+            thread_id,
+            entry,
+            append_id=append_id,
+        )
 
 
 class SceneReaderAdapter:

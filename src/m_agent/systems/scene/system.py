@@ -23,8 +23,13 @@ def build_default_scene_system(
     *,
     persist_dir: Optional[Path] = None,
     persist_enabled: bool = True,
+    runtime_store: Any = None,
 ) -> SceneSystem:
-    store = SceneLogStore(persist_dir=persist_dir, persist_enabled=persist_enabled)
+    store = SceneLogStore(
+        persist_dir=persist_dir,
+        persist_enabled=persist_enabled,
+        runtime_store=runtime_store,
+    )
     return SceneSystem(
         writer=SceneWriterAdapter(store),
         reader=SceneReaderAdapter(store),

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from m_agent.layers.perception import PerceptionInput, build_perception_input
 from m_agent.runtime.think_life.contracts import (
@@ -34,6 +34,7 @@ def read_scene_segment(
     thread_id: str,
     *,
     max_entries: int,
+    entry_filter: Optional[Callable[[SceneEntry], bool]] = None,
 ) -> List[SceneEntry]:
     """Scene entries in the current flush segment (since last memory flush), capped."""
     tid = str(thread_id or "").strip()
@@ -42,7 +43,12 @@ def read_scene_segment(
     if callable(since_fn):
         entries = list(since_fn(tid))
     else:
-        entries = list(scene_reader.tail(tid, limit=cap))
+        # Standard Scene readers implement entries_since_flush. The wider
+        # fallback prevents internal events from starving a filtered view.
+        fallback_cap = cap if entry_filter is None else max(cap * 8, 320)
+        entries = list(scene_reader.tail(tid, limit=fallback_cap))
+    if entry_filter is not None:
+        entries = [entry for entry in entries if entry_filter(entry)]
     if len(entries) > cap:
         return entries[-cap:]
     return entries

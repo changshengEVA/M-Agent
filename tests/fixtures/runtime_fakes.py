@@ -205,6 +205,10 @@ class FakeRuntime:
         self._thread_event_sink = None
         self._threads: dict[str, dict[str, Any]] = {}
         self._scene_entries: dict[str, list[dict[str, Any]]] = {}
+        self._transactions: dict[str, dict[str, Any]] = {}
+        self._transaction_delete_replays: dict[
+            tuple[str, str], tuple[str, int, dict[str, Any]]
+        ] = {}
         self._threads_lock = threading.Lock()
         self._stats_lock = threading.Lock()
         self._runs_failed = 0
@@ -286,15 +290,170 @@ class FakeRuntime:
             entries = entries[-cap:]
         return {"thread_id": tid, "entries": entries, "has_more": has_more}
 
-    def get_think_life_transactions(self, thread_id: str) -> Dict[str, Any]:
+    def seed_transaction(
+        self,
+        *,
+        thread_id: str,
+        transaction_id: str = "tx-test-1",
+        conversation_id: str | None = None,
+        revision: int = 1,
+    ) -> Dict[str, Any]:
+        tid = str(thread_id or self.default_thread_id).strip()
+        record = {
+            "transaction_id": transaction_id,
+            "thread_id": tid,
+            "conversation_id": conversation_id or f"{tid}::0",
+            "state": "continue",
+            "lifecycle_status": "active",
+            "revision": int(revision),
+            "current_activation_id": "act-test-1",
+            "active_delegate_id": None,
+            "deleted": False,
+            "deleted_at": None,
+            "updated_at": _now_iso(),
+            "terminal_at": None,
+            "wm_entries": [],
+            "wm_entry_count": 0,
+            "task_state": {
+                "goal": "test",
+                "completion_status": "processing",
+                "completed": [],
+                "remaining": [],
+            },
+            "kind": "user_task",
+            "priority": 50,
+            "think_rounds": 0,
+            "delegate_count": 0,
+            "is_active_user": True,
+            "is_cpu_holder": False,
+        }
+        self._transactions[transaction_id] = record
+        return deepcopy(record)
+
+    def get_think_life_transactions(
+        self,
+        thread_id: str,
+        *,
+        include_history: bool = False,
+    ) -> Dict[str, Any]:
         tid = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
+        conversation_id = f"{tid}::0"
+        transactions = [
+            deepcopy(item)
+            for item in self._transactions.values()
+            if item["thread_id"] == tid
+            and (
+                include_history
+                or item["conversation_id"] == conversation_id
+            )
+        ]
+        active = next(
+            (
+                item["transaction_id"]
+                for item in transactions
+                if not item.get("deleted")
+                and item.get("state") == "continue"
+            ),
+            None,
+        )
         return {
             "thread_id": tid,
-            "transactions": [],
+            "conversation_id": conversation_id,
+            "transactions": transactions,
+            "active_transaction_id": active,
+            "cpu_transaction_id": None,
+            "transaction_count": len(transactions),
+            "audit_transaction_count": sum(
+                item["thread_id"] == tid
+                for item in self._transactions.values()
+            ),
+            "include_history": bool(include_history),
+        }
+
+    def delete_transaction(
+        self,
+        thread_id: str = "",
+        transaction_id: str = "",
+        *,
+        conversation_id: str | None = None,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> Dict[str, Any]:
+        from m_agent.runtime.transaction_control import (
+            RuntimeTransactionNotFoundError,
+        )
+        from m_agent.runtime.think_life.transaction.store import (
+            IdempotencyConflictError,
+            RevisionConflictError,
+        )
+
+        tid = str(thread_id or self.default_thread_id).strip()
+        cid = str(conversation_id or "").strip() or f"{tid}::0"
+        replay_key = (tid, str(idempotency_key))
+        replay = self._transaction_delete_replays.get(replay_key)
+        if replay is not None:
+            replay_tx, replay_revision, replay_payload = replay
+            if (
+                replay_tx != transaction_id
+                or replay_revision != int(expected_revision)
+            ):
+                raise IdempotencyConflictError(
+                    str(idempotency_key),
+                    stored_digest="stored",
+                    requested_digest="requested",
+                )
+            payload = deepcopy(replay_payload)
+            payload["replayed"] = True
+            return payload
+        record = self._transactions.get(transaction_id)
+        if (
+            record is None
+            or record["thread_id"] != tid
+            or record["conversation_id"] != cid
+        ):
+            raise RuntimeTransactionNotFoundError(transaction_id)
+        if int(record["revision"]) != int(expected_revision):
+            raise RevisionConflictError(
+                transaction_id,
+                expected_revision=int(expected_revision),
+                actual_revision=int(record["revision"]),
+            )
+        already_deleted = bool(record.get("deleted"))
+        if not already_deleted:
+            record["revision"] = int(record["revision"]) + 1
+            record["lifecycle_status"] = "deleted"
+            record["deleted"] = True
+            record["deleted_at"] = _now_iso()
+            record["terminal_at"] = record["deleted_at"]
+            record["updated_at"] = record["deleted_at"]
+            record["current_activation_id"] = None
+            record["active_delegate_id"] = None
+            record["is_active_user"] = False
+        payload = {
+            "success": True,
+            "outcome": "already_deleted" if already_deleted else "deleted",
+            "transaction": deepcopy(record),
+            "cleanup": {
+                "cancelled_schedule_run_ids": [],
+                "aborted_stimulus_ids": [],
+                "terminal_feedback_outbox_ids": [],
+                "cancelled_in_flight": False,
+            },
+            "thread_id": tid,
+            "conversation_id": cid,
             "active_transaction_id": None,
             "cpu_transaction_id": None,
-            "transaction_count": 0,
+            "replayed": False,
+            "already_deleted": already_deleted,
         }
+        self._transaction_delete_replays[replay_key] = (
+            transaction_id,
+            int(expected_revision),
+            deepcopy(payload),
+        )
+        if callable(self._thread_event_sink) and not already_deleted:
+            self._thread_event_sink(tid, "transaction_deleted", deepcopy(payload))
+        return payload
 
     def _ensure_state(self, thread_id: str) -> dict[str, Any]:
         normalized = str(thread_id or self.default_thread_id).strip() or self.default_thread_id

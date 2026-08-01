@@ -213,6 +213,7 @@ def _build_web_search_tool(context: ControllerCapabilityContext, description: st
 WEB_SEARCH_CAPABILITY = ControllerCapabilitySpec(
     name="web_search",
     build_tool=_build_web_search_tool,
+    delivery_guarantee="at_most_once",
 )
 
 

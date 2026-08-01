@@ -1,0 +1,2 @@
+[console_scripts]
+m-agent-acceptance = m_agent.acceptance.cli:main

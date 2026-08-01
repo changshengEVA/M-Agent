@@ -6,7 +6,7 @@ import json
 import re
 import uuid
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from .models import RunResult
 
@@ -104,6 +104,26 @@ class ArtifactStore:
         if stderr_path.is_file():
             result.stderr = stderr_path.read_text(encoding="utf-8", errors="replace")
         return result
+
+    def list_run_ids(self) -> List[str]:
+        """Return persisted runs newest-first, based on summary modification time."""
+
+        if not self.root.is_dir():
+            return []
+        summaries = []
+        for candidate in self.root.iterdir():
+            if not candidate.is_dir() or not _RUN_ID_RE.fullmatch(candidate.name):
+                continue
+            summary = candidate / _ARTIFACT_FILES["summary"]
+            if not summary.is_file():
+                continue
+            try:
+                modified_at = summary.stat().st_mtime_ns
+            except OSError:
+                continue
+            summaries.append((modified_at, candidate.name))
+        summaries.sort(reverse=True)
+        return [run_id for _, run_id in summaries]
 
     def artifact_path(self, run_id: str, artifact_name: str) -> Path:
         safe_name = str(artifact_name or "").strip().lower()

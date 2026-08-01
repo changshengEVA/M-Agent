@@ -12,5 +12,10 @@
    记录当前完成度、缺口、P0～P8 顺序和下一步；属于时间敏感文档。
 4. [LangGraph Runtime 迁移计划](langgraph-runtime-migration-plan.zh-CN.md)  
    候选实现路径；是否采用 LangGraph 仍由 PoC 结果决定。
+5. [生产 Runtime 层实施计划](production-runtime-layer-plan.zh-CN.md)  
+   P8 之后：RuntimeHost、LangGraphRuntime 生产接线、Chat API 灰度与旧 loop 收缩（时间敏感）。
 
 当前实现行为见 [`../runtime/`](../runtime/README.md)。
+
+状态提示：截至 2026-07-30，P0～P8 与 acceptance 双 Runtime 矩阵已完成；
+生产 Runtime 接线见第 5 份文档；完整阶段 Gate 以第 3 份文档为准。

@@ -10,14 +10,20 @@ from typing import Any, Callable, Dict, List, Optional
 from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS, ThreadRuntimeSnapshot
 from m_agent.chat.three_layer_chat_agent import ThreeLayerChatAgent
 from m_agent.paths import chat_user_persistence_root, chat_user_slug
+from m_agent.runtime.host.emitting_scene import EmittingSceneWriter
+from m_agent.runtime.host import product_views
+from m_agent.runtime.transaction_control import (
+    TransactionFencedSceneWriter,
+    delete_runtime_transaction,
+)
 from m_agent.runtime.think_life.config import ThinkLifeConfig, load_think_life_config
 from m_agent.runtime.think_life.contracts import (
+    PauseReason,
     SceneActor,
     SceneEntry,
     SceneEntryType,
     TransactionKind,
     TransactionRecord,
-    TransactionStatus,
 )
 from m_agent.runtime.think_life.drainer import ThreadDrainerService
 from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
@@ -27,33 +33,18 @@ from m_agent.runtime.think_life.scheduler.cpu_state import THREAD_CPU_STATE
 from m_agent.runtime.think_life.scheduler.loop import ThinkLifeLoop
 from m_agent.runtime.think_life.scheduler.schedule_lifecycle import ScheduleLifecycleHook
 from m_agent.runtime.think_life.transaction_registry import TransactionRegistry
+from m_agent.runtime.think_life.transaction.flush import FlushCoordinator
+from m_agent.runtime.think_life.transaction.store import SQLiteRuntimeStore
+from m_agent.runtime.think_life.transaction.predicates import (
+    is_open_continue,
+    project_compat_status,
+)
 from m_agent.systems.scene import build_default_scene_system
-from m_agent.systems.scene.protocols import SceneWriter
 
 logger = logging.getLogger(__name__)
 
 ThreadEventEmitter = Callable[[str, str, Dict[str, Any]], None]
 HistoryProvider = Callable[[str], Optional[List[Dict[str, Any]]]]
-
-
-class _EmittingSceneWriter:
-    """Wraps SceneWriter to emit ``scene_entry_appended`` after append."""
-
-    def __init__(
-        self,
-        inner: SceneWriter,
-        on_appended: Callable[[str, SceneEntry], None],
-    ) -> None:
-        self._inner = inner
-        self._on_appended = on_appended
-
-    def append(self, thread_id: str, entry: SceneEntry) -> SceneEntry:
-        stored = self._inner.append(thread_id, entry)
-        try:
-            self._on_appended(thread_id, stored)
-        except Exception:
-            logger.exception("scene on_appended hook failed thread_id=%s", thread_id)
-        return stored
 
 
 class ThinkLifeRuntime:
@@ -73,19 +64,27 @@ class ThinkLifeRuntime:
             raw_runtime.get("think_life") if isinstance(raw_runtime.get("think_life"), dict) else {}
         )
 
-        scene_dir = chat_user_persistence_root(chat_user_slug(self.owner_id)) / "scene"
+        persistence_root = chat_user_persistence_root(
+            chat_user_slug(self.owner_id)
+        )
+        scene_dir = persistence_root / "scene"
+        runtime_dir = persistence_root / "runtime"
+        runtime_dir.mkdir(parents=True, exist_ok=True)
+        self.runtime_store = SQLiteRuntimeStore(
+            runtime_dir / "think_life.sqlite3"
+        )
         self.scene_system = build_default_scene_system(
             persist_dir=scene_dir,
             persist_enabled=self.config.scene_persist_jsonl,
+            runtime_store=self.runtime_store,
         )
 
-        self.registry = TransactionRegistry()
-        self.inbox = StimulusInbox()
-        self.attributor = TransactionAttributor(
+        self.registry = TransactionRegistry(store=self.runtime_store)
+        self.flush_coordinator = FlushCoordinator(
+            store=self.runtime_store,
             registry=self.registry,
-            config=self.config,
-            semantic_resolver=agent.thinking_agent.resolve_transaction,
         )
+        self.inbox = StimulusInbox(store=self.runtime_store)
         self._reply_lock = threading.Lock()
         self._last_replies: Dict[str, List[str]] = {}
         self._thread_event_emitter: Optional[ThreadEventEmitter] = None
@@ -93,15 +92,25 @@ class ThinkLifeRuntime:
         self._schedule_lifecycle: ScheduleLifecycleHook = None
         self._drain_locks: Dict[str, threading.Lock] = defaultdict(threading.Lock)
 
-        self._emitting_writer = _EmittingSceneWriter(
+        self._emitting_writer = EmittingSceneWriter(
             self.scene_system.writer,
             self._on_scene_appended,
         )
+        self._transaction_scene_writer = TransactionFencedSceneWriter(
+            self.registry,
+            self._emitting_writer,
+        )
 
+        self.attributor = TransactionAttributor(
+            registry=self.registry,
+            config=self.config,
+            semantic_resolver=agent.thinking_agent.resolve_transaction,
+            scene_writer=self._transaction_scene_writer,
+        )
         self.gateway = PerceptionGateway(
             inbox=self.inbox,
             attributor=self.attributor,
-            scene_writer=self._emitting_writer,
+            scene_writer=self._transaction_scene_writer,
             on_enqueued=self._on_stimulus_enqueued,
         )
 
@@ -114,7 +123,7 @@ class ThinkLifeRuntime:
             thinking_agent=agent.thinking_agent,
             execution_agent=agent.execution_agent,
             wm_system=agent.systems.wm,
-            scene_writer=self._emitting_writer,
+            scene_writer=self._transaction_scene_writer,
             scene_reader=self.scene_system.reader,
             on_reply=self._on_reply,
             event_emitter=None,
@@ -177,24 +186,42 @@ class ThinkLifeRuntime:
         self._emit_thread_event(thread_id, "scene_entry_appended", entry.to_dict())
 
     def _on_reply(self, thread_id: str, transaction_id: str, message: str, finalize: bool) -> None:
-        with self._reply_lock:
-            self._last_replies.setdefault(thread_id, []).append(str(message or "").strip())
+        with self.registry._lock:
+            persisted = self.registry.store.load_transaction(transaction_id)
+            if persisted is None or persisted.deleted:
+                return
+            with self._reply_lock:
+                self._last_replies.setdefault(thread_id, []).append(str(message or "").strip())
 
-        record = self.registry.get(transaction_id)
-        delegate_id = ""
-        if record is not None:
-            delegate_id = str(record.active_delegate_id or record.correlation.delegate_id or "")
+            record = self.registry.get(transaction_id)
+            delegate_id = ""
+            if record is not None:
+                delegate_id = str(record.active_delegate_id or "")
 
-        self._emit_thread_event(
-            thread_id,
-            "reply_emitted",
-            {
-                "message": str(message or "").strip(),
-                "finalize": bool(finalize),
-                "transaction_id": transaction_id,
-                "delegate_id": delegate_id,
-            },
-        )
+            if finalize and str(transaction_id or "").strip():
+                try:
+                    self.registry.mark_reply_finalized(transaction_id)
+                except Exception:
+                    logger.exception(
+                        "failed to mark reply finalized txn=%s",
+                        transaction_id,
+                    )
+                    current = self.registry.store.load_transaction(
+                        transaction_id
+                    )
+                    if current is None or current.deleted:
+                        return
+
+            self._emit_thread_event(
+                thread_id,
+                "reply_emitted",
+                {
+                    "message": str(message or "").strip(),
+                    "finalize": bool(finalize),
+                    "transaction_id": transaction_id,
+                    "delegate_id": delegate_id,
+                },
+            )
 
     def _on_stimulus_enqueued(self, stimulus: Any, *, schedule_drainer: bool = True) -> None:
         tid = str(getattr(stimulus, "thread_id", "") or "").strip()
@@ -357,14 +384,14 @@ class ThinkLifeRuntime:
         cleared_pending = self.inbox.clear_thread(tid)
         THREAD_RUNTIME_STATUS.set_pending_stimuli(tid, self.inbox.pending_count(tid))
 
-        cancelled_transactions: List[str] = []
+        paused_transactions: List[str] = []
         candidate_ids: List[str] = []
         if in_flight_transaction_id:
             candidate_ids.append(in_flight_transaction_id)
         candidate_ids.extend(
             record.transaction_id
             for record in self.registry.list_for_thread(tid)
-            if record.kind == TransactionKind.USER_TASK and not record.status.is_terminal()
+            if record.kind == TransactionKind.USER_TASK and is_open_continue(record)
         )
         seen: set[str] = set()
         for txn_id in candidate_ids:
@@ -372,13 +399,13 @@ class ThinkLifeRuntime:
                 continue
             seen.add(txn_id)
             record = self.registry.get(txn_id)
-            if record is None or record.status.is_terminal():
+            if record is None or not is_open_continue(record):
                 continue
             try:
-                self.registry.transition(txn_id, TransactionStatus.CANCELLED)
-                cancelled_transactions.append(txn_id)
+                self.registry.pause(txn_id, reason=PauseReason.MANUAL_HOLD)
+                paused_transactions.append(txn_id)
             except Exception:
-                logger.exception("force_stop transition failed txn=%s thread_id=%s", txn_id, tid)
+                logger.exception("force_stop pause failed txn=%s thread_id=%s", txn_id, tid)
 
         self._emit_thread_event(
             tid,
@@ -388,7 +415,7 @@ class ThinkLifeRuntime:
                 "reason": str(reason or "user_requested").strip() or "user_requested",
                 "cancelled_in_flight": bool(cancelled_in_flight),
                 "cleared_pending_stimuli": int(cleared_pending),
-                "cancelled_transactions": cancelled_transactions,
+                "paused_transactions": paused_transactions,
             },
         )
         self._emit_runtime_updated(tid)
@@ -399,7 +426,7 @@ class ThinkLifeRuntime:
             "runtime_profile": "think_life",
             "cancelled_in_flight": bool(cancelled_in_flight),
             "cleared_pending_stimuli": int(cleared_pending),
-            "cancelled_transactions": cancelled_transactions,
+            "paused_transactions": paused_transactions,
             "thread_runtime": snap.to_dict(),
         }
 
@@ -440,61 +467,38 @@ class ThinkLifeRuntime:
             "accepted": True,
         }
 
-    def list_transactions(self, thread_id: str) -> Dict[str, Any]:
+    def list_transactions(
+        self,
+        thread_id: str,
+        *,
+        conversation_id: Optional[str] = None,
+        include_history: bool = False,
+    ) -> Dict[str, Any]:
         """Per-transaction WM + status snapshot for UI (Think-life only)."""
-        tid = str(thread_id or "").strip()
-        records = self.registry.list_for_thread(tid)
-        active = next(
-            (
-                record
-                for record in reversed(records)
-                if record.kind == TransactionKind.USER_TASK and not record.status.is_terminal()
-            ),
-            None,
+        return product_views.list_transactions(
+            self,
+            thread_id,
+            conversation_id=conversation_id,
+            include_history=include_history,
         )
-        active_id = str(active.transaction_id) if active is not None else None
-        runtime_snap: ThreadRuntimeSnapshot = THREAD_RUNTIME_STATUS.snapshot(tid)
-        cpu_txn = str(runtime_snap.active_transaction_id or "").strip() or None
-        runtime_phase = str(runtime_snap.runtime_phase or "ready")
 
-        def _serialize(record: TransactionRecord) -> Dict[str, Any]:
-            txn_id = str(record.transaction_id)
-            return {
-                "transaction_id": txn_id,
-                "conversation_id": record.conversation_id,
-                "thread_id": record.thread_id,
-                "status": str(record.status.value),
-                "kind": str(record.kind.value),
-                "priority": int(record.priority),
-                "wm_entries": list(record.wm_entries),
-                "wm_entry_count": len(record.wm_entries),
-                "task_state": record.task_state.to_dict(),
-                "think_rounds": int(record.think_rounds),
-                "delegate_count": int(record.delegate_count),
-                "active_delegate_id": record.active_delegate_id,
-                "schedule_id": record.correlation.schedule_id,
-                "created_at": record.created_at,
-                "updated_at": record.updated_at,
-                "terminal_at": record.terminal_at,
-                "last_error": record.last_error,
-                "is_active_user": txn_id == active_id,
-                "is_cpu_holder": bool(cpu_txn and txn_id == cpu_txn),
-            }
-
-        items = sorted(
-            [_serialize(r) for r in records],
-            key=lambda item: str(item.get("updated_at", "") or ""),
-            reverse=True,
+    def delete_transaction(
+        self,
+        *,
+        thread_id: str,
+        conversation_id: str,
+        transaction_id: str,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> Dict[str, Any]:
+        return delete_runtime_transaction(
+            self,
+            thread_id=thread_id,
+            conversation_id=conversation_id,
+            transaction_id=transaction_id,
+            expected_revision=expected_revision,
+            idempotency_key=idempotency_key,
         )
-        return {
-            "thread_id": tid,
-            "transactions": items,
-            "active_transaction_id": active_id,
-            "cpu_transaction_id": cpu_txn,
-            "transaction_count": len(items),
-            "runtime_phase": runtime_phase,
-            "effective_depth": int(runtime_snap.effective_depth),
-        }
 
     def list_scene(
         self,
@@ -566,12 +570,11 @@ class ThinkLifeRuntime:
         *,
         conversation_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Complete the active user transaction when the chat thread is flushed."""
+        """Archive already-complete transactions at the flush boundary."""
         tid = str(thread_id or "").strip()
         cid = str(conversation_id or "").strip()
-        txn_id = self.registry.complete_active_user_transaction(cid) if cid else None
         drained: List[Dict[str, Any]] = []
-        flush_key = str(conversation_id or "").strip() or txn_id
+        flush_key = cid
         if flush_key:
             try:
                 drained = list(
@@ -583,10 +586,18 @@ class ThinkLifeRuntime:
                     flush_key,
                     tid,
                 )
+        archived = (
+            self.registry.archive_completed_for_flush(cid)
+            if cid
+            else []
+        )
         self._emit_runtime_updated(tid)
         return {
             "thread_id": tid,
-            "completed_transaction_id": txn_id,
+            "completed_transaction_id": None,
+            "archived_transaction_ids": [
+                record.transaction_id for record in archived
+            ],
             "episode_notes_drained": len(drained),
         }
 
@@ -633,7 +644,7 @@ class ThinkLifeRuntime:
             is not None
         )
         active_user_segment = any(
-            record.kind == TransactionKind.USER_TASK and not record.status.is_terminal()
+            record.kind == TransactionKind.USER_TASK and is_open_continue(record)
             for record in self.registry.list_for_thread(tid)
             if record.conversation_id == cid
         )
@@ -717,11 +728,20 @@ class ThinkLifeRuntime:
             mark_fn(cid, through_seq=int(through_seq))
 
     def health(self) -> Dict[str, Any]:
+        from m_agent.runtime.routing import DEFAULT_RUNTIME_ENGINE
+
         return {
             "profile": "think_life",
+            "runtime_engine_id": DEFAULT_RUNTIME_ENGINE,
             "pending_stimuli": self.inbox.pending_count(),
             "transactions": self.registry.count_all(),
             "preempt_enabled": self.config.scheduler.preempt_enabled,
             "max_preempt_per_stimulus": self.config.scheduler.max_preempt_per_stimulus,
             "active_drainer_threads": self.drainer.active_drainer_count(),
+            "transaction_authority_migration": dict(
+                self.runtime_store.legacy_status_migration_report
+            ),
+            "transaction_contract_migration": dict(
+                self.runtime_store.transaction_contract_migration_report
+            ),
         }

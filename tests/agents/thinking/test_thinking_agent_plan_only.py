@@ -19,7 +19,7 @@ from m_agent.layers.thinking import (
     ThinkingDecision,
     TransactionResolution,
 )
-from m_agent.runtime.think_life.contracts import TransactionRecord, TransactionStatus
+from m_agent.runtime.think_life.contracts import TransactionRecord, TransactionState
 from m_agent.systems.episodic import DefaultEpisodeRecorder
 
 
@@ -237,7 +237,8 @@ def test_completed_task_state_short_circuits_plan_to_silent_completion() -> None
     assert fake_model.structured_calls(ThinkingDecision) == []
 
 
-def test_awaiting_user_task_state_short_circuits_plan_without_completion() -> None:
+def test_awaiting_user_task_state_skips_action_plan() -> None:
+    """Macro awaiting_user skips action planning; pause is runtime's job."""
     agent, fake_model = _make_agent(
         decisions=[],
         task_updates=[
@@ -249,6 +250,8 @@ def test_awaiting_user_task_state_short_circuits_plan_without_completion() -> No
             )
         ],
     )
+    state = agent.state_registry.get_or_create("t1::0", thread_id="t1")
+    state.reply_finalized_in_activation = True  # type: ignore[attr-defined]
 
     turn = agent.handle(
         _make_perception(
@@ -260,6 +263,47 @@ def test_awaiting_user_task_state_short_circuits_plan_without_completion() -> No
     assert turn.mode == "silent"
     assert turn.request_complete is False
     assert fake_model.structured_calls(ThinkingDecision) == []
+    assert (
+        agent.state_registry.get_or_create(
+            "t1::0", thread_id="t1"
+        ).task_progress.completion_status
+        == "awaiting_user"
+    )
+
+
+def test_awaiting_user_without_reply_is_coerced_to_processing() -> None:
+    agent, fake_model = _make_agent(
+        decisions=[
+            ThinkingDecision(
+                mode="execute",
+                tool_name="email_ask",
+                instruction="List recent mail",
+            )
+        ],
+        task_updates=[
+            TaskProgressUpdate(
+                goal="read email",
+                completion_status="awaiting_user",
+                remaining=["need message id"],
+            )
+        ],
+    )
+
+    turn = agent.handle(
+        _make_perception(
+            user_message="tool=email_read; param gap",
+            source="execution_feedback",
+        )
+    )
+
+    assert turn.mode == "execute"
+    assert (
+        agent.state_registry.get_or_create(
+            "t1::0", thread_id="t1"
+        ).task_progress.completion_status
+        == "processing"
+    )
+    assert fake_model.structured_calls(ThinkingDecision)
 
 
 def test_new_user_stimulus_reopens_completed_task_before_preprocessing() -> None:
@@ -317,13 +361,13 @@ def test_transaction_resolver_uses_turn_local_labels_instead_of_runtime_ids() ->
             transaction_id="txn-private-alpha",
             thread_id="account::canonical-thread",
             conversation_id="account::canonical-thread::4",
-            status=TransactionStatus.RUNNING,
+            state=TransactionState.CONTINUE,
         ),
         TransactionRecord(
             transaction_id="txn-private-beta",
             thread_id="account::canonical-thread",
             conversation_id="account::canonical-thread::4",
-            status=TransactionStatus.SUSPENDED,
+            state=TransactionState.PAUSE,
         ),
     ]
     candidates[0].task_state.goal = "first task"

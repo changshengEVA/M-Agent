@@ -1,6 +1,6 @@
 # Current Project Progress and Design Plan
 
-> 状态快照：2026-07-28  
+> 状态快照：2026-07-30（**P8 完成**；**P8 后生产接线 R1～R3 完成**：Chat API 已按 `RuntimeHost` / `runtime_engine` 分发，默认仍为 ThinkLife；下一步为 R4 生产灰度）<br>
 > 范围：三大结构性功能的语义基线、现有 ThinkLife Runtime 整理，以及后续 LangGraph Runtime 迁移。
 
 本文回答两个问题：
@@ -14,7 +14,12 @@
 
 ## 1. 当前总体结论
 
-当前项目处于“P0 文档收口已完成、验收平台基础设施可用，正在进入 P1 共享测试契约实现，Runtime 改造尚未开始”的阶段。
+> **当前结论：P0～P8 已完成；生产接线 R1～R3 已完成。双 Runtime 共享矩阵
+> 38/38 variant 可执行且 56/56 验收用例全绿。Chat API 已持 `RuntimeHost`，
+> 默认 `think_life_v1`，可通过 `runtime.default_engine` /
+> `M_AGENT_DEFAULT_RUNTIME_ENGINE` 显式切到 LangGraph。下一步进入 R4 生产
+> 灰度（默认切 LangGraph），再经 R5 安全收缩旧 transaction 循环。
+> P5/P6/P7/P8 不包含 M-Agent-UI 或 M-Agent-Desktop 的界面改造。**
 
 具体来说：
 
@@ -25,12 +30,38 @@
 - 当前版本的设计总线已经按最新决策更新，见 [overall-design-architecture.md](overall-design-architecture.md)。
 - 三大功能的详细语义测试规格已经同步当前版决策，见 [runtime-migration-semantic-test-spec.zh-CN.md](runtime-migration-semantic-test-spec.zh-CN.md)。
 - LangGraph 迁移计划已经统一 Transaction Store/checkpoint 权威边界和 P0～P8 阶段入口，见 [langgraph-runtime-migration-plan.zh-CN.md](langgraph-runtime-migration-plan.zh-CN.md)。
-- 现有验收平台已经具备 Runner、CLI、UI、结构化报告和 normalized trace 等基础能力。
-- 但是，现有验收目录仍然是旧的 `INV-01` 至 `INV-14`，尚未改造成新的 `TX/SP/AT` 共享测试契约。
-- 当前 ThinkLife Runtime 具有三大功能的旧版骨架，但尚未满足新确认的目标语义。
-- LangGraph Runtime、跨 Runtime Harness、持久 checkpoint、双 Runtime 对比和灰度路由均尚未开始。
-
-因此，当前不能把“验收平台可以运行”理解为“M0 基线已经通过”，也不能直接进入正式 LangGraph 迁移。
+- 验收平台已经完成 `Scenario → Variant → Runtime binding` 合同、28 个 `TX/SP/AT`
+  顶层场景、27 个 Core、7 个必测 Robustness 和 1 个 Matcher Evaluation variant。
+- 共享 Runtime Harness、ThinkLife adapter、CLI、Web 分层工作区、结构化报告和
+  [P1 分层差距表](../runtime/think-life-p1-gap-matrix.zh-CN.md)均已完成。
+- `think_life_v1` 的 35 个当前必测 variant 已全部可执行且全绿。P7 收口后结果为
+  35 Passed、0 Registered Known Gap、0 Unexpected；P1 时的 “35 个 Known Gap”只保留为
+  pre-P2 历史基线。
+- `AT-10` 已冻结 30 条 matcher 评测数据，Harness `evaluate_matcher` 已接入确定性
+  `offline_policy_v1`，并达到 ≥90% 总准确率 / ≥85% reuse recall 冻结阈值；真实
+  LLM matcher 仍独立于确定性 Core Gate。详细规格第 8 节的 25 条 Robustness
+  requirement 已全部映射到 7 个必测 Robustness variant。
+- `langgraph_v1` 已在 P8 完成完整矩阵：`38/38` variant 可执行，共享验收
+  `56/56` 全绿。实现位于 `src/m_agent/runtime/langgraph/` 与
+  `langgraph_v1` acceptance adapter；TX-01 保留 graph 原生切片，TX-02～TX-10 与
+  全部 SP/AT 通过共享 Store 外层与 ThinkLife 等价 handler 驱动；持久 checkpoint
+  使用 `langgraph-checkpoint-sqlite`；灰度路由见 `src/m_agent/runtime/routing.py`
+  与 `M_AGENT_DEFAULT_RUNTIME_ENGINE` 环境变量。
+- ThinkLife 已具备 P2 的四态 Transaction、activation/delegate、revision/CAS、
+  transition ledger、SQLite 参考 Store、transaction 级 Pause/Delete/Restore、
+  Scene append 幂等及原子 Flush 基础，并已接入 P3 Store-backed Stimulus Pool、
+  P4 来源分流 / pause+未 flush complete 候选 / fake matcher 安全新建 / match→restore
+  activation，以及 P5 的 `SP → AT → TX` 端到端收口（drainer lost-wakeup 闭合、
+  lease takeover fencing、Schedule claim 可观察、Feedback consume-once +
+  disposition、Matcher 阈值达标）。
+- ThinkLife 已在 P7 接入 durable effect ledger、Feedback ingress outbox、
+  capability delivery guarantee 声明、Schedule delivery 幂等与 UI Pause 下的
+  schedule run 控制恢复；`EffectCoordinator` 与扩展后的
+  `TransactionScheduleCoordinator` 提供与 `FlushCoordinator` 同级的故障注入与
+  重启恢复观察面。
+- LangGraph Runtime 已在 P8 完成完整矩阵：持久 SQLite checkpointer、SP/AT/Scene
+  共享外层接入、`runtime_engine` 灰度路由与双 Runtime 38/38 可执行；旧 Runtime
+  收缩进入稳定观察期。
 
 ## 2. 当前项目进度
 
@@ -39,13 +70,13 @@
 | 工作项 | 当前状态 | 已有产出 | 尚未完成 |
 | --- | --- | --- | --- |
 | 三大功能设计总线 | 当前版已确认 | 三大功能的意义、边界、领域逻辑及最新人机控制语义 | 后续版本只在领域规则实际变化时修订 |
-| 目标语义测试规格 | 当前版已同步 | `TX-01～10`、`SP-01～08`、`AT-01～10`，含 activation、UI Pause/Delete、Feedback Gate、异步工具和一次性 Plan 子场景 | 转换为可执行共享场景并随实现验证 |
-| 详细设计决策 | 首版方案持续收敛 | 优先级、持久化、Matcher v1、合成数据、flush 原子边界、执行批次校验 | 在 P1 契约和后续实现中验证 |
-| 验收平台基础设施 | 工作区内可用 | pytest 隔离 Runner、CLI、UI、报告、trace、Gate/Full | 目录与展示层改造成 `TX/SP/AT × Runtime × 测试层级` |
+| 目标语义测试规格 | 当前版已同步并已转成 P1 可执行基线 | `TX-01～10`、`SP-01～08`、`AT-01～10`，含 activation、UI Pause/Delete、Feedback Gate、异步工具和一次性 Plan 子场景 | 双 Runtime 38/38 可执行、56/56 验收全绿 |
+| 详细设计决策 | 首版方案已进入可执行契约 | 优先级、持久化、Matcher v1、合成数据、flush 原子边界、执行批次校验 | 按 P1 证据在 Runtime 实现中验证和收敛 |
+| P1 共享测试合同 | 已完成并满足退出条件 | Scenario/Variant/Runtime schema；28 个场景、27 Core、7 Robustness、1 Matcher Evaluation、3 PoC；共享 Harness；双 Runtime 38/38 可执行；CLI、Web、报告与分层差距表 | 合同随稳定领域语义维护 |
 | 旧语义目录 | 可执行但需要降级定位 | `INV-01～INV-14`，Gate 20 项执行用例，Full 36 项执行用例 | 作为历史映射和 Supporting Tests，不再作为目标 Core Gate |
-| ThinkLife Runtime | 旧版骨架存在 | Transaction Registry、Stimulus Inbox、Attributor、Scene、flush 流程 | 按目标语义重构并通过新 Core Gate |
-| 跨 Runtime Harness | 未开始 | 已有测试方法草案 | 实现统一驱动与统一观察接口 |
-| LangGraph Runtime | 未开始 | 迁移计划草案 | 单 transaction PoC、恢复、外层能力接入与灰度 |
+| ThinkLife Runtime | **P7 已完成** | 四态与 tombstone；activation/delegate；revision/CAS；幂等 ledger；SQLite Transaction/Scene/Flush；Pause/Delete/Restore；Store-backed Stimulus Pool；Schedule delivery 幂等；effect ledger + Feedback outbox；capability delivery guarantee；35/35 全绿 | 稳定观察期后配合默认路由收缩 |
+| 跨 Runtime Harness | **P8 已完成** | 共用参考 Store；双 Runtime 完整矩阵；`load_effects`/`load_schedule` 故障注入；process 重建与 checkpoint 持久化 | 生产 Chat API 按 `runtime_engine` 分发 |
+| LangGraph Runtime | **P8 已完成** | 持久 SQLite checkpointer；SP/AT/Scene 共享外层；`runtime_engine` 路由；38/38 variant 可执行 | 默认路由切 LangGraph；稳定观察后删除旧循环 |
 
 ### 2.2 已完成的领域澄清
 
@@ -174,27 +205,54 @@
 
 执行批次因果关系、UI 控制与 Flush 可见性属于稳定领域逻辑，已经进入 [overall-design-architecture.md](overall-design-architecture.md)。具体优先级数字、存储后端、Matcher 数据结构和 outbox 等仍属于可演进方案，不进入设计总线。
 
-上述 activation、UI Pause/Delete、一次性 Scheduled Plan 和异步工具消费边界已经同步到详细测试规格。下一步是在 P1 将这些文字场景转换成 Runtime 无关的可执行契约。
+上述 activation、UI Pause/Delete、一次性 Scheduled Plan 和异步工具消费边界已经同步到详细测试规格。P1 已将完整目标清单转换为 Runtime 无关的可执行契约，并通过统一 Harness 对 ThinkLife 的全部 35 个当前必测 variant 形成证据；下一步由 P2 按这些证据实现 TX Foundation。
 
 ### 2.4 现有验收平台状态
 
 当前工作区已经具备：
 
 - pytest 隔离执行 Runner；
+- P1 `Scenario/Variant/Runtime binding` 数据模型和完整清单；
 - CLI：
+  - 查看 P1 合同与覆盖；
+  - 按 Scenario、Runtime 和层级运行 P1 场景；
   - 查看目录；
   - 运行 Gate；
   - 运行 Semantic Full；
   - 查看历史报告；
 - 本地 UI：
-  - 分层目录；
-  - 状态筛选；
-  - Gate/Full 切换；
-  - 用例和 trace 展开；
+  - 默认页只展示 P1，共享合同与旧 `INV-01～INV-14` Supporting Tests 不再混排；
+  - 运行总览、`TX/SP/AT` 领域统计、Variant 索引与单项证据主从视图；
+  - 按领域、层级、状态和关键字筛选；
+  - 在未满足检查中直接对照 Expected、Actual、Evidence 和 Known Gap key；
+  - Passed、Registered Known Gap、Unexpected Failure 采用独立视觉状态；
+  - 按 Runtime 隔离并恢复最近一次运行结果；
+  - 旧 Gate/Full 界面降级到 `/legacy` 历史兼容入口；
   - 启动后显示访问地址；
 - 结构化运行报告；
 - normalized semantic trace；
-- Known Gap 与新增失败的差异化展示。
+- Known Gap 与新增失败的差异化展示；
+- 30 条 `AT-10` matcher 数据和独立 evaluator；
+- 25 条详细 Robustness requirement 到 7 个必测 variant 的 manifest；
+- [ThinkLife P1 分层差距表](../runtime/think-life-p1-gap-matrix.zh-CN.md)。
+
+P1 合同清单保持不变；下表是 **2026-07-29 P3 后复验**，不是 2026-07-28 的
+pre-P2 历史快照：
+
+| 层级 | 规格清单 | ThinkLife 可执行 | Passed | Registered Known Gap | LangGraph |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Core | 27/27 | 27/27 | 17 | 10 | 27 `Not Implemented` |
+| Robustness | 7/7 | 7/7 | 3 | 4 | 7 `Not Implemented` |
+| Matcher Evaluation | 1/1 | 1/1 | 0 | 1 | 1 `Not Implemented` |
+| 合计 | 35/35 | 35/35 | **20** | **15** | 35 `Not Implemented` |
+
+ThinkLife 全矩阵能够真实执行当前 Transaction、Stimulus Inbox、Attributor、Scene 等组件，
+并把每个目标断言归一化为 check 与 facts。P3 复验后，`TX-02/core`、`TX-05/core`、
+`TX-08/core`、`SP-01/core`、`SP-01/durable_ingress_restart`、`SP-02/core`、
+`SP-03/core`、`SP-04/core`、`SP-05/core`、`SP-07/core`、`SP-08/core` 的 stale
+Known Gap 已清理并转为 Passed。其余 15 个差距仍由唯一 check key 登记，未登记失败为 0。
+`AT-10` 使用冻结的 30 条数据独立评测，Robustness manifest 的 25 条要求也全部有明确
+variant 承接。
 
 截至本状态快照，旧目录的最新本地结果为：
 
@@ -205,49 +263,62 @@
 
 按语义项统计，旧 Gate 中有 8 项通过、6 项为 Known Gap。
 
-这组结果只能说明旧 `INV-01～INV-14` 目录的现状，不能说明新定义的 28 个 `TX/SP/AT` 顶层场景已经覆盖或通过。其中 27 个属于确定性 Runtime Core Gate，`AT-10` 属于独立的 Matcher Evaluation。
+这组旧结果只说明 Supporting 目录 `INV-01～INV-14` 的现状，不能替代新的共享
+Scenario matrix，也不能替代独立 P2 Foundation Gate。P1 的 35 Known Gap 快照已冻结为
+历史证据；当前结果以本节 post-P2 表和结构化报告为准。
 
-### 2.5 当前 6 个旧 Known Gap
+### 2.5 旧 Supporting 目录的 Known Gap（剩余 2 个）
 
-当前验收目录已经显式记录以下已知差异：
+当前验收目录仍显式记录以下已知差异：
 
 | 旧编号 | 当前差异 | 在新结构中的定位 |
 | --- | --- | --- |
-| `INV-01` | 用户消息当前可能先写 Scene，再完成 inbox admission | SP 的接纳可靠性与 TX/Scene 的事件边界 |
-| `INV-02` | worker 空队列检查与退出之间存在 lost-wakeup 窗口 | SP |
 | `INV-05` | flush 仍依赖 legacy Thinking state，未完整读取 TransactionRecord 中的待处理内容 | TX |
 | `INV-10` | reply 的工具审计记录不完整 | TX 下层 Robustness 或 Supporting Test |
-| `INV-12` | 重入刺激虽然保留 transaction ID，但归因流程可能忽略它并新建 transaction | SP + AT |
-| `INV-13` | 重复 Feedback 尚无稳定的持久消费键 | TX/AT 的幂等 Robustness |
 
-这些是旧目录已经发现的差异，不是新目标语义的完整缺口清单。只有新的 27 个确定性
-Core Gate、当前版必测 Robustness manifest 实际运行在 ThinkLife Runtime，并且
-`AT-10` 的 Matcher Evaluation 独立执行以后，才能形成可信的分层完整差距表。
+原先并列的另外 4 个已在 P2～P8 的 TX/SP/AT 收口中关闭，对应 Supporting Test 已改为
+断言新契约而非 `xfail`：
 
-### 2.6 当前 ThinkLife Runtime 与目标语义的主要差距
+| 旧编号 | 原差异 | 关闭方式 |
+| --- | --- | --- |
+| `INV-01` | 用户消息可能先写 Scene，再完成 inbox admission | Sourceless 用户话语的 Scene 写入移到归因之后（Gateway 只写已带 `transaction_id` 的刺激），入队不再被 Scene 失败阻塞 |
+| `INV-02` | worker 空队列检查与退出之间存在 lost-wakeup 窗口 | Drainer 交接补齐；`INV-02` 用例不再触发降级分支 |
+| `INV-12` | 重入刺激虽保留 transaction ID，但归因可能忽略它并新建 transaction | 显式 source 走 `_resolve_explicit_source`，锁定原事务线并按需 restore |
+| `INV-13` | 重复 Feedback 尚无稳定的持久消费键 | activation + delegate 构成持久消费键：重复 Feedback 按同一 ingress 身份幂等吸收，delegate 只消费一次 |
+
+这些是旧 Supporting 目录已经发现的差异，不是新目标语义的完整缺口清单。新的 27 个
+确定性 Core Gate、7 个必测 Robustness variant 和 `AT-10` Matcher Evaluation 已经
+全部在 ThinkLife Runtime 上执行；完整结果以
+[P1 分层差距表](../runtime/think-life-p1-gap-matrix.zh-CN.md)为准。
+
+### 2.6 当前 ThinkLife Runtime：P3 已接入后的剩余差距
 
 #### TX：Transaction 与 Scene
 
-当前已有：
+P2 已完成：
 
-- TransactionRecord 和 TransactionRegistry；
-- Transaction 与 conversation 的基本关联；
-- Scene 的追加读取能力；
-- 基本 scheduler、feedback 和 flush 流程。
+- `continue/pause/complete/archive` 是权威四态；legacy scheduler status 只作为兼容投影；
+- `lifecycle_status=deleted` 是独立永久 tombstone，正常 archive 只能由 Flush 产生；
+- 每个 transaction 持久保存 `revision`、`runtime_engine`、schema version、WM 和任务状态；
+- activation 与 delegate 有独立持久身份，Store 约束同一 transaction 只能有一个 active
+  activation、一个 pending delegate，Pause/Delete 会永久失效旧批次；
+- transaction-side UoW 使用 CAS/fencing 和 transition ledger；相同 transition ID 与
+  canonical command 重放第一次 JSON 归一结果，不同 command 明确冲突；
+- 已知 transaction ID 下的 Pause、Complete、Delete、Restore 和 archive→continue
+  均使用真实领域状态机；Restore 总是产生新 activation；
+- Transaction、Scene、watermark、Flush journal/outbox 共用一个 SQLite 参考 Store；
+  Scene 使用稳定 `append_id`，Flush 在同一事务内推进 watermark 并只归档 eligible
+  complete transaction；
+- Flush ID、activation/delegate 归属、不可变 transaction 归属和 revision 单步推进均有
+  Store 级不变量保护；commit 后物化窗口可在重启后恢复。
 
-主要差距：
+P3 复验后仍未完成：
 
-- 当前状态仍是 `pending/running/waiting_execution/suspended/completed/failed/cancelled`，不是目标四状态。
-- 当前 Registry 主要是进程内状态，尚不能表达 pause/archive 的持久恢复语义。
-- 当前没有“只有 flush 能产生 archive”的完整生命周期。
-- 当前 Transaction 只有长期 transaction 身份和 active delegate，没有独立的 activation 身份，无法在手动暂停—恢复后永久识别旧执行批次的晚到 Feedback。
-- 当前 force-stop 是 thread 级操作，不是目标中的 transaction 级 UI Pause/Delete；它也没有“当前刺激中止但不重入、仅当前 transaction 进入人工 pause”的完整语义。
-- 当前没有 transaction 级 Delete 和永久 Feedback 拒绝规则。
-- 当前 Flush 尚未被完整建模为用户可见的会话语义边界。
-- Scene、watermark、transaction 状态变化和外部记忆物化尚未形成统一的逻辑提交边界。
-- 当前没有跨 Transaction、Schedule、Inbox 与 effect/outbox 的统一 UoW，也没有能够
-  在 revision 已推进后返回第一次完整结果的 command/result transition ledger。
-- Transaction 的权威状态、运行状态和 legacy Thinking state 之间仍有重叠。
+- M-Agent-UI 与 M-Agent-Desktop 的 Pause/Delete/Restore 控件和交互接线；
+- in-flight worker latch 与当前 stimulus 的持久 abort/no-reentry disposition 仍需在完整
+  drainer 路径中收口；
+- P4 的来源分流、`pause + 未 flush complete` 候选集合和 matcher 端到端续接；
+- P7 的生产级跨 Store UoW、真实 effect/result outbox、外部记忆物化与进程级故障强度。
 
 当前实现证据可见：
 
@@ -267,17 +338,19 @@ Core Gate、当前版必测 Robustness manifest 实际运行在 ThinkLife Runtim
 
 主要差距：
 
-- 当前 StimulusInbox 和 Drainer 以 `thread_id` 分区和协调；目标语义要求所有池操作与单消费者协调都以 `conversation_id` 为边界。
-- 当前排序使用 `priority + occurred_at + counter`，尚未采用 conversation 内稳定的 `accepted_seq` 语义。
-- 当前 Inbox 不是 stimulus ingress/accepted_seq/claim/disposition 的耐久权威；重启会
-  留下排队刺激去向、并发重复 Feedback 和 preconsume disposition 的证据缺口。
-- 刺激类别的默认优先级尚未完整覆盖目标分类。
-- 当前 Gateway 会先把 Feedback 放入 inbox，尚未在 admission 前拒绝人工暂停、删除或旧 activation 的 Feedback。
+- StimulusInbox 已接入 Store-backed partition/ready/claim/disposition；生产 drainer 仍按
+  `thread_id` 唤醒，但 claim/query 已能以 `conversation_id` 为边界观察和消费。
+- 当前排序已采用 admission 时冻结的 effective priority 与 `accepted_seq`，同优先级 FIFO 不再依赖 `occurred_at`。
+- Inbox 已成为 stimulus ingress/accepted_seq/claim/disposition 的参考 SQLite 权威；P7 仍需补生产级跨 Store UoW、effect/result outbox 与更强进程恢复测试。
+- 刺激类别默认优先级已区分 user/feedback/scheduled/observation。
+- Gateway 已在 admission 前把无效 Feedback 写为 `expected_discard`，preconsume 失效也会持久化 stage/reason。
 - 当前工具执行仍可发生在刺激处理调用栈内，尚未证明“Thinking 发出异步委托后立即释放消费者、工具结果以后续 Feedback 返回”的目标边界。
 - 当前没有 effect result→Feedback ingress outbox；真实 capability 也尚未声明其
   `idempotent`/`at_most_once`/`at_least_once` guarantee。
-- worker 退出窗口仍存在 lost-wakeup 风险。
-- 当前结构尚未用新 SP 场景证明多生产者、单消费者、同优先级 FIFO 和 conversation 隔离。
+- P5 已闭合 drainer 空队列检查与 unregister 之间的 lost-wakeup 窗口；`SP-06/core` 与
+  `SP-01/lease_takeover_fencing` 已转绿。
+- 新 SP 场景已经覆盖多生产者、单消费者、同优先级 FIFO 和 conversation 隔离；P5 后
+  SP Core 8/8 与 SP Robustness 2/2 均已通过。
 
 当前实现证据可见：
 
@@ -289,44 +362,44 @@ Core Gate、当前版必测 Robustness manifest 实际运行在 ThinkLife Runtim
 
 当前已有：
 
-- Execution Feedback 已有 `transaction_id + active_delegate_id` 的专用校验路径；
-- 用户刺激候选查询；
-- 可注入的语义 resolver；
-- 无候选时创建 transaction 的基本能力。
+- Execution Feedback 已强制校验 `transaction_id + activation_id + delegate_id`，
+  admission 与 preconsume 对无效来源写 `expected_discard`；成功 Feedback 会
+  consume-once，并写入 durable disposition；
+- 显式 `transaction_id` / Schedule 来源绕过 matcher，并在 pause/complete 上执行 restore；
+  已登记 one-shot run 的 `scheduled_plan` 会原子 claim 并开启新 activation；
+- 无来源候选精确为当前 conversation 的 `pause` 与未 flush `complete`；
+- turn-local `candidate_N` fake matcher 契约，异常/非法/模糊一律新建；
+- 匹配 pause/complete 后复用原 ID 并开启新 activation；
+- Harness `list_match_candidates`、`load_schedule` 与
+  `evaluate_matcher(offline_policy_v1)` 已接线；
+- AT-01～AT-09 Core Gate 全绿，`AT-10` 离线阈值已达标，`TX-03` 已收口。
 
 主要差距：
 
-- 当前只有部分已知类型走明确来源路径，尚未统一为“按来源类型先做确定性有效性校验，通过后才绕过 matcher”。
-- 当前没有 activation 身份；transaction 暂停并恢复后，单靠 active delegate 无法稳定拒绝旧执行批次晚到的 Feedback。
-- 当前 Feedback 校验发生在出池归因阶段，而不是感知 admission 之前。
-- 当前没有人工暂停/删除 transaction 的候选过滤及 Feedback 废弃规则。
-- 当前候选集合偏向非终态且排除 suspended，与目标的 `pause + 未 flush complete` 相反。
-- 当前 Schedule 记录尚未稳定绑定并激活原 transaction ID，Scheduled Plan、重入刺激和未来有来源刺激也尚未统一走来源优先逻辑。
-- 当前 matcher 异常且只有一个候选时可能自动复用；目标要求异常或不确定时新建。
+- 真实 LLM matcher 仍独立于确定性 Core Gate，不计入 M0 Runtime Gate。
+- `TX-06` / `TX-07` 的生产级 Schedule/Inbox 半提交控制竞态、effect outbox 与
+  capability guarantee 明确归属 P7 Robustness。
 - 刺激池 admission 排序本身能够保留 `priority_override=0`；但当前用户/后台刺激归因路径在给 TransactionRecord 赋 priority 时使用布尔回退，可能把合法的 `0` 替换成默认值。该差异属于归因后的 transaction priority 传播，不属于刺激池排序。
-- 尚无真实 matcher 的独立数据集、指标和回归基线。
 
 当前实现证据可见：
 
 - [attributor.py](../../src/m_agent/runtime/think_life/perception/attributor.py)
 - [core.py](../../src/m_agent/layers/thinking/core.py)
 - [loop.py](../../src/m_agent/runtime/think_life/scheduler/loop.py)
+- [matcher_evaluation.py](../../src/m_agent/acceptance/matcher_evaluation.py)
 
-### 2.7 尚未开始的关键工作
+### 2.7 P2 完成后仍待实现的 Runtime 与迁移工作
 
-以下事项目前没有可执行实现：
+P1 的共享场景、Harness、adapter、CLI/Web/report 和差距矩阵已经完成。以下缺口属于
+Runtime 目标语义或后续迁移，不再属于“测试尚未接入”：
 
-- 与最新详细规格一致的 `TX/SP/AT` 共享场景目录和断言；
-- 新的 `TX/SP/AT` 测试目录；
-- transaction activation 生命周期及跨批次 Feedback 失效机制；
-- transaction 级 UI Pause/Delete；
-- 耐久 Stimulus Inbox、唯一 ingress、claim/disposition 与 result→Feedback outbox；
-- Schedule/Transaction/Inbox 的统一原子转换与 run/delivery/activation 绑定；
-- Feedback admission Gate 和 Expected Discard 证据；
+- 耐久 Stimulus Inbox、唯一 ingress、claim/disposition 已进入 P3；result→Feedback outbox
+  仍留待 P7；
+- Schedule 与 transaction-side 绑定已经进入 P2；其与 P3 durable Inbox claim/disposition
+  的生产级统一提交仍待 P7 收口；
+- Feedback admission Gate 和真实 Expected Discard 处理已接入 P3；
 - Thinking 与异步工具执行解耦后的刺激消费链路；
-- 可同时驱动 ThinkLife 与 LangGraph 的共享 Runtime Harness；
-- `think_life_v1` 测试 adapter；
-- `langgraph_v1` 测试 adapter；
+- M-Agent-UI、M-Agent-Desktop 和 Chat API 的 transaction 控制面接线；
 - LangGraph transaction graph；
 - LangGraph 持久 checkpoint 与 resume；
 - effect ledger 和节点重放幂等；
@@ -397,7 +470,7 @@ Feedback admission Gate 和异步工具消费边界。P0 的文档对齐项至�
 Core 通过率，重启、重复投递、故障恢复和 lease takeover 等进入 Robustness。周期性
 Schedule 和自然语言 archive 检索标记为 Future。
 
-| 既有场景 | Layer | 本轮需要补入的 variant |
+| 既有场景 | Layer | P1 已纳入的 variant |
 | --- | --- | --- |
 | `TX-01` | Core | 新 transaction 首次运行产生 activation |
 | `TX-01` | Robustness | UoW 已提交后重放返回第一次完整结果 |
@@ -415,7 +488,7 @@ Schedule 和自然语言 archive 检索标记为 Future。
 | `SP-04` | Core | Thinking 刺激逐个消费，但异步工具不占用消费者 |
 | `AT-01/02/03/08` | Core | 来源有效性、deleted 候选排除、pause 新 activation 恢复及跨 activation 稳定性 |
 
-既有编号及最新子场景已经统一记录在 [runtime-migration-semantic-test-spec.zh-CN.md](runtime-migration-semantic-test-spec.zh-CN.md)；P1 将把这份当前目标语义基线转换为共享可执行契约。
+既有编号及最新子场景已经统一记录在 [runtime-migration-semantic-test-spec.zh-CN.md](runtime-migration-semantic-test-spec.zh-CN.md)；P1 已把这份当前目标语义基线转换为共享可执行契约。
 
 ### 3.3 共享测试的证据原则
 
@@ -497,15 +570,15 @@ TX 基础
 
 | 阶段 | 目标 | 主要产出 | 决策门 |
 | --- | --- | --- | --- |
-| P0 | 冻结设计总线并对齐下游文档 | Overall Design Architecture、详细测试规格同步、状态权威边界修订 | 三大功能边界获得确认，测试规格和旧迁移计划不再与新语义冲突 |
-| P1 | 冻结跨 Runtime 测试契约 | 27 个共享 Core、必测 Robustness manifest、AT-10、Harness 协议、ThinkLife adapter | 当前必测项无 Not Covered，新目录能真实运行并生成分层差距表 |
-| P2 | 完成 TX 基础 | 四状态、activation、UI Pause/Delete、持久 Transaction/Scene、flush 边界 | 不依赖 SP/AT 的 TX Foundation Gate 全绿 |
-| P3 | 完成 SP | conversation 池、Feedback admission、Thinking 单消费者、异步工具解耦 | ThinkLife SP Core Gate 全绿 |
-| P4 | 完成 AT | 来源有效性、跨 activation 拒绝、候选过滤、matcher、安全新建 | ThinkLife AT Core Gate 全绿 |
-| P5 | 完成 M0 基线 | `SP → AT → TX` 完整链路 | ThinkLife 27 项 Core Gate 全绿，Matcher Evaluation 独立达标 |
-| P6 | LangGraph 单事务 PoC | 隔离的 transaction graph、共享 TX 场景 | 双 Runtime 单事务行为等价 |
-| P7 | 持久恢复与共享外层接入 | checkpoint、durable Inbox/UoW、effect ledger、SP/AT/Scene 接入 | 共享层接入后双 Runtime 27 项 Core、Store conformance 与必测 Robustness 全绿 |
-| P8 | 灰度与旧 Runtime 收缩 | 固定 Runtime 归属、分批路由、回退机制 | 稳定观察后再删除旧循环 |
+| P0（已完成） | 冻结设计总线并对齐下游文档 | Overall Design Architecture、详细测试规格同步、状态权威边界修订 | 三大功能边界获得确认，测试规格和旧迁移计划不再与新语义冲突 |
+| P1（已完成） | 冻结跨 Runtime 测试契约 | 27 个共享 Core、7 个 Robustness variant/25 条 requirement manifest、30 条数据的 AT-10、共享 Harness、CLI/Web/report 和 ThinkLife adapter | 35 个 ThinkLife variant 可执行且无未登记失败；LangGraph 35 个 binding 明确 `Not Implemented`；已生成分层差距表 |
+| P2（已完成） | 完成 TX 基础 | 四状态、activation、UoW/revision、transaction 控制原语、一次性 Schedule transaction-side 原语、持久 Transaction/Scene、flush 边界 | 独立 `p2_foundation` Gate 全绿；6 个 TX variant 与 3 个直接受益的 AT variant 移除 Known Gap |
+| P3（已完成） | 完成 SP | Store-backed conversation 池、durable ingress、Feedback admission/preconsume、claim/disposition、consumer epoch fencing、Harness latch/disposition 观察面 | SP Core 7/8 通过；`SP-06` 与 lease takeover 留作后续 robustness |
+| P4（已完成） | 完成 AT | 来源有效性、跨 activation 拒绝、候选过滤、fake matcher、match→restore、安全新建、`evaluate_matcher` 离线评测入口 | ThinkLife AT-01～AT-09 Core Gate 全绿；`TX-03` 收口；`AT-10` 可报告指标但未达阈值 |
+| P5（已完成） | 完成 M0 基线 | `SP → AT → TX` 完整链路；SP-06 lost-wakeup；lease takeover fencing；Schedule claim 可观察；Feedback consume-once + disposition；Matcher 阈值 | ThinkLife 27 项 Core Gate 全绿；`AT-10` 独立达标；剩余 Robustness 差距归属 P7（已收口） |
+| P6（已完成） | LangGraph Transaction Graph PoC | 单已归因 transaction、临时 checkpointer、可控 fake effect | 双 Runtime 在所选共享切片上产生等价领域结果 |
+| P7（已完成） | 持久恢复与共享外层接入 | effect ledger、Feedback outbox、capability guarantee、Schedule delivery 幂等与控制恢复 | ThinkLife 35/35 全绿；0 Registered Known Gap |
+| P8（已完成） | 灰度与旧 Runtime 收缩 | 双 Runtime 完整矩阵、持久 LangGraph checkpoint、灰度路由 | 38/38 可执行、56/56 验收全绿；`runtime_engine` 固定归属与可回退默认路由 |
 
 ## 5. 各阶段的具体安排
 
@@ -513,8 +586,8 @@ TX 基础
 
 #### 当前状态
 
-设计总线、详细测试规格和 LangGraph 迁移计划均已按当前版本决策同步；P0 当前完成，
-下一阶段为 P1 共享测试契约实现。
+设计总线、详细测试规格和 LangGraph 迁移计划均已按当前版本决策同步；P0 已完成。
+P1 和 P2 也已在后续阶段完成，项目下一步进入 P3。
 
 #### 产出
 
@@ -537,19 +610,40 @@ TX 基础
 
 ### P1：冻结跨 Runtime 测试契约
 
+#### 当前状态
+
+P1 已完整实现并满足退出条件：
+
+- `ScenarioSpec/ScenarioVariantSpec/RuntimeBindingSpec`、校验规则和显式可用性状态均已冻结；
+- 28 个顶层场景已经展开为 27 个 Core、7 个必测 Robustness 和 1 个 Matcher
+  Evaluation，共 35 个当前必测 variant；
+- `think_life_v1` 的 35 个 variant 全部可执行；P1 当时的结果为 35 个已登记
+  Known Gap、0 个未登记失败，该数字已冻结为 pre-P2 历史基线；
+- `langgraph_v1` 的 35 个对应 binding 全部明确为 `Not Implemented`；
+- 共享 Runtime Harness、ThinkLife adapter、共享断言和 normalized observation/trace
+  已覆盖完整矩阵；
+- `AT-10` 已冻结 30 条 matcher 评测数据和独立 evaluator；
+- 详细规格中的 25 条 Robustness requirement 已全部映射到 7 个必测 variant；
+- Scenario CLI、Web 分层工作区、结构化报告和
+  [ThinkLife P1 分层差距表](../runtime/think-life-p1-gap-matrix.zh-CN.md)均已完成；
+- 旧 `INV-01～INV-14` 继续作为 Supporting Tests 和历史映射。
+
+P1 的完成标准是证据覆盖完整且状态诚实，不是 Runtime 全绿。P3 后已有 20 个完整
+variant 转绿，当前剩余 15 个已登记差距由 P3～P5/P7 继续消除；M0 仍未通过。
+
 #### 目标
 
 先让测试准确表达目标语义，再修改 Runtime。
 
-#### 工作内容
+#### 已完成内容
 
-1. 把 27 个确定性 `TX/SP/AT` Core 场景转换为数据化、可执行的共享场景；`AT-10` 继续作为独立 Matcher Evaluation。
-2. 为第 8 节当前版本横向约束建立
+1. 已把 27 个确定性 `TX/SP/AT` Core 场景转换为数据化、可执行的共享场景；`AT-10` 作为独立 Matcher Evaluation。
+2. 已为第 8 节当前版本横向约束建立
    `parent_scenario_id + variant_id + layer=robustness` manifest，并至少实现测试规格
    第 9 节阻断清单中的共享场景；具体断言来自测试规格第 8 节与第 10.3 节，包括 UoW
    replay、Schedule 原子控制、durable Inbox/lease fencing、result→Feedback outbox、
    三种 capability guarantee 与 Flush fault。
-3. 定义统一 Runtime Harness，至少能够：
+3. 已定义统一 Runtime Harness，操作与观察面包括：
    - 创建 conversation；
    - 提交刺激；
    - 查询刺激池；
@@ -567,14 +661,14 @@ TX 基础
    - 触发 flush；
    - 注入 fake matcher、fake effect sink 和故障点；
    - 导出 normalized semantic trace。
-4. 实现 `think_life_v1` adapter。
-5. 为尚不存在的 `langgraph_v1` 明确返回 `Not Implemented`。
-6. 将 UI 第一层改为 `TX/SP/AT`，第二层改为测试层级，第三层展示 Runtime。
-7. 将旧 INV 用例迁移为 Supporting Tests 或历史映射。
-8. 对 ThinkLife 执行 27 个新 Core、必测 Robustness manifest 和 `AT-10`，生成第一份
+4. 已实现 `think_life_v1` adapter。
+5. 已为尚不存在的 `langgraph_v1` 明确返回 `Not Implemented`。
+6. 已将 UI 组织为 `TX/SP/AT → 测试层级 → Runtime → 场景证据`。
+7. 已将旧 INV 用例定位为 Supporting Tests 和历史映射。
+8. 已对 ThinkLife 执行 27 个新 Core、必测 Robustness manifest 和 `AT-10`，生成第一份
    分层完整差距表。
 
-#### 退出条件
+#### 退出条件（已满足）
 
 - 详细测试规格不再包含“Scheduled Plan 执行后回到 pause”或“只凭 transaction ID 接受 Feedback”等旧语义；
 - 27 个 Core 场景不引用具体 Runtime 的类、私有方法或节点；
@@ -582,14 +676,18 @@ TX 基础
 - 每个 variant 都有明确 parent ID 和 layer；当前版本 Core 与必测 Robustness 的输入及
   断言均已存在，不得仍为 `Not Covered`；
 - `AT-10` 使用冻结的 matcher 输入输出契约和独立数据集；
-- `think_life_v1` 可以实际运行；
-- 未实现的 `langgraph_v1` 明确显示 `Not Implemented`；
+- `think_life_v1` 的 35 个当前必测 variant 均可实际运行；
+- 未实现的 `langgraph_v1` 在 35 个对应 binding 上均明确显示 `Not Implemented`；
 - 非当前必测范围的缺测项目仍明确显示 `Not Covered`，但不能用该状态让 P1 跳过当前
   必测契约；
 - normalized trace schema 冻结；
-- Harness 能区分 admission 与 preconsume disposition，观察唯一 ingress/claim，并能
-  证明异步工具不占用刺激消费者；
+- Harness 提供 admission/preconsume disposition、唯一 ingress/claim 和异步工具消费
+  边界的统一操作与观察面；当前 Runtime 缺失的目标事实以明确 check 证据形成 Known Gap；
 - ThinkLife 的 Core/Robustness/Matcher 分层差距清单已经生成。
+
+P1 退出时的历史结果为：当前必测项 0 `Not Covered`，ThinkLife 35 个可执行、
+35 个 Known Gap、0 个未登记失败，LangGraph 35 个 `Not Implemented`。P3 后复验已变为
+20 Passed / 15 Registered Known Gap / 0 Unexpected；两组数字分别服务于历史基线和当前状态，不能混用。
 
 #### 主要风险与控制
 
@@ -600,11 +698,17 @@ TX 基础
 
 ### P2：实现 TX——Transaction 与 Scene 基础
 
+#### 当前状态
+
+P2 TX Foundation 已完成并通过独立 Gate。实现保持在 runtime/domain/store、
+共享 Harness 和 fake/logical port 层，没有修改 M-Agent-UI 或 M-Agent-Desktop，也没有
+提前实现依赖 TX 的 AT 主链。
+
 #### 目标
 
 建立 AT 所依赖、并且端到端链路需要的事务领域基础。SP 可以继续用 fake consumer 独立实施，不依赖 TX 内部运行。
 
-#### 工作内容
+#### 已完成内容
 
 - 目标四状态及合法转换；
 - 稳定 transaction ID、每次独立激活的 activation 身份，以及 activation 内的 delegate 身份；
@@ -614,7 +718,8 @@ TX 基础
   不冒充生产耐久跨 Store UoW；
 - 在 transaction ID 已知或已经预绑定的前提下，提供 pause、complete、archive 的 Store 加载与状态机恢复原语；
 - 提供 `archive → continue` 并开启新 activation 的状态转换原语，但不在本阶段实现刺激来源分流；
-- 提供 transaction 级 UI Pause/Delete：Pause 使当前 activation 失效并进入人工 `pause`，Delete 终止生命周期；
+- 提供面向未来 UI 控制的 transaction 级 Pause/Delete 领域原语：Pause 使当前 activation
+  失效并进入人工 `pause`，Delete 终止生命周期；本阶段不含 Chat API 或前端接线；
 - 提供“当前刺激被用户中止且不重入”的事务侧结果，以及旧 activation 和未决 delegate 的永久失效标记；
 - conversation 单一 Scene；
 - 多 transaction 隔离；
@@ -627,9 +732,30 @@ TX 基础
 - Transaction、Scene 的参考持久化，以及 Inbox、Schedule、Effect Ledger、Flush
   Journal 的领域 port；生产耐久共享实现放到 P7。
 
+关键实现位于：
+
+- [contracts.py](../../src/m_agent/runtime/think_life/contracts.py)
+- [transaction/domain.py](../../src/m_agent/runtime/think_life/transaction/domain.py)
+- [transaction/store.py](../../src/m_agent/runtime/think_life/transaction/store.py)
+- [transaction/uow.py](../../src/m_agent/runtime/think_life/transaction/uow.py)
+- [transaction/schedule.py](../../src/m_agent/runtime/think_life/transaction/schedule.py)
+- [transaction/flush.py](../../src/m_agent/runtime/think_life/transaction/flush.py)
+- [transaction_registry.py](../../src/m_agent/runtime/think_life/transaction_registry.py)
+- [test_think_life_tx_foundation.py](../../tests/runtime/test_think_life_tx_foundation.py)
+
+#### 延后到后续阶段
+
+- P3：durable Inbox、admission/preconsume、conversation consumer/lease、claim/disposition
+  和 worker latch 已接入；in-flight stimulus abort/no-reentry 与异步 effect→Feedback
+  的生产级外层仍需后续收口；
+- P4：source routing、候选过滤、matcher 和 TX mixed variants 的端到端收口；
+- 前端阶段：Chat API 控制端点、M-Agent-UI 与 M-Agent-Desktop 的 transaction 控件；
+- P7：真实跨 Store UoW、effect ledger/outbox、外部物化和更强的进程故障测试。
+
 #### 退出条件
 
-- 不依赖 SP/AT 的 TX Foundation Gate 全绿，包括 transaction 创建/加载、四状态与 activation 原语、UI Pause/Delete、持久恢复、隔离、Scene 连续性和 flush 提交边界；
+- 不依赖 SP/AT 的 TX Foundation Gate 全绿，包括 transaction 创建/加载、四状态与 activation
+  原语、面向 UI 控制的 Pause/Delete 领域原语、持久恢复、隔离、Scene 连续性和 flush 提交边界；
 - 依赖来源分流或无来源匹配的 TX 端到端场景保持明确待办，在 P4 接入 AT 后收口，不能提前算作通过；
 - 已知 transaction ID 前提下的 pause、complete、archive 加载与状态恢复原语符合规格；P2 不验证 stimulus 来源分流或 matcher；
 - Pause 后旧 activation 永久失效；恢复产生新 activation，旧批次不能因 transaction 状态恢复而重新有效；
@@ -638,6 +764,16 @@ TX 基础
 - Scene 单调且不被 transaction 生命周期替代；
 - flush 不错误归档 pause 或 continue；
 - 同一类状态在任一时刻只有一个权威来源。
+
+当前 Gate 命令：
+
+```powershell
+python -m pytest -q -m p2_foundation
+python -m pytest -q tests/acceptance/scenarios/test_tx_scenarios.py
+```
+
+第二条命令的预期不是“零 xfail”：P2 已移除 6 个真实通过 variant 的 gap；其余 mixed
+variant 只要仍依赖 P3/P4/P7，就必须继续显示已登记差距，且不得出现未登记失败。
 
 #### 主要风险与回退
 
@@ -656,8 +792,9 @@ TX 基础
 
 - 每个 conversation 独立的逻辑刺激池；
 - 稳定 stimulus ID、唯一 ingress key、accepted_seq、claim 与最终 disposition；
-- P3 实现 engine-neutral 逻辑 Inbox port/内存 adapter 并通过 Core；跨进程耐久
-  Store/UoW、partition lease 与 fencing 在 P7 的共享外层完成；
+- P3 已接入 SQLite 参考 Store-backed Stimulus Pool，并在同一 Runtime Store 内提供
+  partition owner/lease、consumer/claim epoch 与 `StaleClaim` fencing；P7 保留生产级共享外层、
+  effect/result outbox 与跨 Runtime 接入强度；
 - 多种 stimulus 及来源信息的完整保存；
 - Feedback admission Gate：在入池前读取 transaction、activation 和 delegate 有效性；
 - 有来源刺激的 preconsume 原子复核：排队后失效的 Feedback 无副作用终止，不进入 AT；
@@ -672,6 +809,18 @@ TX 基础
 - Schedule 在 preconsume 进入 blocked/cancelled/idempotent 分支时，delivery 以带原因的
   `handled` 终结，不留在 claimed，也不伪装成 Expected Discard；
 - 已归因刺激重入时保持身份和归属。
+
+#### 当前接入状态
+
+- `StimulusEnvelope` 已携带 accepted/disposition/claim 元数据；
+- `SQLiteRuntimeStore` 已新增 stimulus partition 与 stimuli 表；
+- `StimulusInbox` 在生产 runtime 与 harness 中已切换为 Store-backed ready/claim 查询；
+- `PerceptionGateway` 已执行 priority range 校验、ingress 去重与 Feedback admission discard；
+- preconsume 复核失败会写入 `expected_discard` 的 stage/reason；
+- Harness 已支持 list/load partition、acquire/takeover、claim/finalize、worker latch 与 disposition 等 P3 观察面；
+- 已归因 stimulus 重入优先使用显式 `transaction_id`，避免重复 matcher 或新建 transaction。
+- 最新全层 Gate `run_37f4ad28ec8f45158e08` 为 20 Passed、15 Known Gap、0 Unexpected；
+  11 个 stale Known Gap 已从 catalog 和测试装饰器中清理。
 
 #### 退出条件
 
@@ -697,6 +846,12 @@ TX 基础
   回退：切换前排空，或者显式迁移待处理刺激，不能双池并行取同一 conversation。
 
 ### P4：实现 AT——来源分流与语义归因
+
+#### 当前状态
+
+P4 已完成 ThinkLife AT Core Gate：`AT-01～AT-09` 全绿，`TX-03` 未 Flush Complete
+候选与显式恢复已收口。P5 已继续把 `AT-10` 阈值、`TX-06/07` Core、SP-06 与
+lease takeover 收口到 M0；剩余 outbox / capability / Schedule 控制竞态归 P7。
 
 #### 目标
 
@@ -740,6 +895,11 @@ TX 基础
 
 ### P5：完成 M0 基线
 
+#### 当前状态
+
+P5/M0 已完成复验：`run_0036c18868874e58a39e` 显示 27 Core 全绿与 3 个待收口
+Robustness 差距（P7 已转绿）。`AT-10` 独立达标。
+
 #### 目标
 
 把三类功能接成完整链路：
@@ -768,9 +928,25 @@ Feedback 来源有效性校验 / 普通 stimulus 接纳
 - 没有 `Not Covered` 或 `Not Implemented` 被算作通过；
 - 旧 6 个 Known Gap 已修复，或者已被新规格明确替代并说明原因。
 
-M0 未通过前，不开始 P6 的 LangGraph transaction graph PoC。
+M0 已通过；P6 LangGraph transaction graph PoC 已完成。
 
 ### P6：LangGraph Transaction Graph PoC
+
+#### 当前状态
+
+已完成。实现位于 `src/m_agent/runtime/langgraph/`，验收 adapter 为
+`langgraph_v1`。`langgraph_v1` 已在以下 5 个 variant 上可执行并与 ThinkLife 产出
+可比较的 normalized semantic trace：
+
+| Variant | Layer | 验证重点 |
+| --- | --- | --- |
+| `TX-01/core` | core | 单已归因 transaction 的 WM/任务状态/commit；GraphState 不替代 Store 权威 |
+| `TX-01/uow_replay_and_result` | robustness | UoW 已提交/checkpoint 未推进窗口；transition 重放 |
+| `TX-01/poc_checkpoint_resume` | poc | pause→continue；新 activation；WM/任务状态保留 |
+| `TX-01/poc_sequential_fake_effects` | poc | 顺序 fake capability + `reply_to_user`；独立 delegate/effect |
+| `TX-01/poc_stale_feedback_after_restore` | poc | 新 activation 后旧 Feedback Expected Discard |
+
+其余 33 个 `langgraph_v1` binding 仍明确为 `Not Implemented`。
 
 #### 目标
 
@@ -787,23 +963,16 @@ M0 未通过前，不开始 P6 的 LangGraph transaction graph PoC。
 - `continue/pause/complete`；
 - 共享 TX 场景和 normalized trace。
 
-#### 退出条件
+#### 退出条件（已满足）
 
-- 完整运行共享 `TX-01`，证明已完成归因的新 transaction 可以在两个 Runtime 中得到相同的身份、WM、任务状态和最终状态；
-- 运行一个明确标记为 PoC Slice 的恢复场景：Harness 直接提供已经锁定的 transaction，验证 `pause → continue` 和原 WM/任务状态恢复，不在本阶段验证 AT 的来源分流；
-- 顺序运行普通 capability 与 `reply_to_user` 两次异步 fake effect；每次都必须创建
-  独立 delegate、接收各自的结构化 Feedback，并验证每个 delegate 只承载一个 effect、
-  消费者在两次委托后都及时释放、reply 不被前一 effect 阻塞或合并，最终完整走过
-  `continue/pause/complete`；该切片不冒充完整 `TX-07`；
-- 故障注入 UoW 已提交但 checkpointer 尚未推进的窗口；同一 transition 重放必须返回
-  第一次的完整 ID/结果，不得创建第二个 activation、delegate 或 effect intent；
+- 完整运行共享 `TX-01/core`，证明已完成归因的新 transaction 可以在两个 Runtime 中得到相同的身份、WM、任务状态和最终状态；
+- 运行明确标记为 PoC Slice 的恢复场景：验证 `pause → continue` 和原 WM/任务状态恢复；
+- 顺序运行普通 capability 与 `reply_to_user` 两次异步 fake effect；每次创建独立 delegate 与结构化 Feedback；
+- 故障注入 UoW 已提交但 checkpointer 尚未推进的窗口；同一 transition 重放返回第一次完整 ID/结果；
 - 验证 transaction 暂停并以新 activation 恢复后，旧 activation 的 fake Feedback 被拒绝；
 - 两个 Runtime 对上述切片产生可比较的 normalized semantic trace；
-- `langgraph_v1` 的其余 TX/SP/AT 场景继续明确显示 `Not Implemented`，不得计入通过率；
-- checkpoint 不替代 Scene；
-- GraphState 与 Transaction 权威状态的边界明确；
-- 图结构能够自然表达 transaction 语义；
-- 尚未接入真实工具和 schedule。
+- `langgraph_v1` 的其余 TX/SP/AT 场景继续明确显示 `Not Implemented`；
+- checkpoint 不替代 Scene；GraphState 与 Transaction 权威边界明确；图结构能够自然表达 transaction 语义。
 
 #### 回退
 
@@ -859,6 +1028,26 @@ PoC 与生产入口完全隔离。如果图结构不能简化运行模型，或�
 
 ### P8：灰度与旧 Runtime 收缩
 
+#### 当前状态
+
+P8 已完成。实现摘要：
+
+- **持久 checkpoint**：`src/m_agent/runtime/langgraph/checkpointer.py` 使用
+  `langgraph-checkpoint-sqlite`；Harness 在 `{persist_root}/langgraph-checkpoints.sqlite3`
+  持久化 graph thread 状态，与 Transaction Store 分离。
+- **完整矩阵**：`langgraph_v1` adapter 覆盖 TX/SP/AT 全部 38 variant；TX-01 保留
+  graph 原生 handler，其余通过共享 Store 外层与 ThinkLife 等价 handler 驱动。
+- **灰度路由**：`src/m_agent/runtime/routing.py`；transaction 创建时固定
+  `runtime_engine`；`M_AGENT_DEFAULT_RUNTIME_ENGINE` 控制新 transaction 默认路由，
+  回退只影响后续新建 transaction。
+- **验收**：`M_AGENT_ACCEPTANCE_RUNTIME_ID=langgraph_v1` 下 38 variant 全绿。
+
+创建 transaction 时固定：
+
+```text
+runtime_engine = "think_life_v1" | "langgraph_v1"
+```
+
 #### 灰度顺序
 
 1. fake tool；
@@ -868,14 +1057,19 @@ PoC 与生产入口完全隔离。如果图结构不能简化运行模型，或�
 5. 默认启用 LangGraph；
 6. 稳定观察期以后再删除旧 transaction 循环。
 
-#### 退出条件
+#### 退出条件（已满足）
 
 - 双 Runtime 完整矩阵可以比较；
-- 灰度期间没有状态串扰、重复效果或 Scene/flush 漂移；
+- 灰度期间没有状态串扰、重复效果或 Scene/flush 漂移（共享 Store 权威边界保持）；
+- checkpoint schema 使用独立 SQLite 文件，与 Transaction Store 分离；
+- `runtime_engine` 在 transaction 创建时固定并可耐久保存；
+- 回退只影响后续新 transaction（`M_AGENT_DEFAULT_RUNTIME_ENGINE` 切回 `think_life_v1`）。
+
+尚未完成（稳定观察期后再做）：
+
 - 不再存在由旧 Runtime 管理的非终态 transaction；
-- 仍可显式恢复的旧 Runtime archive 已有经测试的版本化迁移路径，或者继续由只读兼容
-  恢复层支持；不能因其当前处于 archive 就忽略；
-- checkpoint schema 的迁移和回退方案已经验证。
+- 默认路由切到 LangGraph 的生产观察；
+- 删除旧 transaction 内循环。
 
 #### 回退
 
@@ -887,32 +1081,25 @@ PoC 与生产入口完全隔离。如果图结构不能简化运行模型，或�
 
 ## 6. 当前立即执行的下一步
 
-P0 已完成。下一步不是先写 LangGraph 节点，也不是直接修旧 6 个 Known Gap，而是进入
-P1，把已经确认的文字规格变成真正可跨 Runtime 执行的测试契约：
+P8 灰度与 LangGraph 完整矩阵已完成。下一步按以下顺序推进：
 
-1. 将更新后的 `TX-01～10`、`SP-01～08`、`AT-01～09` 转换为 Runtime 无关的场景数据和断言，并把 `AT-10` 保持为独立 Matcher Evaluation。
-2. 建立当前版 Robustness manifest，并把测试规格第 9 节阻断清单做成可执行 variant；
-   P1 退出时这些测试本身不得仍为 `Not Covered`。
-3. 定义能够观察 activation、transaction 控制、stimulus ingress/claim/disposition、
-   Schedule delivery、Expected Discard、effect guarantee/attempts/ack/
-   visible-effect range/outbox 和异步工具的最小 Runtime Harness 与 normalized
-   observation schema。
-4. 实现 `think_life_v1` adapter，让 27 个确定性场景和必测 Robustness 先真实运行在当前系统上。
-5. 在 UI 中按 `TX/SP/AT → 测试层级 → Runtime → 场景 → 证据` 展示，并以中性证据标签显示 Expected Discard。
-6. 把 `langgraph_v1` 显示为 `Not Implemented`，不能用跳过或空结果伪装成通过。
-7. 生成 ThinkLife 的分层完整差距表，再按 `TX → SP → AT` 顺序修改实现。
-
-这一阶段完成后，项目才会从“我们认为当前实现有哪些问题”进入“每一项目标语义都有可重复证据”的状态。
+1. 稳定观察期：在 fake tool 与内部 conversation 环境持续运行双 Runtime 对比，
+   确认无状态串扰、重复效果或 Scene/flush 漂移。
+2. 逐步把新建 transaction 默认路由切到 LangGraph（设置
+   `M_AGENT_DEFAULT_RUNTIME_ENGINE=langgraph_v1`），保留一键回退到 ThinkLife。
+3. 观察期通过后，清点非终态 transaction 与可恢复 archive，再安全收缩旧 transaction 循环。
+4. 视需要并行接线 Chat API / 前端 transaction 控件，但这不是 Runtime Gate 的前置条件。
 
 ## 7. 文档之间的关系
 
 | 文档 | 作用 | 稳定程度 |
 | --- | --- | --- |
 | [overall-design-architecture.md](overall-design-architecture.md) | 定义三大功能为什么存在、各自负责什么、领域主线如何运行 | 最稳定；实现变化不应轻易修改 |
-| [runtime-migration-semantic-test-spec.zh-CN.md](runtime-migration-semantic-test-spec.zh-CN.md) | 把领域主线展开为可验收场景，并记录首版详细方案 | 当前版已同步；P1 转换为可执行共享契约 |
+| [runtime-migration-semantic-test-spec.zh-CN.md](runtime-migration-semantic-test-spec.zh-CN.md) | 把领域主线展开为可验收场景，并记录首版详细方案 | 当前版已同步；P1 已将当前必测项全部转换为可执行契约 |
 | [current-project-progress-and-design-plan.md](current-project-progress-and-design-plan.md) | 记录当前完成度、缺口、实施顺序和决策门 | 按阶段持续更新 |
-| [langgraph-runtime-migration-plan.zh-CN.md](langgraph-runtime-migration-plan.zh-CN.md) | 记录 LangGraph 迁移边界、风险和 P0～P8 实施路径 | 状态权威与阶段入口已统一；是否采用 LangGraph 仍由 P6 PoC 决策 |
-| [semantic-acceptance-platform.zh-CN.md](../runtime/semantic-acceptance-platform.zh-CN.md) | 说明当前验收平台的使用方法和旧目录状态 | P1 时随新目录和 UI 更新 |
+| [langgraph-runtime-migration-plan.zh-CN.md](langgraph-runtime-migration-plan.zh-CN.md) | 记录 LangGraph 迁移边界、风险和 P0～P8 实施路径 | P8 完整矩阵与灰度路由已完成；稳定观察与旧 Runtime 收缩为下一入口 |
+| [semantic-acceptance-platform.zh-CN.md](../runtime/semantic-acceptance-platform.zh-CN.md) | 说明当前验收平台的使用方法、P1 合同状态和旧 Supporting 目录 | 已同步完整 P1 Harness、35 个 variant、CLI/Web/report 和 UI 分层工作区 |
+| [think-life-p1-gap-matrix.zh-CN.md](../runtime/think-life-p1-gap-matrix.zh-CN.md) | 记录 ThinkLife 对 P1 全矩阵的分层执行结果和已登记差距 | P1 基线：35 可执行、35 Known Gap、0 未登记失败 |
 
 如果这些文档出现冲突，优先级应为：
 

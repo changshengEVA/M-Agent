@@ -13,15 +13,18 @@ from m_agent.layers.execution.core import ExecutionAgent
 from m_agent.layers.execution.errors import ExecutionCancelledError
 from m_agent.layers.perception.contracts import PerceptionInput
 from m_agent.layers.thinking.contracts import (
+    TASK_COMPLETION_AWAITING_USER,
     ThinkingDecision,
     is_execute_mode,
     is_reply_mode,
     is_silent_mode,
+    normalize_task_completion_status,
     request_is_complete,
 )
 from m_agent.layers.thinking.core import ThinkingAgent
 from m_agent.runtime.think_life.config import ThinkLifeConfig
 from m_agent.runtime.think_life.contracts import (
+    PauseReason,
     SceneActor,
     SceneEntry,
     SceneEntryType,
@@ -29,11 +32,17 @@ from m_agent.runtime.think_life.contracts import (
     StimulusKind,
     TransactionKind,
     TransactionRecord,
-    TransactionStatus,
+    TransactionState,
+)
+from m_agent.runtime.think_life.scheduler.awaiting_user_pause import (
+    pause_for_user_collaboration,
 )
 from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
 from m_agent.runtime.think_life.perception.gateway import PerceptionGateway
 from m_agent.runtime.think_life.perception.inbox import StimulusInbox
+from m_agent.runtime.think_life.perception.matcher_scene_view import (
+    is_user_visible_scene_interaction,
+)
 from m_agent.runtime.think_life.scheduler.cpu_state import THREAD_CPU_STATE
 from m_agent.runtime.think_life.scheduler.delegate import (
     DelegateTarget,
@@ -51,13 +60,21 @@ from m_agent.runtime.think_life.scheduler.execution_feedback import (
 from m_agent.runtime.think_life.scheduler.schedule_lifecycle import ScheduleLifecycleHook
 from m_agent.runtime.think_life.scheduler.think_context import (
     build_perception_for_stimulus,
-    format_scene_tail,
     latest_user_utterance_from_scene,
     read_scene_segment,
 )
 from m_agent.runtime.think_life.transaction_registry import (
     TransactionRegistry,
     TransactionTransitionError,
+)
+from m_agent.runtime.think_life.transaction.store import (
+    RevisionConflictError,
+    StaleClaimError,
+)
+from m_agent.runtime.think_life.transaction.uow import RuntimeUnitOfWork
+from m_agent.runtime.think_life.transaction.predicates import (
+    is_open_continue,
+    is_runnable_record,
 )
 from m_agent.systems.scene.protocols import SceneReader, SceneWriter
 from m_agent.systems.wm import WMSystem
@@ -69,6 +86,41 @@ ThinkingEventEmitter = Callable[[str, Dict[str, Any]], None]
 HistoryProvider = Callable[[str], Optional[List[Dict[str, Any]]]]
 
 _MAX_COMPLETION_GATE_NUDGES = 2
+
+
+class _TransactionFencedSceneWriter:
+    """Suppress tool-owned Scene appends after a transaction tombstone."""
+
+    def __init__(
+        self,
+        *,
+        registry: TransactionRegistry,
+        transaction_id: str,
+        inner: SceneWriter,
+    ) -> None:
+        self._registry = registry
+        self._transaction_id = str(transaction_id or "").strip()
+        self._inner = inner
+
+    def append(
+        self,
+        conversation_id: str,
+        entry: SceneEntry,
+        *,
+        append_id: Optional[str] = None,
+    ) -> SceneEntry:
+        current = self._registry.store.load_transaction(
+            self._transaction_id
+        )
+        if current is not None and current.deleted:
+            return entry
+        if append_id is None:
+            return self._inner.append(conversation_id, entry)
+        return self._inner.append(
+            conversation_id,
+            entry,
+            append_id=append_id,
+        )
 
 
 class ThinkLifeLoop:
@@ -127,11 +179,41 @@ class ThinkLifeLoop:
                 history_provider=history_provider,
             )
             try:
-                results.append(
-                    self._process_one(stimulus, history_messages=turn_history)
+                result = self._process_one(
+                    stimulus,
+                    history_messages=turn_history,
                 )
+                results.append(result)
+                if not (
+                    result.get("preempted")
+                    or result.get("cancelled")
+                    or result.get("force_stopped")
+                ):
+                    self._finalize_claim(
+                        stimulus,
+                        disposition="consumed",
+                    )
             except Exception as exc:
                 logger.exception("Think-life process failed thread_id=%s", thread_id)
+                current = self._load_stimulus_disposition(
+                    stimulus.stimulus_id
+                )
+                if current in {"expected_discard", "aborted"}:
+                    results.append(
+                        {
+                            "success": True,
+                            "expected_discard": current == "expected_discard",
+                            "cancelled": current == "aborted",
+                            "stimulus_id": stimulus.stimulus_id,
+                        }
+                    )
+                    continue
+                self._mark_stimulus_disposition(
+                    stimulus,
+                    disposition="failed",
+                    stage="final",
+                    reason=str(exc),
+                )
                 results.append(
                     {
                         "success": False,
@@ -140,6 +222,64 @@ class ThinkLifeLoop:
                     }
                 )
         return results
+
+    def _load_stimulus_disposition(
+        self,
+        stimulus_id: str,
+    ) -> Optional[str]:
+        store = getattr(self.inbox, "store", None)
+        if store is None:
+            return None
+        stimulus = store.load_stimulus(stimulus_id)
+        return stimulus.disposition if stimulus is not None else None
+
+    def _mark_stimulus_disposition(
+        self,
+        stimulus: StimulusEnvelope,
+        *,
+        disposition: str,
+        stage: str,
+        reason: str = "",
+    ) -> None:
+        store = getattr(self.inbox, "store", None)
+        if store is None:
+            return
+        store.set_stimulus_disposition(
+            stimulus.stimulus_id,
+            disposition=disposition,
+            stage=stage,
+            reason=reason,
+        )
+
+    def _finalize_claim(
+        self,
+        stimulus: StimulusEnvelope,
+        *,
+        disposition: str,
+    ) -> None:
+        store = getattr(self.inbox, "store", None)
+        if store is None or not stimulus.claimed_by:
+            return
+        try:
+            store.finalize_stimulus(
+                stimulus_id=stimulus.stimulus_id,
+                claim_token={
+                    "claimed_by": stimulus.claimed_by,
+                    "consumer_epoch": stimulus.consumer_epoch,
+                    "claim_epoch": stimulus.claim_epoch,
+                },
+                disposition=disposition,
+                transition_id=(
+                    f"stimulus-finalize:{stimulus.stimulus_id}:"
+                    f"{stimulus.claim_epoch}"
+                ),
+                command_digest=disposition,
+            )
+        except StaleClaimError:
+            logger.info(
+                "stale stimulus claim ignored stimulus_id=%s",
+                stimulus.stimulus_id,
+            )
 
     def _refresh_pending_stimuli(self, thread_id: str) -> None:
         tid = str(thread_id or "").strip()
@@ -182,19 +322,53 @@ class ThinkLifeLoop:
             self.scene_reader,
             stimulus.conversation_id,
             max_entries=self.config.scene_context_max_entries,
+            entry_filter=is_user_visible_scene_interaction,
         )
         transaction, _created = self.attributor.resolve(
             stimulus,
             dialogue_history=history_messages,
-            scene_context=format_scene_tail(routing_scene),
+            scene_entries=routing_scene,
         )
-        if transaction.status == TransactionStatus.PENDING:
-            self.registry.transition(transaction.transaction_id, TransactionStatus.RUNNING)
-        elif transaction.status == TransactionStatus.WAITING_EXECUTION:
-            self.registry.transition(transaction.transaction_id, TransactionStatus.RUNNING)
-        elif transaction.status == TransactionStatus.SUSPENDED:
-            self.registry.transition(transaction.transaction_id, TransactionStatus.RUNNING)
+        transaction, deleted_at_binding = self._bind_attributed_stimulus(
+            stimulus,
+            transaction,
+        )
+        if deleted_at_binding:
+            return self._handle_transaction_deleted(
+                stimulus,
+                transaction,
+                phase="attribution_bind",
+            )
+        self._bind_deferred_user_scene(stimulus, transaction)
+        if not str(stimulus.transaction_id or "").strip():
+            object.__setattr__(
+                stimulus,
+                "transaction_id",
+                transaction.transaction_id,
+            )
         transaction = self.registry.get(transaction.transaction_id) or transaction
+        if self._is_deleted_transaction(transaction):
+            return self._handle_transaction_deleted(
+                stimulus,
+                transaction,
+                phase="attribution",
+            )
+        activation = (
+            self.registry.store.load_activation(transaction.current_activation_id)
+            if transaction.current_activation_id
+            else None
+        )
+        if not is_runnable_record(transaction, activation):
+            if self._is_deleted_transaction(transaction):
+                return self._handle_transaction_deleted(
+                    stimulus,
+                    transaction,
+                    phase="attribution",
+                )
+            raise TransactionTransitionError(
+                "attributed transaction is not runnable: "
+                f"{transaction.transaction_id}"
+            )
         tid = transaction.thread_id
         txn_id = transaction.transaction_id
         priority = self.attributor.priority_for(stimulus)
@@ -206,29 +380,137 @@ class ThinkLifeLoop:
         )
         THREAD_RUNTIME_STATUS.set_cpu_holder(tid, txn_id)
         self._emit_runtime_updated(tid)
-        if stimulus.kind == StimulusKind.SCHEDULED_PLAN:
-            self._notify_schedule_started(stimulus, transaction)
+        schedule_started = False
         try:
+            if stimulus.kind == StimulusKind.SCHEDULED_PLAN:
+                # Linearize the external schedule ``running`` transition with
+                # transaction deletion.  Delete uses the same registry lock,
+                # so either it wins and no start is emitted, or start wins and
+                # every later delete path below emits a matching terminal
+                # lifecycle callback.
+                with self.registry._lock:
+                    if (
+                        self._is_transaction_delete_cancel(cancel_event)
+                        or self._is_deleted_transaction(transaction)
+                    ):
+                        return self._handle_transaction_deleted(
+                            stimulus,
+                            transaction,
+                            phase="schedule_start",
+                        )
+                    schedule_started = self._notify_schedule_started(
+                        stimulus,
+                        transaction,
+                    )
             result = self._run_transaction_turn(
                 transaction,
                 stimulus,
                 history_messages=history_messages,
                 cancel_event=cancel_event,
             )
-            if result.get("preempted"):
+            # The final durable deletion check and the schedule terminal hook
+            # are one critical section.  A normal tool/planner result cannot
+            # race a tombstone and incorrectly report schedule success.
+            with self.registry._lock:
+                if (
+                    self._is_transaction_delete_cancel(cancel_event)
+                    or self._is_deleted_transaction(transaction)
+                    or result.get("deleted")
+                ):
+                    deleted_result = self._handle_transaction_deleted(
+                        stimulus,
+                        transaction,
+                        phase="schedule_finish",
+                    )
+                    if schedule_started:
+                        self._notify_schedule_finished(
+                            transaction,
+                            {
+                                "success": False,
+                                "cancelled": True,
+                                "deleted": True,
+                                "error": "transaction_deleted",
+                            },
+                        )
+                    return deleted_result
+                if result.get("preempted"):
+                    return result
+                record = self.registry.get(transaction.transaction_id) or transaction
+                if record.kind == TransactionKind.SCHEDULE:
+                    if not (
+                        result.get("waiting_feedback")
+                        or result.get("cancelled")
+                    ):
+                        self._notify_schedule_finished(record, result)
                 return result
-            record = self.registry.get(transaction.transaction_id) or transaction
-            if record.kind == TransactionKind.SCHEDULE:
-                if not result.get("waiting_feedback"):
-                    self._notify_schedule_finished(record, result)
-            return result
         except ExecutionCancelledError:
-            if self._is_force_stop(cancel_event):
-                return self._handle_force_stop(stimulus, transaction, phase="execute")
-            return self._handle_preempt(stimulus, transaction, phase="execute")
+            with self.registry._lock:
+                if (
+                    self._is_transaction_delete_cancel(cancel_event)
+                    or self._is_deleted_transaction(transaction)
+                ):
+                    deleted_result = self._handle_transaction_deleted(
+                        stimulus,
+                        transaction,
+                        phase="execute",
+                    )
+                    if schedule_started:
+                        self._notify_schedule_finished(
+                            transaction,
+                            {
+                                "success": False,
+                                "cancelled": True,
+                                "deleted": True,
+                                "error": "transaction_deleted",
+                            },
+                        )
+                    return deleted_result
+                if self._is_force_stop(cancel_event):
+                    return self._handle_force_stop(
+                        stimulus,
+                        transaction,
+                        phase="execute",
+                    )
+                return self._handle_preempt(
+                    stimulus,
+                    transaction,
+                    phase="execute",
+                )
         except Exception as exc:
-            self._handle_processing_failure(stimulus, transaction, exc)
-            raise
+            with self.registry._lock:
+                current = self.registry.store.load_transaction(
+                    transaction.transaction_id
+                )
+                deleted = bool(current is not None and current.deleted)
+                if deleted or self._is_transaction_delete_cancel(cancel_event):
+                    deleted_result = self._handle_transaction_deleted(
+                        stimulus,
+                        current or transaction,
+                        phase="execute_error",
+                    )
+                    if schedule_started:
+                        self._notify_schedule_finished(
+                            current or transaction,
+                            {
+                                "success": False,
+                                "cancelled": True,
+                                "deleted": True,
+                                "error": "transaction_deleted",
+                            },
+                        )
+                    return deleted_result
+                if schedule_started:
+                    self._notify_schedule_finished(
+                        current or transaction,
+                        {
+                            "success": False,
+                            "cancelled": False,
+                            "deleted": False,
+                            "error": str(exc or "schedule processing failed"),
+                        },
+                    )
+                self._handle_processing_failure(stimulus, transaction, exc)
+                raise
         finally:
             THREAD_CPU_STATE.clear_in_flight(tid, stimulus_id=stimulus.stimulus_id)
             THREAD_RUNTIME_STATUS.set_cpu_holder(tid, None)
@@ -242,15 +524,14 @@ class ThinkLifeLoop:
     ) -> None:
         current = self.registry.get(transaction.transaction_id) or transaction
         error = str(exc or "think-life processing failed").strip() or "think-life processing failed"
-        current.last_error = error
-        if not current.status.is_terminal():
+        if is_open_continue(current):
             try:
-                self.registry.transition(current.transaction_id, TransactionStatus.FAILED)
+                self.registry.fail(current.transaction_id, error=error)
             except TransactionTransitionError:
                 logger.exception(
-                    "Think-life failure transition failed txn=%s status=%s",
+                    "Think-life failure transition failed txn=%s state=%s",
                     current.transaction_id,
-                    current.status.value,
+                    current.state.value,
                 )
         if self._event_emitter is not None:
             try:
@@ -271,20 +552,105 @@ class ThinkLifeLoop:
                     current.transaction_id,
                 )
 
+    @staticmethod
+    def _is_transaction_delete_cancel(cancel_event: Optional[Any]) -> bool:
+        return bool(
+            cancel_event is not None
+            and str(
+                getattr(cancel_event, "cancel_reason", "") or ""
+            ).strip()
+            == "transaction_deleted"
+        )
+
+    def _is_deleted_transaction(
+        self,
+        transaction: TransactionRecord,
+    ) -> bool:
+        current = self.registry.store.load_transaction(
+            transaction.transaction_id
+        )
+        return bool(current is not None and current.deleted)
+
+    def _bind_attributed_stimulus(
+        self,
+        stimulus: StimulusEnvelope,
+        transaction: TransactionRecord,
+    ) -> tuple[TransactionRecord, bool]:
+        """Persist sourceless attribution before Scene or CPU work."""
+
+        with self.registry._lock:
+            inbox_store = getattr(self.inbox, "store", None)
+            bound = None
+            bind = getattr(inbox_store, "bind_stimulus_target", None)
+            if callable(bind):
+                bound = bind(
+                    stimulus.stimulus_id,
+                    transaction_id=transaction.transaction_id,
+                )
+            durable = self.registry.store.load_transaction(
+                transaction.transaction_id
+            )
+            if durable is not None:
+                transaction = self.registry.refresh_from_store(
+                    transaction.transaction_id
+                ) or durable
+            deleted = bool(
+                (bound is not None and bound.disposition == "aborted")
+                or (durable is not None and durable.deleted)
+            )
+            return transaction, deleted
+
+    def _handle_transaction_deleted(
+        self,
+        stimulus: StimulusEnvelope,
+        transaction: TransactionRecord,
+        *,
+        phase: str,
+    ) -> Dict[str, Any]:
+        refreshed = self.registry.refresh_from_store(
+            transaction.transaction_id
+        )
+        if isinstance(refreshed, TransactionRecord):
+            transaction = refreshed
+        store = getattr(self.inbox, "store", None)
+        current_stimulus = (
+            store.load_stimulus(stimulus.stimulus_id)
+            if store is not None
+            else None
+        )
+        if (
+            current_stimulus is not None
+            and current_stimulus.disposition in {"ready", "claimed"}
+        ):
+            self._mark_stimulus_disposition(
+                stimulus,
+                disposition="aborted",
+                stage="transaction_delete",
+                reason="transaction_deleted",
+            )
+        return {
+            "success": False,
+            "cancelled": True,
+            "deleted": True,
+            "transaction_id": transaction.transaction_id,
+            "stimulus_id": stimulus.stimulus_id,
+            "phase": str(phase or "runtime"),
+        }
+
     def _notify_schedule_started(
         self,
         stimulus: StimulusEnvelope,
         transaction: TransactionRecord,
-    ) -> None:
+    ) -> bool:
         hook = self._schedule_lifecycle
         if hook is None:
-            return
+            return False
         payload = stimulus.payload if isinstance(stimulus.payload, dict) else {}
         owner_id = str(payload.get("owner_id", "") or "").strip()
         schedule_id = str(stimulus.schedule_id or payload.get("schedule_id", "") or "").strip()
         run_id = str(payload.get("run_id", "") or "").strip()
         if not owner_id or not schedule_id:
-            return
+            return False
         try:
             hook.on_schedule_processing_started(
                 owner_id=owner_id,
@@ -295,6 +661,10 @@ class ThinkLifeLoop:
             )
         except Exception:
             logger.exception("schedule processing_started failed schedule_id=%s", schedule_id)
+        # Treat an attempted start as externally visible: a hook may have
+        # committed its running state before raising.  The caller must always
+        # pair it with a terminal callback on deletion or failure.
+        return True
 
     def _notify_schedule_finished(
         self,
@@ -365,18 +735,16 @@ class ThinkLifeLoop:
         preempt_count = int(stimulus.payload.get("_preempt_count", 0) or 0)
         max_preempt = max(1, int(self.config.scheduler.max_preempt_per_stimulus))
         if preempt_count >= max_preempt:
-            self.registry.transition(transaction.transaction_id, TransactionStatus.FAILED)
+            self.registry.fail(
+                transaction.transaction_id,
+                error="max_preempt_per_stimulus exceeded",
+            )
             return {
                 "success": False,
                 "preempted": False,
                 "error": "max_preempt_per_stimulus exceeded",
                 "transaction_id": transaction.transaction_id,
             }
-        try:
-            if transaction.status == TransactionStatus.RUNNING:
-                self.registry.transition(transaction.transaction_id, TransactionStatus.SUSPENDED)
-        except TransactionTransitionError:
-            pass
         new_payload = dict(stimulus.payload)
         new_payload["_preempt_count"] = preempt_count + 1
         new_payload["_checkpoint"] = {
@@ -391,12 +759,28 @@ class ThinkLifeLoop:
             stimulus=replace(stimulus.stimulus, payload=new_payload),
             occurred_at=stimulus.occurred_at,
             transaction_id=transaction.transaction_id,
+            activation_id=stimulus.activation_id,
             delegate_id=stimulus.delegate_id,
             schedule_id=stimulus.schedule_id,
+            schedule_run_id=stimulus.schedule_run_id,
+            schedule_delivery_id=stimulus.schedule_delivery_id,
+            ingress_key=stimulus.ingress_key,
             priority_override=stimulus.priority_override,
+            accepted_seq=stimulus.accepted_seq,
+            accepted_at=stimulus.accepted_at,
+            effective_priority=stimulus.effective_priority,
+            disposition=stimulus.disposition,
+            disposition_stage=stimulus.disposition_stage,
+            disposition_reason=stimulus.disposition_reason,
+            claimed_by=stimulus.claimed_by,
+            consumer_epoch=stimulus.consumer_epoch,
+            claim_epoch=stimulus.claim_epoch,
+            claimed_at=stimulus.claimed_at,
+            finalized_at=stimulus.finalized_at,
+            worker_latch=stimulus.worker_latch,
         )
         priority = self.attributor.priority_for(requeued)
-        self.inbox.push(requeued, priority=priority)
+        self.inbox.requeue_claimed(requeued, priority=priority)
         self._refresh_pending_stimuli(stimulus.thread_id)
         return {
             "success": True,
@@ -418,8 +802,11 @@ class ThinkLifeLoop:
     ) -> Dict[str, Any]:
         current = self.registry.get(transaction.transaction_id) or transaction
         try:
-            if not current.status.is_terminal():
-                self.registry.transition(current.transaction_id, TransactionStatus.CANCELLED)
+            if is_open_continue(current):
+                self.registry.pause(
+                    current.transaction_id,
+                    reason=PauseReason.MANUAL_HOLD,
+                )
         except TransactionTransitionError:
             pass
         self._refresh_pending_stimuli(stimulus.thread_id)
@@ -483,11 +870,19 @@ class ThinkLifeLoop:
         cancel_event: Optional[Any] = None,
     ) -> Dict[str, Any]:
         record = self.registry.get(transaction.transaction_id) or transaction
+        if self._is_deleted_transaction(record):
+            return self._handle_transaction_deleted(
+                stimulus,
+                record,
+                phase="before_think",
+            )
         record.think_rounds += 1
         limit_rounds = self.config.max_think_rounds
         if limit_rounds is not None and record.think_rounds > limit_rounds:
-            self.registry.transition(record.transaction_id, TransactionStatus.FAILED)
-            record.last_error = "max_think_rounds exceeded"
+            record = self.registry.fail(
+                record.transaction_id,
+                error="max_think_rounds exceeded",
+            )
             return {
                 "success": False,
                 "error": record.last_error,
@@ -511,6 +906,15 @@ class ThinkLifeLoop:
             perception=perception,
             scene_tail=scene_tail,
         )
+        if (
+            self._is_transaction_delete_cancel(cancel_event)
+            or self._is_deleted_transaction(record)
+        ):
+            return self._handle_transaction_deleted(
+                stimulus,
+                record,
+                phase="think",
+            )
         if decision.reasoning:
             self._append_scene(
                 record,
@@ -529,6 +933,12 @@ class ThinkLifeLoop:
         if self._should_yield_to_inbox(record.thread_id, current_priority):
             return self._handle_preempt(stimulus, record, phase="think")
         if cancel_event is not None and cancel_event.is_set():
+            if self._is_transaction_delete_cancel(cancel_event):
+                return self._handle_transaction_deleted(
+                    stimulus,
+                    record,
+                    phase="think",
+                )
             if self._is_force_stop(cancel_event):
                 return self._handle_force_stop(stimulus, record, phase="think")
             return self._handle_preempt(stimulus, record, phase="think")
@@ -539,7 +949,10 @@ class ThinkLifeLoop:
             if target:
                 limit = self.config.max_delegates_per_transaction
                 if limit is not None and record.delegate_count >= limit:
-                    self.registry.transition(record.transaction_id, TransactionStatus.FAILED)
+                    self.registry.fail(
+                        record.transaction_id,
+                        error="max_delegates_per_transaction exceeded",
+                    )
                     return {
                         "success": False,
                         "error": "max_delegates_per_transaction exceeded",
@@ -553,8 +966,10 @@ class ThinkLifeLoop:
                     stimulus=stimulus,
                     cancel_event=cancel_event,
                 )
-            record.last_error = "execute mode requires tool_name (or a single capability_hint)"
-            self.registry.transition(record.transaction_id, TransactionStatus.FAILED)
+            record = self.registry.fail(
+                record.transaction_id,
+                error="execute mode requires tool_name",
+            )
             return {
                 "success": False,
                 "error": record.last_error,
@@ -598,7 +1013,12 @@ class ThinkLifeLoop:
         record: TransactionRecord,
         decision: ThinkingDecision,
     ) -> Dict[str, Any]:
-        """No delegate, no reply; keep the transaction open unless request_complete."""
+        """No delegate, no reply; keep open, complete, or pause from macro status.
+
+        Pause is driven by task_state.completion_status==awaiting_user (macro
+        decision), not by ThinkingDecision.mode. Once paused, Think hard-rules
+        silent on later turns.
+        """
         if request_is_complete(decision):
             self._complete_transaction_after_turn(record)
             return {
@@ -608,34 +1028,30 @@ class ThinkLifeLoop:
                 "silent": True,
                 "phases": ["plan"],
             }
-        current = self.registry.get(record.transaction_id) or record
-        if current.status in {
-            TransactionStatus.PENDING,
-            TransactionStatus.WAITING_EXECUTION,
-        }:
-            self.registry.transition(record.transaction_id, TransactionStatus.RUNNING)
+        paused_for_user = self._pause_if_macro_awaits_user(record)
         return {
             "success": True,
             "transaction_id": record.transaction_id,
             "completed": False,
             "silent": True,
+            "paused_awaiting_user": bool(paused_for_user),
             "phases": ["plan"],
         }
 
-    def _complete_transaction_after_turn(self, record: TransactionRecord) -> None:
-        """USER_TASK stays open until memory flush; other kinds close after the turn."""
-        if record.kind == TransactionKind.USER_TASK:
-            current = self.registry.get(record.transaction_id) or record
-            if current.status == TransactionStatus.WAITING_EXECUTION:
-                self.registry.transition(record.transaction_id, TransactionStatus.RUNNING)
-            elif current.status == TransactionStatus.PENDING:
-                self.registry.transition(record.transaction_id, TransactionStatus.RUNNING)
-            return
-        if record.status == TransactionStatus.WAITING_EXECUTION:
-            self.registry.transition(record.transaction_id, TransactionStatus.RUNNING)
+    def _pause_if_macro_awaits_user(self, record: TransactionRecord) -> bool:
         current = self.registry.get(record.transaction_id) or record
-        if not current.status.is_terminal():
-            self.registry.transition(record.transaction_id, TransactionStatus.COMPLETED)
+        status = normalize_task_completion_status(
+            current.task_state.completion_status
+        )
+        if status != TASK_COMPLETION_AWAITING_USER:
+            return False
+        return pause_for_user_collaboration(self.registry, current)
+
+    def _complete_transaction_after_turn(self, record: TransactionRecord) -> None:
+        """Complete the logical transaction after an explicit completion decision."""
+        current = self.registry.get(record.transaction_id) or record
+        if current.state == TransactionState.CONTINUE:
+            self.registry.complete(record.transaction_id)
 
     def _delegate_and_wait(
         self,
@@ -647,10 +1063,28 @@ class ThinkLifeLoop:
         stimulus: StimulusEnvelope,
         cancel_event: Optional[Any] = None,
     ) -> Dict[str, Any]:
+        if (
+            self._is_transaction_delete_cancel(cancel_event)
+            or self._is_deleted_transaction(record)
+        ):
+            return self._handle_transaction_deleted(
+                stimulus,
+                record,
+                phase="before_execute",
+            )
         if self._should_yield_to_inbox(record.thread_id, self.attributor.priority_for(stimulus)):
             return self._handle_preempt(stimulus, record, phase="execute")
         delegate_id = f"dlg_{uuid.uuid4().hex}"
         record = self.registry.begin_delegate(record.transaction_id, delegate_id)
+        if (
+            self._is_transaction_delete_cancel(cancel_event)
+            or self._is_deleted_transaction(record)
+        ):
+            return self._handle_transaction_deleted(
+                stimulus,
+                record,
+                phase="before_dispatch",
+            )
         fill_result = resolve_delegate_tool_input(
             self.execution_agent,
             target,
@@ -658,6 +1092,15 @@ class ThinkLifeLoop:
             correlation_id=delegate_id,
             pending_user_request=pending_user_request,
         )
+        if (
+            self._is_transaction_delete_cancel(cancel_event)
+            or self._is_deleted_transaction(record)
+        ):
+            return self._handle_transaction_deleted(
+                stimulus,
+                record,
+                phase="before_dispatch",
+            )
         tool_name = target.tool_name
         if fill_result.needs_clarification:
             tool_history = build_param_gap_tool_history(
@@ -665,11 +1108,20 @@ class ThinkLifeLoop:
                 instruction=target.instruction,
             )
             self._append_tool_scene(record, tool_history, delegate_id=delegate_id)
+            if self._is_deleted_transaction(record):
+                return self._handle_transaction_deleted(
+                    stimulus,
+                    record,
+                    phase="param_gap",
+                )
             self.gateway.submit_execution_feedback(
                 thread_id=record.thread_id,
                 conversation_id=record.conversation_id,
                 transaction_id=record.transaction_id,
                 delegate_id=delegate_id,
+                activation_id=str(
+                    record.current_activation_id or ""
+                ),
                 tool_history=tool_history,
                 summary=param_gap_summary(fill_result),
             )
@@ -684,6 +1136,8 @@ class ThinkLifeLoop:
         replies: List[str] = []
         finalized = {"value": False}
         def on_reply(message: str, *, finalize: bool) -> None:
+            if self._is_deleted_transaction(record):
+                return
             replies.append(str(message or "").strip())
             if finalize:
                 finalized["value"] = True
@@ -691,7 +1145,18 @@ class ThinkLifeLoop:
                 self._on_reply(record.thread_id, record.transaction_id, message, finalize)
         try:
             if cancel_event is not None and cancel_event.is_set():
-                raise ExecutionCancelledError("execution preempted")
+                # Once begin_delegate commits, ordinary priority preemption
+                # must not replay an effect with unknown side effects.  A
+                # user force-stop is the only cancellation that may cross
+                # this boundary.
+                if self._is_transaction_delete_cancel(cancel_event):
+                    return self._handle_transaction_deleted(
+                        stimulus,
+                        record,
+                        phase="before_dispatch",
+                    )
+                if self._is_force_stop(cancel_event):
+                    raise ExecutionCancelledError("execution force-stopped")
             exec_result = self.execution_agent.invoke_tool_direct(
                 tool_name=tool_name,
                 tool_input=dict(fill_result.args or {}),
@@ -702,13 +1167,69 @@ class ThinkLifeLoop:
                     "transaction_id": record.transaction_id,
                     "conversation_id": record.conversation_id,
                     "on_reply": on_reply,
-                    "scene_writer": self.scene_writer,
+                    "scene_writer": _TransactionFencedSceneWriter(
+                        registry=self.registry,
+                        transaction_id=record.transaction_id,
+                        inner=self.scene_writer,
+                    ),
                 },
             )
-        except ExecutionCancelledError:
+        except ExecutionCancelledError as exc:
+            if self._is_force_stop(cancel_event):
+                raise
+            raise RuntimeError(
+                "delegate execution cancelled after dispatch"
+            ) from exc
+        if (
+            self._is_transaction_delete_cancel(cancel_event)
+            or self._is_deleted_transaction(record)
+        ):
+            return self._handle_transaction_deleted(
+                stimulus,
+                record,
+                phase="execute",
+            )
+        wm_entries = list(record.wm_entries)
+        self.wm_system.write(wm_entries, exec_result.tool_history)
+
+        def commit_wm(transaction: Optional[TransactionRecord]) -> Dict[str, Any]:
+            assert transaction is not None
+            transaction.wm_entries = list(wm_entries)
+            return {
+                "action": "commit_delegate_wm",
+                "transaction_id": transaction.transaction_id,
+                "delegate_id": delegate_id,
+                "wm_entry_count": len(wm_entries),
+            }
+
+        try:
+            RuntimeUnitOfWork(self.registry).apply_transition(
+                f"think-life-delegate-result:{delegate_id}",
+                {
+                    "action": "commit_delegate_wm",
+                    "transaction_id": record.transaction_id,
+                    "delegate_id": delegate_id,
+                },
+                record.transaction_id,
+                record.revision,
+                commit_wm,
+            )
+        except (RevisionConflictError, TransactionTransitionError):
+            if self._is_deleted_transaction(record):
+                return self._handle_transaction_deleted(
+                    stimulus,
+                    record,
+                    phase="commit",
+                )
             raise
-        self.wm_system.write(record.wm_entries, exec_result.tool_history)
+        record = self.registry.get(record.transaction_id) or record
         self._append_tool_scene(record, exec_result.tool_history, delegate_id=delegate_id)
+        if self._is_deleted_transaction(record):
+            return self._handle_transaction_deleted(
+                stimulus,
+                record,
+                phase="commit",
+            )
         # A finalized reply closes the user-visible message stream, not the
         # semantic task. Feed its delivery outcome back through perception so
         # task-state preprocessing can decide completed vs awaiting_user vs
@@ -718,6 +1239,7 @@ class ThinkLifeLoop:
             conversation_id=record.conversation_id,
             transaction_id=record.transaction_id,
             delegate_id=delegate_id,
+            activation_id=str(record.current_activation_id or ""),
             tool_history=exec_result.tool_history,
             summary=feedback_summary_from_tool_history(exec_result.tool_history)
             or str(exec_result.summary or ""),
@@ -740,6 +1262,8 @@ class ThinkLifeLoop:
         actor: SceneActor,
         text: str,
     ) -> None:
+        if self._is_deleted_transaction(record):
+            return
         body = str(text or "").strip()
         if not body:
             return
@@ -755,6 +1279,45 @@ class ThinkLifeLoop:
             ),
         )
 
+    def _bind_deferred_user_scene(
+        self,
+        stimulus: StimulusEnvelope,
+        record: TransactionRecord,
+    ) -> None:
+        """Bind sourceless user utterances after AT attribution.
+
+        Perception defers Scene writes for sourceless user messages so the
+        entry can carry the attributed ``transaction_id``.
+        """
+
+        if self._is_deleted_transaction(record):
+            return
+        if stimulus.kind != StimulusKind.USER_MESSAGE:
+            return
+        if str(stimulus.transaction_id or "").strip():
+            return
+        body = str(stimulus.text or "").strip()
+        if not body:
+            return
+        append_id = str(stimulus.stimulus_id or "").strip() or None
+        entry = SceneEntry(
+            seq=0,
+            occurred_at=stimulus.occurred_at,
+            entry_type=SceneEntryType.UTTERANCE,
+            actor=SceneActor.USER,
+            text=body,
+            append_id=append_id,
+            transaction_id=record.transaction_id,
+        )
+        try:
+            self.scene_writer.append(
+                stimulus.conversation_id,
+                entry,
+                append_id=append_id,
+            )
+        except TypeError:
+            self.scene_writer.append(stimulus.conversation_id, entry)
+
     def _append_tool_scene(
         self,
         record: TransactionRecord,
@@ -762,6 +1325,8 @@ class ThinkLifeLoop:
         *,
         delegate_id: str,
     ) -> None:
+        if self._is_deleted_transaction(record):
+            return
         for item in tool_history:
             if not isinstance(item, dict):
                 continue

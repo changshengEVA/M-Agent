@@ -177,7 +177,7 @@ INVARIANTS: Tuple[InvariantSpec, ...] = (
                 "TaskState 对象独立。",
             ),
         ),
-        known_gap="flush 仍读取 ThinkingAgent legacy state registry，未排空 TransactionRecord.episode_buffer。",
+        known_gap="",
     ),
     InvariantSpec(
         invariant_id="INV-06",

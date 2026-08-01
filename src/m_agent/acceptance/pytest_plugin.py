@@ -44,6 +44,7 @@ def pytest_runtest_logreport(report: Any) -> None:
             "duration_seconds": 0.0,
             "message": "",
             "trace": [],
+            "observation": {},
         },
     )
     current["duration_seconds"] = float(current["duration_seconds"]) + float(
@@ -61,11 +62,15 @@ def pytest_runtest_logreport(report: Any) -> None:
         return
     if report.when == "call":
         for name, value in list(getattr(report, "user_properties", []) or []):
-            if name != "semantic_trace":
+            if name not in {"semantic_trace", "semantic_observation"}:
                 continue
             try:
                 parsed = json.loads(str(value))
             except Exception:
+                continue
+            if name == "semantic_observation":
+                if isinstance(parsed, dict):
+                    current["observation"] = dict(parsed)
                 continue
             events = parsed.get("events", []) if isinstance(parsed, dict) else parsed
             if isinstance(events, list):

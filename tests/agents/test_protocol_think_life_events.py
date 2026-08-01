@@ -35,13 +35,14 @@ def test_think_life_planning_events_are_in_protocol_whitelist(
 def test_summarize_thinking_plan_returns_mode_and_instruction_excerpt() -> None:
     payload = {
         "mode": "execute",
+        "tool_name": "deep_recall",
         "instruction": "Find yesterday's travel plan",
-        "capability_hint": ["deep_recall", "shallow_recall"],
     }
 
     text = _summarize_event_payload("thinking_plan", payload)
 
     assert "mode=execute" in text
+    assert "tool=deep_recall" in text
     assert "yesterday's travel" in text
 
 

@@ -5,6 +5,8 @@ import threading
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock
 
+import pytest
+
 from m_agent.api.chat_api_runtime import BufferedRound, ChatServiceRuntime, ThreadSessionState
 from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS
 from m_agent.runtime.think_life.contracts import SceneActor, SceneEntry, SceneEntryType
@@ -21,10 +23,15 @@ def _minimal_runtime() -> ChatServiceRuntime:
     rt._flushes_started = 0
     rt._flushes_completed = 0
     rt._flushes_failed = 0
-    rt._think_life = MagicMock()
-    rt._think_life.registry.get_active_user_transaction.return_value = None
-    rt._think_life.scene_pending_flush_metrics.return_value = {}
-    rt._think_life.build_dialogue_flush_payload.return_value = None
+    rt._engine = MagicMock()
+    # Compatibility alias used by a few focused assertions in this module.
+    rt._think_life = rt._engine
+    rt._runtime_host = MagicMock()
+    rt._runtime_engine_id = "think_life_v1"
+    rt._engine.registry.get_active_user_transaction.return_value = None
+    rt._engine.scene_pending_flush_metrics.return_value = {}
+    rt._engine.build_dialogue_flush_payload.return_value = None
+    rt._engine.scene_system.store.load_conversation_seq.return_value = 0
     rt._thread_event_sink = None
     rt.idle_flush_seconds = 0
     rt.history_max_rounds = 12
@@ -64,8 +71,8 @@ def test_any_queued_stimulus_arms_idle_timer() -> None:
     rt = _minimal_runtime()
     tid = "think_life_test::scheduled-stimulus"
     session = rt._get_or_create_thread(tid)
-    rt._wire_think_life_runtime()
-    emitter = rt._think_life.set_thread_event_emitter.call_args.args[0]
+    rt._wire_runtime_host()
+    emitter = rt._runtime_host.set_thread_event_emitter.call_args.args[0]
 
     emitter(tid, "stimulus_queued", {"kind": "scheduled_plan"})
 
@@ -80,8 +87,8 @@ def test_turn_failed_resolves_pending_user_reply_obligation() -> None:
         user_message="hello",
         user_turn={"speaker": "think_life_test", "text": "hello"},
     )
-    rt._wire_think_life_runtime()
-    emitter = rt._think_life.set_thread_event_emitter.call_args.args[0]
+    rt._wire_runtime_host()
+    emitter = rt._runtime_host.set_thread_event_emitter.call_args.args[0]
 
     emitter(tid, "turn_failed", {"error": "boom"})
 
@@ -207,6 +214,72 @@ def test_successful_flush_disarms_idle_timer() -> None:
     assert result["status"] == "written"
     assert session.idle_timer_started_at is None
     assert result["thread_state"]["idle_timer_armed"] is False
+
+
+@pytest.mark.parametrize(
+    ("segment_result", "expected_status"),
+    [
+        (None, "noop"),
+        (
+            {"completed_transaction_id": "tx-old"},
+            "think_life_segment",
+        ),
+    ],
+)
+def test_successful_empty_flush_starts_a_new_conversation_boundary(
+    segment_result: dict | None,
+    expected_status: str,
+) -> None:
+    rt = _minimal_runtime()
+    tid = "think_life_test::empty-flush-boundary"
+    session = rt._get_or_create_thread(tid)
+    old_conversation_id = session.conversation_id
+    old_transaction = {
+        "transaction_id": "tx-old",
+        "conversation_id": old_conversation_id,
+    }
+    rt._engine.on_flush_segment.return_value = segment_result
+
+    def _list_transactions(
+        thread_id: str,
+        *,
+        conversation_id: str,
+        include_history: bool,
+    ) -> dict:
+        visible = (
+            [old_transaction]
+            if include_history or conversation_id == old_conversation_id
+            else []
+        )
+        return {
+            "thread_id": thread_id,
+            "conversation_id": conversation_id,
+            "transactions": visible,
+            "include_history": include_history,
+        }
+
+    rt._runtime_host.list_transactions.side_effect = _list_transactions
+
+    result = rt.flush_thread(tid)
+
+    assert result["success"] is True
+    assert result["status"] == expected_status
+    assert result["thread_state"]["conversation_id"] == f"{tid}::1"
+    assert result["thread_state"]["conversation_id"] != old_conversation_id
+    rt._engine.on_flush_segment.assert_called_once_with(
+        tid,
+        conversation_id=old_conversation_id,
+    )
+    rt._engine.scene_system.store.persist_conversation_seq.assert_called_once_with(
+        tid,
+        1,
+    )
+
+    current = rt.get_think_life_transactions(tid)
+    audit = rt.get_think_life_transactions(tid, include_history=True)
+    assert current["conversation_id"] == f"{tid}::1"
+    assert current["transactions"] == []
+    assert audit["transactions"] == [old_transaction]
 
 
 def test_capture_think_life_round_buffers_pending_for_flush() -> None:

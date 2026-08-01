@@ -119,6 +119,11 @@ class CaseResult:
     evidence_refs: List[Dict[str, str]] = field(default_factory=list)
     known_gap: Optional[str] = None
     known_gap_reasons: List[Dict[str, str]] = field(default_factory=list)
+    scenario_id: str = ""
+    variant_id: str = ""
+    runtime_id: str = ""
+    scenario_layer: str = ""
+    observation: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CaseResult":
@@ -163,6 +168,15 @@ class CaseResult:
                 for item in data.get("known_gap_reasons", [])
                 if isinstance(item, dict)
             ],
+            scenario_id=str(data.get("scenario_id", "") or ""),
+            variant_id=str(data.get("variant_id", "") or ""),
+            runtime_id=str(data.get("runtime_id", "") or ""),
+            scenario_layer=str(data.get("scenario_layer", "") or ""),
+            observation=(
+                dict(data.get("observation", {}))
+                if isinstance(data.get("observation"), dict)
+                else {}
+            ),
         )
 
     def to_dict(self) -> Dict[str, Any]:
@@ -194,6 +208,97 @@ class InvariantResult:
 
 
 @dataclass
+class ScenarioVariantResult:
+    """One scenario variant executed (or classified) for one Runtime."""
+
+    parent_scenario_id: str
+    variant_id: str
+    title: str
+    layer: str
+    runtime_id: str
+    availability: str
+    status: str
+    cases: List[CaseResult] = field(default_factory=list)
+    known_gap: Optional[str] = None
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ScenarioVariantResult":
+        return cls(
+            parent_scenario_id=str(
+                data.get("parent_scenario_id", data.get("scenario_id", "")) or ""
+            ),
+            variant_id=str(data.get("variant_id", data.get("id", "")) or ""),
+            title=str(data.get("title", "") or ""),
+            layer=str(data.get("layer", "") or ""),
+            runtime_id=str(data.get("runtime_id", "") or ""),
+            availability=str(data.get("availability", "not_covered") or "not_covered"),
+            status=str(data.get("status", "not_covered") or "not_covered"),
+            cases=[
+                CaseResult.from_dict(item)
+                for item in data.get("cases", [])
+                if isinstance(item, dict)
+            ],
+            known_gap=(
+                str(data["known_gap"])
+                if data.get("known_gap") is not None
+                else None
+            ),
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.variant_id,
+            "variant_id": self.variant_id,
+            "parent_scenario_id": self.parent_scenario_id,
+            "title": self.title,
+            "layer": self.layer,
+            "runtime_id": self.runtime_id,
+            "availability": self.availability,
+            "status": self.status,
+            "known_gap": self.known_gap,
+            "cases": [item.to_dict() for item in self.cases],
+        }
+
+
+@dataclass
+class ScenarioResult:
+    """Aggregated result for one Runtime-independent semantic scenario."""
+
+    scenario_id: str
+    title: str
+    domain: str
+    order: int
+    status: str
+    variants: List[ScenarioVariantResult] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "ScenarioResult":
+        return cls(
+            scenario_id=str(data.get("scenario_id", data.get("id", "")) or ""),
+            title=str(data.get("title", "") or ""),
+            domain=str(data.get("domain", "") or ""),
+            order=int(data.get("order", 0) or 0),
+            status=str(data.get("status", "not_covered") or "not_covered"),
+            variants=[
+                ScenarioVariantResult.from_dict(item)
+                for item in data.get("variants", [])
+                if isinstance(item, dict)
+            ],
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "id": self.scenario_id,
+            "scenario_id": self.scenario_id,
+            "title": self.title,
+            "domain": self.domain,
+            "order": self.order,
+            "status": self.status,
+            "variants": [item.to_dict() for item in self.variants],
+        }
+
+
+@dataclass
 class RunResult:
     """Complete persisted result of one acceptance run."""
 
@@ -212,6 +317,10 @@ class RunResult:
     stderr: str = ""
     error: str = ""
     artifacts: Dict[str, str] = field(default_factory=dict)
+    result_kind: str = "legacy_invariants"
+    runtime_id: str = ""
+    scenario_ids: List[str] = field(default_factory=list)
+    scenarios: List[ScenarioResult] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "RunResult":
@@ -260,6 +369,18 @@ class RunResult:
                 str(key): str(value)
                 for key, value in dict(data.get("artifacts", {}) or {}).items()
             },
+            result_kind=str(data.get("result_kind", "legacy_invariants") or "legacy_invariants"),
+            runtime_id=str(data.get("runtime_id", "") or ""),
+            scenario_ids=[
+                str(item)
+                for item in data.get("scenario_ids", [])
+                if str(item)
+            ],
+            scenarios=[
+                ScenarioResult.from_dict(item)
+                for item in data.get("scenarios", [])
+                if isinstance(item, dict)
+            ],
         )
 
     def to_dict(self, *, include_logs: bool = True) -> Dict[str, Any]:
@@ -277,6 +398,10 @@ class RunResult:
             "invariants": [item.to_dict() for item in self.invariants],
             "error": self.error,
             "artifacts": dict(self.artifacts),
+            "result_kind": self.result_kind,
+            "runtime_id": self.runtime_id,
+            "scenario_ids": list(self.scenario_ids),
+            "scenarios": [item.to_dict() for item in self.scenarios],
         }
         if include_logs:
             payload["stdout"] = self.stdout
@@ -369,6 +494,11 @@ def annotate_cases(
                 known_gap_reasons=[
                     dict(item) for item in known_gap_reasons
                 ],
+                scenario_id=case.scenario_id,
+                variant_id=case.variant_id,
+                runtime_id=case.runtime_id,
+                scenario_layer=case.scenario_layer,
+                observation=dict(case.observation),
             )
         )
     return annotated

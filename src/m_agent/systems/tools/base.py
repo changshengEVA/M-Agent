@@ -44,6 +44,7 @@ class ControllerCapabilitySpec:
     feedback_projector: Optional[str] = None
     memory_projector: Optional[str] = None
     side_effect: str = "unspecified"
+    delivery_guarantee: str = ""
     dependencies: tuple[str, ...] = ()
 
 

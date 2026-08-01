@@ -261,16 +261,19 @@ def _build_email_send_tool(context: ControllerCapabilityContext, description: st
 EMAIL_ASK_CAPABILITY = ControllerCapabilitySpec(
     name="email_ask",
     build_tool=_build_email_ask_tool,
+    delivery_guarantee="at_least_once",
 )
 
 EMAIL_READ_CAPABILITY = ControllerCapabilitySpec(
     name="email_read",
     build_tool=_build_email_read_tool,
+    delivery_guarantee="at_least_once",
 )
 
 EMAIL_SEND_CAPABILITY = ControllerCapabilitySpec(
     name="email_send",
     build_tool=_build_email_send_tool,
+    delivery_guarantee="at_most_once",
 )
 
 

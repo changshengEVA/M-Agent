@@ -40,6 +40,7 @@ def _build_get_current_time_tool(context: ControllerCapabilityContext, descripti
 GET_CURRENT_TIME_CAPABILITY = ControllerCapabilitySpec(
     name="get_current_time",
     build_tool=_build_get_current_time_tool,
+    delivery_guarantee="idempotent",
 )
 
 

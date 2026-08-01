@@ -69,4 +69,5 @@ def _build_reply_to_user_tool(context: ControllerCapabilityContext, description:
 REPLY_TO_USER_CAPABILITY = ControllerCapabilitySpec(
     name="reply_to_user",
     build_tool=_build_reply_to_user_tool,
+    delivery_guarantee="at_most_once",
 )

@@ -27,10 +27,25 @@ def test_openapi_contains_core_chat_api_paths() -> None:
         "/v1/chat/threads/{thread_id}/memory/state",
         "/v1/chat/threads/{thread_id}/memory/mode",
         "/v1/chat/threads/{thread_id}/memory/flush",
+        "/v1/chat/threads/{thread_id}/transactions",
+        "/v1/chat/threads/{thread_id}/transactions/{transaction_id}",
         "/v1/chat/threads/{thread_id}/schedules",
         "/v1/chat/threads/{thread_id}/schedules/{schedule_id}",
     }
     assert expected_paths.issubset(set(paths.keys()))
+    assert (
+        "delete"
+        in paths[
+            "/v1/chat/threads/{thread_id}/transactions/{transaction_id}"
+        ]
+    )
+    delete_parameters = {
+        item["name"]
+        for item in paths[
+            "/v1/chat/threads/{thread_id}/transactions/{transaction_id}"
+        ]["delete"]["parameters"]
+    }
+    assert {"If-Match", "Idempotency-Key"}.issubset(delete_parameters)
 
     schemas = payload["components"]["schemas"]
     assert "ChatRunCreateRequest" in schemas

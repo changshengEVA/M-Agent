@@ -5,7 +5,10 @@ import json
 import pytest
 
 from m_agent.api.chat_api_shared import _normalize_memory_mode, _with_public_result_thread_id
-from m_agent.api.chat_api_web import _encode_sse
+from m_agent.api.chat_api_web import (
+    _encode_sse,
+    _with_public_transaction_scope,
+)
 
 
 pytestmark = pytest.mark.unit
@@ -49,3 +52,29 @@ def test_encode_sse_uses_id_event_data_lines() -> None:
     assert lines[2].startswith("data: ")
     payload = json.loads(lines[2][len("data: ") :])
     assert payload["payload"]["answer"] == "hello"
+
+
+def test_transaction_event_scope_is_recursively_public() -> None:
+    event = {
+        "thread_id": "alice::alice-thread",
+        "type": "transaction_deleted",
+        "payload": {
+            "thread_id": "alice::alice-thread",
+            "conversation_id": "alice::alice-thread::3",
+            "transaction": {
+                "thread_id": "alice::alice-thread",
+                "conversation_id": "alice::alice-thread::3",
+            },
+        },
+    }
+
+    public = _with_public_transaction_scope(
+        event,
+        internal_thread_id="alice::alice-thread",
+        public_thread_id="alice-thread",
+    )
+
+    assert public["thread_id"] == "alice-thread"
+    assert public["payload"]["conversation_id"] == "alice-thread::3"
+    assert public["payload"]["transaction"]["thread_id"] == "alice-thread"
+    assert event["payload"]["conversation_id"] == "alice::alice-thread::3"

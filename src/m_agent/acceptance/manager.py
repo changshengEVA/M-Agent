@@ -107,7 +107,10 @@ class RunManager:
             if state is not None:
                 return state.to_dict()
         persisted = self.runner.store.load_result(safe_id)
-        if persisted is None:
+        if (
+            persisted is None
+            or persisted.result_kind != "legacy_invariants"
+        ):
             return None
         return {
             "run_id": safe_id,

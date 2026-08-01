@@ -15,13 +15,15 @@ def test_resolve_tool_name_from_decision() -> None:
     assert resolve_tool_name(decision, enabled_tools=["shallow_recall", "email_send"]) == "shallow_recall"
 
 
-def test_resolve_tool_name_fallback_capability_hint() -> None:
+def test_resolve_tool_name_requires_tool_name() -> None:
     decision = ThinkingDecision(
         mode="execute",
-        capability_hint=["get_current_time"],
         instruction="现在几点",
     )
-    assert resolve_tool_name(decision, enabled_tools=["get_current_time", "shallow_recall"]) == "get_current_time"
+    assert (
+        resolve_tool_name(decision, enabled_tools=["get_current_time", "shallow_recall"])
+        is None
+    )
 
 
 def test_plan_delegate_reply() -> None:

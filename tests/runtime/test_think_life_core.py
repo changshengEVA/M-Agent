@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import threading
 
 import pytest
 
@@ -14,7 +15,7 @@ from m_agent.runtime.think_life.contracts import (
     StimulusEnvelope,
     StimulusKind,
     TransactionKind,
-    TransactionStatus,
+    TransactionState,
 )
 from m_agent.layers.perception.contracts import Stimulus
 from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
@@ -37,6 +38,10 @@ def _stimulus(
     text: str = "",
     transaction_id: str | None = None,
     delegate_id: str | None = None,
+    activation_id: str | None = None,
+    schedule_id: str | None = None,
+    schedule_run_id: str | None = None,
+    schedule_delivery_id: str | None = None,
     priority_override: int | None = None,
 ) -> StimulusEnvelope:
     return StimulusEnvelope(
@@ -51,6 +56,10 @@ def _stimulus(
         occurred_at=occurred_at,
         transaction_id=transaction_id,
         delegate_id=delegate_id,
+        activation_id=activation_id,
+        schedule_id=schedule_id,
+        schedule_run_id=schedule_run_id,
+        schedule_delivery_id=schedule_delivery_id,
         priority_override=priority_override,
     )
 
@@ -58,35 +67,37 @@ def _stimulus(
 def test_transaction_lifecycle() -> None:
     reg = TransactionRegistry()
     tx = reg.create(thread_id="t1", kind=TransactionKind.USER_TASK, priority=10)
-    assert tx.status == TransactionStatus.PENDING
-    reg.transition(tx.transaction_id, TransactionStatus.RUNNING)
-    reg.transition(tx.transaction_id, TransactionStatus.WAITING_EXECUTION)
-    reg.transition(tx.transaction_id, TransactionStatus.RUNNING)
-    reg.transition(tx.transaction_id, TransactionStatus.COMPLETED)
-    assert reg.get(tx.transaction_id).status == TransactionStatus.COMPLETED
+    assert tx.state == TransactionState.CONTINUE
+    completed = reg.complete(tx.transaction_id)
+    assert completed.state == TransactionState.COMPLETE
 
 
 def test_begin_delegate_is_atomic_and_rejects_terminal_transaction() -> None:
     reg = TransactionRegistry()
     tx = reg.create(thread_id="t1", kind=TransactionKind.USER_TASK)
-    reg.transition(tx.transaction_id, TransactionStatus.RUNNING)
 
     delegated = reg.begin_delegate(tx.transaction_id, "dlg_1")
 
-    assert delegated.status == TransactionStatus.WAITING_EXECUTION
+    assert delegated.state == TransactionState.CONTINUE
     assert delegated.delegate_count == 1
     assert delegated.active_delegate_id == "dlg_1"
-    assert delegated.correlation.delegate_id == "dlg_1"
 
-    reg.transition(tx.transaction_id, TransactionStatus.RUNNING)
-    reg.transition(tx.transaction_id, TransactionStatus.COMPLETED)
+    # Real pending work prevents logical completion.
+    with pytest.raises(TransactionTransitionError, match="pending delegates"):
+        reg.complete(tx.transaction_id)
+    reg.consume_feedback(
+        tx.transaction_id,
+        str(delegated.current_activation_id),
+        "dlg_1",
+    )
+    reg.complete(tx.transaction_id)
     with pytest.raises(TransactionTransitionError, match="cannot begin delegate"):
         reg.begin_delegate(tx.transaction_id, "dlg_2")
 
     terminal = reg.get(tx.transaction_id)
     assert terminal is not None
     assert terminal.delegate_count == 1
-    assert terminal.active_delegate_id == "dlg_1"
+    assert terminal.active_delegate_id is None
 
 
 def test_transaction_wm_isolation() -> None:
@@ -329,9 +340,7 @@ def test_execution_feedback_attribution() -> None:
     config = ThinkLifeConfig(scheduler=ThinkLifeSchedulerConfig())
     attr = TransactionAttributor(registry=reg, config=config)
     tx = reg.create(thread_id="t1", kind=TransactionKind.USER_TASK)
-    reg.transition(tx.transaction_id, TransactionStatus.RUNNING)
-    tx.active_delegate_id = "dlg_1"
-    tx.correlation.delegate_id = "dlg_1"
+    delegated = reg.begin_delegate(tx.transaction_id, "dlg_1")
 
     stim = _stimulus(
         stimulus_id="s1",
@@ -341,10 +350,42 @@ def test_execution_feedback_attribution() -> None:
         occurred_at="2026-01-01T00:00:03Z",
         transaction_id=tx.transaction_id,
         delegate_id="dlg_1",
+        activation_id=delegated.current_activation_id,
     )
     resolved, created = attr.resolve(stim)
     assert created is False
     assert resolved.transaction_id == tx.transaction_id
+
+
+def test_execution_feedback_requires_full_causal_triple() -> None:
+    """transaction_id + activation_id + delegate_id must all be present."""
+
+    reg = TransactionRegistry()
+    config = ThinkLifeConfig(scheduler=ThinkLifeSchedulerConfig())
+    attr = TransactionAttributor(registry=reg, config=config)
+    tx = reg.create(thread_id="t1", kind=TransactionKind.USER_TASK)
+    delegated = reg.begin_delegate(tx.transaction_id, "dlg_1")
+    activation_id = delegated.current_activation_id
+
+    incomplete = {
+        "missing_activation": (tx.transaction_id, None, "dlg_1"),
+        "missing_delegate": (tx.transaction_id, activation_id, None),
+        "missing_transaction": (None, activation_id, "dlg_1"),
+    }
+    for name, (transaction_id, aid, delegate_id) in incomplete.items():
+        with pytest.raises(ValueError):
+            attr.resolve(
+                _stimulus(
+                    stimulus_id=f"s-{name}",
+                    thread_id="t1",
+                    kind=StimulusKind.EXECUTION_FEEDBACK,
+                    payload={"tool_history": [], "summary": "done"},
+                    occurred_at="2026-01-01T00:00:03Z",
+                    transaction_id=transaction_id,
+                    delegate_id=delegate_id,
+                    activation_id=aid,
+                )
+            )
 
 
 def test_inbox_priority_order() -> None:
@@ -367,19 +408,33 @@ def test_inbox_priority_order() -> None:
     assert first.stimulus_id == "high"
 
 
-def test_waiting_execution_completes_via_running() -> None:
+def test_waiting_execution_is_derived_from_delegate_facts() -> None:
     reg = TransactionRegistry()
     tx = reg.create(thread_id="t1", kind=TransactionKind.USER_TASK)
-    reg.transition(tx.transaction_id, TransactionStatus.RUNNING)
-    reg.transition(tx.transaction_id, TransactionStatus.WAITING_EXECUTION)
-    reg.transition(tx.transaction_id, TransactionStatus.RUNNING)
-    reg.transition(tx.transaction_id, TransactionStatus.COMPLETED)
-    assert reg.get(tx.transaction_id).status == TransactionStatus.COMPLETED
+    waiting = reg.begin_delegate(tx.transaction_id, "dlg-wait")
+    assert waiting.state == TransactionState.CONTINUE
+    assert waiting.active_delegate_id == "dlg-wait"
+    reg.consume_feedback(
+        tx.transaction_id,
+        str(waiting.current_activation_id),
+        "dlg-wait",
+    )
+    completed = reg.complete(tx.transaction_id)
+    assert completed.state == TransactionState.COMPLETE
 
 
-def test_user_messages_share_transaction_until_flush() -> None:
+def test_each_user_message_opens_its_own_transaction() -> None:
+    """A running transaction is never implicitly joined by the next message.
+
+    ``is_match_candidate`` excludes ``continue``/running records entirely, so a
+    follow-up while the first task is still running opens a fresh USER_TASK and
+    moves the active pointer to it. Only ``pause``/``complete`` lines can be
+    re-joined, and only through the semantic resolver (see
+    :func:`test_semantic_match_reuses_paused_transaction`).
+    """
+
     reg = TransactionRegistry()
-    config = ThinkLifeConfig(scheduler=ThinkLifeSchedulerConfig(preempt_enabled=False))
+    config = ThinkLifeConfig(scheduler=ThinkLifeSchedulerConfig())
     attr = TransactionAttributor(registry=reg, config=config)
 
     stim1 = _stimulus(
@@ -391,7 +446,6 @@ def test_user_messages_share_transaction_until_flush() -> None:
     )
     first, created1 = attr.resolve(stim1)
     assert created1 is True
-    reg.transition(first.transaction_id, TransactionStatus.RUNNING)
 
     stim2 = _stimulus(
         stimulus_id="s2",
@@ -401,46 +455,297 @@ def test_user_messages_share_transaction_until_flush() -> None:
         occurred_at="2026-01-01T00:00:01Z",
     )
     second, created2 = attr.resolve(stim2)
-    assert created2 is False
-    assert second.transaction_id == first.transaction_id
-
-    closed = reg.complete_active_user_transaction("t1::0")
-    assert closed == first.transaction_id
-    assert reg.get(first.transaction_id).status == TransactionStatus.COMPLETED
-
-    stim3 = _stimulus(
-        stimulus_id="s3",
-        thread_id="t1",
-        kind=StimulusKind.USER_MESSAGE,
-        payload={"text": "after flush"},
-        occurred_at="2026-01-01T00:00:02Z",
+    assert created2 is True
+    assert second.transaction_id != first.transaction_id
+    assert (
+        reg.get_active_user_transaction("t1::0").transaction_id
+        == second.transaction_id
     )
-    third, created3 = attr.resolve(stim3)
-    assert created3 is True
-    assert third.transaction_id != first.transaction_id
+    assert reg.get(first.transaction_id).state == TransactionState.CONTINUE
+
+    reg.complete(second.transaction_id)
+    assert reg.get(second.transaction_id).state == TransactionState.COMPLETE
+    assert reg.get_active_user_transaction("t1::0") is None
 
 
-def test_preempt_disabled_reuses_active_user_transaction() -> None:
+def test_sourceless_scheduled_plan_uses_persisted_run_binding(
+    tmp_path: Path,
+) -> None:
+    from m_agent.runtime.think_life.transaction import (
+        TransactionScheduleCoordinator,
+    )
+
+    reg = TransactionRegistry(
+        persist_path=tmp_path / "sourceless-schedule.sqlite3"
+    )
+    transaction = reg.create(
+        thread_id="t-schedule",
+        conversation_id="t-schedule::0",
+        kind=TransactionKind.USER_TASK,
+    )
+    coordinator = TransactionScheduleCoordinator(reg.store)
+    registered = coordinator.register(
+        schedule_id="schedule-bound",
+        schedule_run_id="run-bound",
+        transaction_id=transaction.transaction_id,
+        due_at="2026-01-02T09:30:00Z",
+        expected_transaction_revision=transaction.revision,
+    )
+    claimed = coordinator.claim(
+        registered.run.schedule_run_id,
+        expected_run_revision=registered.run.revision,
+        expected_transaction_revision=registered.transaction.revision,
+    )
+    stimulus = _stimulus(
+        stimulus_id="scheduled-bound",
+        thread_id="t-schedule",
+        kind=StimulusKind.SCHEDULED_PLAN,
+        text="run the bound plan",
+        payload={
+            "schedule_id": registered.run.schedule_id,
+            "run_id": registered.run.schedule_run_id,
+            "delivery_id": claimed.delivery_id,
+        },
+        occurred_at="2026-01-02T09:30:00Z",
+        schedule_id=registered.run.schedule_id,
+        schedule_run_id=registered.run.schedule_run_id,
+        schedule_delivery_id=claimed.delivery_id,
+    )
+
+    resolved, created = TransactionAttributor(
+        registry=reg,
+        config=ThinkLifeConfig(),
+    ).resolve(stimulus)
+
+    assert created is False
+    assert resolved.transaction_id == transaction.transaction_id
+    assert resolved.current_activation_id == claimed.activation_id
+
+
+def test_sourceless_external_schedule_run_creates_schedule_transaction() -> None:
     reg = TransactionRegistry()
-    config = ThinkLifeConfig(
-        scheduler=ThinkLifeSchedulerConfig(preempt_enabled=False),
+    stimulus = _stimulus(
+        stimulus_id="scheduled-external",
+        thread_id="t-external",
+        kind=StimulusKind.SCHEDULED_PLAN,
+        text="run external schedule",
+        payload={
+            "schedule_id": "schedule-external",
+            "run_id": "run-external",
+            "owner_id": "owner-external",
+        },
+        occurred_at="2026-01-02T09:30:00Z",
+        schedule_id="schedule-external",
+        schedule_run_id="run-external",
     )
-    attr = TransactionAttributor(registry=reg, config=config)
-    first = reg.create(thread_id="t1", kind=TransactionKind.USER_TASK)
-    reg.transition(first.transaction_id, TransactionStatus.RUNNING)
+
+    resolved, created = TransactionAttributor(
+        registry=reg,
+        config=ThinkLifeConfig(),
+    ).resolve(stimulus)
+
+    assert created is True
+    assert resolved.kind == TransactionKind.SCHEDULE
+    assert resolved.correlation.schedule_id == "schedule-external"
+    assert resolved.correlation.schedule_run_id == "run-external"
+
+
+def test_schedule_run_binding_rejects_conflicting_explicit_transaction(
+    tmp_path: Path,
+) -> None:
+    from m_agent.runtime.think_life.transaction import (
+        TransactionScheduleCoordinator,
+    )
+
+    reg = TransactionRegistry(
+        persist_path=tmp_path / "conflicting-schedule.sqlite3"
+    )
+    bound = reg.create(
+        thread_id="t-conflict",
+        conversation_id="t-conflict::0",
+        kind=TransactionKind.USER_TASK,
+    )
+    other = reg.create(
+        thread_id="t-conflict",
+        conversation_id="t-conflict::0",
+        kind=TransactionKind.USER_TASK,
+    )
+    coordinator = TransactionScheduleCoordinator(reg.store)
+    registered = coordinator.register(
+        schedule_id="schedule-conflict",
+        schedule_run_id="run-conflict",
+        transaction_id=bound.transaction_id,
+        due_at="2026-01-02T09:30:00Z",
+        expected_transaction_revision=bound.revision,
+    )
+    claimed = coordinator.claim(
+        registered.run.schedule_run_id,
+        expected_run_revision=registered.run.revision,
+        expected_transaction_revision=registered.transaction.revision,
+    )
+    stimulus = _stimulus(
+        stimulus_id="scheduled-conflict",
+        thread_id="t-conflict",
+        kind=StimulusKind.SCHEDULED_PLAN,
+        text="conflicting source",
+        payload={
+            "schedule_id": registered.run.schedule_id,
+            "run_id": registered.run.schedule_run_id,
+            "delivery_id": claimed.delivery_id,
+        },
+        occurred_at="2026-01-02T09:30:00Z",
+        transaction_id=other.transaction_id,
+        schedule_id=registered.run.schedule_id,
+        schedule_run_id=registered.run.schedule_run_id,
+        schedule_delivery_id=claimed.delivery_id,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="run is bound to another transaction",
+    ):
+        TransactionAttributor(
+            registry=reg,
+            config=ThinkLifeConfig(),
+        ).resolve(stimulus)
+
+
+def test_schedule_gateway_deduplicates_delivery_by_run_id(
+    tmp_path: Path,
+) -> None:
+    from m_agent.systems.scene.default import SceneWriterAdapter
+
+    reg = TransactionRegistry(
+        persist_path=tmp_path / "schedule-ingress.sqlite3"
+    )
+    inbox = StimulusInbox(store=reg.store)
+    gateway = PerceptionGateway(
+        inbox=inbox,
+        attributor=TransactionAttributor(
+            registry=reg,
+            config=ThinkLifeConfig(),
+        ),
+        scene_writer=SceneWriterAdapter(
+            SceneLogStore(persist_enabled=False)
+        ),
+    )
+
+    first_id = gateway.submit_heartbeat(
+        thread_id="t-ingress",
+        conversation_id="t-ingress::0",
+        schedule_id="schedule-ingress",
+        text="run once",
+        payload={"run_id": "run-ingress"},
+    )
+    replay_id = gateway.submit_heartbeat(
+        thread_id="t-ingress",
+        conversation_id="t-ingress::0",
+        schedule_id="schedule-ingress",
+        text="run once",
+        payload={"run_id": "run-ingress"},
+    )
+
+    assert replay_id == first_id
+    assert inbox.pending_count("t-ingress") == 1
+
+
+def test_semantic_match_reuses_paused_transaction() -> None:
+    """A paused line is re-joined only when the semantic resolver picks it."""
+
+    reg = TransactionRegistry()
+    config = ThinkLifeConfig(scheduler=ThinkLifeSchedulerConfig())
+    first = reg.create(
+        thread_id="t1",
+        conversation_id="t1::0",
+        kind=TransactionKind.USER_TASK,
+    )
+    reg.pause(first.transaction_id)
     reg.set_active_user_transaction("t1::0", first.transaction_id)
 
     stim = _stimulus(
         stimulus_id="s2",
         thread_id="t1",
         kind=StimulusKind.USER_MESSAGE,
-        payload={"text": "follow-up"},
+        payload={"text": "follow-up on the same task"},
         occurred_at="2026-01-01T00:00:01Z",
     )
-    second, created = attr.resolve(stim)
-    assert created is False
-    assert second.transaction_id == first.transaction_id
-    assert reg.get(first.transaction_id).status == TransactionStatus.RUNNING
+
+    declining = TransactionAttributor(
+        registry=reg,
+        config=config,
+        semantic_resolver=lambda _stimulus, _candidates: None,
+    )
+    fresh, created_fresh = declining.resolve(stim)
+    assert created_fresh is True
+    assert fresh.transaction_id != first.transaction_id
+
+    matching = TransactionAttributor(
+        registry=reg,
+        config=config,
+        semantic_resolver=lambda _stimulus, _candidates: first.transaction_id,
+    )
+    matched, created_matched = matching.resolve(stim)
+    assert created_matched is False
+    assert matched.transaction_id == first.transaction_id
+    assert matched.state == TransactionState.CONTINUE
+
+
+def test_semantic_match_revalidates_candidate_after_concurrent_delete() -> None:
+    reg = TransactionRegistry()
+    candidate = reg.create(
+        thread_id="t-match-delete",
+        conversation_id="t-match-delete::0",
+        kind=TransactionKind.USER_TASK,
+    )
+    candidate = reg.pause(candidate.transaction_id)
+    resolver_entered = threading.Event()
+    release_resolver = threading.Event()
+
+    def _resolver(_stimulus, _candidates, **_kwargs):
+        resolver_entered.set()
+        assert release_resolver.wait(timeout=2)
+        return "candidate_1"
+
+    attributor = TransactionAttributor(
+        registry=reg,
+        config=ThinkLifeConfig(),
+        semantic_resolver=_resolver,
+    )
+    stimulus = _stimulus(
+        stimulus_id="stim-match-delete",
+        thread_id="t-match-delete",
+        kind=StimulusKind.USER_MESSAGE,
+        text="continue the old task",
+        payload={},
+        occurred_at="2026-01-01T00:00:00Z",
+    )
+    outcome: dict = {}
+
+    def _resolve() -> None:
+        try:
+            record, created = attributor.resolve(stimulus)
+            outcome.update(record=record, created=created)
+        except Exception as exc:  # pragma: no cover - asserted below
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=_resolve)
+    worker.start()
+    assert resolver_entered.wait(timeout=2)
+    reg.delete_with_cleanup(
+        candidate.transaction_id,
+        expected_revision=candidate.revision,
+        transition_id="delete-during-semantic-match",
+        idempotency_key="delete-during-semantic-match",
+    )
+    release_resolver.set()
+    worker.join(timeout=2)
+
+    assert not worker.is_alive()
+    assert "error" not in outcome
+    assert outcome["created"] is True
+    assert outcome["record"].transaction_id != candidate.transaction_id
+    deleted = reg.store.load_transaction(candidate.transaction_id)
+    assert deleted is not None and deleted.deleted
 
 
 def test_semantic_attribution_can_create_new_transaction() -> None:
@@ -451,7 +756,6 @@ def test_semantic_attribution_can_create_new_transaction() -> None:
         conversation_id="t1::0",
         kind=TransactionKind.USER_TASK,
     )
-    reg.transition(first.transaction_id, TransactionStatus.RUNNING)
     reg.set_active_user_transaction("t1::0", first.transaction_id)
     attr = TransactionAttributor(
         registry=reg,
@@ -472,9 +776,16 @@ def test_semantic_attribution_can_create_new_transaction() -> None:
     assert second.transaction_id != first.transaction_id
 
 
-def test_gateway_submits_user_utterance_to_scene() -> None:
+def test_gateway_defers_sourceless_user_utterance_to_the_scheduler() -> None:
+    """A sourceless utterance has no transaction yet, so Scene waits for AT.
+
+    Writing at ingress would orphan the entry under a null ``transaction_id``,
+    and ``append_id`` replay is idempotent so it could never be repaired. The
+    scheduler loop appends it once attribution has bound a transaction.
+    """
+
     store = SceneLogStore(persist_enabled=False)
-    from m_agent.systems.scene.default import SceneReaderAdapter, SceneWriterAdapter
+    from m_agent.systems.scene.default import SceneWriterAdapter
 
     reg = TransactionRegistry()
     config = ThinkLifeConfig()
@@ -486,10 +797,50 @@ def test_gateway_submits_user_utterance_to_scene() -> None:
         scene_writer=SceneWriterAdapter(store),
     )
     gw.submit_user_message(thread_id="t1", conversation_id="t1::0", text="hi there")
+    assert store.tail("t1::0", limit=5) == []
+    assert inbox.pending_count("t1") == 1
+
+
+def test_gateway_writes_scene_for_already_attributed_utterance() -> None:
+    store = SceneLogStore(persist_enabled=False)
+    from m_agent.systems.scene.default import SceneWriterAdapter
+
+    reg = TransactionRegistry()
+    config = ThinkLifeConfig()
+    attr = TransactionAttributor(registry=reg, config=config)
+    tx = reg.create(
+        thread_id="t1",
+        conversation_id="t1::0",
+        kind=TransactionKind.USER_TASK,
+    )
+    gw = PerceptionGateway(
+        inbox=StimulusInbox(),
+        attributor=attr,
+        scene_writer=SceneWriterAdapter(store),
+    )
+    gw.submit_user_message(
+        thread_id="t1",
+        conversation_id="t1::0",
+        text="hi there",
+        payload={},
+    )
+    assert store.tail("t1::0", limit=5) == []
+
+    gw.submit(
+        _stimulus(
+            stimulus_id="s-attributed",
+            thread_id="t1",
+            kind=StimulusKind.USER_MESSAGE,
+            payload={"text": "hi there"},
+            occurred_at="2026-01-01T00:00:00Z",
+            transaction_id=tx.transaction_id,
+        )
+    )
     tail = store.tail("t1::0", limit=5)
     assert len(tail) == 1
     assert tail[0].entry_type == SceneEntryType.UTTERANCE
     assert tail[0].text == "hi there"
+    assert tail[0].transaction_id == tx.transaction_id
 
 
 def test_latest_user_utterance_from_scene() -> None:
@@ -613,6 +964,13 @@ def test_gateway_execution_feedback_does_not_schedule_drainer_by_default() -> No
     store = SceneLogStore(persist_enabled=False)
     from m_agent.systems.scene.default import SceneWriterAdapter
 
+    tx = reg.create(
+        thread_id="t1",
+        conversation_id="t1::0",
+        kind=TransactionKind.USER_TASK,
+    )
+    delegated = reg.begin_delegate(tx.transaction_id, "dlg_1")
+
     gw = PerceptionGateway(
         inbox=inbox,
         attributor=attr,
@@ -622,9 +980,160 @@ def test_gateway_execution_feedback_does_not_schedule_drainer_by_default() -> No
     gw.submit_execution_feedback(
         thread_id="t1",
         conversation_id="t1::0",
-        transaction_id="txn_1",
+        transaction_id=tx.transaction_id,
         delegate_id="dlg_1",
+        activation_id=delegated.current_activation_id or "",
         tool_history=[],
         summary="done",
     )
     assert scheduled == [False]
+
+
+def test_gateway_discards_feedback_without_a_causal_source() -> None:
+    """An unattributable feedback is refused at admission, not queued."""
+
+    enqueued: list[str] = []
+    inbox = StimulusInbox()
+    reg = TransactionRegistry()
+    attr = TransactionAttributor(registry=reg, config=ThinkLifeConfig())
+    from m_agent.systems.scene.default import SceneWriterAdapter
+
+    gw = PerceptionGateway(
+        inbox=inbox,
+        attributor=attr,
+        scene_writer=SceneWriterAdapter(SceneLogStore(persist_enabled=False)),
+        on_enqueued=lambda stimulus, **_kwargs: enqueued.append(
+            stimulus.stimulus_id
+        ),
+    )
+    gw.submit_execution_feedback(
+        thread_id="t1",
+        conversation_id="t1::0",
+        transaction_id="txn_never_created",
+        delegate_id="dlg_1",
+        tool_history=[],
+        summary="done",
+    )
+    assert enqueued == []
+    assert inbox.pending_count("t1") == 0
+
+
+def test_feedback_admission_linearizes_before_delete_cleanup() -> None:
+    from m_agent.systems.scene.default import SceneWriterAdapter
+
+    reg = TransactionRegistry()
+    inbox = StimulusInbox(store=reg.store)
+    attr = TransactionAttributor(registry=reg, config=ThinkLifeConfig())
+    tx = reg.create(
+        thread_id="t-feedback-delete",
+        conversation_id="t-feedback-delete::0",
+        kind=TransactionKind.USER_TASK,
+    )
+    delegated = reg.begin_delegate(tx.transaction_id, "delegate-delete")
+    gateway = PerceptionGateway(
+        inbox=inbox,
+        attributor=attr,
+        scene_writer=SceneWriterAdapter(
+            SceneLogStore(persist_enabled=False)
+        ),
+    )
+    original_validate = gateway._feedback_source_is_admissible
+    validation_entered = threading.Event()
+    release_validation = threading.Event()
+
+    def _blocking_validate(stimulus: StimulusEnvelope) -> bool:
+        validation_entered.set()
+        assert release_validation.wait(timeout=2)
+        return original_validate(stimulus)
+
+    gateway._feedback_source_is_admissible = _blocking_validate  # type: ignore[method-assign]
+    admission: dict = {}
+    deletion: dict = {}
+    feedback_thread = threading.Thread(
+        target=lambda: admission.update(
+            stimulus_id=gateway.submit_execution_feedback(
+                thread_id=tx.thread_id,
+                conversation_id=tx.conversation_id,
+                transaction_id=tx.transaction_id,
+                delegate_id="delegate-delete",
+                activation_id=str(delegated.current_activation_id or ""),
+                tool_history=[],
+                summary="late feedback",
+            )
+        )
+    )
+    feedback_thread.start()
+    assert validation_entered.wait(timeout=2)
+
+    def _delete() -> None:
+        current = reg.store.load_transaction(tx.transaction_id)
+        assert current is not None
+        deletion.update(
+            reg.delete_with_cleanup(
+                tx.transaction_id,
+                expected_revision=current.revision,
+                transition_id="delete-during-feedback-admission",
+                idempotency_key="delete-during-feedback-admission",
+            )
+        )
+
+    delete_thread = threading.Thread(target=_delete)
+    delete_thread.start()
+    release_validation.set()
+    feedback_thread.join(timeout=2)
+    delete_thread.join(timeout=2)
+
+    assert not feedback_thread.is_alive()
+    assert not delete_thread.is_alive()
+    stored = reg.store.load_stimulus(admission["stimulus_id"])
+    assert stored is not None
+    assert stored.disposition == "aborted"
+    assert stored.disposition_stage == "transaction_delete"
+    assert admission["stimulus_id"] in deletion["cleanup"]["aborted_stimulus_ids"]
+    assert inbox.pending_count(tx.thread_id) == 0
+
+
+def test_targeted_schedule_after_delete_is_expected_discard() -> None:
+    from m_agent.systems.scene.default import SceneWriterAdapter
+
+    reg = TransactionRegistry()
+    inbox = StimulusInbox(store=reg.store)
+    gateway = PerceptionGateway(
+        inbox=inbox,
+        attributor=TransactionAttributor(
+            registry=reg,
+            config=ThinkLifeConfig(),
+        ),
+        scene_writer=SceneWriterAdapter(
+            SceneLogStore(persist_enabled=False)
+        ),
+    )
+    tx = reg.create(
+        thread_id="t-schedule-after-delete",
+        conversation_id="t-schedule-after-delete::0",
+        kind=TransactionKind.USER_TASK,
+    )
+    reg.delete_with_cleanup(
+        tx.transaction_id,
+        expected_revision=tx.revision,
+        transition_id="delete-before-schedule-admission",
+        idempotency_key="delete-before-schedule-admission",
+    )
+
+    stimulus_id = gateway.submit_heartbeat(
+        thread_id=tx.thread_id,
+        conversation_id=tx.conversation_id,
+        schedule_id="schedule-after-delete",
+        text="must not run",
+        payload={
+            "transaction_id": tx.transaction_id,
+            "run_id": "run-after-delete",
+        },
+    )
+
+    stored = reg.store.load_stimulus(stimulus_id)
+    assert stored is not None
+    assert stored.disposition == "expected_discard"
+    assert stored.disposition_stage == "admission"
+    assert stored.disposition_reason == "invalid_schedule_source"
+    assert inbox.pending_count(tx.thread_id) == 0

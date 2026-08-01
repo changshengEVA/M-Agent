@@ -43,6 +43,7 @@ _PROTOCOL_SSE_EVENTS = frozenset({
     "thinking_plan",
     "thinking_completed",
     "turn_failed",
+    "transaction_deleted",
 })
 
 
@@ -131,12 +132,10 @@ def _summarize_event_payload(event_type: str, payload: Dict[str, Any]) -> str:
         )
     if event_type == "thinking_plan":
         mode = payload.get("mode")
-        hints = payload.get("capability_hint") or []
-        hint_text = ",".join(str(h) for h in list(hints)[:3]) if isinstance(hints, list) else ""
         return (
             f"mode={mode} "
-            f"instruction={_short_text(payload.get('instruction'))} "
-            f"hints={hint_text or '-'}"
+            f"tool={payload.get('tool_name') or '-'} "
+            f"instruction={_short_text(payload.get('instruction'))}"
         )
     if event_type == "thinking_completed":
         phases = payload.get("phases") or []
@@ -147,6 +146,17 @@ def _summarize_event_payload(event_type: str, payload: Dict[str, Any]) -> str:
             f"thread={payload.get('thread_id')} "
             f"txn={payload.get('transaction_id')} "
             f"error={_short_text(payload.get('error'))}"
+        )
+    if event_type == "transaction_deleted":
+        transaction = (
+            payload.get("transaction")
+            if isinstance(payload.get("transaction"), dict)
+            else {}
+        )
+        return (
+            f"txn={transaction.get('transaction_id')} "
+            f"revision={transaction.get('revision')} "
+            f"outcome={payload.get('outcome')}"
         )
     return ""
 

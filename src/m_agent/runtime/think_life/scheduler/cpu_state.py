@@ -69,6 +69,38 @@ class ThreadCpuStateRegistry:
         record.cancel_event.set()
         return True
 
+    def cancel_if_matches(
+        self,
+        thread_id: str,
+        transaction_id: str,
+        *,
+        reason: str = "transaction_cancelled",
+    ) -> bool:
+        """Cancel only when the CPU slot still belongs to ``transaction_id``.
+
+        Comparison and signalling happen under the same lock so a completed
+        transaction cannot be replaced by another one between lookup and
+        cancellation.  The reason is attached to the event for cooperative
+        runtime fences; callers must not treat this as a hard thread stop.
+        """
+
+        tid = str(thread_id or "").strip()
+        tx_id = str(transaction_id or "").strip()
+        if not tid or not tx_id:
+            return False
+        with self._lock:
+            record = self._in_flight.get(tid)
+            if record is None or record.transaction_id != tx_id:
+                return False
+            setattr(
+                record.cancel_event,
+                "cancel_reason",
+                str(reason or "transaction_cancelled").strip()
+                or "transaction_cancelled",
+            )
+            record.cancel_event.set()
+            return True
+
 
 THREAD_CPU_STATE = ThreadCpuStateRegistry()
 

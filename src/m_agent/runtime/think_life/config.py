@@ -11,6 +11,7 @@ class ThinkLifeSchedulerConfig:
     max_preempt_per_stimulus: int = 3
     default_user_priority: int = 10
     default_feedback_priority: int = 20
+    default_schedule_priority: int = 30
     default_heartbeat_priority: int = 40
 
 
@@ -35,6 +36,7 @@ def load_think_life_config(raw: Mapping[str, Any] | None) -> ThinkLifeConfig:
         max_preempt_per_stimulus=int(sched_raw.get("max_preempt_per_stimulus", 3) or 3),
         default_user_priority=int(sched_raw.get("default_user_priority", 10) or 10),
         default_feedback_priority=int(sched_raw.get("default_feedback_priority", 20) or 20),
+        default_schedule_priority=int(sched_raw.get("default_schedule_priority", 30) or 30),
         default_heartbeat_priority=int(sched_raw.get("default_heartbeat_priority", 40) or 40),
     )
     max_delegates_raw = data.get("max_delegates_per_transaction")

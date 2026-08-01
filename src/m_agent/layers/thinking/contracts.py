@@ -9,7 +9,7 @@ SILENT_MODES = frozenset({"silent", "wait", "defer"})
 
 
 def normalize_thinking_mode(mode: Any) -> str:
-    """Return a canonical thinking mode."""
+    """Return a canonical action-decision mode (not transaction lifecycle)."""
     value = str(mode or "").strip().lower()
     if value in SILENT_MODES:
         return "silent"
@@ -50,6 +50,12 @@ def normalize_task_completion_status(
     *,
     default: TaskCompletionStatus = TASK_COMPLETION_PROCESSING,
 ) -> TaskCompletionStatus:
+    """Normalize macro task-progress status.
+
+    ``awaiting_user`` is the macro decision that the task line needs user
+    collaboration. Runtime maps it to ``Transaction.state=pause``; action
+    planning uses ``mode`` separately (and is forced silent once paused).
+    """
     normalized = str(value or "").strip().lower()
     if normalized in _TASK_COMPLETION_STATUSES:
         return cast(TaskCompletionStatus, normalized)
@@ -131,7 +137,6 @@ class ThinkingDecision:
     instruction: Optional[str] = None
     answer: Optional[str] = None
     episode_note: Optional[str] = None
-    capability_hint: Optional[List[str]] = None
     request_complete: Optional[bool] = None
     reasoning: Optional[str] = None
 

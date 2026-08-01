@@ -9,12 +9,22 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from m_agent.api.user_access import AuthenticatedUser, UserAccessError, UserAccessService
 from m_agent.paths import PROJECT_ROOT
+from m_agent.runtime.transaction_control import (
+    RuntimeTransactionNotFoundError,
+)
+from m_agent.runtime.think_life.transaction.store import (
+    IdempotencyConflictError,
+    RevisionConflictError,
+)
+from m_agent.runtime.think_life.transaction_registry import (
+    TransactionTransitionError,
+)
 
 from .chat_api_models import (
     ChatRunCreateRequest,
@@ -109,6 +119,62 @@ def _encode_sse(event: Dict[str, Any]) -> bytes:
 
 def _iso_utc(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_if_match_revision(value: Any) -> int:
+    """Parse a transaction revision from an HTTP If-Match value."""
+
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError("If-Match is required")
+    if raw[:2].lower() == "w/":
+        raw = raw[2:].strip()
+    if len(raw) >= 2 and raw[0] == raw[-1] == '"':
+        raw = raw[1:-1].strip()
+    if not raw or not raw.isdigit():
+        raise ValueError(
+            'If-Match must be a transaction revision such as W/"3"'
+        )
+    return int(raw)
+
+
+def _with_public_transaction_scope(
+    payload: Any,
+    *,
+    internal_thread_id: str,
+    public_thread_id: str,
+) -> Any:
+    """Remove authenticated runtime thread prefixes from transaction data."""
+
+    internal = str(internal_thread_id or "").strip()
+    public = str(public_thread_id or "").strip()
+    if isinstance(payload, list):
+        return [
+            _with_public_transaction_scope(
+                item,
+                internal_thread_id=internal,
+                public_thread_id=public,
+            )
+            for item in payload
+        ]
+    if not isinstance(payload, dict):
+        return payload
+    result: Dict[str, Any] = {}
+    for key, value in payload.items():
+        if key == "thread_id" and str(value or "").strip() == internal:
+            result[key] = public
+            continue
+        if key == "conversation_id":
+            conversation_id = str(value or "").strip()
+            if internal and conversation_id.startswith(f"{internal}::"):
+                result[key] = f"{public}{conversation_id[len(internal):]}"
+                continue
+        result[key] = _with_public_transaction_scope(
+            value,
+            internal_thread_id=internal,
+            public_thread_id=public,
+        )
+    return result
 
 
 def _resolve_schedule_agent(active_runtime: ChatServiceRuntime) -> Any:
@@ -468,6 +534,7 @@ def create_app(
                 "thread_events": "/v1/chat/threads/{thread_id}/events",
                 "thread_scene": "/v1/chat/threads/{thread_id}/scene",
                 "thread_transactions": "/v1/chat/threads/{thread_id}/transactions",
+                "delete_thread_transaction": "/v1/chat/threads/{thread_id}/transactions/{transaction_id}",
                 "thread_stimuli": "/v1/chat/threads/{thread_id}/stimuli",
                 "thread_thinking_stop": "/v1/chat/threads/{thread_id}/thinking/stop",
                 "thread_state": "/v1/chat/threads/{thread_id}/memory/state",
@@ -887,6 +954,11 @@ def create_app(
                                 return
                             current_seq = max(current_seq, int(event.get("seq", 0) or 0))
                             public_event = _with_public_thread_event(event, public_thread_id=public_thread_id)
+                            public_event = _with_public_transaction_scope(
+                                public_event,
+                                internal_thread_id=runtime_thread_id,
+                                public_thread_id=public_thread_id,
+                            )
                             yield _encode_sse(public_event)
                     else:
                         yield b": keep-alive\n\n"
@@ -904,15 +976,123 @@ def create_app(
         )
 
     @app.get("/v1/chat/threads/{thread_id}/transactions")
-    def get_thread_transactions(thread_id: str, request: Request) -> JSONResponse:
+    def get_thread_transactions(
+        thread_id: str,
+        request: Request,
+        include_history: bool = False,
+    ) -> JSONResponse:
         user, active_runtime, auth_error = _resolve_user_and_runtime(request)
         if auth_error is not None:
             return auth_error
         public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
         runtime_thread_id = _runtime_thread_id(user, public_thread_id)
-        payload = active_runtime.get_think_life_transactions(runtime_thread_id)
-        payload["thread_id"] = public_thread_id
-        return JSONResponse(content=payload)
+        payload = active_runtime.get_think_life_transactions(
+            runtime_thread_id,
+            include_history=include_history,
+        )
+        public_payload = _with_public_transaction_scope(
+            payload,
+            internal_thread_id=runtime_thread_id,
+            public_thread_id=public_thread_id,
+        )
+        public_payload["thread_id"] = public_thread_id
+        return JSONResponse(content=public_payload)
+
+    @app.delete(
+        "/v1/chat/threads/{thread_id}/transactions/{transaction_id}"
+    )
+    def delete_thread_transaction(
+        thread_id: str,
+        transaction_id: str,
+        request: Request,
+        if_match: Optional[str] = Header(default=None, alias="If-Match"),
+        idempotency_header: Optional[str] = Header(
+            default=None,
+            alias="Idempotency-Key",
+        ),
+    ) -> JSONResponse:
+        user, active_runtime, auth_error = _resolve_user_and_runtime(request)
+        if auth_error is not None:
+            return auth_error
+        raw_if_match = str(if_match or "").strip()
+        if not raw_if_match:
+            return _error_response(
+                status_code=428,
+                message="If-Match is required for transaction deletion",
+            )
+        try:
+            expected_revision = _parse_if_match_revision(raw_if_match)
+        except ValueError as exc:
+            return _error_response(status_code=400, message=str(exc))
+        idempotency_key = str(idempotency_header or "").strip()
+        if not idempotency_key:
+            return _error_response(
+                status_code=400,
+                message="Idempotency-Key is required for transaction deletion",
+            )
+        if len(idempotency_key) > 200:
+            return _error_response(
+                status_code=400,
+                message="Idempotency-Key must be at most 200 characters",
+            )
+
+        public_thread_id = (
+            _public_thread_id(user, thread_id)
+            or active_runtime.default_thread_id
+        )
+        runtime_thread_id = _runtime_thread_id(user, public_thread_id)
+        try:
+            payload = active_runtime.delete_transaction(
+                runtime_thread_id,
+                transaction_id,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+            )
+        except RuntimeTransactionNotFoundError:
+            return _error_response(
+                status_code=404,
+                message="transaction not found",
+            )
+        except RevisionConflictError as exc:
+            return _error_response(
+                status_code=409,
+                message=str(exc),
+                extra={
+                    "code": "revision_conflict",
+                    "transaction_id": str(exc.record_id),
+                    "expected_revision": int(exc.expected_revision),
+                    "actual_revision": int(exc.actual_revision),
+                },
+            )
+        except IdempotencyConflictError as exc:
+            return _error_response(
+                status_code=409,
+                message=str(exc),
+                extra={"code": "idempotency_conflict"},
+            )
+        except TransactionTransitionError as exc:
+            return _error_response(
+                status_code=409,
+                message=str(exc),
+                extra={"code": "transaction_transition_conflict"},
+            )
+
+        public_payload = _with_public_transaction_scope(
+            payload,
+            internal_thread_id=runtime_thread_id,
+            public_thread_id=public_thread_id,
+        )
+        public_payload["thread_id"] = public_thread_id
+        revision = int(
+            dict(public_payload.get("transaction") or {}).get(
+                "revision",
+                expected_revision,
+            )
+        )
+        return JSONResponse(
+            content=public_payload,
+            headers={"ETag": f'W/"{revision}"'},
+        )
 
     @app.get("/v1/chat/threads/{thread_id}/scene")
     def get_thread_scene(

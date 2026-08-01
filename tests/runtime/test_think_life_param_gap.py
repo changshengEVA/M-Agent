@@ -13,8 +13,10 @@ from m_agent.runtime.think_life.contracts import (
     SceneEntryType,
     StimulusEnvelope,
     StimulusKind,
+    PauseReason,
+    TransactionCorrelation,
     TransactionKind,
-    TransactionStatus,
+    TransactionState,
 )
 from m_agent.runtime.think_life.perception.inbox import StimulusInbox
 from m_agent.runtime.think_life.scheduler.delegate import DelegateTarget
@@ -54,7 +56,6 @@ def test_delegate_and_wait_submits_feedback_without_invoke_on_param_gap() -> Non
     loop = _minimal_loop(execution_agent=execution_agent)
 
     record = loop.registry.create(thread_id="t1", kind=TransactionKind.USER_TASK)
-    loop.registry.transition(record.transaction_id, TransactionStatus.RUNNING)
     record = loop.registry.get(record.transaction_id) or record
 
     target = DelegateTarget(tool_name="schedule_create", instruction="提醒我起床")
@@ -107,7 +108,6 @@ def test_delegate_passes_scene_conversation_id_to_reply_tool() -> None:
         conversation_id="owner::thread::7",
         kind=TransactionKind.USER_TASK,
     )
-    loop.registry.transition(record.transaction_id, TransactionStatus.RUNNING)
     record = loop.registry.get(record.transaction_id) or record
     stimulus = StimulusEnvelope(
         stimulus_id="s-reply",
@@ -161,7 +161,6 @@ def test_finalized_reply_submits_feedback_instead_of_completing_task() -> None:
     execution_agent.invoke_tool_direct.side_effect = _invoke_reply
     loop = _minimal_loop(execution_agent=execution_agent)
     record = loop.registry.create(thread_id="t1", kind=TransactionKind.USER_TASK)
-    loop.registry.transition(record.transaction_id, TransactionStatus.RUNNING)
     record = loop.registry.get(record.transaction_id) or record
     stimulus = StimulusEnvelope(
         stimulus_id="s-reply-feedback",
@@ -198,7 +197,8 @@ def test_finalized_reply_submits_feedback_instead_of_completing_task() -> None:
     assert "finalize=true" in feedback["summary"]
     current = loop.registry.get(record.transaction_id)
     assert current is not None
-    assert current.status == TransactionStatus.WAITING_EXECUTION
+    assert current.state == TransactionState.CONTINUE
+    assert current.active_delegate_id is not None
 
 
 def test_schedule_feedback_completion_recovers_previously_emitted_reply() -> None:
@@ -240,7 +240,6 @@ def test_processing_failure_marks_transaction_failed_and_emits_terminal_event() 
         (event_type, payload)
     )
     record = loop.registry.create(thread_id="t1", kind=TransactionKind.USER_TASK)
-    loop.registry.transition(record.transaction_id, TransactionStatus.RUNNING)
     stimulus = StimulusEnvelope(
         stimulus_id="s-failed",
         thread_id="t1",
@@ -253,7 +252,8 @@ def test_processing_failure_marks_transaction_failed_and_emits_terminal_event() 
 
     failed = loop.registry.get(record.transaction_id)
     assert failed is not None
-    assert failed.status == TransactionStatus.FAILED
+    assert failed.state == TransactionState.PAUSE
+    assert failed.pause_reason == PauseReason.RUNTIME_ERROR
     assert failed.last_error == "boom"
     assert events == [
         (
@@ -268,3 +268,115 @@ def test_processing_failure_marks_transaction_failed_and_emits_terminal_event() 
             },
         )
     ]
+
+
+def _schedule_delete_loop() -> tuple[
+    ThinkLifeLoop,
+    object,
+    StimulusEnvelope,
+    MagicMock,
+]:
+    loop = _minimal_loop(execution_agent=MagicMock())
+    # Use the same durable Store for inbox claims so deletion can atomically
+    # abort the in-flight stimulus and the drainer can observe the tombstone.
+    loop.inbox = StimulusInbox(store=loop.registry.store)
+    lifecycle = MagicMock()
+    loop._schedule_lifecycle = lifecycle
+    record = loop.registry.create(
+        thread_id="schedule-delete-thread",
+        conversation_id="schedule-delete-thread::0",
+        kind=TransactionKind.SCHEDULE,
+        correlation=TransactionCorrelation(
+            schedule_id="schedule-delete-1",
+            schedule_owner_id="owner-1",
+            schedule_run_id="run-delete-1",
+        ),
+    )
+    stimulus = StimulusEnvelope(
+        stimulus_id="stimulus-schedule-delete",
+        thread_id=record.thread_id,
+        conversation_id=record.conversation_id,
+        transaction_id=record.transaction_id,
+        schedule_id="schedule-delete-1",
+        schedule_run_id="run-delete-1",
+        stimulus=Stimulus(
+            kind=StimulusKind.SCHEDULED_PLAN,
+            text="deliver reminder",
+            payload={
+                "owner_id": "owner-1",
+                "schedule_id": "schedule-delete-1",
+                "run_id": "run-delete-1",
+            },
+        ),
+        occurred_at="2026-01-01T00:00:00Z",
+    )
+    loop.inbox.push(stimulus, priority=0)
+    loop.attributor.resolve.return_value = (record, False)
+    return loop, record, stimulus, lifecycle
+
+
+def test_schedule_delete_after_normal_turn_result_finishes_as_deleted() -> None:
+    loop, record, stimulus, lifecycle = _schedule_delete_loop()
+
+    def _run_then_delete(*_args, **_kwargs) -> dict:
+        current = loop.registry.store.load_transaction(record.transaction_id)
+        assert current is not None
+        loop.registry.delete_with_cleanup(
+            record.transaction_id,
+            expected_revision=current.revision,
+            transition_id="delete-after-normal-result",
+            idempotency_key="delete-after-normal-result",
+        )
+        # Simulate a planner/tool result that completed just as delete won.
+        return {"success": True, "answer": "must not report success"}
+
+    loop._run_transaction_turn = MagicMock(  # type: ignore[method-assign]
+        side_effect=_run_then_delete
+    )
+
+    results = loop.drain_thread(record.thread_id)
+
+    assert results[0]["deleted"] is True
+    lifecycle.on_schedule_processing_started.assert_called_once()
+    finished = lifecycle.on_schedule_processing_finished.call_args.kwargs
+    assert finished["success"] is False
+    assert finished["error"] == "transaction_deleted"
+    stored_stimulus = loop.registry.store.load_stimulus(stimulus.stimulus_id)
+    assert stored_stimulus is not None
+    assert stored_stimulus.disposition == "aborted"
+    assert stored_stimulus.disposition_stage == "transaction_delete"
+
+
+def test_schedule_exception_after_delete_is_deleted_unwind_not_turn_failed() -> None:
+    loop, record, stimulus, lifecycle = _schedule_delete_loop()
+    events: list[tuple[str, dict]] = []
+    loop._event_emitter = lambda event_type, payload: events.append(
+        (event_type, payload)
+    )
+
+    def _delete_then_raise(*_args, **_kwargs) -> dict:
+        current = loop.registry.store.load_transaction(record.transaction_id)
+        assert current is not None
+        loop.registry.delete_with_cleanup(
+            record.transaction_id,
+            expected_revision=current.revision,
+            transition_id="delete-before-tool-error",
+            idempotency_key="delete-before-tool-error",
+        )
+        raise RuntimeError("late tool error")
+
+    loop._run_transaction_turn = MagicMock(  # type: ignore[method-assign]
+        side_effect=_delete_then_raise
+    )
+
+    results = loop.drain_thread(record.thread_id)
+
+    assert results[0]["deleted"] is True
+    assert all(event_type != "turn_failed" for event_type, _ in events)
+    lifecycle.on_schedule_processing_started.assert_called_once()
+    finished = lifecycle.on_schedule_processing_finished.call_args.kwargs
+    assert finished["success"] is False
+    assert finished["error"] == "transaction_deleted"
+    stored_stimulus = loop.registry.store.load_stimulus(stimulus.stimulus_id)
+    assert stored_stimulus is not None
+    assert stored_stimulus.disposition == "aborted"

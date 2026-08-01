@@ -25,8 +25,8 @@ The current Chat API is not a per-request config override service. It uses a sta
 
 ### 1.1 Core runtime model / 核心运行模型
 
-- Think-life is the sole runtime.
-- Think-life 是唯一运行时。
+- Default product runtime is Think-life (`think_life_v1`); Chat API dispatches through `RuntimeHost` and can select LangGraph via `runtime.default_engine` / `M_AGENT_DEFAULT_RUNTIME_ENGINE`.
+- 默认产品运行时是 Think-life（`think_life_v1`）；Chat API 经 `RuntimeHost` 分发，可用 `runtime.default_engine` / `M_AGENT_DEFAULT_RUNTIME_ENGINE` 选择 LangGraph。
 - `POST /v1/chat/runs` creates an asynchronous chat run.
 - `GET /v1/chat/runs/{run_id}/events` is the main real-time event stream for one chat run.
 - `GET /v1/chat/runs/{run_id}` returns the final run snapshot.
@@ -59,7 +59,7 @@ In the current implementation:
 | User config | `GET /v1/users/me/config/schema` `PATCH /v1/users/me/config` | 当前用户可编辑配置元数据与更新接口 | Editable config metadata and patch API |
 | Chat runs | `POST /v1/chat/runs` `GET /v1/chat/runs/{run_id}` `GET /v1/chat/runs/{run_id}/events` | 创建对话、获取结果、订阅 run 级事件 | Create run, fetch final result, subscribe to run events |
 | Thread events | `GET /v1/chat/threads/{thread_id}/events` | 线程级事件流 | Thread-level SSE stream |
-| Thread runtime | `GET /v1/chat/threads/{thread_id}/transactions` `GET /v1/chat/threads/{thread_id}/scene` `POST /v1/chat/threads/{thread_id}/stimuli` `POST /v1/chat/threads/{thread_id}/thinking/stop` | 事务、场景、刺激入队与线程级停止 | Transactions, scene, stimulus enqueue, and thread-level stop |
+| Thread runtime | `GET /v1/chat/threads/{thread_id}/transactions` `DELETE /v1/chat/threads/{thread_id}/transactions/{transaction_id}` `GET /v1/chat/threads/{thread_id}/scene` `POST /v1/chat/threads/{thread_id}/stimuli` `POST /v1/chat/threads/{thread_id}/thinking/stop` | 事务查看/删除、场景、刺激入队与线程级停止 | Transaction inspection/deletion, scene, stimulus enqueue, and thread-level stop |
 | Thread memory | `GET /v1/chat/threads/{thread_id}/memory/state` `POST /v1/chat/threads/{thread_id}/memory/mode` `POST /v1/chat/threads/{thread_id}/memory/flush` | 查看线程记忆状态、切换模式、手动 flush | Inspect thread state, switch memory mode, manually flush |
 | Dialogues | `GET /v1/chat/dialogues` `GET /v1/chat/dialogues/{dialogue_id}` `POST /v1/chat/dialogues/import` `POST /v1/chat/dialogues/upload` | 已归档对话列表/详情；迁移旧目录布局或批量上传 JSON 并建 RAG 索引（上传为 SSE 进度） | Dialogue list/detail; old-layout import; multipart upload + SSE progress |
 | Schedules | `GET/POST/DELETE /v1/chat/threads/{thread_id}/schedules...` | 日程刺激查询、创建、取消 | Schedule stimulus query, create, cancel |
@@ -483,7 +483,7 @@ The durable record contains only the first seven fields. `due_at_local` and `due
 | `effective_depth` | `integer` | inbox + 在途刺激数 | Effective queue depth |
 | `pending_stimuli` | `integer` | 感知 inbox 深度（未 pop） | Perception inbox depth |
 | `in_flight_stimulus_id` | `string \| null` | 当前正在消费的刺激 id | In-flight stimulus |
-| `runtime_profile` | `string` | 固定为 `think_life` | Always `think_life` |
+| `runtime_profile` | `string` | 当前引擎 id（如 `think_life_v1` / `langgraph_v1`） | Active engine id |
 | `active_transaction_id` | `string \| null` | 当前 CPU 事务 | Active transaction |
 | `preempt_enabled` | `boolean` | 是否启用刺激抢占 | Preemption enabled |
 
@@ -961,6 +961,43 @@ Important note / 重要说明:
 
 - Returns Think-life transaction state for the public thread, including `transactions`, `active_transaction_id`, `cpu_transaction_id`, and `transaction_count`.
 - 返回该公开线程的 Think-life 事务状态。
+- 默认 `include_history=false`，只返回当前 `conversation_id` 的事务；传
+  `include_history=true` 可读取同一 thread 的历史 tombstone/归档记录用于审计。
+- By default, `include_history=false` scopes the result to the current
+  `conversation_id`. Pass `include_history=true` only for a thread-wide audit
+  view that also includes historical tombstones and archived records.
+- 客户端应以 `state`（`continue | pause | complete | archive`）和
+  `lifecycle_status`（`active | deleted`）为准；暂停原因由 `pause_reason` 表达。
+  `status` 仅为旧客户端保留的计算投影，不可作为控制命令或权威状态。
+
+### 6.11a.1 `DELETE /v1/chat/threads/{thread_id}/transactions/{transaction_id}`
+
+永久废弃当前 conversation 中的一条 transaction。该操作保留审计 tombstone，
+不会物理删除 Scene 历史，也不能 Restore。
+
+Required headers:
+
+| Header | Example | Purpose |
+| --- | --- | --- |
+| `If-Match` | `W/"3"` | 必填的 transaction revision；缺失返回 `428`，过期返回 `409` |
+| `Idempotency-Key` | `delete-<uuid>` | 必填；同一请求可安全重放，不同命令复用同一 key 返回 `409` |
+
+成功响应包含 `transaction` tombstone、`cleanup`、当前
+`active_transaction_id` / `cpu_transaction_id`，并返回新的 `ETag`。未知事务、其他
+thread 的事务，以及非当前 conversation 的历史事务统一返回 `404`，避免跨作用域删除。
+
+删除在线性化边界内完成以下处理：
+
+- 写入 `lifecycle_status=deleted` 与 `deleted_at`，失效 activation/delegate；
+- 取消 transaction-side schedule run，终结待发送 feedback，并 abort 已绑定的
+  ready/claimed stimulus；
+- 定向取消当前 CPU work；运行时在调用返回后丢弃该 transaction 的 WM、Scene、reply
+  与 feedback 后写；
+- thread SSE 发送一次 `transaction_deleted`（幂等重放不重复发送）。
+
+已经越过最终 dispatch 边界的第三方工具副作用无法回滚；Delete 保证这些结果不再写回
+本系统，而不是撤销外部系统中已经发生的动作。deleted transaction 仍可作为 matcher
+prompt 中标为 `deprecated_N` 的历史上下文，但永远不是可选候选。
 
 ### 6.11b `GET /v1/chat/threads/{thread_id}/scene`
 
@@ -1056,7 +1093,7 @@ Success response fields:
 | `success` | `boolean` | flush 是否成功 | Whether flush succeeded |
 | `thread_id` | `string` | 公开线程 ID | Public thread id |
 | `flush_reason` | `string` | flush reason | Flush reason |
-| `status` | `string` | `noop` / `written` / `failed` / `busy` | Flush status |
+| `status` | `string` | `noop` / `think_life_segment` / `written` / `failed` / `busy` | Flush status |
 | `retryable` | `boolean \| null` | `busy` 时表示客户端可稍后重试 | For `busy`, indicates that the client may retry later |
 | `block_reason` | `string \| null` | 阻止 flush 的运行时原因 | Runtime reason that prevented the flush |
 | `message` | `string \| null` | 无待写回时的提示文本 | Message for noop cases |
@@ -1069,6 +1106,10 @@ Success response fields:
 Notes / 说明:
 
 - if there are no pending rounds, the endpoint returns `success: true` and `status: "noop"`
+- every successful flush, including `noop` and `think_life_segment`, closes the
+  old conversation and advances to a fresh `conversation_id`; the default
+  transaction/Scene views are therefore empty after the UI refresh, while
+  `include_history=true` retains the old transactions for audit
 - if the thread is processing or still owes a user-visible reply, the endpoint returns HTTP `409`, `status: "busy"`, and does not close the transaction
 - flush progress is also emitted to the thread SSE stream
 
@@ -1410,6 +1451,7 @@ The following event types may appear on `GET /v1/chat/threads/{thread_id}/events
 | `schedule_completed` | 到点任务执行完成 | Due schedule execution completed | `thread_id`, `schedule_id`, `run_id`, `status`, `answer` |
 | `schedule_failed` | 到点任务执行失败 | Due schedule execution failed | `thread_id`, `schedule_id`, `run_id`, `error` |
 | `stimulus_queued` | 刺激入队 | Stimulus enqueued | `stimulus_id`, `kind`, `pending_count` |
+| `transaction_deleted` | 事务已永久废弃 | Transaction tombstoned and dependent runtime work fenced | `thread_id`, `conversation_id`, `transaction`, `cleanup`, `active_transaction_id`, `cpu_transaction_id` |
 | `reply_emitted` | 用户可见回复 | User-visible reply (`reply_to_user`) | `message`, `finalize`, `transaction_id`, `delegate_id` |
 | `scene_entry_appended` | Scene 时间轴新增条目 | Scene timeline entry appended | `seq`, `occurred_at`, `entry_type`, `actor`, `text`, `transaction_id` |
 | `thread_runtime_updated` | 单线程运行时 busy/队列快照 | Per-thread runtime busy/queue snapshot | `thread_runtime` |

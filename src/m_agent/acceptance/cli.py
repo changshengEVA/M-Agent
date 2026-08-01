@@ -10,7 +10,9 @@ from typing import Any, Dict, Optional, Sequence
 
 from .artifacts import resolve_project_root
 from .catalog import PHASE0_SUITE, catalog_payload
-from .runner import AcceptanceRunner, RunBusyError
+from .runner import RunBusyError
+from .scenario_catalog import contract_catalog_payload
+from .scenario_runner import ScenarioAcceptanceRunner
 
 
 def _ui_port(value: str) -> int:
@@ -56,6 +58,9 @@ def _print_catalog() -> None:
 
 
 def _print_result(payload: Dict[str, Any]) -> None:
+    if payload.get("result_kind") == "scenario_contract":
+        _print_contract_result(payload)
+        return
     print(
         f"run={payload['run_id']}  status={payload['status']}  "
         f"profile={payload['profile']}  duration={payload['duration_seconds']:.2f}s"
@@ -79,6 +84,77 @@ def _print_result(payload: Dict[str, Any]) -> None:
             if case.get("message") and case["outcome"] in {"failed", "error", "xpassed"}:
                 first = str(case["message"]).strip().splitlines()[0]
                 print(f"                  {first}")
+
+
+def _print_contract_catalog() -> None:
+    payload = contract_catalog_payload()
+    coverage = payload["coverage"]
+    execution = payload["execution"]
+    print(
+        f"{payload['title']}  "
+        f"scenarios={coverage['specified_scenarios']}/"
+        f"{coverage['required_scenarios']}  "
+        f"catalog={'valid' if coverage['catalog_complete'] else 'invalid'}"
+    )
+    print(
+        "executable: "
+        + ", ".join(
+            f"{runtime}={count}"
+            for runtime, count in execution[
+                "executable_variants_by_runtime"
+            ].items()
+        )
+    )
+    print()
+    for scenario in payload["scenarios"]:
+        bindings = []
+        for variant in scenario["variants"]:
+            if variant["layer"] not in {"core", "matcher_evaluation"}:
+                continue
+            bindings.extend(
+                f"{item['runtime_id']}:{item['availability']}"
+                for item in variant["bindings"]
+            )
+        print(
+            f"{scenario['id']}  [{scenario['domain']}] "
+            f"{scenario['title']}  · {' · '.join(bindings)}"
+        )
+
+
+def _print_contract_result(payload: Dict[str, Any]) -> None:
+    print(
+        f"run={payload['run_id']}  status={payload['status']}  "
+        f"runtime={payload.get('runtime_id') or '—'}  "
+        f"layers={payload['profile']}  "
+        f"duration={payload['duration_seconds']:.2f}s"
+    )
+    if payload.get("error"):
+        print(f"error: {payload['error']}")
+    print()
+    symbols = {
+        "passed": "PASS",
+        "known_gap": "GAP ",
+        "failed": "FAIL",
+        "not_implemented": "NIMP",
+        "not_covered": "NCOV",
+        "future": "FUTR",
+        "timeout": "TIME",
+        "cancelled": "CANC",
+    }
+    for scenario in payload.get("scenarios", []):
+        status = str(scenario.get("status", "not_covered"))
+        print(
+            f"{symbols.get(status, status.upper()[:4]):4}  "
+            f"{scenario['id']}  {scenario['title']}"
+        )
+        for variant in scenario.get("variants", []):
+            variant_status = str(variant.get("status", "not_covered"))
+            print(
+                f"      {symbols.get(variant_status, variant_status.upper()[:4]):4} "
+                f"{variant['id']}  [{variant['layer']}]"
+            )
+            for case in variant.get("cases", []):
+                print(f"           {case['outcome']:9} {case['nodeid']}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -119,6 +195,71 @@ def build_parser() -> argparse.ArgumentParser:
     ui = sub.add_parser("ui", help="Start the local acceptance dashboard.")
     ui.add_argument("--host", default="127.0.0.1")
     ui.add_argument("--port", type=_ui_port, default=8788)
+
+    contract = sub.add_parser(
+        "contract",
+        help="Inspect or run the P1 TX/SP/AT cross-Runtime contract.",
+    )
+    contract_sub = contract.add_subparsers(
+        dest="contract_command",
+        required=True,
+    )
+    contract_list = contract_sub.add_parser(
+        "list",
+        help="List P1 scenarios, variants, and Runtime availability.",
+    )
+    contract_list.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+    )
+    contract_coverage = contract_sub.add_parser(
+        "coverage",
+        help="Show structural and executable P1 contract coverage.",
+    )
+    contract_coverage.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+    )
+    contract_run = contract_sub.add_parser(
+        "run",
+        help="Run allowlisted P1 scenario variants.",
+    )
+    contract_run.add_argument(
+        "--scenario",
+        action="append",
+        dest="scenarios",
+        help="Run one scenario ID; repeat to select several. Default: all.",
+    )
+    contract_run.add_argument(
+        "--runtime",
+        choices=("think_life_v1", "langgraph_v1"),
+        default="think_life_v1",
+    )
+    contract_run.add_argument(
+        "--layer",
+        action="append",
+        choices=(
+            "core",
+            "robustness",
+            "matcher",
+            "matcher_evaluation",
+        ),
+        dest="layers",
+        help="Select a test layer; repeat for several. Default: core.",
+    )
+    contract_run.add_argument(
+        "--all-layers",
+        action="store_true",
+        help="Run Core, Robustness, and Matcher Evaluation together.",
+    )
+    contract_run.add_argument("--timeout", type=float, default=300.0)
+    contract_run.add_argument(
+        "--format",
+        choices=("text", "json"),
+        default="text",
+    )
     return parser
 
 
@@ -146,8 +287,65 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             for error in coverage["errors"]:
                 print(f"- {error}")
         return 0 if coverage["complete"] else 1
+    if args.command == "contract":
+        contract_payload = contract_catalog_payload()
+        if args.contract_command == "list":
+            if args.format == "json":
+                _json(contract_payload)
+            else:
+                _print_contract_catalog()
+            return 0
+        if args.contract_command == "coverage":
+            coverage = contract_payload["coverage"]
+            if args.format == "json":
+                _json(coverage)
+            else:
+                print(
+                    f"scenarios={coverage['specified_scenarios']}/"
+                    f"{coverage['required_scenarios']} "
+                    f"core={coverage['specified_core']}/"
+                    f"{coverage['required_core']} "
+                    f"robustness={coverage['specified_robustness']}/"
+                    f"{coverage['required_robustness']} "
+                    f"matcher={coverage['specified_matcher']}/"
+                    f"{coverage['required_matcher']} "
+                    f"catalog_complete="
+                    f"{str(coverage['catalog_complete']).lower()} "
+                    f"p1_exit_ready="
+                    f"{str(coverage['p1_exit_ready']).lower()}"
+                )
+                for error in coverage["errors"]:
+                    print(f"- {error}")
+            return 0 if coverage["catalog_complete"] else 1
+        if args.contract_command == "run":
+            runner = ScenarioAcceptanceRunner(project_root=project_root)
+            try:
+                result = runner.run_contract(
+                    scenario_ids=args.scenarios,
+                    runtime_id=args.runtime,
+                    layers=(
+                        (
+                            "core",
+                            "robustness",
+                            "matcher_evaluation",
+                        )
+                        if args.all_layers
+                        else args.layers or ("core",)
+                    ),
+                    timeout_seconds=args.timeout,
+                )
+            except (ValueError, RunBusyError) as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+            payload = result.to_dict()
+            if args.format == "json":
+                _json(payload)
+            else:
+                _print_result(payload)
+            return 0 if result.status == "passed" else 1
+        return 2
 
-    runner = AcceptanceRunner(project_root=project_root)
+    runner = ScenarioAcceptanceRunner(project_root=project_root)
     if args.command == "show":
         result = runner.store.load_result(args.run_id)
         if result is None:

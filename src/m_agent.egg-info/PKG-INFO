@@ -5,6 +5,15 @@ Summary: M-Agent: a multi-dimensional memory agent for long-term dialogue QA.
 Requires-Python: >=3.10
 Description-Content-Type: text/markdown
 License-File: LICENSE
+Provides-Extra: acceptance
+Requires-Dist: pytest>=8.0; extra == "acceptance"
+Requires-Dist: fastapi>=0.110; extra == "acceptance"
+Requires-Dist: uvicorn>=0.29; extra == "acceptance"
+Provides-Extra: langgraph
+Requires-Dist: langgraph>=1.0.10; extra == "langgraph"
+Requires-Dist: langgraph-checkpoint>=4.0.1; extra == "langgraph"
+Requires-Dist: langgraph-checkpoint-sqlite>=3.0.1; extra == "langgraph"
+Requires-Dist: langgraph-prebuilt>=1.0.8; extra == "langgraph"
 Dynamic: license-file
 
 # M-Agent
@@ -16,9 +25,15 @@ Dynamic: license-file
 
 
 ## How to Run
-### Server side
-- **Run the agent as a service (FastAPI + SSE)**: create a run, subscribe to its event stream, fetch the final result, and maintain thread-level conversation state.
+
+### Server side (Chat API)
+
+Run the agent as a **long-lived HTTP / SSE service** (`python -m m_agent.api.chat_api`). You create a run per user message, subscribe to the event stream, and read the final result while the server keeps **thread-level** session state.
+
+**Think-life is the sole product runtime.** Stimuli go through a **perception bus**, WM is isolated by transaction, the **Scene log** records a chronological timeline, and user-visible text is emitted only through the **`reply_to_user`** tool. Schedule heartbeat and execution feedback use the same runtime path. See the **[current runtime specification](docs/runtime/think-life-runtime-spec.zh-CN.md)**.
+
 ### Client side
+
 - **M-Agent-UI**: the simplest information-interaction surface **[available now]**
 - **M-Agent-desktop**: a desktop-form personal assistant
 
@@ -28,7 +43,7 @@ Dynamic: license-file
 
 Core source code lives under `src/m_agent/`, runnable entry scripts under `scripts/`, automated tests under `tests/`, examples under `examples/`, and experimental integrations under `experiments/`. Configuration lives under `config/`, while runtime artifacts mostly land in `data/` and `log/`.
 
-For a fuller directory layout and design conventions, see: **[docs/project-structure.md](docs/project-structure.md)**.
+For a fuller directory layout and design conventions, see the **[project structure guide](docs/development/project-structure.md)**.
 
 ---
 
@@ -84,15 +99,19 @@ ALIBABA_EMBED_MODEL=text-embedding-v4
 LANGUAGE=zh
 EMBED_PROVIDER=aliyun
 LLM_PROVIDER=deepseek
+
+# Web search (Tavily / You.com — optional, for the web_search tool)
+YDC_API_KEY=YOUR_YOU_COM_KEY
+TAVILY_API_KEY=YOUR_TAVILY_KEY
 ```
 
 ---
 
 ## Usage 1: Chat API as a Long-Running Backend (FastAPI)
 
-The repo ships an HTTP / SSE chat service built on **fixed startup-time config + thread-level session state** (i.e. *not* the "send full config with every request" pattern).
+The repo ships an HTTP / SSE chat service built on **fixed startup-time config + thread-level session state** (i.e. *not* the "send full config with every request" pattern). The service always runs the Think-life runtime.
 
-Startup example (PowerShell):
+### Start the service
 
 ```powershell
 $env:PYTHONPATH = "src"
@@ -107,28 +126,46 @@ python -m m_agent.api.chat_api `
   --session-ttl-seconds 43200
 ```
 
-Once running:
+Think-life tuning (delegates per transaction, Scene context window, preemption) lives under `runtime.think_life` in `chat_controller.yaml`.
+
+### After startup
 
 - Swagger UI: `http://127.0.0.1:8777/docs`
 - OpenAPI JSON: `http://127.0.0.1:8777/openapi.json`
 
 Full API reference, authentication, thread events and schedule details: **[docs/chat_api/README.md](docs/chat_api/README.md)**.
 
+### Bash (Linux / macOS)
+
+```bash
+export PYTHONPATH=src
+python -m m_agent.api.chat_api \
+  --host 127.0.0.1 \
+  --port 8777 \
+  --config config/agents/chat/chat_controller.yaml
+```
+
 
 
 ## Episodic memory in this repo (simple RAG)
 
-The **chat stack** uses a lightweight **RAG episodic backend** (`SimpleRagEpisodicBackend`) configured via `config/systems/episodic/rag_default.yaml`. It chunks dialogue, embeds locally, and serves `shallow_recall` / `deep_recall` through the pluggable `systems` layer.
+The **chat stack** uses a **RAG episodic backend** (`SimpleRagEpisodicBackend`) by default, configured via `config/systems/episodic/rag_default.yaml`. It writes to the per-user vector index after each turn and flush, and serves `shallow_recall` / `deep_recall` queries.
+
+- **Pluggable subsystem guides:** [docs/systems-plugin/](docs/systems-plugin/) (one Chinese and one English guide for each of WM, episodic memory, and tools)
+- **RAG index:** `data/memory/chat-api/<user>/episodic/` (`chunks.jsonl`, `embeddings.npy`)
+- **Dialogue archive** (flush): `data/memory/chat-api/<user>/dialogues/`
+- **Scene log**: `data/memory/chat-api/<user>/scene/<thread_id>.jsonl` — a chronological, cross-transaction record of what was said and done
+- **How this differs from WM:** WM is isolated by **transaction** and provides hot in-process context; episodic memory and Scene logs can be retrieved across turns or read chronologically
+
+For persistence details, see **[docs/systems-plugin/episodic.md](docs/systems-plugin/episodic.md)**. `GET .../memory/state` returns `thread_state.episodic_persistence`.
 
 ## WorkspaceMem (full memory stack + benchmarks)
 
-The evidence-driven **MemoryAgent / MemoryCore** implementation and **LoCoMo / LongMemEval / REALTALK** evaluation pipelines live in the sibling repository:
+The evidence-driven **MemoryAgent / MemoryCore** implementation and **LoCoMo / LongMemEval / REALTALK** evaluation pipelines have moved to a standalone repository:
 
 **[F:/AI/WorkspaceMem](F:/AI/WorkspaceMem)** (`workspace_mem` Python package)
 
-Install and run eval from that repo; M-Agent intentionally does not vendor those scripts anymore.
-
-- **[docs/project-structure.md](docs/project-structure.md)** — M-Agent layout
+- **[docs/development/project-structure.md](docs/development/project-structure.md)** — M-Agent layout
 - **[src/m_agent/systems/README.md](src/m_agent/systems/README.md)** — plug-in contracts
 
 ---
@@ -148,9 +185,11 @@ For markers and policy, see `[tool.pytest.ini_options]` in `pyproject.toml`.
 
 | Document | Content |
 | --- | --- |
-| [docs/project-structure.md](docs/project-structure.md) | Directory conventions and common commands |
-| [scripts/run_locomo/README.md](scripts/run_locomo/README.md) | LoCoMo configuration and per-script reference |
+| [docs/README.md](docs/README.md) | Documentation index and reading order |
+| [docs/development/project-structure.md](docs/development/project-structure.md) | Directory conventions and common commands |
 | [docs/chat_api/README.md](docs/chat_api/README.md) | Full Chat API reference |
+| [docs/runtime/think-life-runtime-spec.zh-CN.md](docs/runtime/think-life-runtime-spec.zh-CN.md) | Current Think-life runtime spec (Chinese) |
+| [docs/architecture/README.md](docs/architecture/README.md) | Target architecture and migration documents |
 | [tools/M-Agent-UI/API.md](tools/M-Agent-UI/API.md) | Frontend integration API |
 
 ---

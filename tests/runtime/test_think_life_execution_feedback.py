@@ -10,7 +10,6 @@ from m_agent.runtime.think_life.contracts import (
     StimulusKind,
     TransactionKind,
     TransactionRecord,
-    TransactionStatus,
 )
 from m_agent.layers.perception.contracts import Stimulus
 from m_agent.runtime.think_life.scheduler.execution_feedback import (
@@ -119,7 +118,6 @@ def test_build_perception_includes_structured_feedback() -> None:
         transaction_id="txn1",
         thread_id="t1",
         conversation_id="t1::0",
-        status=TransactionStatus.RUNNING,
         kind=TransactionKind.USER_TASK,
     )
     stimulus = _stimulus(

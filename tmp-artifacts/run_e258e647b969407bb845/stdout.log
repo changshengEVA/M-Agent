@@ -1,0 +1,332 @@
+FFFF                                                                     [100%]
+================================== FAILURES ===================================
+___________________ test_tx_01_new_transaction_normal_flow ____________________
+
+path = 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-qanmddur'
+onexc = <function TemporaryDirectory._rmtree.<locals>.onexc at 0x000001F29A4691C0>
+
+    def _rmtree_unsafe(path, onexc):
+        def onerror(err):
+            if not isinstance(err, FileNotFoundError):
+                onexc(os.scandir, err.filename, err)
+        results = os.walk(path, topdown=False, onerror=onerror, followlinks=os._walk_symlinks_as_files)
+        for dirpath, dirnames, filenames in results:
+            for name in dirnames:
+                fullname = os.path.join(dirpath, name)
+                try:
+                    os.rmdir(fullname)
+                except FileNotFoundError:
+                    continue
+                except OSError as err:
+                    onexc(os.rmdir, fullname, err)
+            for name in filenames:
+                fullname = os.path.join(dirpath, name)
+                try:
+>                   os.unlink(fullname)
+E                   PermissionError: [WinError 32] 另一个程序正在使用此文件，进程无法访问。: 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-qanmddur\\langgraph-checkpoints.sqlite3'
+
+F:\ProgramData\miniconda3\Lib\shutil.py:625: PermissionError
+
+During handling of the above exception, another exception occurred:
+
+request = <FixtureRequest for <Function test_tx_01_new_transaction_normal_flow>>
+
+    def test_tx_01_new_transaction_normal_flow(
+        request: pytest.FixtureRequest,
+    ) -> None:
+>       run_contract(request, "TX-01", "TX-01/core")
+
+tests\acceptance\scenarios\test_tx_scenarios.py:14: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\acceptance\scenarios\_support.py:47: in run_contract
+    execution = get_runtime_adapter(runtime_id).run_scenario(
+src\m_agent\acceptance\adapters\langgraph_v1.py:36: in run_scenario
+    harness.close()
+src\m_agent\acceptance\adapters\langgraph_harness.py:235: in close
+    super().close()
+src\m_agent\acceptance\adapters\think_life_harness.py:164: in close
+    self._temporary_directory.cleanup()
+F:\ProgramData\miniconda3\Lib\tempfile.py:950: in cleanup
+    self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)
+F:\ProgramData\miniconda3\Lib\tempfile.py:930: in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+F:\ProgramData\miniconda3\Lib\shutil.py:790: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+F:\ProgramData\miniconda3\Lib\shutil.py:629: in _rmtree_unsafe
+    onexc(os.unlink, fullname, err)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+func = <built-in function unlink>
+path = 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-qanmddur\\langgraph-checkpoints.sqlite3'
+exc = PermissionError(13, '另一个程序正在使用此文件，进程无法访问。')
+
+    def onexc(func, path, exc):
+        if isinstance(exc, PermissionError):
+            if repeated and path == name:
+                if ignore_errors:
+                    return
+                raise
+    
+            try:
+                if path != name:
+                    _resetperms(_os.path.dirname(path))
+                _resetperms(path)
+    
+                try:
+>                   _os.unlink(path)
+E                   PermissionError: [WinError 32] 另一个程序正在使用此文件，进程无法访问。: 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-qanmddur\\langgraph-checkpoints.sqlite3'
+
+F:\ProgramData\miniconda3\Lib\tempfile.py:905: PermissionError
+______________________ test_tx_01_poc_checkpoint_resume _______________________
+
+path = 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-y970jjb8'
+onexc = <function TemporaryDirectory._rmtree.<locals>.onexc at 0x000001F29A4693A0>
+
+    def _rmtree_unsafe(path, onexc):
+        def onerror(err):
+            if not isinstance(err, FileNotFoundError):
+                onexc(os.scandir, err.filename, err)
+        results = os.walk(path, topdown=False, onerror=onerror, followlinks=os._walk_symlinks_as_files)
+        for dirpath, dirnames, filenames in results:
+            for name in dirnames:
+                fullname = os.path.join(dirpath, name)
+                try:
+                    os.rmdir(fullname)
+                except FileNotFoundError:
+                    continue
+                except OSError as err:
+                    onexc(os.rmdir, fullname, err)
+            for name in filenames:
+                fullname = os.path.join(dirpath, name)
+                try:
+>                   os.unlink(fullname)
+E                   PermissionError: [WinError 32] 另一个程序正在使用此文件，进程无法访问。: 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-y970jjb8\\langgraph-checkpoints.sqlite3'
+
+F:\ProgramData\miniconda3\Lib\shutil.py:625: PermissionError
+
+During handling of the above exception, another exception occurred:
+
+request = <FixtureRequest for <Function test_tx_01_poc_checkpoint_resume>>
+
+    def test_tx_01_poc_checkpoint_resume(
+        request: pytest.FixtureRequest,
+    ) -> None:
+>       run_contract(
+            request,
+            "TX-01",
+            "TX-01/poc_checkpoint_resume",
+        )
+
+tests\acceptance\scenarios\test_tx_scenarios.py:30: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\acceptance\scenarios\_support.py:47: in run_contract
+    execution = get_runtime_adapter(runtime_id).run_scenario(
+src\m_agent\acceptance\adapters\langgraph_v1.py:36: in run_scenario
+    harness.close()
+src\m_agent\acceptance\adapters\langgraph_harness.py:235: in close
+    super().close()
+src\m_agent\acceptance\adapters\think_life_harness.py:164: in close
+    self._temporary_directory.cleanup()
+F:\ProgramData\miniconda3\Lib\tempfile.py:950: in cleanup
+    self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)
+F:\ProgramData\miniconda3\Lib\tempfile.py:930: in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+F:\ProgramData\miniconda3\Lib\shutil.py:790: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+F:\ProgramData\miniconda3\Lib\shutil.py:629: in _rmtree_unsafe
+    onexc(os.unlink, fullname, err)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+func = <built-in function unlink>
+path = 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-y970jjb8\\langgraph-checkpoints.sqlite3'
+exc = PermissionError(13, '另一个程序正在使用此文件，进程无法访问。')
+
+    def onexc(func, path, exc):
+        if isinstance(exc, PermissionError):
+            if repeated and path == name:
+                if ignore_errors:
+                    return
+                raise
+    
+            try:
+                if path != name:
+                    _resetperms(_os.path.dirname(path))
+                _resetperms(path)
+    
+                try:
+>                   _os.unlink(path)
+E                   PermissionError: [WinError 32] 另一个程序正在使用此文件，进程无法访问。: 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-y970jjb8\\langgraph-checkpoints.sqlite3'
+
+F:\ProgramData\miniconda3\Lib\tempfile.py:905: PermissionError
+___________________ test_tx_01_poc_sequential_fake_effects ____________________
+
+path = 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-qug73gml'
+onexc = <function TemporaryDirectory._rmtree.<locals>.onexc at 0x000001F29A492520>
+
+    def _rmtree_unsafe(path, onexc):
+        def onerror(err):
+            if not isinstance(err, FileNotFoundError):
+                onexc(os.scandir, err.filename, err)
+        results = os.walk(path, topdown=False, onerror=onerror, followlinks=os._walk_symlinks_as_files)
+        for dirpath, dirnames, filenames in results:
+            for name in dirnames:
+                fullname = os.path.join(dirpath, name)
+                try:
+                    os.rmdir(fullname)
+                except FileNotFoundError:
+                    continue
+                except OSError as err:
+                    onexc(os.rmdir, fullname, err)
+            for name in filenames:
+                fullname = os.path.join(dirpath, name)
+                try:
+>                   os.unlink(fullname)
+E                   PermissionError: [WinError 32] 另一个程序正在使用此文件，进程无法访问。: 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-qug73gml\\langgraph-checkpoints.sqlite3'
+
+F:\ProgramData\miniconda3\Lib\shutil.py:625: PermissionError
+
+During handling of the above exception, another exception occurred:
+
+request = <FixtureRequest for <Function test_tx_01_poc_sequential_fake_effects>>
+
+    def test_tx_01_poc_sequential_fake_effects(
+        request: pytest.FixtureRequest,
+    ) -> None:
+>       run_contract(
+            request,
+            "TX-01",
+            "TX-01/poc_sequential_fake_effects",
+        )
+
+tests\acceptance\scenarios\test_tx_scenarios.py:40: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\acceptance\scenarios\_support.py:47: in run_contract
+    execution = get_runtime_adapter(runtime_id).run_scenario(
+src\m_agent\acceptance\adapters\langgraph_v1.py:36: in run_scenario
+    harness.close()
+src\m_agent\acceptance\adapters\langgraph_harness.py:235: in close
+    super().close()
+src\m_agent\acceptance\adapters\think_life_harness.py:164: in close
+    self._temporary_directory.cleanup()
+F:\ProgramData\miniconda3\Lib\tempfile.py:950: in cleanup
+    self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)
+F:\ProgramData\miniconda3\Lib\tempfile.py:930: in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+F:\ProgramData\miniconda3\Lib\shutil.py:790: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+F:\ProgramData\miniconda3\Lib\shutil.py:629: in _rmtree_unsafe
+    onexc(os.unlink, fullname, err)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+func = <built-in function unlink>
+path = 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-qug73gml\\langgraph-checkpoints.sqlite3'
+exc = PermissionError(13, '另一个程序正在使用此文件，进程无法访问。')
+
+    def onexc(func, path, exc):
+        if isinstance(exc, PermissionError):
+            if repeated and path == name:
+                if ignore_errors:
+                    return
+                raise
+    
+            try:
+                if path != name:
+                    _resetperms(_os.path.dirname(path))
+                _resetperms(path)
+    
+                try:
+>                   _os.unlink(path)
+E                   PermissionError: [WinError 32] 另一个程序正在使用此文件，进程无法访问。: 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-qug73gml\\langgraph-checkpoints.sqlite3'
+
+F:\ProgramData\miniconda3\Lib\tempfile.py:905: PermissionError
+_________________ test_tx_01_poc_stale_feedback_after_restore _________________
+
+path = 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-2xvdgyy6'
+onexc = <function TemporaryDirectory._rmtree.<locals>.onexc at 0x000001F29A469D00>
+
+    def _rmtree_unsafe(path, onexc):
+        def onerror(err):
+            if not isinstance(err, FileNotFoundError):
+                onexc(os.scandir, err.filename, err)
+        results = os.walk(path, topdown=False, onerror=onerror, followlinks=os._walk_symlinks_as_files)
+        for dirpath, dirnames, filenames in results:
+            for name in dirnames:
+                fullname = os.path.join(dirpath, name)
+                try:
+                    os.rmdir(fullname)
+                except FileNotFoundError:
+                    continue
+                except OSError as err:
+                    onexc(os.rmdir, fullname, err)
+            for name in filenames:
+                fullname = os.path.join(dirpath, name)
+                try:
+>                   os.unlink(fullname)
+E                   PermissionError: [WinError 32] 另一个程序正在使用此文件，进程无法访问。: 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-2xvdgyy6\\langgraph-checkpoints.sqlite3'
+
+F:\ProgramData\miniconda3\Lib\shutil.py:625: PermissionError
+
+During handling of the above exception, another exception occurred:
+
+request = <FixtureRequest for <Function test_tx_01_poc_stale_feedback_after_restore>>
+
+    def test_tx_01_poc_stale_feedback_after_restore(
+        request: pytest.FixtureRequest,
+    ) -> None:
+>       run_contract(
+            request,
+            "TX-01",
+            "TX-01/poc_stale_feedback_after_restore",
+        )
+
+tests\acceptance\scenarios\test_tx_scenarios.py:50: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+tests\acceptance\scenarios\_support.py:47: in run_contract
+    execution = get_runtime_adapter(runtime_id).run_scenario(
+src\m_agent\acceptance\adapters\langgraph_v1.py:36: in run_scenario
+    harness.close()
+src\m_agent\acceptance\adapters\langgraph_harness.py:235: in close
+    super().close()
+src\m_agent\acceptance\adapters\think_life_harness.py:164: in close
+    self._temporary_directory.cleanup()
+F:\ProgramData\miniconda3\Lib\tempfile.py:950: in cleanup
+    self._rmtree(self.name, ignore_errors=self._ignore_cleanup_errors)
+F:\ProgramData\miniconda3\Lib\tempfile.py:930: in _rmtree
+    _shutil.rmtree(name, onexc=onexc)
+F:\ProgramData\miniconda3\Lib\shutil.py:790: in rmtree
+    return _rmtree_unsafe(path, onexc)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+F:\ProgramData\miniconda3\Lib\shutil.py:629: in _rmtree_unsafe
+    onexc(os.unlink, fullname, err)
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+func = <built-in function unlink>
+path = 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-2xvdgyy6\\langgraph-checkpoints.sqlite3'
+exc = PermissionError(13, '另一个程序正在使用此文件，进程无法访问。')
+
+    def onexc(func, path, exc):
+        if isinstance(exc, PermissionError):
+            if repeated and path == name:
+                if ignore_errors:
+                    return
+                raise
+    
+            try:
+                if path != name:
+                    _resetperms(_os.path.dirname(path))
+                _resetperms(path)
+    
+                try:
+>                   _os.unlink(path)
+E                   PermissionError: [WinError 32] 另一个程序正在使用此文件，进程无法访问。: 'F:\\AI\\M-Agent\\tmp-artifacts\\run_e258e647b969407bb845\\tmp\\m-agent-p2-harness-2xvdgyy6\\langgraph-checkpoints.sqlite3'
+
+F:\ProgramData\miniconda3\Lib\tempfile.py:905: PermissionError
+=========================== short test summary info ===========================
+FAILED tests/acceptance/scenarios/test_tx_scenarios.py::test_tx_01_new_transaction_normal_flow
+FAILED tests/acceptance/scenarios/test_tx_scenarios.py::test_tx_01_poc_checkpoint_resume
+FAILED tests/acceptance/scenarios/test_tx_scenarios.py::test_tx_01_poc_sequential_fake_effects
+FAILED tests/acceptance/scenarios/test_tx_scenarios.py::test_tx_01_poc_stale_feedback_after_restore
+4 failed in 6.78s

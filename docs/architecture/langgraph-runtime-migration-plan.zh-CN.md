@@ -655,6 +655,11 @@ tool result
 
 ### P4：完成 ThinkLife AT
 
+#### 当前状态
+
+已完成。ThinkLife AT-01～AT-09 全绿；`TX-03` 收口；`AT-10` 评测入口已接通。
+阈值达标与 M0 端到端收口已在 P5 完成。
+
 工作：
 
 - 按来源类型确定性校验和直达；
@@ -677,6 +682,12 @@ tool result
 
 ### P5：完成 M0 领域基线
 
+#### 当前状态
+
+已完成。`run_0036c18868874e58a39e`：32 Passed / 3 Known Gap / 0 Unexpected。
+ThinkLife 27 Core 全绿；`AT-10` 独立达标；剩余 3 个 Known Gap 明确归属 P7
+Robustness。
+
 工作：
 
 - 打通 `SP → AT → TX`；
@@ -688,9 +699,15 @@ M0 决策门：
 - `think_life_v1` 的 27 个 Core Gate 全绿；
 - `AT-10` 独立达到冻结阈值；
 - 旧 `INV-01～14` 即使全绿也不能单独证明 M0；
-- M0 未通过时不得开始 P6。
+- M0 已通过，可以开始 P6。
 
 ### P6：LangGraph 单 Transaction PoC
+
+#### 当前状态
+
+已完成。`langgraph_v1` adapter 与 `src/m_agent/runtime/langgraph/` 已落地；共享
+`TX-01/core`、`TX-01/uow_replay_and_result` 与 3 个 `layer=poc` 切片可在双 Runtime
+上产出可比较的 normalized trace；其余 binding 仍为 `Not Implemented`。
 
 范围：
 
@@ -760,6 +777,13 @@ M0 决策门：
   disposition 不出现半提交。
 
 ### P8：灰度与旧 Runtime 收缩
+
+#### 当前状态
+
+P8 已完成。`langgraph_v1` 38/38 variant 可执行；持久 SQLite checkpointer、SP/AT
+共享外层与 `runtime_engine` 灰度路由见 `src/m_agent/runtime/langgraph/` 与
+`src/m_agent/runtime/routing.py`。验收：`M_AGENT_DEFAULT_RUNTIME_ENGINE` 可切换
+默认路由；回退只影响后续新建 transaction。
 
 创建 transaction 时固定：
 
@@ -943,18 +967,12 @@ P6 只要求临时 checkpointer 下的图中断/恢复切片。生产崩溃恢�
 
 ## 14. 当前下一步
 
-P0 文档同步完成后，下一步是 P1，而不是直接实现 LangGraph。
+P5/M0 与 P6 LangGraph Transaction Graph PoC 均已完成。下一步是 P7 生产级持久恢复与
+共享外层接入，而不是提前宣称完整 Runtime 或灰度完成。
 
 具体顺序：
 
-1. 将 27 个确定性 TX/SP/AT 场景及本轮新增子场景转成共享数据目录；
-2. 建立当前版 Robustness manifest，并把测试规格第 9 节阻断清单做成可执行 variant；
-   P1 退出时测试本身不得仍为 `Not Covered`；
-3. 定义能观察 activation、UI 控制、stimulus ingress/claim/disposition、Schedule
-   delivery、Expected Discard、effect guarantee/outbox、异步工具和 Flush boundary 的
-   Harness 协议；
-4. 实现 `think_life_v1` adapter；
-5. 让 CLI 与 UI 运行同一目录，并按层级展示结果和证据；
-6. 运行 ThinkLife，形成 Core/Robustness/Matcher 分层差距表；
-7. 再按 P2 → P5 修复领域基线；
-8. M0 通过后才执行第 13 节 P6 实验。
+1. 生产 checkpointer 与 transaction graph resume；
+2. 耐久 Stimulus Inbox/UoW、effect ledger、SP/AT/Scene/Schedule 接入；
+3. 共享层接入后双 Runtime 重跑 27 Core 与必测 Robustness；
+4. 保持剩余 3 个 Known Gap 明确归属 P7，不回流到 PoC 决策。

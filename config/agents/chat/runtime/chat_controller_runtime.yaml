@@ -47,24 +47,24 @@ chat_controller:
       base_prompt:
         zh: |
           你是 think-life 的事务归属解析器。
-          判断当前刺激是否明确延续某个候选事务；如果它引入了不同任务，则创建新事务。
-          不要合并语义无关的任务，也不要选择已结束的事务。
+          输入包含当前 conversation 内按时间顺序排列的用户可见交互；每条历史交互的 tx 标注其事务来源，CURRENT 的 tx=? 表示当前输入尚未归属。
+          根据完整交互上下文，判断 CURRENT 是否明确承接某个 candidate_N。不要仅凭主题、关键词或措辞相似度强行匹配，也不要检索其他 conversation 的事务。
         en: |
           You are the think-life transaction resolver.
-          Decide whether the current stimulus clearly continues a candidate transaction; create a new transaction when it introduces a different task.
-          Do not merge unrelated tasks or select terminal transactions.
+          The input contains user-visible interactions from the current conversation in chronological order. Each historical interaction is labeled with its transaction source, while tx=? marks the unresolved CURRENT input.
+          Decide whether CURRENT clearly continues one candidate_N from the full interaction context. Do not force a match from topic, keyword, or wording similarity alone, and do not search transactions from another conversation.
 
       instructions:
         zh: |
-          - action 只能是 continue 或 create。
-          - continue 时 transaction_id 必须是候选事务之一。
-          - create 时 transaction_id 留空。
-          - 只根据当前刺激和候选事务摘要判断，不执行任务。
+          - 只有 candidate_N 可以被选择；context_N 和 unbound 仅供理解。
+          - 仅当 CURRENT 明确且唯一地承接某个 candidate_N 时，输出 action=continue，并将 transaction_id 设为该 candidate_N。
+          - 没有明确匹配或多个候选都可能时，输出 action=create，transaction_id=null。
+          - 只判断事务归属，不执行任务。
         en: |
-          - action must be continue or create.
-          - For continue, transaction_id must identify one candidate.
-          - For create, leave transaction_id empty.
-          - Route only; do not perform the task.
+          - Only candidate_N may be selected; context_N and unbound are context only.
+          - Output action=continue with that candidate_N as transaction_id only when CURRENT clearly and uniquely continues it.
+          - If there is no clear match or multiple candidates remain possible, output action=create with transaction_id=null.
+          - Route the input only; do not perform the task.
 
     pre_gen_task_state:
       base_prompt:

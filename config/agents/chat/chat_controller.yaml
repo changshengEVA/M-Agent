@@ -21,7 +21,9 @@ systems:
   tools:    ../../systems/tools/default.yaml
 
 runtime:
-  # Think-life is the sole runtime; only its tuning knobs live here.
+  # Default product engine for new Chat API transactions.
+  # Override with M_AGENT_DEFAULT_RUNTIME_ENGINE or set langgraph_v1 for R3 gray.
+  default_engine: think_life_v1
   think_life:
     # max_delegates_per_transaction / max_think_rounds: omit or null = unlimited
     scene_context_max_entries: 40
@@ -32,3 +34,8 @@ runtime:
       default_user_priority: 10
       default_feedback_priority: 20
       default_heartbeat_priority: 40
+  langgraph:
+    turn_loop: true
+    # Use execution_agent when routing Chat API traffic to LangGraph.
+    delegate_executor: execution_agent
+

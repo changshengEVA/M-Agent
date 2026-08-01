@@ -44,14 +44,6 @@ def resolve_tool_name(
     name = str(decision.tool_name or "").strip()
     if name and name in enabled:
         return name
-
-    hints = decision.capability_hint or []
-    if isinstance(hints, list):
-        for item in hints:
-            hint = str(item or "").strip()
-            if hint in enabled:
-                return hint
-
     return None
 
 

@@ -8,7 +8,13 @@ from m_agent.runtime.think_life.contracts import SceneEntry
 
 @runtime_checkable
 class SceneWriter(Protocol):
-    def append(self, conversation_id: str, entry: SceneEntry) -> SceneEntry:
+    def append(
+        self,
+        conversation_id: str,
+        entry: SceneEntry,
+        *,
+        append_id: Optional[str] = None,
+    ) -> SceneEntry:
         ...
 
 

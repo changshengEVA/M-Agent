@@ -15,7 +15,11 @@ from m_agent.chat.chat_memory_persistence import _parse_ts_from_turn
 from m_agent.chat.three_layer_chat_agent import ThreeLayerChatAgent
 from m_agent.chat.working_memory import build_working_memory_api_payload
 from m_agent.paths import chat_user_slug
-from m_agent.runtime.think_life import ThinkLifeRuntime
+from m_agent.runtime.host import RuntimeHost, ThinkLifeRuntimeHost, create_runtime_host
+from m_agent.runtime.routing import (
+    DEFAULT_RUNTIME_ENGINE,
+    resolve_runtime_engine_from_config,
+)
 from m_agent.systems import SystemsBundle
 
 from .chat_api_shared import (
@@ -285,12 +289,14 @@ class ChatServiceRuntime:
         self._stats_lock = threading.Lock()
         self._threads_lock = threading.Lock()
         self._agent: Optional[ThreeLayerChatAgent] = None
-        self._think_life: ThinkLifeRuntime
+        self._runtime_host: RuntimeHost
+        self._engine: Any
+        self._runtime_engine_id: str = DEFAULT_RUNTIME_ENGINE
         self._systems_override: Optional[SystemsBundle] = systems_override
         self._threads: Dict[str, ThreadSessionState] = {}
         self._force_stop_lock = threading.Lock()
         self._force_stop_events: Dict[str, threading.Event] = {}
-        # Think-life async: user turns awaiting finalize reply (FIFO per thread).
+        # Async path: user turns awaiting finalize reply (FIFO per thread).
         self._think_life_pending_users: Dict[str, Deque[Dict[str, Any]]] = {}
         self._runs_started = 0
         self._runs_completed = 0
@@ -309,9 +315,9 @@ class ChatServiceRuntime:
 
     def set_thread_event_sink(self, sink: ThreadEventSink) -> None:
         self._thread_event_sink = sink
-        self._wire_think_life_runtime()
+        self._wire_runtime_host()
 
-    def _wire_think_life_runtime(self) -> None:
+    def _wire_runtime_host(self) -> None:
         def _emitter(thread_id: str, event_type: str, payload: Dict[str, Any]) -> None:
             if event_type == "stimulus_queued":
                 self._record_thread_activity(thread_id, arm_idle_timer=True)
@@ -325,15 +331,19 @@ class ChatServiceRuntime:
                 self._discard_pending_think_life_user_turn(thread_id)
             self._emit_thread_event(thread_id, event_type, payload)
 
-        self._think_life.set_thread_event_emitter(_emitter)
+        self._runtime_host.set_thread_event_emitter(_emitter)
 
         def _history(thread_id: str) -> List[Dict[str, Any]]:
             session = self._get_or_create_thread(thread_id)
             with self._threads_lock:
                 return self._build_history_messages(session)
 
-        self._think_life.set_history_provider(_history)
-        self._think_life.set_schedule_lifecycle(_ThinkLifeScheduleLifecycle(self))
+        set_history = getattr(self._engine, "set_history_provider", None)
+        if callable(set_history):
+            set_history(_history)
+        set_schedule = getattr(self._engine, "set_schedule_lifecycle", None)
+        if callable(set_schedule):
+            set_schedule(_ThinkLifeScheduleLifecycle(self))
 
     def _record_thread_activity(self, thread_id: str, *, arm_idle_timer: bool) -> None:
         tid = str(thread_id or "").strip()
@@ -453,10 +463,25 @@ class ChatServiceRuntime:
             systems=self._systems_override,
         )
         owner_slug = chat_user_slug(str(getattr(self._agent, "user_name", "") or "anonymous"))
-        self._think_life = ThinkLifeRuntime(self._agent, owner_id=owner_slug)
-        self._wire_think_life_runtime()
+        raw_runtime = (
+            self._agent.config.get("runtime")
+            if isinstance(self._agent.config.get("runtime"), dict)
+            else {}
+        )
+        self._runtime_engine_id = resolve_runtime_engine_from_config(raw_runtime)
+        self._runtime_host = create_runtime_host(
+            agent=self._agent,
+            owner_id=owner_slug,
+            runtime_engine=self._runtime_engine_id,
+        )
+        if isinstance(self._runtime_host, ThinkLifeRuntimeHost):
+            self._engine = self._runtime_host.runtime
+        else:
+            self._engine = self._runtime_host
+        self._wire_runtime_host()
         logger.info(
-            "Chat runtime initialized: runtime=think_life default_thread_id=%s persist_memory=%s",
+            "Chat runtime initialized: runtime_engine=%s default_thread_id=%s persist_memory=%s",
+            self._runtime_engine_id,
             self.default_thread_id,
             bool(getattr(self._agent, "persist_memory", False)),
         )
@@ -468,13 +493,22 @@ class ChatServiceRuntime:
         return self._agent
 
     @property
-    def runtime_profile(self) -> str:
-        """Return the stable runtime identifier exposed by the HTTP API."""
-        return "think_life"
+    def runtime_host(self) -> RuntimeHost:
+        return self._runtime_host
 
     @property
-    def think_life(self) -> ThinkLifeRuntime:
-        return self._think_life
+    def runtime_engine_id(self) -> str:
+        return str(self._runtime_engine_id or DEFAULT_RUNTIME_ENGINE)
+
+    @property
+    def runtime_profile(self) -> str:
+        """Return the stable runtime identifier exposed by the HTTP API."""
+        return self.runtime_engine_id
+
+    @property
+    def think_life(self) -> Any:
+        """Active product engine (ThinkLife or LangGraph). Kept for callers."""
+        return self._engine
 
     @property
     def default_thread_id(self) -> str:
@@ -498,6 +532,10 @@ class ChatServiceRuntime:
         self._stop_event.set()
         if getattr(self, "_idle_worker", None) is not None and self._idle_worker.is_alive():
             self._idle_worker.join(timeout=2.0)
+        try:
+            self._runtime_host.shutdown()
+        except Exception:
+            logger.exception("Runtime host shutdown failed")
 
     def _idle_flush_loop(self) -> None:
         while not self._stop_event.wait(self.idle_scan_interval_seconds):
@@ -507,7 +545,7 @@ class ChatServiceRuntime:
                 logger.exception("Idle flush loop failed")
 
     def _load_conversation_seq(self, thread_id: str) -> int:
-        store = getattr(getattr(self._think_life, "scene_system", None), "store", None)
+        store = getattr(getattr(self._engine, "scene_system", None), "store", None)
         load_fn = getattr(store, "load_conversation_seq", None)
         if not callable(load_fn):
             return 0
@@ -521,7 +559,7 @@ class ChatServiceRuntime:
             return 0
 
     def _persist_conversation_seq(self, session: ThreadSessionState) -> None:
-        store = getattr(getattr(self._think_life, "scene_system", None), "store", None)
+        store = getattr(getattr(self._engine, "scene_system", None), "store", None)
         persist_fn = getattr(store, "persist_conversation_seq", None)
         if not callable(persist_fn):
             return
@@ -555,14 +593,14 @@ class ChatServiceRuntime:
 
     def _current_wm_entries(self, session: ThreadSessionState) -> List[Dict[str, Any]]:
         """Return WM entries for the active user transaction."""
-        transaction = self._think_life.registry.get_active_user_transaction(
+        transaction = self._engine.registry.get_active_user_transaction(
             session.conversation_id
         )
         return list(transaction.wm_entries) if transaction is not None else []
 
     def _current_task_progress(self, session: ThreadSessionState) -> Dict[str, Any]:
         """Return task progress for the active user transaction."""
-        transaction = self._think_life.registry.get_active_user_transaction(
+        transaction = self._engine.registry.get_active_user_transaction(
             session.conversation_id
         )
         return (
@@ -634,7 +672,7 @@ class ChatServiceRuntime:
             pending = self._think_life_pending_users.pop(active_thread_id, None)
             cleared_pending_users = len(pending or [])
 
-        result = self._think_life.force_stop_thread(active_thread_id, reason=safe_reason)
+        result = self._engine.force_stop_thread(active_thread_id, reason=safe_reason)
 
         session = self._get_or_create_thread(active_thread_id)
         with self._threads_lock:
@@ -737,8 +775,8 @@ class ChatServiceRuntime:
         """
         conversation_id = session.conversation_id
         try:
-            self._think_life.ensure_scene_thread_loaded(conversation_id)
-            reader = self._think_life.scene_system.reader
+            self._engine.ensure_scene_thread_loaded(conversation_id)
+            reader = self._engine.scene_system.reader
             entries_fn = getattr(reader, "entries_since_flush", None)
             entries = list(entries_fn(conversation_id)) if callable(entries_fn) else []
         except Exception:
@@ -806,7 +844,7 @@ class ChatServiceRuntime:
         scene_pending_turns = 0
         active_user_segment = False
         try:
-            scene_metrics = self._think_life.scene_pending_flush_metrics(
+            scene_metrics = self._engine.scene_pending_flush_metrics(
                 session.thread_id,
                 conversation_id=session.conversation_id,
             )
@@ -875,16 +913,21 @@ class ChatServiceRuntime:
             "episodic_persistence": self._episodic_persistence_payload(),
         }
         snap = THREAD_RUNTIME_STATUS.snapshot(session.thread_id)
-        snapshot["think_life"] = {
+        engine_block = {
             "pending_stimuli": snap.pending_stimuli,
             "busy": snap.busy,
             "busy_reason": snap.busy_reason,
-            "runtime_profile": "think_life",
+            "runtime_profile": self.runtime_engine_id,
+            "runtime_engine_id": self.runtime_engine_id,
             "runtime_phase": snap.runtime_phase,
             "effective_depth": snap.effective_depth,
             "in_flight_stimulus_id": snap.in_flight_stimulus_id,
             "preempt_enabled": snap.preempt_enabled,
         }
+        # Keep think_life key for existing UI clients; also publish engine-neutral alias.
+        snapshot["think_life"] = engine_block
+        snapshot["runtime"] = dict(engine_block)
+        snapshot["runtime_engine_id"] = self.runtime_engine_id
         return snapshot
 
     def get_thread_state(self, thread_id: str) -> Dict[str, Any]:
@@ -945,13 +988,13 @@ class ChatServiceRuntime:
                 user_message=_normalize_text(normalized_user_turn.get("text")) or rendered_message,
                 user_turn=normalized_user_turn,
             )
-            self._think_life.submit_user_message(
+            self._runtime_host.submit_user_message(
                 thread_id=active_thread_id,
                 conversation_id=conversation_id,
                 text=rendered_message,
                 schedule_drainer=False,
             )
-            result = self._think_life.run_thread(
+            result = self._runtime_host.run_thread(
                 active_thread_id,
                 history_messages=history_messages,
                 event_emitter=self._build_thinking_event_emitter(active_thread_id),
@@ -960,7 +1003,7 @@ class ChatServiceRuntime:
             THREAD_RUNTIME_STATUS.clear_busy(active_thread_id, reason="chat_run")
             THREAD_RUNTIME_STATUS.set_pending_stimuli(
                 active_thread_id,
-                self._think_life.inbox.pending_count(active_thread_id),
+                self._engine.inbox.pending_count(active_thread_id),
             )
 
         if cancel_event.is_set():
@@ -1078,7 +1121,7 @@ class ChatServiceRuntime:
             yield {"seq": seq, **event}
 
     def _scene_flush_through_seq(self, conversation_id: str) -> int:
-        reader = self._think_life.scene_system.reader
+        reader = self._engine.scene_system.reader
         entries_fn = getattr(reader, "entries_since_flush", None)
         if not callable(entries_fn):
             return 0
@@ -1089,7 +1132,7 @@ class ChatServiceRuntime:
         self, thread_id: str, conversation_id: str
     ) -> Optional[Dict[str, Any]]:
         try:
-            return self._think_life.build_dialogue_flush_payload(
+            return self._engine.build_dialogue_flush_payload(
                 thread_id,
                 conversation_id=conversation_id,
                 source="chat_api_thread_flush",
@@ -1215,24 +1258,35 @@ class ChatServiceRuntime:
                 scene_payload = None
 
             if not scene_payload and not pending_rounds:
+                old_conversation_id = session.conversation_id
                 think_life_segment: Optional[Dict[str, Any]] = None
                 try:
-                    think_life_segment = self._think_life.on_flush_segment(
+                    think_life_segment = self._engine.on_flush_segment(
                         session.thread_id,
-                        conversation_id=session.conversation_id,
+                        conversation_id=old_conversation_id,
                     )
                 except Exception:
                     logger.exception(
                         "Think-life on_flush_segment failed thread_id=%s (noop flush)",
                         session.thread_id,
                     )
-                snapshot = self._thread_state_snapshot(session)
                 message = "no pending rounds to flush"
                 status = "noop"
                 if think_life_segment and think_life_segment.get("completed_transaction_id"):
                     message = "think_life user segment closed (no pending dialogue turns)"
                     status = "think_life_segment"
                 session.idle_timer_started_at = None
+                session.last_flush_at = session.last_flush_attempt_at
+                session.last_flush_reason = reason
+                session.last_flush_result = {
+                    "success": True,
+                    "status": status,
+                    "conversation_id": old_conversation_id,
+                }
+                session.flush_count += 1
+                session.conversation_seq += 1
+                self._persist_conversation_seq(session)
+                snapshot = self._thread_state_snapshot(session)
                 result = {
                     "success": True,
                     "thread_id": snapshot["thread_id"],
@@ -1250,8 +1304,8 @@ class ChatServiceRuntime:
                         "thread_id": snapshot["thread_id"],
                         "flush_reason": reason,
                         "success": True,
-                        "status": "noop",
-                        "message": "no pending rounds to flush",
+                        "status": status,
+                        "message": message,
                         "rounds_flushed": 0,
                         "turns_flushed": 0,
                         "thread_state": snapshot,
@@ -1364,7 +1418,7 @@ class ChatServiceRuntime:
 
                 if scene_flush_through_seq > 0:
                     try:
-                        self._think_life.mark_scene_flushed(
+                        self._engine.mark_scene_flushed(
                             session.conversation_id,
                             through_seq=scene_flush_through_seq,
                         )
@@ -1393,7 +1447,7 @@ class ChatServiceRuntime:
                 conversation_seq_changed = True
 
                 try:
-                    self._think_life.on_flush_segment(
+                    self._engine.on_flush_segment(
                         session.thread_id,
                         conversation_id=old_conversation_id,
                     )
@@ -1469,7 +1523,7 @@ class ChatServiceRuntime:
                 has_scene_pending = False
                 scene_metrics: Dict[str, Any] = {}
                 try:
-                    scene_metrics = self._think_life.scene_pending_flush_metrics(
+                    scene_metrics = self._engine.scene_pending_flush_metrics(
                         thread_id,
                         conversation_id=session.conversation_id,
                     )
@@ -1539,7 +1593,7 @@ class ChatServiceRuntime:
                 user_message=user_text,
                 user_turn=normalized_user_turn,
             )
-            return self._think_life.submit_stimulus_async(
+            return self._engine.submit_stimulus_async(
                 thread_id=active_thread_id,
                 conversation_id=session.conversation_id,
                 text=rendered_message,
@@ -1555,7 +1609,7 @@ class ChatServiceRuntime:
         since_flush: bool = True,
     ) -> Dict[str, Any]:
         active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
-        return self._think_life.list_scene(
+        return self._engine.list_scene(
             active_thread_id,
             conversation_id=self._get_or_create_thread(active_thread_id).conversation_id,
             limit=limit,
@@ -1563,9 +1617,43 @@ class ChatServiceRuntime:
             since_flush=since_flush,
         )
 
-    def get_think_life_transactions(self, thread_id: str) -> Dict[str, Any]:
+    def get_think_life_transactions(
+        self,
+        thread_id: str,
+        *,
+        include_history: bool = False,
+    ) -> Dict[str, Any]:
         active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
-        return self._think_life.list_transactions(active_thread_id)
+        lock = _get_thread_lock(active_thread_id)
+        with lock:
+            session = self._get_or_create_thread(active_thread_id)
+            return self._runtime_host.list_transactions(
+                active_thread_id,
+                conversation_id=session.conversation_id,
+                include_history=bool(include_history),
+            )
+
+    def delete_transaction(
+        self,
+        thread_id: str,
+        transaction_id: str,
+        *,
+        expected_revision: int,
+        idempotency_key: str,
+    ) -> Dict[str, Any]:
+        active_thread_id = str(
+            thread_id or self.default_thread_id
+        ).strip() or self.default_thread_id
+        lock = _get_thread_lock(active_thread_id)
+        with lock:
+            session = self._get_or_create_thread(active_thread_id)
+            return self._runtime_host.delete_transaction(
+                thread_id=active_thread_id,
+                conversation_id=session.conversation_id,
+                transaction_id=str(transaction_id or "").strip(),
+                expected_revision=int(expected_revision),
+                idempotency_key=str(idempotency_key or "").strip(),
+            )
 
     def health_payload(self) -> Dict[str, Any]:
         with self._threads_lock:
@@ -1577,6 +1665,7 @@ class ChatServiceRuntime:
                 "created_at": self.created_at,
                 "default_thread_id": self.default_thread_id,
                 "runtime_profile": self.runtime_profile,
+                "runtime_engine_id": self.runtime_engine_id,
                 "persist_memory": self.persist_memory,
                 "idle_flush_seconds": self.idle_flush_seconds,
                 "history_max_rounds": self.history_max_rounds,
@@ -1592,10 +1681,25 @@ class ChatServiceRuntime:
                 "last_run_finished_at": self._last_run_finished_at,
                 "last_idle_flush_scan_at": self._last_idle_flush_scan_at,
             }
-        tl_health = self._think_life.health()
-        payload["think_life"] = {
-            "pending_stimuli_total": tl_health.get("pending_stimuli", 0),
-            "active_drainer_threads": tl_health.get("active_drainer_threads", 0),
-            "preempt_enabled": tl_health.get("preempt_enabled", False),
+        host_health = dict(self._runtime_host.health())
+        engine_metrics = {
+            "runtime_engine_id": host_health.get(
+                "runtime_engine_id", self.runtime_engine_id
+            ),
+            "pending_stimuli_total": host_health.get("pending_stimuli", 0),
+            "active_drainer_threads": host_health.get("active_drainer_threads", 0),
+            "preempt_enabled": host_health.get("preempt_enabled", False),
+            "transactions": host_health.get("transactions", 0),
+            "turn_loop": host_health.get("turn_loop"),
+            "delegate_executor": host_health.get("delegate_executor"),
+            "profile": host_health.get("profile"),
         }
+        # Backward-compatible nested block + engine-neutral aliases.
+        payload["think_life"] = {
+            "pending_stimuli_total": engine_metrics["pending_stimuli_total"],
+            "active_drainer_threads": engine_metrics["active_drainer_threads"],
+            "preempt_enabled": engine_metrics["preempt_enabled"],
+        }
+        payload["runtime_engine"] = engine_metrics
+        payload["engines"] = {self.runtime_engine_id: engine_metrics}
         return payload
