@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Protocol, runtime_checkable
 
-from m_agent.runtime.think_life.contracts import SceneEntry
+from m_agent.runtime.domain.contracts import SceneEntry
 
 
 @runtime_checkable

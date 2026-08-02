@@ -40,13 +40,16 @@ def parse_bool(value: Any) -> Optional[bool]:
     return None
 
 
-def resolve_turn_loop_enabled(*, explicit: Any = None) -> bool:
+def resolve_turn_loop_enabled(
+    *,
+    explicit: Any = None,
+    configured: Any = None,
+) -> bool:
     """Resolve the R2 rollback switch for the in-graph think/delegate loop.
 
-    Precedence mirrors :func:`m_agent.runtime.routing.resolve_runtime_engine`:
-    an explicit config value wins, then ``M_AGENT_LANGGRAPH_TURN_LOOP``, then
-    the built-in default. Turning it off falls back to the R1 MVP drain, which
-    only records progress and never delegates.
+    Precedence mirrors runtime engine routing: a direct programmatic argument
+    wins, then ``M_AGENT_LANGGRAPH_TURN_LOOP``, then YAML, then the built-in
+    default. Turning it off falls back to the R1 MVP drain.
     """
 
     chosen = parse_bool(explicit)
@@ -55,12 +58,15 @@ def resolve_turn_loop_enabled(*, explicit: Any = None) -> bool:
     from_env = parse_bool(os.getenv(TURN_LOOP_ENV, ""))
     if from_env is not None:
         return from_env
+    from_config = parse_bool(configured)
+    if from_config is not None:
+        return from_config
     return True
 
 
 @dataclass
 class LangGraphRuntimeConfig:
-    """Engine-local knobs; shared semantics stay in :class:`ThinkLifeConfig`."""
+    """Engine-local knobs; shared semantics stay in :class:`RuntimeConfig`."""
 
     turn_loop_enabled: bool = True
     delegate_executor: str = FAKE_DELEGATE_EXECUTOR
@@ -107,7 +113,7 @@ def load_langgraph_config(
 
     return LangGraphRuntimeConfig(
         turn_loop_enabled=resolve_turn_loop_enabled(
-            explicit=data.get("turn_loop"),
+            configured=data.get("turn_loop"),
         ),
         delegate_executor=executor,
         delivery_guarantee=str(

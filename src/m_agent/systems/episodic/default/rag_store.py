@@ -78,7 +78,7 @@ class RagStore:
         self.chunks_path = self.root / "chunks.jsonl"
         self.embeddings_path = self.root / "embeddings.npy"
         self._embed = _resolve_embed_fn(embed_model)
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
         self._chunks: List[Dict[str, Any]] = []
         self._matrix: np.ndarray = np.zeros((0, 64), dtype=np.float32)
         self._load()
@@ -131,14 +131,14 @@ class RagStore:
             f"User: {str(user_message or '').strip()}\n"
             f"Assistant: {str(assistant_message or '').strip()}"
         ).strip()
-        chunk_id = f"chunk_{len(self._chunks) + 1:05d}"
-        record = {
-            "chunk_id": chunk_id,
-            "thread_id": str(thread_id or "").strip(),
-            "text": text,
-            "meta": dict(meta or {}),
-        }
         with self._lock:
+            chunk_id = f"chunk_{len(self._chunks) + 1:05d}"
+            record = {
+                "chunk_id": chunk_id,
+                "thread_id": str(thread_id or "").strip(),
+                "text": text,
+                "meta": dict(meta or {}),
+            }
             self._chunks.append(record)
             vec = np.asarray([self._embed(text)], dtype=np.float32)
             if self._matrix.size == 0:
@@ -155,23 +155,59 @@ class RagStore:
         rounds: Sequence[Dict[str, Any]],
         meta: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        ids: List[str] = []
-        for idx, item in enumerate(rounds, start=1):
-            if not isinstance(item, dict):
-                continue
-            round_meta = dict(meta or {})
-            round_meta["round_index"] = idx
-            result = self.append_round(
-                thread_id=thread_id,
-                user_message=str(item.get("user_message", "") or ""),
-                assistant_message=str(item.get("assistant_message", "") or ""),
-                meta=round_meta,
+        normalized = [item for item in rounds if isinstance(item, dict)]
+        dialogue_id = str(
+            dict(meta or {}).get("dialogue_id", "")
+            or (
+                normalized[0].get("dialogue_id", "")
+                if normalized
+                else ""
             )
-            ids.append(str(result.get("chunk_id", "")))
+            or ""
+        ).strip()
+        with self._lock:
+            if dialogue_id:
+                existing_ids = [
+                    str(item.get("chunk_id", "") or "")
+                    for item in self._chunks
+                    if str(item.get("thread_id", "") or "")
+                    == str(thread_id or "").strip()
+                    and str(
+                        dict(item.get("meta") or {}).get(
+                            "dialogue_id",
+                            "",
+                        )
+                        or ""
+                    ).strip()
+                    == dialogue_id
+                ]
+                if existing_ids:
+                    return {
+                        "success": True,
+                        "workflow_id": self.workflow_id,
+                        "chunk_ids": existing_ids,
+                        "replayed": True,
+                    }
+            ids: List[str] = []
+            for idx, item in enumerate(normalized, start=1):
+                round_meta = dict(meta or {})
+                round_meta["round_index"] = idx
+                if dialogue_id:
+                    round_meta["dialogue_id"] = dialogue_id
+                result = self.append_round(
+                    thread_id=thread_id,
+                    user_message=str(item.get("user_message", "") or ""),
+                    assistant_message=str(
+                        item.get("assistant_message", "") or ""
+                    ),
+                    meta=round_meta,
+                )
+                ids.append(str(result.get("chunk_id", "")))
         return {
             "success": True,
             "workflow_id": self.workflow_id,
             "chunk_ids": ids,
+            "replayed": False,
         }
 
     def merge_notes_on_last_chunk(self, episode_notes: Sequence[Dict[str, Any]]) -> None:

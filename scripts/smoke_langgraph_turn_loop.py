@@ -1,20 +1,11 @@
-"""R2 internal smoke check for the LangGraph in-graph transaction turn loop.
+"""Internal smoke check for the LangGraph in-graph transaction turn loop.
 
-Two gates in one entry point:
-
-1. **Turn loop smoke** — one user message drives
+One user message drives
    ``thinking -> delegate -> fake tool -> structured Feedback -> Scene`` inside
    the LangGraph host, and the Transaction Store, Scene log, P7 effect ledger and
    LangGraph turn checkpoint are cross-checked. The round also restarts the host
    on the same persistence root and re-runs the same input with the turn loop
    rolled back, which must fall back to the R1 ``record_progress`` drain.
-
-2. **Domain comparison sampling** — the same stimulus and the same scripted
-   thinking decisions run through the ThinkLife loop, and the domain observation
-   surface (transaction state, stimulus dispositions, Scene sequence, delegate
-   statuses) must match the LangGraph run. This is the TX-07 flavoured slice the
-   plan asks for: Feedback causality and Expected Discard evidence must look the
-   same on both engines.
 
 Both agents are stubs with no model provider, so the run is offline and
 deterministic.
@@ -36,7 +27,7 @@ import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence
 
 _SRC_ROOT = Path(__file__).resolve().parents[1] / "src"
 if _SRC_ROOT.is_dir() and str(_SRC_ROOT) not in sys.path:
@@ -53,38 +44,25 @@ from m_agent.runtime.langgraph.turn_graph import (  # noqa: E402
     PHASE_TURN_IDLE,
 )
 from m_agent.runtime.routing import LANGGRAPH_RUNTIME_ENGINE  # noqa: E402
-from m_agent.runtime.think_life.config import (  # noqa: E402
-    ThinkLifeConfig,
-    load_think_life_config,
-)
-from m_agent.runtime.think_life.contracts import (  # noqa: E402
+from m_agent.runtime.domain.contracts import (  # noqa: E402
     DelegateStatus,
     SceneActor,
     SceneEntry,
     SceneEntryType,
     TransactionState,
 )
-from m_agent.runtime.think_life.perception.attributor import (  # noqa: E402
-    TransactionAttributor,
-)
-from m_agent.runtime.think_life.perception.gateway import (  # noqa: E402
-    PerceptionGateway,
-)
-from m_agent.runtime.think_life.perception.inbox import StimulusInbox  # noqa: E402
-from m_agent.runtime.think_life.transaction.predicates import (  # noqa: E402
+from m_agent.runtime.transaction.predicates import (  # noqa: E402
     project_compat_status,
 )
-from m_agent.runtime.think_life.scheduler.loop import ThinkLifeLoop  # noqa: E402
-from m_agent.runtime.think_life.scheduler.tool_runner import (  # noqa: E402
+from m_agent.runtime.turn_support.tool_runner import (  # noqa: E402
     REPLY_TOOL_NAME,
 )
-from m_agent.runtime.think_life.transaction.store import (  # noqa: E402
+from m_agent.runtime.transaction.store import (  # noqa: E402
     SQLiteRuntimeStore,
 )
-from m_agent.runtime.think_life.transaction_registry import (  # noqa: E402
+from m_agent.runtime.transaction.registry import (  # noqa: E402
     TransactionRegistry,
 )
-from m_agent.systems.scene import build_default_scene_system  # noqa: E402
 from m_agent.systems.wm import build_default_wm_system  # noqa: E402
 
 FAKE_CAPABILITY = "fake_capability"
@@ -187,11 +165,7 @@ class ScriptedThinkingAgent:
 
 
 class ScriptedExecutionAgent:
-    """ThinkLife-side twin of ``FakeToolDelegateExecutor``.
-
-    Produces the same tool history so the two engines can be compared on the
-    domain observation surface rather than on capability implementation detail.
-    """
+    """Deterministic execution stub for the LangGraph turn loop."""
 
     enabled_capability_names = (REPLY_TOOL_NAME, FAKE_CAPABILITY)
     registry = None
@@ -219,10 +193,10 @@ class ScriptedExecutionAgent:
         tool_input: Dict[str, Any],
         thread_id: str,
         correlation_id: str = "",
-        think_life_hooks: Optional[Dict[str, Any]] = None,
+        runtime_hooks: Optional[Dict[str, Any]] = None,
     ) -> ExecutionResult:
         del thread_id
-        hooks = dict(think_life_hooks or {})
+        hooks = dict(runtime_hooks or {})
         if tool_name == REPLY_TOOL_NAME:
             message = str(tool_input.get("message", "") or "")
             on_reply = hooks.get("on_reply")
@@ -292,7 +266,7 @@ def _stub_agent(
         systems=SimpleNamespace(wm=build_default_wm_system()),
         config={
             "runtime": {
-                "think_life": {},
+                "common": {},
                 "langgraph": {
                     "turn_loop": turn_loop,
                     "fake_capabilities": [FAKE_CAPABILITY],
@@ -380,12 +354,6 @@ def domain_surface(
         "stimuli": stimuli,
         "scene": scene,
     }
-
-
-def _diff_keys(left: Dict[str, Any], right: Dict[str, Any]) -> List[str]:
-    return sorted(
-        key for key in set(left) | set(right) if left.get(key) != right.get(key)
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -777,134 +745,6 @@ def _check_rollback(log: CheckLog, persist_root: Path, *, round_index: int) -> N
 
 
 # ---------------------------------------------------------------------------
-# Gate 2: ThinkLife domain comparison
-# ---------------------------------------------------------------------------
-
-
-class _ThinkLifeSample:
-    """Minimal ThinkLife loop over a temp Store, wired with the same stubs."""
-
-    def __init__(
-        self,
-        *,
-        persist_root: Path,
-        config: Optional[ThinkLifeConfig] = None,
-    ) -> None:
-        runtime_dir = persist_root / "runtime"
-        runtime_dir.mkdir(parents=True, exist_ok=True)
-        self.config = config or load_think_life_config({})
-        self.store = SQLiteRuntimeStore(runtime_dir / "think_life.sqlite3")
-        self.registry = TransactionRegistry(store=self.store)
-        self.inbox = StimulusInbox(store=self.store)
-        self.scene_system = build_default_scene_system(
-            persist_dir=persist_root / "scene",
-            persist_enabled=self.config.scene_persist_jsonl,
-            runtime_store=self.store,
-        )
-        self.thinking_agent = ScriptedThinkingAgent(turn_decisions())
-        self.attributor = TransactionAttributor(
-            registry=self.registry,
-            config=self.config,
-            semantic_resolver=self.thinking_agent.resolve_transaction,
-            scene_writer=self.scene_system.writer,
-        )
-        self.gateway = PerceptionGateway(
-            inbox=self.inbox,
-            attributor=self.attributor,
-            scene_writer=self.scene_system.writer,
-        )
-        self.loop = ThinkLifeLoop(
-            config=self.config,
-            registry=self.registry,
-            inbox=self.inbox,
-            attributor=self.attributor,
-            gateway=self.gateway,
-            thinking_agent=self.thinking_agent,  # type: ignore[arg-type]
-            execution_agent=ScriptedExecutionAgent(),  # type: ignore[arg-type]
-            wm_system=build_default_wm_system(),
-            scene_writer=self.scene_system.writer,
-            scene_reader=self.scene_system.reader,
-        )
-
-    def drive(self, *, thread_id: str, text: str) -> List[Dict[str, Any]]:
-        self.gateway.submit_user_message(
-            thread_id=thread_id,
-            conversation_id=f"{thread_id}::0",
-            text=text,
-            schedule_drainer=False,
-        )
-        return self.loop.drain_thread(thread_id)
-
-    def surface(self, *, thread_id: str) -> Dict[str, Any]:
-        return domain_surface(
-            registry=self.registry,
-            store=self.store,
-            scene_reader=self.scene_system.reader,
-            thread_id=thread_id,
-            conversation_id=f"{thread_id}::0",
-        )
-
-    def close(self) -> None:
-        self.store.close()
-
-
-def _compare_domain_surface(
-    log: CheckLog,
-    *,
-    persist_root: Path,
-    round_index: int,
-    thread_id: str,
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Run the same input on both engines and diff the domain surface."""
-
-    langgraph = _open_langgraph_runtime(
-        persist_root=persist_root / "langgraph",
-        thread_id=thread_id,
-        owner_id=f"r2-compare-lg-{round_index}",
-    )
-    think_life = _ThinkLifeSample(persist_root=persist_root / "think_life")
-    try:
-        langgraph.submit_user_message(
-            thread_id=thread_id,
-            conversation_id=f"{thread_id}::0",
-            text=USER_TEXT,
-            schedule_drainer=False,
-        )
-        lg_results = list(langgraph.run_thread(thread_id).get("results") or [])
-        tl_results = think_life.drive(thread_id=thread_id, text=USER_TEXT)
-        log.expect_equal("compare.turn_count", len(lg_results), len(tl_results))
-
-        lg_surface = domain_surface(
-            registry=langgraph.registry,
-            store=langgraph.runtime_store,
-            scene_reader=langgraph.scene_system.reader,
-            thread_id=thread_id,
-            conversation_id=f"{thread_id}::0",
-        )
-        tl_surface = think_life.surface(thread_id=thread_id)
-        for key in ("transactions", "delegates", "stimuli", "scene"):
-            log.expect_equal(
-                f"compare.{key}",
-                lg_surface.get(key),
-                tl_surface.get(key),
-            )
-        log.expect_equal(
-            "compare.surface_diff",
-            _diff_keys(lg_surface, tl_surface),
-            [],
-        )
-        log.expect_equal(
-            "compare.think_call_kinds",
-            [item["kind"] for item in langgraph.agent.thinking_agent.calls],
-            [item["kind"] for item in think_life.thinking_agent.calls],
-        )
-        return lg_surface, tl_surface
-    finally:
-        think_life.close()
-        langgraph.shutdown()
-
-
-# ---------------------------------------------------------------------------
 # Rounds
 # ---------------------------------------------------------------------------
 
@@ -914,9 +754,8 @@ def run_round(
     round_index: int,
     persist_root: Path,
     thread_id: str,
-    compare: bool = True,
 ) -> Dict[str, Any]:
-    """One cold-start turn loop round, plus restart, rollback and comparison."""
+    """Run one cold-start turn-loop round, restart, and rollback check."""
 
     conversation_id = f"{thread_id}::0"
     log = CheckLog()
@@ -1005,14 +844,6 @@ def run_round(
         )
 
         _check_rollback(log, persist_root / "rollback", round_index=round_index)
-        if compare:
-            _compare_domain_surface(
-                log,
-                persist_root=persist_root / "compare",
-                round_index=round_index,
-                thread_id=f"{thread_id}-cmp",
-            )
-
         return {
             "round": round_index,
             "ok": not log.failures,
@@ -1053,7 +884,6 @@ def run_smoke(
     rounds: int,
     persist_root: Path,
     thread_id: str,
-    compare: bool = True,
     progress: bool = True,
 ) -> Dict[str, Any]:
     results: List[Dict[str, Any]] = []
@@ -1062,7 +892,6 @@ def run_smoke(
             round_index=index,
             persist_root=persist_root / f"round-{index:02d}",
             thread_id=thread_id,
-            compare=compare,
         )
         results.append(result)
         if progress:
@@ -1081,7 +910,6 @@ def run_smoke(
         "rounds": rounds,
         "passed": passed,
         "failed": rounds - passed,
-        "domain_comparison": compare,
         "thread_id": thread_id,
         "persist_root": str(persist_root),
         "ok": passed == rounds,
@@ -1122,11 +950,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--keep",
         action="store_true",
         help="Keep the temp persistence root instead of deleting it.",
-    )
-    parser.add_argument(
-        "--skip-compare",
-        action="store_true",
-        help="Skip the ThinkLife domain comparison sampling.",
     )
     parser.add_argument(
         "--json-out",
@@ -1171,7 +994,6 @@ def main(argv: Optional[List[str]] = None) -> int:
                 rounds=args.rounds,
                 persist_root=persist_root,
                 thread_id=args.thread_id,
-                compare=not args.skip_compare,
                 progress=not args.quiet,
             )
         except SmokeError as exc:

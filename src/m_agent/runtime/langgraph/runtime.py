@@ -5,14 +5,16 @@ from __future__ import annotations
 import logging
 import threading
 from collections import defaultdict
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional
 
 from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS
 from m_agent.chat.three_layer_chat_agent import ThreeLayerChatAgent
 from m_agent.paths import chat_user_persistence_root, chat_user_slug
 from m_agent.runtime.host import product_views
 from m_agent.runtime.host.emitting_scene import EmittingSceneWriter
+from m_agent.runtime.host.flush_orchestrator import RuntimeFlushOrchestrator
 from m_agent.runtime.host.protocol import RuntimeHost, ThreadEventEmitter
 from m_agent.runtime.langgraph.config import (
     LangGraphRuntimeConfig,
@@ -36,22 +38,26 @@ from m_agent.runtime.transaction_control import (
     TransactionFencedSceneWriter,
     delete_runtime_transaction,
 )
-from m_agent.runtime.think_life.config import ThinkLifeConfig, load_think_life_config
-from m_agent.runtime.think_life.contracts import (
+from m_agent.runtime.config import RuntimeConfig, load_runtime_config
+from m_agent.runtime.domain.contracts import (
     PauseReason,
     SceneEntry,
+    Stimulus,
+    StimulusEnvelope,
+    StimulusKind,
     TransactionKind,
 )
-from m_agent.runtime.think_life.drainer import ThreadDrainerService
-from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
-from m_agent.runtime.think_life.perception.gateway import PerceptionGateway
-from m_agent.runtime.think_life.perception.inbox import StimulusInbox
-from m_agent.runtime.think_life.scheduler.cpu_state import THREAD_CPU_STATE
-from m_agent.runtime.think_life.transaction import RuntimeUnitOfWork
-from m_agent.runtime.think_life.transaction.effects import EffectCoordinator
-from m_agent.runtime.think_life.transaction_registry import TransactionRegistry
-from m_agent.runtime.think_life.transaction.store import SQLiteRuntimeStore
-from m_agent.runtime.think_life.transaction.predicates import (
+from m_agent.runtime.dispatch.drainer import ThreadDrainerService
+from m_agent.runtime.perception.attributor import TransactionAttributor
+from m_agent.runtime.perception.gateway import PerceptionGateway
+from m_agent.runtime.perception.inbox import StimulusInbox
+from m_agent.runtime.dispatch.cpu_state import THREAD_CPU_STATE
+from m_agent.runtime.transaction import RuntimeUnitOfWork
+from m_agent.runtime.transaction.effects import EffectCoordinator
+from m_agent.runtime.transaction.flush import FlushCoordinator
+from m_agent.runtime.transaction.registry import TransactionRegistry
+from m_agent.runtime.transaction.store import SQLiteRuntimeStore
+from m_agent.runtime.transaction.predicates import (
     is_open_continue,
     is_runnable_record,
 )
@@ -62,16 +68,19 @@ logger = logging.getLogger(__name__)
 
 ReplyCallback = Callable[[str, str, str, bool], None]
 HistoryProvider = Callable[[str], Optional[List[Dict[str, Any]]]]
+_RETIRED_RUNTIME_DATABASE_NAME = "".join(
+    ("think", "_", "life", ".sqlite3")
+)
 
 
 class LangGraphRuntime:
-    """LangGraph-backed product runtime sharing SP/AT/Store with ThinkLife."""
+    """LangGraph-backed product runtime and durable product host."""
 
     def __init__(
         self,
         agent: ThreeLayerChatAgent,
         *,
-        config: Optional[ThinkLifeConfig] = None,
+        config: Optional[RuntimeConfig] = None,
         engine_config: Optional[LangGraphRuntimeConfig] = None,
         owner_id: str = "anonymous",
         persist_root: Optional[Path | str] = None,
@@ -84,9 +93,9 @@ class LangGraphRuntime:
             if isinstance(agent.config.get("runtime"), dict)
             else {}
         )
-        self.config = config or load_think_life_config(
-            raw_runtime.get("think_life")
-            if isinstance(raw_runtime.get("think_life"), dict)
+        self.config = config or load_runtime_config(
+            raw_runtime.get("common")
+            if isinstance(raw_runtime.get("common"), dict)
             else {}
         )
         self.engine_config = engine_config or load_langgraph_config(
@@ -108,6 +117,13 @@ class LangGraphRuntime:
         self._persistence_root.mkdir(parents=True, exist_ok=True)
         runtime_dir = self._persistence_root / "runtime"
         runtime_dir.mkdir(parents=True, exist_ok=True)
+        retired_database = runtime_dir / _RETIRED_RUNTIME_DATABASE_NAME
+        if retired_database.is_file():
+            raise RuntimeError(
+                "retired runtime database remains in the online persistence "
+                "directory; run the separately authorized retirement backup, "
+                "audit, and quarantine batch before starting the final runtime"
+            )
         scene_dir = self._persistence_root / "scene"
 
         self.runtime_store = SQLiteRuntimeStore(runtime_dir / "langgraph.sqlite3")
@@ -160,6 +176,15 @@ class LangGraphRuntime:
         self.effect_coordinator = EffectCoordinator(
             store=self.runtime_store,
             registry=self.registry,
+            feedback_relay=self._relay_effect_feedback,
+        )
+        self.flush_coordinator = FlushCoordinator(
+            store=self.runtime_store,
+            registry=self.registry,
+        )
+        self.flush_orchestrator = RuntimeFlushOrchestrator(
+            self,
+            journal_path=runtime_dir / "runtime-flush.sqlite3",
         )
         self.turn_engine = self._build_turn_engine(runtime_dir)
 
@@ -181,6 +206,7 @@ class LangGraphRuntime:
             get_history=lambda _tid: None,
             on_runtime_updated=self._emit_runtime_updated,
         )
+        self.recover_pending_effect_feedback(schedule_drainers=True)
 
     def _build_turn_engine(
         self,
@@ -206,11 +232,16 @@ class LangGraphRuntime:
             scene_writer=self._transaction_scene_writer,
             scene_reader=self.scene_system.reader,
             wm_system=wm_system,
-            think_life_config=self.config,
+            runtime_config=self.config,
             langgraph_config=self.engine_config,
             effect_ledger=DelegateEffectLedger(
                 coordinator=self.effect_coordinator,
                 delivery_guarantee=self.engine_config.delivery_guarantee,
+                capability_registry=getattr(
+                    getattr(self.agent, "execution_agent", None),
+                    "registry",
+                    None,
+                ),
             ),
         )
         return TransactionTurnEngine(
@@ -233,9 +264,10 @@ class LangGraphRuntime:
                 )
             return ExecutionAgentDelegateExecutor(
                 execution_agent=execution_agent,
-            scene_writer=self._transaction_scene_writer,
+                scene_writer=self._transaction_scene_writer,
                 on_reply=self._handle_reply,
                 transaction_is_deleted=transaction_is_deleted,
+                on_schedule_created=self._record_schedule_created,
             )
         return FakeToolDelegateExecutor(
             scene_writer=self._transaction_scene_writer,
@@ -262,9 +294,26 @@ class LangGraphRuntime:
         self._history_provider = provider
 
     def set_schedule_lifecycle(self, hook: Any) -> None:
-        """LangGraph does not yet drive schedule lifecycle callbacks (R3 transitional)."""
+        """Bridge scheduled-plan processing to the product schedule store."""
 
-        del hook
+        self.loop._schedule_lifecycle = hook
+
+    def _record_schedule_created(
+        self,
+        *,
+        transaction_id: str,
+        schedule_id: str,
+        due_at: str,
+        owner_id: str = "",
+        result: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        del result
+        self.registry.record_schedule_intent(
+            transaction_id,
+            schedule_id=schedule_id,
+            due_at=due_at,
+            owner_id=owner_id,
+        )
 
     def _emit_thread_event(
         self,
@@ -373,8 +422,89 @@ class LangGraphRuntime:
         history_messages: Optional[List[Dict[str, Any]]] = None,
         event_emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
-        del event_emitter
-        return self.run_thread(thread_id, history_messages=history_messages)
+        return self.run_thread(
+            thread_id,
+            history_messages=history_messages,
+            event_emitter=event_emitter,
+        )
+
+    def _relay_effect_feedback(self, delivery: Dict[str, Any]) -> Dict[str, Any]:
+        """Relay one durable outbox item through canonical Feedback ingress."""
+
+        effect = dict(delivery.get("effect") or {})
+        outcome = dict(delivery.get("outcome") or {})
+        ingress_key = str(delivery.get("ingress_key", "") or "").strip()
+        effect_id = str(effect.get("effect_id", "") or "").strip()
+        transaction_id = str(
+            effect.get("transaction_id", "") or ""
+        ).strip()
+        record = self.runtime_store.load_transaction(transaction_id)
+        if record is None:
+            raise ValueError(
+                f"effect Feedback transaction not found: {transaction_id}"
+            )
+        if record.deleted:
+            raise ValueError(
+                f"effect Feedback transaction deleted: {transaction_id}"
+            )
+        summary = str(outcome.get("summary", "") or "").strip()
+        tool_history = list(outcome.get("tool_history") or [])
+        readable = summary or "Execution finished and returned tool evidence."
+        stimulus_id = f"stim_{effect_id}"
+        stimulus = StimulusEnvelope(
+            stimulus_id=stimulus_id,
+            ingress_key=ingress_key or None,
+            thread_id=record.thread_id,
+            conversation_id=record.conversation_id,
+            stimulus=Stimulus(
+                kind=StimulusKind.EXECUTION_FEEDBACK,
+                text=readable,
+                payload={
+                    "activation_id": str(effect.get("activation_id", "") or ""),
+                    "delegate_id": str(effect.get("delegate_id", "") or ""),
+                    "effect_id": effect_id,
+                    "tool_history": tool_history,
+                    "summary": summary,
+                    "effect_status": str(effect.get("status", "") or ""),
+                },
+            ),
+            occurred_at=datetime.now(timezone.utc).isoformat().replace(
+                "+00:00",
+                "Z",
+            ),
+            transaction_id=transaction_id,
+            activation_id=str(effect.get("activation_id", "") or "") or None,
+            delegate_id=str(effect.get("delegate_id", "") or "") or None,
+        )
+        stored_id = self.gateway.submit(stimulus, schedule_drainer=False)
+        stored = self.runtime_store.load_stimulus(stored_id)
+        return {
+            "stimulus_id": stored_id,
+            "thread_id": record.thread_id,
+            "transaction_id": transaction_id,
+            "disposition": str(
+                getattr(stored, "disposition", "") or ""
+            ),
+            "disposition_reason": str(
+                getattr(stored, "disposition_reason", "") or ""
+            ),
+        }
+
+    def recover_pending_effect_feedback(
+        self,
+        *,
+        schedule_drainers: bool = False,
+    ) -> Dict[str, Any]:
+        recovery = self.effect_coordinator.recover_pending_relays()
+        if schedule_drainers:
+            for item in list(recovery.get("recovered") or []):
+                relay_result = item.get("relay_result")
+                if not isinstance(relay_result, dict):
+                    continue
+                thread_id = str(relay_result.get("thread_id", "") or "").strip()
+                if thread_id:
+                    self.drainer.ensure_running(thread_id)
+        return recovery
 
     def submit_user_message(
         self,
@@ -404,14 +534,6 @@ class LangGraphRuntime:
     ) -> Dict[str, Any]:
         del kwargs
         tid = str(thread_id or "").strip()
-        planner = getattr(
-            getattr(self.turn_engine, "ports", None),
-            "planner",
-            None,
-        )
-        previous_emitter = getattr(planner, "event_emitter", None)
-        if planner is not None and event_emitter is not None:
-            planner.event_emitter = event_emitter
         resolved_history = history_messages
         if resolved_history is None and self._history_provider is not None:
             try:
@@ -421,34 +543,31 @@ class LangGraphRuntime:
                     "LangGraph history provider failed thread_id=%s", tid
                 )
                 resolved_history = None
-        try:
-            with self._drain_locks[tid]:
-                with self._reply_lock:
-                    self._last_replies.pop(tid, None)
-                results = self.loop.drain_thread(
-                    tid,
-                    history_messages=resolved_history,
-                )
-                THREAD_RUNTIME_STATUS.set_pending_stimuli(
-                    tid,
-                    self.inbox.pending_count(tid),
-                )
-                with self._reply_lock:
-                    replies = list(self._last_replies.get(tid, []))
-                answer = replies[-1] if replies else ""
-                return {
-                    "success": bool(results)
-                    and all(r.get("success") for r in results),
-                    "thread_id": tid,
-                    "results": results,
-                    "replies": replies,
-                    "answer": answer,
-                    "runtime_engine_id": self.runtime_engine_id,
-                    "turn_loop": self.turn_loop_enabled,
-                }
-        finally:
-            if planner is not None:
-                planner.event_emitter = previous_emitter
+        with self._drain_locks[tid]:
+            with self._reply_lock:
+                self._last_replies.pop(tid, None)
+            results = self.loop.drain_thread(
+                tid,
+                history_messages=resolved_history,
+                event_emitter=event_emitter,
+            )
+            THREAD_RUNTIME_STATUS.set_pending_stimuli(
+                tid,
+                self.inbox.pending_count(tid),
+            )
+            with self._reply_lock:
+                replies = list(self._last_replies.get(tid, []))
+            answer = replies[-1] if replies else ""
+            return {
+                "success": bool(results)
+                and all(r.get("success") for r in results),
+                "thread_id": tid,
+                "results": results,
+                "replies": replies,
+                "answer": answer,
+                "runtime_engine_id": self.runtime_engine_id,
+                "turn_loop": self.turn_loop_enabled,
+            }
 
     def advance_transaction(
         self,
@@ -677,18 +796,99 @@ class LangGraphRuntime:
             since_flush=since_flush,
         )
 
-    def on_flush_segment(
+    def _commit_flush_segment(
         self,
         thread_id: str,
         *,
         conversation_id: Optional[str] = None,
+        flush_id: Optional[str] = None,
+        through_seq: Optional[int] = None,
+        eligible_revisions: Optional[Mapping[str, int]] = None,
+        payload: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         return product_views.on_flush_segment(
             self,
             thread_id,
             conversation_id=conversation_id,
+            flush_id=flush_id,
+            through_seq=through_seq,
+            eligible_revisions=eligible_revisions,
+            payload=payload,
             emit_runtime_updated=self._emit_runtime_updated,
         )
+
+    def prepare_flush_segment(
+        self,
+        thread_id: str,
+        *,
+        conversation_id: str,
+        source: str = "chat_api_thread_flush",
+    ) -> Dict[str, Any]:
+        return self.flush_orchestrator.prepare(
+            thread_id,
+            conversation_id=conversation_id,
+            source=source,
+        )
+
+    def stage_flush_materialization(
+        self,
+        flush_id: str,
+        *,
+        destination: str,
+        payload: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        return self.flush_orchestrator.stage_materialization(
+            flush_id,
+            destination=destination,
+            payload=payload,
+        )
+
+    def mark_flush_materialization_delivered(
+        self,
+        flush_id: str,
+        *,
+        destination: str,
+        result: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        return self.flush_orchestrator.mark_materialization_delivered(
+            flush_id,
+            destination=destination,
+            result=result,
+        )
+
+    def on_flush_segment(
+        self,
+        thread_id: str,
+        *,
+        conversation_id: Optional[str] = None,
+        flush_id: Optional[str] = None,
+        through_seq: Optional[int] = None,
+        eligible_revisions: Optional[Mapping[str, int]] = None,
+        payload: Optional[Dict[str, Any]] = None,
+        flush_snapshot: Optional[Mapping[str, Any]] = None,
+        defer_completion: bool = False,
+    ) -> Dict[str, Any]:
+        """Commit a staged product flush, or support a direct internal commit."""
+
+        if flush_snapshot is not None:
+            return self.flush_orchestrator.commit_runtime(
+                thread_id,
+                conversation_id=str(conversation_id or "").strip(),
+                flush_snapshot=flush_snapshot,
+                defer_completion=defer_completion,
+                payload=payload,
+            )
+        return self._commit_flush_segment(
+            thread_id,
+            conversation_id=conversation_id,
+            flush_id=flush_id,
+            through_seq=through_seq,
+            eligible_revisions=eligible_revisions,
+            payload=payload,
+        )
+
+    def complete_flush_segment(self, flush_id: str) -> Dict[str, Any]:
+        return self.flush_orchestrator.complete(flush_id)
 
     def ensure_scene_thread_loaded(self, conversation_id: str) -> None:
         product_views.ensure_scene_thread_loaded(self, conversation_id)
@@ -726,6 +926,34 @@ class LangGraphRuntime:
             through_seq=through_seq,
         )
 
+    def scene_flush_through_seq(self, conversation_id: str) -> int:
+        entries = list(
+            self.scene_system.reader.entries_since_flush(
+                str(conversation_id or "").strip()
+            )
+        )
+        return max(
+            (int(getattr(entry, "seq", 0) or 0) for entry in entries),
+            default=0,
+        )
+
+    def load_conversation_seq(self, thread_id: str) -> int:
+        store = getattr(self.scene_system, "store", None)
+        load = getattr(store, "load_conversation_seq", None)
+        return max(0, int(load(thread_id) or 0)) if callable(load) else 0
+
+    def persist_conversation_seq(self, thread_id: str, sequence: int) -> None:
+        store = getattr(self.scene_system, "store", None)
+        persist = getattr(store, "persist_conversation_seq", None)
+        if callable(persist):
+            persist(thread_id, int(sequence))
+
+    def active_user_transaction(self, conversation_id: str) -> Any:
+        return self.registry.get_active_user_transaction(conversation_id)
+
+    def pending_count(self, thread_id: Optional[str] = None) -> int:
+        return self.inbox.pending_count(thread_id)
+
     def health(self) -> Dict[str, Any]:
         return {
             "profile": "langgraph",
@@ -736,12 +964,19 @@ class LangGraphRuntime:
             "preempt_enabled": self.config.scheduler.preempt_enabled,
             "turn_loop": self.turn_loop_enabled,
             "delegate_executor": self.engine_config.delegate_executor,
+            "checkpoint": self.graph_engine.checkpoint_metadata,
+            "turn_checkpoint": (
+                self.turn_engine.checkpoint_metadata
+                if self.turn_engine is not None
+                else None
+            ),
             "transaction_authority_migration": dict(
                 self.runtime_store.legacy_status_migration_report
             ),
             "transaction_contract_migration": dict(
                 self.runtime_store.transaction_contract_migration_report
             ),
+            "flush_journal": self.flush_orchestrator.health(),
         }
 
     def effect_ledger_snapshot(self, transaction_id: str) -> Dict[str, Any]:
@@ -753,6 +988,7 @@ class LangGraphRuntime:
         if self.turn_engine is not None:
             self.turn_engine.close()
         self.graph_engine.close()
+        self.flush_orchestrator.close()
         self.runtime_store.close()
 
 

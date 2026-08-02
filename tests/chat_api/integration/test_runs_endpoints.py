@@ -5,6 +5,7 @@ import time
 import pytest
 from fastapi.testclient import TestClient
 
+from m_agent.runtime.routing import LANGGRAPH_RUNTIME_ENGINE
 from tests.fixtures.app_factory import build_test_app, build_test_runtime
 from tests.fixtures.payload_builders import run_payload
 from tests.fixtures.sse_helpers import parse_sse_events
@@ -82,6 +83,11 @@ def test_stop_thread_thinking_endpoint() -> None:
     payload = stopped.json()
     assert payload["success"] is True
     assert payload["thread_id"] == "demo-thread"
-    assert payload["runtime_profile"] == "think_life"
+    assert payload["runtime_profile"] == LANGGRAPH_RUNTIME_ENGINE
+    assert payload["cancelled_in_flight"] is False
     assert payload["cleared_pending_stimuli"] == 1
+    assert payload["paused_transactions"] == []
+    assert payload["thread_runtime"]["runtime_profile"] == (
+        LANGGRAPH_RUNTIME_ENGINE
+    )
     assert payload["thread_state"]["thread_id"] == "demo-thread"

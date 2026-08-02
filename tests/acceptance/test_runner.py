@@ -149,7 +149,7 @@ def test_scenario_runner_executes_tx_01_and_persists_passed_result(
 
     result = runner.run_contract(
         scenario_ids=["TX-01"],
-        runtime_id="think_life_v1",
+        runtime_id="langgraph_v1",
         layers=("core",),
         timeout_seconds=60,
     )
@@ -157,7 +157,7 @@ def test_scenario_runner_executes_tx_01_and_persists_passed_result(
     assert result.result_kind == "scenario_contract"
     assert result.suite == "p1-contract"
     assert result.status == "passed"
-    assert result.runtime_id == "think_life_v1"
+    assert result.runtime_id == "langgraph_v1"
     assert result.scenario_ids == ["TX-01"]
     assert len(result.scenarios) == 1
     scenario = result.scenarios[0]
@@ -167,7 +167,7 @@ def test_scenario_runner_executes_tx_01_and_persists_passed_result(
     observation = scenario.variants[0].cases[0].observation
     assert observation["scenario_id"] == "TX-01"
     assert observation["variant_id"] == "TX-01/core"
-    assert observation["runtime_id"] == "think_life_v1"
+    assert observation["runtime_id"] == "langgraph_v1"
     assert observation["data"]["facts"]
     assert observation["data"]["checks"]
     assert observation["data"]["summary"]["total_checks"] == len(

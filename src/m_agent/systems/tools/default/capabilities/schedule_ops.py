@@ -18,13 +18,13 @@ def _build_schedule_create_tool(context: ControllerCapabilityContext, descriptio
             str,
             Field(description="ISO-8601 due time (UTC Z or offset), e.g. 2026-05-30T08:00:00+08:00"),
         ],
-        text: Annotated[
+        deferred_objective: Annotated[
             str,
             Field(
                 description=(
-                    "Self-contained, system-like information delivered to the agent when the due time arrives. "
-                    "State that the scheduled time has arrived and what context now matters; use absolute facts, "
-                    "not the user's original command or relative-time wording."
+                    "The still-unfinished objective to activate when the due time arrives. "
+                    "Describe what the agent must do then; do not state that it already happened, "
+                    "and do not write the final assistant reply."
                 )
             ),
         ],
@@ -33,14 +33,14 @@ def _build_schedule_create_tool(context: ControllerCapabilityContext, descriptio
             Field(description="IANA timezone; omit to use configured default"),
         ] = None,
     ) -> Dict[str, Any]:
-        """Create one schedule with an explicit due time and future stimulus text."""
+        """Create one schedule with an explicit due time and deferred objective."""
 
         effective_timezone_name = (
             str(timezone_name or context.tool_default("schedule_create", "timezone_name") or "").strip() or None
         )
         params = {
             "due_at": str(due_at or "").strip(),
-            "text": str(text or "").strip(),
+            "deferred_objective": str(deferred_objective or "").strip(),
             "timezone_name": effective_timezone_name,
         }
         call_id = context.start_tool_call("schedule_create", params)
@@ -49,16 +49,51 @@ def _build_schedule_create_tool(context: ControllerCapabilityContext, descriptio
             context.finish_tool_call(call_id, "schedule_create", result=limit_result)
             return limit_result
         try:
+            hooks = context.controller_state.get("runtime")
+            hooks = hooks if isinstance(hooks, dict) else {}
             result = context.get_schedule_agent().handle_create_command(
                 thread_id=context.active_thread_id,
                 due_at=params["due_at"],
-                text=params["text"],
+                deferred_objective=params["deferred_objective"],
                 timezone_name=effective_timezone_name,
                 now_context=get_current_time_context(effective_timezone_name),
+                origin={
+                    "transaction_id": str(hooks.get("transaction_id", "") or "").strip(),
+                    "conversation_id": str(hooks.get("conversation_id", "") or "").strip(),
+                },
             )
         except Exception as exc:
             context.finish_tool_call(call_id, "schedule_create", error=str(exc))
             raise
+
+        on_schedule_created = hooks.get("on_schedule_created")
+        if callable(on_schedule_created) and bool(result.get("success", False)):
+            item = result.get("item")
+            item = dict(item) if isinstance(item, dict) else {}
+            machine = result.get("machine")
+            machine = dict(machine) if isinstance(machine, dict) else {}
+            try:
+                on_schedule_created(
+                    transaction_id=str(
+                        hooks.get("transaction_id", "") or ""
+                    ).strip(),
+                    schedule_id=str(
+                        result.get("schedule_id", "")
+                        or item.get("schedule_id", "")
+                        or ""
+                    ).strip(),
+                    due_at=str(item.get("due_at_utc", "") or "").strip(),
+                    owner_id=str(machine.get("owner_id", "") or "").strip(),
+                    result=result,
+                )
+                machine["transaction_binding"] = "recorded"
+            except Exception as exc:
+                # The durable product schedule still carries its origin and
+                # can be reconciled by heartbeat. Surface the degraded bind
+                # without pretending that schedule creation itself failed.
+                machine["transaction_binding"] = "deferred"
+                machine["transaction_binding_error"] = str(exc)
+            result["machine"] = machine
 
         context.record_tool_use("schedule_create", params, result)
         context.finish_tool_call(call_id, "schedule_create", result=result)

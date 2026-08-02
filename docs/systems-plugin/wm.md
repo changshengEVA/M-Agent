@@ -4,9 +4,29 @@
 
 ## Role
 
-Project **in-process** capability-call history into text for Think-life planning. WM is **not persisted across restarts** and has **no recall tools** — use [episodic.md](./episodic.md) for persisted retrieval.
+WM projects capability-call history into compact entries on the active runtime
+transaction. The LangGraph turn graph persists `TransactionRecord.wm_entries`
+with the transaction and renders those entries into later planning turns.
 
-## Mount & swap
+WM is transaction-scoped context, not cross-conversation recall. Use the
+[episodic subsystem](./episodic.md) for searchable dialogue history.
+
+## Runtime flow
+
+```text
+LangGraph turn graph
+  → WMReader.render(transaction.wm_entries)
+  → ThinkingAgent decision
+  → ExecutionAgent.invoke_tool_direct(..., runtime_hooks=...)
+  → WMWriter.write(transaction.wm_entries, tool_history)
+  → transaction store commit
+```
+
+`runtime_hooks` carries delegate callbacks and durable identifiers for the
+capability invocation. WM receives the resulting `tool_history`; it does not
+store callbacks or engine-specific objects.
+
+## Mount and configuration
 
 | Item | Value |
 |------|-------|
@@ -19,38 +39,37 @@ systems:
   wm: ../../systems/wm/my_variant.yaml
 ```
 
-## Swappable slots
+## Slots
 
 | YAML field | Protocol | Default | Role |
 |------------|----------|---------|------|
-| `writer` | `WMWriter` | `DefaultWMWriter` | Append `tool_history` to the active transaction's `wm_entries` after a capability call |
-| `reader` | `WMReader` | `DefaultWMReader` | Render `wm_entries` for the next **Think-life planning** turn |
-| `display` | `WMDisplay` | `DefaultWMDisplay` | Optional renderer for integrations; the Think-life execution path does not inject a WM system prompt |
-| `config` | `WorkingMemoryConfig` | see default.yaml | Not a `path`; injected into writer/reader/display |
+| `writer` | `WMWriter` | `DefaultWMWriter` | Append projected `tool_history` to the active transaction |
+| `reader` | `WMReader` | `DefaultWMReader` | Render the transaction's entries for planning |
+| `display` | `WMDisplay` | `DefaultWMDisplay` | Optional renderer for diagnostics and custom integrations |
+| `config` | `WorkingMemoryConfig` | See `default.yaml` | Shared reader/writer/display parameters; not a `path` slot |
 
-## LLM-facing surfaces
+Common `config` fields include `enable`, `inject_max_entries`,
+`max_stored_entries`, and per-result truncation limits.
 
-| Surface | Layer |
-|---------|-------|
-| WM text block | Think-life planning (`WMReader.render`) |
-| Capability result | Scheduler writes `tool_history` through `WMWriter.write` |
-| `WMDisplay` | Available to custom integrations; not consumed by Think-life capability invocation |
-| No tools | LLM only reads rendered prompt text |
+## Protocol requirements
 
-## Implementation
+- `WMWriter.write(entries, tool_history)` mutates `entries` in place and
+  enforces `max_stored_entries`.
+- `WMReader.render(entries, *, language, task_progress=None)` returns the
+  planning prompt block.
+- `WMDisplay.render(entries, *, language, task_progress=None)` provides an
+  optional view without changing capability execution.
 
-- `WMWriter.write` — mutate the active transaction's entries and respect `max_stored_entries`
-- `WMReader.render` — inject the transaction's recent entries into planning
-- `WMDisplay.render` — provide an optional text rendering without changing Think-life execution
+WM code must not call the episodic backend or domain agents directly. Cross-
+subsystem work goes through declared capabilities and their context.
 
-**Do not** call episodic backends or domain agents from WM code.
+## Delivery and verification
 
-## Delivery
-
-1. Implement protocols in `wm/protocols.py`
-2. Copy `config/systems/wm/default.yaml` → `my_variant.yaml`
-3. Point `systems.wm` in `chat_controller.yaml`
+1. Implement `WMWriter`, `WMReader`, and `WMDisplay` from `wm/protocols.py`.
+2. Copy `config/systems/wm/default.yaml` to a variant and update its paths.
+3. Point `systems.wm` at the variant.
 
 ```bash
 pytest tests/systems/test_protocol_shapes.py tests/systems/test_system_yaml_loader.py
+pytest tests/runtime/test_langgraph_turn_loop.py
 ```

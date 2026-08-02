@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import yaml
+import pytest
 
 from m_agent.agents.schedule_agent import ScheduleAgent
 from m_agent.schedule.models import ScheduleItem
@@ -45,14 +46,18 @@ def test_schedule_create_query_delete_flow(tmp_path: Path) -> None:
     created = agent.handle_create_command(
         thread_id=thread_id,
         due_at="2026-04-06T09:00:00+08:00",
-        text="预定的会议时间已到，请准备参加会议。",
+        deferred_objective="提醒用户准备参加会议",
         timezone_name="Asia/Shanghai",
         now_context=_fixed_now_context(),
     )
     assert created["success"] is True
     assert created["action"] == "create"
     assert created["schedule_id"].startswith("sch_")
-    assert created["item"]["text"] == "预定的会议时间已到，请准备参加会议。"
+    assert created["item"]["text"] == "提醒用户准备参加会议"
+    assert created["item"]["deferred_objective"] == {
+        "description": "提醒用户准备参加会议",
+        "encoding": "native",
+    }
     assert created["item"]["status"] == "pending"
 
     queried = agent.handle_query_command(
@@ -88,7 +93,7 @@ def test_schedule_create_marks_partial_for_bulk_text(tmp_path: Path) -> None:
     result = agent.handle_create_command(
         thread_id="demo-thread",
         due_at="2026-04-06T06:00:00+08:00",
-        text="每天6点的起床时间已到，请开始新的一天；持续一周。",
+        deferred_objective="每天6点提醒用户起床；持续一周。",
         timezone_name="Asia/Shanghai",
         now_context=_fixed_now_context(),
     )
@@ -134,12 +139,12 @@ def test_schedule_delete_invalid_or_missing_id(tmp_path: Path) -> None:
     assert missing["needs_clarification"] is True
 
 
-def test_schedule_persists_only_minimal_fields(tmp_path: Path) -> None:
+def test_schedule_persists_v2_deferred_objective_as_authority(tmp_path: Path) -> None:
     agent = _build_agent(tmp_path)
     created = agent.handle_create_command(
         thread_id="demo-thread",
         due_at="2026-04-06T09:00:00+08:00",
-        text="预定的会议时间已到，请准备参加会议。",
+        deferred_objective="提醒用户准备参加会议",
         timezone_name="Asia/Shanghai",
         now_context=_fixed_now_context(),
     )
@@ -152,27 +157,73 @@ def test_schedule_persists_only_minimal_fields(tmp_path: Path) -> None:
         "thread_id",
         "due_at_utc",
         "timezone_name",
-        "text",
+        "deferred_objective",
         "status",
         "created_at",
+        "origin",
+        "schema_version",
+    }
+    assert "text" not in payload["items"][0]
+    assert payload["items"][0]["schema_version"] == 2
+    assert payload["items"][0]["deferred_objective"] == {
+        "description": "提醒用户准备参加会议",
+        "encoding": "native",
     }
 
 
-def test_legacy_schedule_prompt_migrates_to_text() -> None:
+@pytest.mark.parametrize(
+    "legacy_fields, expected",
+    [
+        ({"text": "Legacy text"}, "Legacy text"),
+        ({"action_payload": {"prompt": "Legacy prompt"}}, "Legacy prompt"),
+        ({"title": "Legacy title"}, "Legacy title"),
+        ({"source_text": "Legacy source"}, "Legacy source"),
+    ],
+)
+def test_legacy_schedule_text_migrates_to_deferred_objective(
+    legacy_fields: dict,
+    expected: str,
+) -> None:
     item = ScheduleItem.from_dict(
         {
             "schedule_id": "sch_legacy123456",
             "owner_id": "agent",
             "thread_id": "demo-thread",
-            "title": "legacy title",
             "due_at_utc": "2026-04-06T01:00:00Z",
             "timezone_name": "Asia/Shanghai",
-            "action_payload": {"prompt": "The legacy scheduled time has arrived."},
             "status": "pending",
             "created_at": "2026-04-05T00:00:00Z",
             "updated_at": "2026-04-05T01:00:00Z",
+            **legacy_fields,
         }
     )
-    assert item.text == "The legacy scheduled time has arrived."
-    assert "owner_id" not in item.to_dict()
-    assert "updated_at" not in item.to_dict()
+    assert item.text == expected
+    assert item.deferred_objective.description == expected
+    assert item.deferred_objective.encoding == "legacy_text"
+    persisted = item.to_dict()
+    assert persisted["deferred_objective"] == {
+        "description": expected,
+        "encoding": "legacy_text",
+    }
+    assert "text" not in persisted
+    assert "owner_id" not in persisted
+    assert "updated_at" not in persisted
+
+
+def test_v2_objective_wins_over_stale_legacy_text() -> None:
+    item = ScheduleItem.from_dict(
+        {
+            "schema_version": 2,
+            "schedule_id": "sch_v2123456",
+            "thread_id": "demo-thread",
+            "due_at_utc": "2026-04-06T01:00:00Z",
+            "timezone_name": "Asia/Shanghai",
+            "deferred_objective": {
+                "description": "提醒用户准备会议",
+                "encoding": "native",
+            },
+            "text": "会议已经提醒完成",
+        }
+    )
+    assert item.text == "提醒用户准备会议"
+    assert item.deferred_objective.encoding == "native"

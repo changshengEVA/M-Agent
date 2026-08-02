@@ -8,20 +8,21 @@ version = "0.1.0"
 description = "M-Agent: a multi-dimensional memory agent for long-term dialogue QA."
 readme = "README.md"
 requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.104,<1.0",
+    "langchain>=1.2,<2.0",
+    "langgraph>=1.0.10",
+    "langgraph-checkpoint>=4.1.1,<5.0.0",
+    "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
+    "langgraph-prebuilt>=1.0.8",
+    "numpy>=1.24",
+]
 
 [project.optional-dependencies]
 acceptance = [
     "pytest>=8.0",
-    "fastapi>=0.110",
     "uvicorn>=0.29",
 ]
-langgraph = [
-    "langgraph>=1.0.10",
-    "langgraph-checkpoint>=4.0.1",
-    "langgraph-checkpoint-sqlite>=3.0.1",
-    "langgraph-prebuilt>=1.0.8",
-]
-
 [project.scripts]
 m-agent-acceptance = "m_agent.acceptance.cli:main"
 

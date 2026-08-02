@@ -7,20 +7,20 @@ from typing import Any, Dict, List, Optional
 from m_agent.runtime.langgraph.engine import TransactionGraphEngine
 from m_agent.runtime.langgraph.fake_effects import FakeEffectIntent
 from m_agent.runtime.routing import LANGGRAPH_RUNTIME_ENGINE
-from m_agent.runtime.think_life.contracts import (
+from m_agent.runtime.domain.contracts import (
     TransactionKind,
     TransactionRecord,
 )
 
 from .base import HarnessResult
-from .think_life_harness import ThinkLifeV1Harness
+from .shared_harness import SharedRuntimeHarness
 from .transaction_fixtures import (
     FixtureTransactionStatus as TransactionStatus,
     apply_fixture_status,
 )
 
 
-class LangGraphV1Harness(ThinkLifeV1Harness):
+class LangGraphV1Harness(SharedRuntimeHarness):
     """Reuse the shared Store while executing transaction steps via LangGraph."""
 
     runtime_id = "langgraph_v1"
@@ -138,7 +138,7 @@ class LangGraphV1Harness(ThinkLifeV1Harness):
             },
         )
 
-    def create_legacy_transaction(
+    def create_runtime_transaction(
         self,
         *,
         conversation_id: str,
@@ -169,7 +169,7 @@ class LangGraphV1Harness(ThinkLifeV1Harness):
         wm_entries: Optional[List[Dict[str, Any]]] = None,
         goal: str = "",
     ) -> HarnessResult:
-        record = self.create_legacy_transaction(
+        record = self.create_runtime_transaction(
             conversation_id=conversation_id,
             status=TransactionStatus.RUNNING,
         )

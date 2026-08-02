@@ -54,40 +54,30 @@ def test_p1_catalog_is_complete_and_exit_ready() -> None:
     }
 
 
-def test_all_variants_are_executable_for_both_runtimes() -> None:
+def test_all_38_variants_are_executable_for_langgraph() -> None:
     variants = _variants()
 
     assert len(variants) == 38
     for variant in variants:
-        think_life = variant.binding_for("think_life_v1")
         langgraph = variant.binding_for("langgraph_v1")
 
-        assert think_life.availability == "executable"
-        assert len(think_life.tests) == 1
         assert langgraph.availability == "executable"
         assert len(langgraph.tests) == 1
-        if think_life.known_gap:
-            assert len(think_life.known_gap_keys) == 1
-        else:
-            assert think_life.known_gap_keys == ()
         assert langgraph.known_gap_keys == ()
 
     execution = contract_catalog_payload()["execution"]
     assert execution["executable_variants_by_runtime"] == {
-        "think_life_v1": 38,
         "langgraph_v1": 38,
     }
     assert execution["executable_by_layer_and_runtime"] == {
-        "core": {"think_life_v1": 27, "langgraph_v1": 27},
-        "robustness": {"think_life_v1": 7, "langgraph_v1": 7},
+        "core": {"langgraph_v1": 27},
+        "robustness": {"langgraph_v1": 7},
         "matcher_evaluation": {
-            "think_life_v1": 1,
             "langgraph_v1": 1,
         },
-        "poc": {"think_life_v1": 3, "langgraph_v1": 3},
+        "poc": {"langgraph_v1": 3},
     }
     assert execution["registered_known_gaps_by_runtime"] == {
-        "think_life_v1": 0,
         "langgraph_v1": 0,
     }
 
@@ -109,9 +99,6 @@ def test_robustness_manifest_covers_all_25_requirements_without_bad_mappings() -
         assert item["variant_id"] in robustness_ids
         assert item["layer"] == "robustness"
         assert item["parent_scenario_id"] == item["variant_id"].split("/", 1)[0]
-        assert item["think_life_v1"]["availability"] == "executable"
-        assert item["think_life_v1"]["registered_status"] == "implemented"
-        assert item["think_life_v1"]["known_gap"] is None
         assert item["langgraph_v1"] == {
             "availability": "executable",
             "registered_status": "implemented",
@@ -127,7 +114,7 @@ def test_allowlisted_scenario_nodes_point_to_real_files() -> None:
     project_root = Path(__file__).resolve().parents[2]
     for scenario in SCENARIOS:
         for variant in scenario.variants:
-            for runtime_id in ("think_life_v1", "langgraph_v1"):
+            for runtime_id in ("langgraph_v1",):
                 for ref in variant.binding_for(runtime_id).tests:
                     relative_file = ref.nodeid.split("::", 1)[0]
                     assert (project_root / relative_file).is_file(), (

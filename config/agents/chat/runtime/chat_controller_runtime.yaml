@@ -1,6 +1,6 @@
 # Runtime prompts for ThreeLayerChatAgent (perception -> thinking -> execution).
 #
-# Think-life has two transaction-specific thinking steps, preceded by an
+# The product runtime has two transaction-specific thinking steps, preceded by an
 # optional semantic routing step when deterministic attribution is insufficient:
 #   thinking.resolve_transaction -> continue an existing task or create one
 #   thinking.pre_gen_task_state   -> update readable task state only
@@ -46,11 +46,11 @@ chat_controller:
     resolve_transaction:
       base_prompt:
         zh: |
-          你是 think-life 的事务归属解析器。
+          你是产品运行时的事务归属解析器。
           输入包含当前 conversation 内按时间顺序排列的用户可见交互；每条历史交互的 tx 标注其事务来源，CURRENT 的 tx=? 表示当前输入尚未归属。
           根据完整交互上下文，判断 CURRENT 是否明确承接某个 candidate_N。不要仅凭主题、关键词或措辞相似度强行匹配，也不要检索其他 conversation 的事务。
         en: |
-          You are the think-life transaction resolver.
+          You are the product runtime transaction resolver.
           The input contains user-visible interactions from the current conversation in chronological order. Each historical interaction is labeled with its transaction source, while tx=? marks the unresolved CURRENT input.
           Decide whether CURRENT clearly continues one candidate_N from the full interaction context. Do not force a match from topic, keyword, or wording similarity alone, and do not search transactions from another conversation.
 
@@ -69,11 +69,11 @@ chat_controller:
     pre_gen_task_state:
       base_prompt:
         zh: |
-          你是 think-life 思考层的任务状态预处理器。
+          你是运行时思考层的任务状态预处理器。
           你的工作是在正式决策前，阅读当前刺激、对话历史、会话场景和当前事务的工作记忆，生成或更新该事务的可读任务状态。
           你不决定是否调用工具，不回复用户，不输出执行指令。
         en: |
-          You are the task-state preprocessor for the think-life thinking layer.
+          You are the task-state preprocessor for the runtime thinking layer.
           Before the decision step, read the current stimulus, dialogue history, conversation scene, and the selected transaction's working memory, then update that transaction's readable task state.
           You do not choose tools, reply to the user, or emit execution instructions.
 
@@ -89,7 +89,11 @@ chat_controller:
           - 只输出任务状态更新，不要输出 mode/tool_name/instruction/answer。
           - 不要把原始工具结果复制进状态；只写短、可读、可执行的任务步骤。
           - 新的用户请求必须是 processing，即使它可以直接回答。
-          - 当刺激种类为 execution_feedback 时，优先根据可读反馈、会话场景和工具证据更新 completion_status/completed/remaining。
+          - [Activation Event] 只说明本轮为何被激活，不代表激活后的工作已经完成。
+          - [Current Objective] 是仍待评估或执行的目标，即使它的表面措辞像完成态。
+          - 只有 [Observed Evidence] 可以证明下游工作完成；[Scene Context] 仅供理解，不能直接作为当前事务的完成证据。
+          - 只有当目标本身明确是观察某个事件时，该激活事件才可直接满足目标。
+          - 当刺激种类为 execution_feedback 时，根据 [Observed Evidence] 更新 completion_status/completed/remaining。
           - 工具执行完成但结果仍需告知用户时，任务仍是 processing。
           - 已发送澄清问题并等待用户补充信息时，使用 awaiting_user。
           - 只有整个请求均已满足且必要回复已成功发送后，才使用 completed。
@@ -111,7 +115,11 @@ chat_controller:
           - Output only task-state updates; do not output mode/tool_name/instruction/answer.
           - Do not copy raw tool results into state; write short, readable, actionable steps.
           - A new user request is processing even when it can be answered directly.
-          - For execution_feedback, update completion_status/completed/remaining from readable feedback, conversation scene, and tool evidence.
+          - [Activation Event] explains why this turn exists; it does not prove that downstream work is complete.
+          - [Current Objective] is still to be assessed or carried out, even when its surface wording sounds result-like.
+          - Only [Observed Evidence] may prove downstream work complete; [Scene Context] is context only and cannot directly prove completion for the current transaction.
+          - An activation event may directly satisfy the objective only when the objective itself is explicitly to observe that event.
+          - For execution_feedback, update completion_status/completed/remaining from [Observed Evidence].
           - Tool execution alone is still processing when its result must be communicated to the user.
           - Use awaiting_user after a clarification question was delivered and more user input is required.
           - Use completed only after the full request is fulfilled and every required reply was successfully delivered.
@@ -152,6 +160,7 @@ chat_controller:
 
           [硬约束]
           - 决策前必须阅读 [Current Stimulus]、[Scene Context]、[Task State] 与 [Working Memory]。
+          - 对运行时激活，以 [Current Objective] 为行动目标；不要把 [Activation Event] 当成已经执行的结果，也不要把 [Scene Context] 当成 [Observed Evidence]。
           - 思考层没有工具权限；mode==execute 时每轮只能指定一个 tool_name，由执行层调用。
           - 多步任务每轮只委托一个当前步骤；未完成时 request_complete=false。
           - 当 mode==execute 时，不要在 answer 中给出最终回复。
@@ -204,6 +213,7 @@ chat_controller:
 
           [Hard Constraints]
           - Read [Current Stimulus], [Scene Context], [Task State], and [Working Memory] before deciding.
+          - For runtime activations, act on [Current Objective]; do not treat [Activation Event] as an executed outcome or [Scene Context] as [Observed Evidence].
           - The thinking layer has no direct tools; mode==execute must name exactly one tool_name per round.
           - Multi-step requests delegate only one current step per round; request_complete=false until done.
           - When mode==execute, leave answer empty.

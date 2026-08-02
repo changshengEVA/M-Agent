@@ -122,8 +122,8 @@ def test_thinking_agent_uses_override_plan_and_fallback_prompts() -> None:
     assert agent._fallback_answer(perception) == custom_fallback
 
 
-def test_chat_controller_runtime_yaml_contains_think_life_prompt_sections() -> None:
-    """Smoke test: the shipped YAML exposes Think-life prompt keys."""
+def test_chat_controller_runtime_yaml_contains_thinking_prompt_sections() -> None:
+    """Smoke test: the shipped YAML exposes the thinking prompt keys."""
     path = PROJECT_ROOT / "config" / "agents" / "chat" / "runtime" / "chat_controller_runtime.yaml"
     resolved = load_resolved_prompt_config(path, language="zh")
     cc = resolved.get("chat_controller")

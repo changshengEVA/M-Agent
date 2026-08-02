@@ -2,15 +2,21 @@
 
 The fake model returns deterministic task-state updates and decisions.  These
 tests deliberately give the thinking layer a capability catalog that raises
-if invocation is attempted: Think-life delegates execution from its scheduler,
-never from ``ThinkingAgent.handle``.
+if invocation is attempted: runtime orchestration delegates execution outside
+``ThinkingAgent.handle``.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
 from m_agent.layers.execution.model_provider import ModelProvider
-from m_agent.layers.perception.contracts import Stimulus, StimulusKind
+from m_agent.layers.perception.contracts import (
+    ActivationFrame,
+    EventFrame,
+    ObjectiveFrame,
+    Stimulus,
+    StimulusKind,
+)
 from m_agent.layers.thinking import (
     ConversationStateRegistry,
     PerceptionInput,
@@ -19,7 +25,7 @@ from m_agent.layers.thinking import (
     ThinkingDecision,
     TransactionResolution,
 )
-from m_agent.runtime.think_life.contracts import TransactionRecord, TransactionState
+from m_agent.runtime.domain.contracts import TransactionRecord, TransactionState
 from m_agent.systems.episodic import DefaultEpisodeRecorder
 
 
@@ -329,24 +335,50 @@ def test_current_stimulus_is_rendered_in_both_thinking_prompts() -> None:
 
     agent.handle(
         _make_perception(
-            user_message="Reminder fired",
+            user_message="schedule_due",
             source="schedule",
             system_context={"schedule_id": "sch_1"},
+            activation=ActivationFrame(
+                event=EventFrame(
+                    event_type="schedule_due",
+                    source="heartbeat",
+                    occurred_at="2026-08-01T09:25:33Z",
+                    facts={"due_at_utc": "2026-08-01T09:25:29Z"},
+                ),
+                objective=ObjectiveFrame(
+                    description="Remind the user to cook",
+                    encoding="native",
+                ),
+                evidence=[],
+            ),
         )
     )
 
-    task_prompt = fake_model.structured_calls(TaskProgressUpdate)[0][0]["content"]
-    decision_prompt = fake_model.structured_calls(ThinkingDecision)[0][0]["content"]
+    task_messages = fake_model.structured_calls(TaskProgressUpdate)[0]
+    decision_messages = fake_model.structured_calls(ThinkingDecision)[0]
+    task_prompt = task_messages[0]["content"]
+    decision_prompt = decision_messages[0]["content"]
     for prompt in (task_prompt, decision_prompt):
         assert "[Current Stimulus]" in prompt
         assert "kind: scheduled_plan" in prompt
-        assert "Reminder fired" in prompt
+        assert "semantic_role: runtime_activation" in prompt
+        assert "[Activation Event]" in prompt
+        assert "type: schedule_due" in prompt
+        assert "[Current Objective]" in prompt
+        assert "Remind the user to cook" in prompt
+        assert "[Observed Evidence]" in prompt
+        assert "(none)" in prompt
         assert "thread_id:" not in prompt
         assert "conversation_id:" not in prompt
         assert "transaction_id:" not in prompt
         assert "t1::0" not in prompt
         assert "txn-1" not in prompt
         assert '"schedule_id": "sch_1"' not in prompt
+    for messages in (task_messages, decision_messages):
+        assert messages[1]["content"].startswith(
+            "[Runtime semantic input — not a user utterance]"
+        )
+        assert messages[1]["content"] != "Remind the user to cook"
 
 
 def test_transaction_resolver_uses_turn_local_labels_instead_of_runtime_ids() -> None:

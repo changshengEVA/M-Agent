@@ -1,4 +1,4 @@
-"""Plan-only thinking layer used by the Think-life scheduler.
+"""Plan-only thinking layer used by the Runtime scheduler.
 
 The selected transaction owns task state, working memory, and episode notes.
 The thinking layer owns persona-guided decisions but has no direct tool-use

@@ -2,7 +2,7 @@
 #
 # Source of versions:
 # - Local conda env: MAG
-# - Generated on: 2026-04-05
+# - Generated on: 2026-08-02
 #
 # Intent:
 # - Match the repo's current chat API/runtime path on Ubuntu servers
@@ -28,9 +28,12 @@ Pillow==11.3.0
 langchain==1.2.10
 langchain-core==1.2.16
 langgraph==1.0.10
-langgraph-checkpoint==4.0.1
+langgraph-checkpoint==4.1.1
+langgraph-checkpoint-sqlite==3.1.1
 langgraph-prebuilt==1.0.8
 langgraph-sdk==0.3.9
+aiosqlite==0.21.0
+sqlite-vec==0.1.9
 langchain-openai==1.1.10
 langchain-deepseek==1.0.1
 openai==2.24.0

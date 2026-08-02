@@ -20,7 +20,7 @@ def known_gap(scenario_id: str, variant_id: str) -> Callable[[Any], Any]:
         for item in scenario.variants
         if item.variant_id == variant_id
     )
-    binding = variant.binding_for("think_life_v1")
+    binding = variant.binding_for("langgraph_v1")
     if not binding.known_gap or not binding.known_gap_keys:
         raise ValueError(
             f"{variant_id} is decorated as a Known Gap without a "
@@ -42,7 +42,7 @@ def run_contract(
 ) -> None:
     runtime_id = os.environ.get(
         "M_AGENT_ACCEPTANCE_RUNTIME_ID",
-        "think_life_v1",
+        "langgraph_v1",
     )
     execution = get_runtime_adapter(runtime_id).run_scenario(
         scenario_id,

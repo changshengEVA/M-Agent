@@ -9,7 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from m_agent.runtime.think_life.contracts import SceneEntry
+from m_agent.runtime.domain.contracts import SceneEntry
 
 # Windows and cross-platform unsafe filename characters (incl. scoped ids like `user::thread`).
 _UNSAFE_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')

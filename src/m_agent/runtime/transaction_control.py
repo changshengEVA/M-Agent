@@ -10,8 +10,8 @@ from m_agent.runtime.host.product_views import (
     list_transactions,
     serialize_transaction,
 )
-from m_agent.runtime.think_life.scheduler.cpu_state import THREAD_CPU_STATE
-from m_agent.runtime.think_life.contracts import SceneEntry
+from m_agent.runtime.dispatch.cpu_state import THREAD_CPU_STATE
+from m_agent.runtime.domain.contracts import SceneEntry
 from m_agent.systems.scene.protocols import SceneWriter
 
 

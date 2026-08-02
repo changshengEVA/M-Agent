@@ -68,7 +68,7 @@ def test_cli_contract_coverage_reports_complete_executable_matrix(capsys) -> Non
 def test_cli_contract_list_json_reports_every_variant_executable(
     capsys,
 ) -> None:
-    """P8 closed the matrix: all 38 variants are executable on both runtimes."""
+    """All 38 variants remain executable on the product runtime."""
 
     project_root = Path(__file__).resolve().parents[2]
     exit_code = main(
@@ -90,7 +90,6 @@ def test_cli_contract_list_json_reports_every_variant_executable(
     assert payload["coverage"]["p1_exit_ready"] is True
     assert total_variants == 38
     assert payload["execution"]["executable_variants_by_runtime"] == {
-        "think_life_v1": total_variants,
         "langgraph_v1": total_variants,
     }
 
@@ -112,7 +111,6 @@ def test_cli_contract_list_json_exposes_runtime_availability(capsys) -> None:
     assert exit_code == 0
     assert '"TX-01"' in output
     assert '"AT-10"' in output
-    assert '"think_life_v1"' in output
     assert '"langgraph_v1"' in output
     assert '"matcher_evaluation"' in output
     assert '"executable_variants_by_runtime"' in output

@@ -22,7 +22,7 @@ class CapabilityDescriptor:
 
 @dataclass
 class ExecutionResult:
-    """Structured outcome of one direct Think-life capability invocation."""
+    """Structured outcome of one direct Runtime capability invocation."""
 
     summary: str
     tool_history: List[Dict[str, Any]] = field(default_factory=list)
@@ -53,7 +53,7 @@ class ExecutionResult:
 
 @dataclass
 class ParamFillResult:
-    """Outcome of Think-life param fill (structured LLM pass before direct invoke)."""
+    """Outcome of Runtime param fill (structured LLM pass before direct invoke)."""
 
     tool_name: str
     status: Literal["ready", "needs_clarification"]

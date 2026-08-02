@@ -116,17 +116,15 @@ class _ScenarioManager:
             "status": "known_gaps",
             "result": {
                 "result_kind": "scenario_contract",
-                "runtime_id": "think_life_v1",
+                "runtime_id": "langgraph_v1",
                 "scenarios": [],
             },
         }
 
     def latest(self, runtime_id: str) -> Optional[Dict[str, Any]]:
         self.last_latest_runtime = runtime_id
-        if runtime_id == "unknown_runtime":
+        if runtime_id != "langgraph_v1":
             raise ValueError(f"unknown Runtime id: {runtime_id}")
-        if runtime_id == "langgraph_v1":
-            return None
         return self.get("run_contract1234567890ab")
 
     def cancel(self, run_id: str) -> bool:
@@ -177,7 +175,6 @@ def test_local_dashboard_and_catalog_are_served_with_security_headers() -> None:
     )
     assert total_variants == 38
     assert contract_payload["execution"]["executable_variants_by_runtime"] == {
-        "think_life_v1": total_variants,
         "langgraph_v1": total_variants,
     }
 
@@ -299,7 +296,7 @@ def test_contract_run_api_accepts_only_structured_scenario_selection() -> None:
         "/api/contract/runs",
         json={
             "scenario_ids": ["TX-01", "AT-10"],
-            "runtime_id": "think_life_v1",
+            "runtime_id": "langgraph_v1",
             "layers": ["core", "matcher_evaluation"],
             "timeout_seconds": 90,
         },
@@ -309,7 +306,7 @@ def test_contract_run_api_accepts_only_structured_scenario_selection() -> None:
     assert response.json()["run_id"] == "run_contract1234567890ab"
     assert scenario_manager.last_start == {
         "scenario_ids": ["TX-01", "AT-10"],
-        "runtime_id": "think_life_v1",
+        "runtime_id": "langgraph_v1",
         "layers": ["core", "matcher_evaluation"],
         "timeout_seconds": 90.0,
     }
@@ -333,24 +330,17 @@ def test_contract_run_api_accepts_only_structured_scenario_selection() -> None:
     assert "unsupported field" in rejected.json()["detail"]
 
 
-def test_latest_contract_run_is_scoped_to_runtime() -> None:
+def test_latest_contract_run_is_scoped_to_langgraph() -> None:
     client, _manager, scenario_manager = _client()
 
     latest = client.get(
         "/api/contract/runs/latest",
-        params={"runtime_id": "think_life_v1"},
+        params={"runtime_id": "langgraph_v1"},
     )
     assert latest.status_code == 200
     assert latest.json()["run_id"] == "run_contract1234567890ab"
-    assert latest.json()["result"]["runtime_id"] == "think_life_v1"
-    assert scenario_manager.last_latest_runtime == "think_life_v1"
-
-    missing = client.get(
-        "/api/contract/runs/latest",
-        params={"runtime_id": "langgraph_v1"},
-    )
-    assert missing.status_code == 404
-    assert missing.json()["detail"] == "run not found"
+    assert latest.json()["result"]["runtime_id"] == "langgraph_v1"
+    assert scenario_manager.last_latest_runtime == "langgraph_v1"
 
     invalid = client.get(
         "/api/contract/runs/latest",

@@ -18,11 +18,11 @@ from m_agent.paths import PROJECT_ROOT
 from m_agent.runtime.transaction_control import (
     RuntimeTransactionNotFoundError,
 )
-from m_agent.runtime.think_life.transaction.store import (
+from m_agent.runtime.transaction.store import (
     IdempotencyConflictError,
     RevisionConflictError,
 )
-from m_agent.runtime.think_life.transaction_registry import (
+from m_agent.runtime.transaction.registry import (
     TransactionTransitionError,
 )
 
@@ -986,7 +986,7 @@ def create_app(
             return auth_error
         public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
         runtime_thread_id = _runtime_thread_id(user, public_thread_id)
-        payload = active_runtime.get_think_life_transactions(
+        payload = active_runtime.get_transactions(
             runtime_thread_id,
             include_history=include_history,
         )
@@ -1319,9 +1319,22 @@ def create_app(
         public_thread_id = _public_thread_id(user, thread_id) or active_runtime.default_thread_id
         runtime_thread_id = _runtime_thread_id(user, public_thread_id)
         owner_id = _schedule_owner_id(user)
-        text = str(body.text or "").strip()
-        if not text:
-            return _error_response(status_code=400, message="text is required")
+        deferred_objective = str(body.deferred_objective or "").strip()
+        legacy_text = str(body.text or "").strip()
+        if (
+            deferred_objective
+            and legacy_text
+            and deferred_objective != legacy_text
+        ):
+            return _error_response(
+                status_code=400,
+                message="deferred_objective conflicts with legacy text",
+            )
+        if not (deferred_objective or legacy_text):
+            return _error_response(
+                status_code=400,
+                message="deferred_objective is required",
+            )
         try:
             schedule_agent = _resolve_schedule_agent(active_runtime)
             normalized_due = _normalize_schedule_due_at(body.due_at, body.timezone_name)
@@ -1330,7 +1343,8 @@ def create_app(
                 thread_id=runtime_thread_id,
                 due_at_utc=normalized_due["due_at_utc"],
                 timezone_name=normalized_due["timezone_name"],
-                text=text,
+                deferred_objective=deferred_objective,
+                text=(legacy_text if not deferred_objective else ""),
             )
             serialized = _serialize_schedule_item(
                 schedule_agent,

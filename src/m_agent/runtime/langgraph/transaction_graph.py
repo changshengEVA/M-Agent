@@ -9,7 +9,7 @@ from langgraph.graph import END, START, StateGraph
 
 from .checkpointer import Checkpointer
 
-from m_agent.runtime.think_life.contracts import (
+from m_agent.runtime.domain.contracts import (
     TransactionRecord,
     TransactionState,
 )

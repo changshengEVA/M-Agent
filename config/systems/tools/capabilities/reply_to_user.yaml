@@ -11,7 +11,7 @@ input:
   schema: inferred_from_tool
 output:
   schema: builtins:dict
-  feedback_projector: m_agent.runtime.think_life.scheduler.execution_feedback:feedback_summary_from_tool_history
+  feedback_projector: m_agent.runtime.turn_support.execution_feedback:feedback_summary_from_tool_history
   memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
 policy:
   side_effect: emit

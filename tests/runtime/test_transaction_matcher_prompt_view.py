@@ -13,8 +13,8 @@ from m_agent.layers.thinking import (
 )
 from m_agent.paths import PROJECT_ROOT
 from m_agent.prompt_utils import load_resolved_prompt_config
-from m_agent.runtime.think_life.config import ThinkLifeConfig
-from m_agent.runtime.think_life.contracts import (
+from m_agent.runtime.config import RuntimeConfig
+from m_agent.runtime.domain.contracts import (
     SceneActor,
     SceneEntry,
     SceneEntryType,
@@ -22,11 +22,11 @@ from m_agent.runtime.think_life.contracts import (
     TransactionKind,
     TransactionLifecycle,
 )
-from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
-from m_agent.runtime.think_life.perception.matcher_scene_view import (
+from m_agent.runtime.perception.attributor import TransactionAttributor
+from m_agent.runtime.perception.matcher_scene_view import (
     format_transaction_scene_view,
 )
-from m_agent.runtime.think_life.transaction_registry import TransactionRegistry
+from m_agent.runtime.transaction.registry import TransactionRegistry
 from m_agent.systems.episodic import DefaultEpisodeRecorder
 
 
@@ -178,7 +178,7 @@ def test_match_candidates_are_limited_to_current_conversation() -> None:
 
     attributor = TransactionAttributor(
         registry=registry,
-        config=ThinkLifeConfig(),
+        config=RuntimeConfig(),
     )
 
     candidates = attributor.list_match_candidates("conversation-current")
@@ -211,11 +211,20 @@ def test_attributor_builds_the_transaction_labeled_interaction_view() -> None:
     ) -> str:
         captured["candidates"] = candidates
         captured.update(kwargs)
-        return "candidate_1"
+        first_line = next(
+            line
+            for line in str(kwargs["scene_context"]).splitlines()
+            if "FIRST-VISIBLE-QUESTION" in line
+        )
+        return next(
+            str(item["ref"])
+            for item in candidates
+            if f"tx={item['ref']}" in first_line
+        )
 
     attributor = TransactionAttributor(
         registry=registry,
-        config=ThinkLifeConfig(),
+        config=RuntimeConfig(),
         semantic_resolver=resolver,
     )
     resolved, created = attributor.resolve(
@@ -289,7 +298,7 @@ def test_deleted_scene_is_deprecated_and_deprecated_ref_cannot_be_selected() -> 
 
     attributor = TransactionAttributor(
         registry=registry,
-        config=ThinkLifeConfig(),
+        config=RuntimeConfig(),
         semantic_resolver=resolver,
     )
     resolved, created = attributor.resolve(
@@ -356,7 +365,7 @@ def test_only_deleted_transaction_still_reaches_matcher_and_must_create() -> Non
 
     attributor = TransactionAttributor(
         registry=registry,
-        config=ThinkLifeConfig(),
+        config=RuntimeConfig(),
         semantic_resolver=resolver,
     )
     resolved, created = attributor.resolve(
@@ -440,7 +449,7 @@ def test_deleted_durable_id_is_rejected_and_live_candidate_remains_selectable() 
 
     attributor = TransactionAttributor(
         registry=registry,
-        config=ThinkLifeConfig(),
+        config=RuntimeConfig(),
         semantic_resolver=resolver,
     )
     scene_entries = [
@@ -501,7 +510,7 @@ def test_deprecated_ids_are_scoped_to_the_current_conversation() -> None:
 
     attributor = TransactionAttributor(
         registry=registry,
-        config=ThinkLifeConfig(),
+        config=RuntimeConfig(),
         semantic_resolver=resolver,
     )
     selected, created = attributor.resolve(

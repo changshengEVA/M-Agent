@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 from m_agent.layers.perception.contracts import Stimulus, StimulusKind
-from m_agent.runtime.think_life.contracts import (
+from m_agent.runtime.domain.contracts import (
     SceneActor,
     SceneEntry,
     SceneEntryType,
     StimulusEnvelope,
 )
-from m_agent.runtime.think_life.perception.matcher_scene_view import (
+from m_agent.runtime.perception.matcher_scene_view import (
     format_transaction_scene_view,
     is_user_visible_scene_interaction,
 )
-from m_agent.runtime.think_life.scheduler.think_context import read_scene_segment
+from m_agent.runtime.turn_support.think_context import read_scene_segment
 
 
 def _entry(

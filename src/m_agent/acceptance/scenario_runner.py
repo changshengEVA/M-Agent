@@ -30,7 +30,7 @@ class ScenarioAcceptanceRunner(AcceptanceRunner):
         self,
         *,
         scenario_ids: Optional[Sequence[str]] = None,
-        runtime_id: str = "think_life_v1",
+        runtime_id: str = "langgraph_v1",
         layers: Sequence[str] = ("core",),
         timeout_seconds: float = 300.0,
         run_id: Optional[str] = None,

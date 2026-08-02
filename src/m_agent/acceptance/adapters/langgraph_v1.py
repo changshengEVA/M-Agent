@@ -5,8 +5,8 @@ from __future__ import annotations
 from .base import RuntimeAdapterError, ScenarioExecution
 from .langgraph_harness import LangGraphV1Harness
 from .langgraph_tx import run_tx_scenario
-from .think_life_at import run_at_scenario
-from .think_life_sp import run_sp_scenario
+from .shared_at import run_at_scenario
+from .shared_sp import run_sp_scenario
 
 
 class LangGraphV1Adapter:

@@ -21,7 +21,7 @@ SCENARIO_LAYERS = frozenset(
 SCENARIO_LAYER_ALIASES = {
     "matcher": "matcher_evaluation",
 }
-RUNTIME_IDS = ("think_life_v1", "langgraph_v1")
+RUNTIME_IDS = ("langgraph_v1",)
 RUNTIME_AVAILABILITIES = frozenset(
     {"executable", "not_implemented", "not_covered", "future"}
 )

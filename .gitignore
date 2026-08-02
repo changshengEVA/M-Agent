@@ -4,8 +4,17 @@ venv/
 
 **/__pycache__/
 *.py[cod]
-.pytest_cache/
+.pytest_cache*/
+.pytest_tmp*/
+.tmp/
 .acceptance-runs/
+tmp-artifacts/
+/tmp_evermemos_pdf.txt
+*.egg-info/
+.coverage*
+coverage.xml
+htmlcov/
+.ipynb_checkpoints/
 .mypy_cache/
 .ruff_cache/
 

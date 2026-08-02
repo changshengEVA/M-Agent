@@ -59,6 +59,43 @@ def _build_schedule_agent(tmp_path: Path) -> ScheduleAgent:
     return ScheduleAgent(config_path=config_path)
 
 
+def test_schedule_create_accepts_native_objective_and_rejects_conflicting_aliases(
+    tmp_path: Path,
+) -> None:
+    schedule_agent = _build_schedule_agent(tmp_path)
+    runtime = _DummyRuntime(schedule_agent, config_path=tmp_path / "chat.yaml")
+    app = create_app(service_runtime=runtime, user_access=None)
+
+    with TestClient(app) as client:
+        created = client.post(
+            "/v1/chat/threads/demo-thread/schedules",
+            json={
+                "deferred_objective": "remind the user to submit the weekly report",
+                "due_at": "2026-04-06T09:30",
+                "timezone_name": "Asia/Shanghai",
+            },
+        )
+
+        assert created.status_code == 201
+        created_item = created.json()["item"]
+        assert created_item["text"] == "remind the user to submit the weekly report"
+        assert created_item["deferred_objective"] == {
+            "description": "remind the user to submit the weekly report",
+            "encoding": "native",
+        }
+
+        conflicting = client.post(
+            "/v1/chat/threads/demo-thread/schedules",
+            json={
+                "deferred_objective": "objective A",
+                "text": "objective B",
+                "due_at": "2026-04-06T10:30",
+                "timezone_name": "Asia/Shanghai",
+            },
+        )
+        assert conflicting.status_code == 400
+
+
 def test_schedule_crud_endpoints(tmp_path: Path) -> None:
     schedule_agent = _build_schedule_agent(tmp_path)
     runtime = _DummyRuntime(schedule_agent, config_path=tmp_path / "chat.yaml")

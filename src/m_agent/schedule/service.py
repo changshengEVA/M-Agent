@@ -15,6 +15,9 @@ from .models import (
     SCHEDULE_STATUS_LEASED,
     SCHEDULE_STATUS_PENDING,
     SCHEDULE_STATUS_RUNNING,
+    DeferredObjective,
+    OBJECTIVE_ENCODING_LEGACY_TEXT,
+    OBJECTIVE_ENCODING_NATIVE,
     ScheduleItem,
 )
 from .store import ScheduleStore
@@ -46,28 +49,47 @@ class ScheduleService:
         thread_id: str,
         due_at_utc: str,
         timezone_name: str,
-        text: str,
+        deferred_objective: str = "",
+        text: str = "",
+        origin: Optional[Dict[str, str]] = None,
     ) -> ScheduleItem:
         normalized_owner_id = self.store._normalize_owner_id(owner_id)
         safe_thread_id = str(thread_id or "").strip()
         safe_due_at_utc = str(due_at_utc or "").strip()
-        safe_text = _clean_text(text)
+        safe_objective = _clean_text(deferred_objective)
+        legacy_text = _clean_text(text)
+        if safe_objective and legacy_text and safe_objective != legacy_text:
+            raise ValueError("deferred_objective conflicts with legacy text")
+        objective_encoding = (
+            OBJECTIVE_ENCODING_NATIVE
+            if safe_objective
+            else OBJECTIVE_ENCODING_LEGACY_TEXT
+        )
+        safe_objective = safe_objective or legacy_text
         if not safe_thread_id:
             raise ValueError("thread_id is required")
         if not safe_due_at_utc:
             raise ValueError("due_at_utc is required")
         _parse_utc_iso(safe_due_at_utc)
-        if not safe_text:
-            raise ValueError("text is required")
+        if not safe_objective:
+            raise ValueError("deferred_objective is required")
 
         item = ScheduleItem(
             schedule_id=f"sch_{uuid.uuid4().hex[:12]}",
             thread_id=safe_thread_id,
             due_at_utc=safe_due_at_utc,
             timezone_name=str(timezone_name or self.default_timezone_name).strip() or self.default_timezone_name,
-            text=safe_text,
+            deferred_objective=DeferredObjective(
+                description=safe_objective,
+                encoding=objective_encoding,
+            ),
             status=SCHEDULE_STATUS_PENDING,
             created_at=_now_utc_iso(),
+            origin={
+                str(key): str(value or "").strip()
+                for key, value in dict(origin or {}).items()
+                if str(key).strip() and str(value or "").strip()
+            },
         )
         items = self.store.load_thread_items(normalized_owner_id, safe_thread_id)
         items.append(item)
@@ -245,6 +267,9 @@ class ScheduleService:
         due_local = _parse_utc_iso(item.due_at_utc).astimezone(tz)
         return {
             **item.to_dict(),
+            # Deprecated API compatibility. Durable storage does not write
+            # this untyped alias; callers should migrate to deferred_objective.
+            "text": item.text,
             "due_at_local": due_local.isoformat(),
             "due_display": due_local.strftime("%Y-%m-%d %H:%M"),
         }

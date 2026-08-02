@@ -69,6 +69,9 @@ class ThreadStimulusRequest(BaseModel):
 
 
 class ScheduleCreateRequest(BaseModel):
+    deferred_objective: Optional[str] = None
+    # Deprecated compatibility alias. New callers should send
+    # ``deferred_objective`` so its semantic role is explicit.
     text: Optional[str] = None
     due_at: Optional[str] = None
     timezone_name: Optional[str] = None

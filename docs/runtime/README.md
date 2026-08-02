@@ -1,23 +1,26 @@
 # 当前 Runtime 文档
 
-本目录记录已经存在的 `think_life_v1` 行为和验收工具。
+产品 Runtime 由单个 LangGraph 宿主提供，运行时标识固定为 `langgraph_v1`。共享 Transaction、Perception、Dispatch、Turn Support 与 Flush 能力位于中性命名空间，LangGraph 负责图执行和 checkpoint 恢复。
 
-当前为 **post-P2 Transaction Foundation**：共享合同仍有 35 个 `Executable`
-variant，当前验收结果为 9 `Passed` / 26 `Registered Known Gaps`。
+## 配置与协议
 
-- [Think-life 当前实现规格](think-life-runtime-spec.zh-CN.md)：post-P2 已实现的
-  transaction、activation/delegate、SQLite 持久化与仍待接线的生产边界。
-- [Runtime 语义验收平台](semantic-acceptance-platform.zh-CN.md)：当前合同口径、
-  CLI、Web UI、结构化证据和 P2 Gate。
-- [ThinkLife P1 Known Gap 矩阵](think-life-p1-gap-matrix.zh-CN.md)：冻结的
-  **2026-07-28 pre-P2 历史基线**；表内 35 个 gap 不代表当前状态。
+- 通用参数：`runtime.common`
+- LangGraph 参数：`runtime.langgraph`
+- 能力执行上下文：`runtime_hooks`
+- Flush 结果字段：`runtime_flush`
+- 事务查询：`get_transactions()`
 
-当前 Gate：
+持久化启动要求可用的 SQLite checkpointer 和兼容 schema；不满足条件时启动失败。Scene、Transaction、effect ledger、flush journal 与 checkpoint 共同支持重试和重启恢复。
+
+Final 版本还会在用户在线持久化目录仍含退役 Runtime 数据库时拒绝启动。必须先按退役计划完成单独授权的停服、SQLite Backup API 备份、审计与隔离；部署脚本不得把该数据库当作普通缓存直接删除。
+
+## 语义验收
+
+[Runtime 语义验收平台](semantic-acceptance-platform.zh-CN.md)维护 38 个 LangGraph 场景，覆盖 TX、SP、AT、robustness、matcher evaluation 与 PoC。
 
 ```powershell
-python -m pytest -q -m p2_foundation
-python -m m_agent.acceptance contract run --runtime think_life_v1 --scenario TX-01 --scenario TX-04 --scenario TX-09 --scenario TX-10 --scenario AT-05 --scenario AT-06 --scenario AT-07 --all-layers
+python -m m_agent.acceptance contract run --runtime langgraph_v1 --all-layers
+python scripts/run_runtime_migration_gate.py --rounds 3
 ```
 
-未来目标语义和迁移计划见 [`../architecture/`](../architecture/README.md)。当前实现与目标设计
-不一致时，应通过验收场景标记差异，不能静默修改任一侧的含义。
+旧实现规格、P1 差距矩阵和迁移过程已经归档，入口见 [`../architecture/archive/`](../architecture/archive/README.md)。归档内容只用于历史追溯。

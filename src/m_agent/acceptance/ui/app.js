@@ -83,7 +83,7 @@ const ARTIFACT_LABELS = {
 
 const state = {
   catalog: null,
-  runtimeId: "think_life_v1",
+  runtimeId: "langgraph_v1",
   runsByRuntime: new Map(),
   selectedVariantId: "",
   starting: false,

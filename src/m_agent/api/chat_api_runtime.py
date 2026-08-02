@@ -11,15 +11,16 @@ from pathlib import Path
 from typing import Any, Callable, Deque, Dict, Iterator, List, Optional, Sequence, Tuple
 
 from m_agent.chat.chat_agent_factory import create_chat_agent
-from m_agent.chat.chat_memory_persistence import _parse_ts_from_turn
+from m_agent.chat.chat_memory_persistence import (
+    _parse_ts_from_turn,
+    build_dialogue_id,
+    build_dialogue_payload,
+)
 from m_agent.chat.three_layer_chat_agent import ThreeLayerChatAgent
 from m_agent.chat.working_memory import build_working_memory_api_payload
 from m_agent.paths import chat_user_slug
-from m_agent.runtime.host import RuntimeHost, ThinkLifeRuntimeHost, create_runtime_host
-from m_agent.runtime.routing import (
-    DEFAULT_RUNTIME_ENGINE,
-    resolve_runtime_engine_from_config,
-)
+from m_agent.runtime.host import RuntimeHost, create_runtime_host
+from m_agent.runtime.routing import LANGGRAPH_RUNTIME_ENGINE
 from m_agent.systems import SystemsBundle
 
 from .chat_api_shared import (
@@ -41,8 +42,8 @@ class ThinkingForceStoppedError(RuntimeError):
     """Raised when a thread is force-stopped through the chat API."""
 
 
-class _ThinkLifeScheduleLifecycle:
-    """Bridges Think-life HEARTBEAT processing to the schedule store."""
+class _RuntimeScheduleLifecycle:
+    """Bridges Runtime HEARTBEAT processing to the schedule store."""
 
     def __init__(self, runtime: "ChatServiceRuntime") -> None:
         self._runtime = runtime
@@ -291,13 +292,13 @@ class ChatServiceRuntime:
         self._agent: Optional[ThreeLayerChatAgent] = None
         self._runtime_host: RuntimeHost
         self._engine: Any
-        self._runtime_engine_id: str = DEFAULT_RUNTIME_ENGINE
+        self._runtime_engine_id: str = LANGGRAPH_RUNTIME_ENGINE
         self._systems_override: Optional[SystemsBundle] = systems_override
         self._threads: Dict[str, ThreadSessionState] = {}
         self._force_stop_lock = threading.Lock()
         self._force_stop_events: Dict[str, threading.Event] = {}
         # Async path: user turns awaiting finalize reply (FIFO per thread).
-        self._think_life_pending_users: Dict[str, Deque[Dict[str, Any]]] = {}
+        self._runtime_pending_users: Dict[str, Deque[Dict[str, Any]]] = {}
         self._runs_started = 0
         self._runs_completed = 0
         self._runs_failed = 0
@@ -323,12 +324,12 @@ class ChatServiceRuntime:
                 self._record_thread_activity(thread_id, arm_idle_timer=True)
             if event_type == "reply_emitted" and isinstance(payload, dict) and payload.get("finalize"):
                 self._record_thread_activity(thread_id, arm_idle_timer=True)
-                self._capture_think_life_round(
+                self._capture_runtime_round(
                     thread_id,
                     assistant_message=str(payload.get("message", "") or ""),
                 )
             elif event_type == "turn_failed":
-                self._discard_pending_think_life_user_turn(thread_id)
+                self._discard_pending_runtime_user_turn(thread_id)
             self._emit_thread_event(thread_id, event_type, payload)
 
         self._runtime_host.set_thread_event_emitter(_emitter)
@@ -343,7 +344,7 @@ class ChatServiceRuntime:
             set_history(_history)
         set_schedule = getattr(self._engine, "set_schedule_lifecycle", None)
         if callable(set_schedule):
-            set_schedule(_ThinkLifeScheduleLifecycle(self))
+            set_schedule(_RuntimeScheduleLifecycle(self))
 
     def _record_thread_activity(self, thread_id: str, *, arm_idle_timer: bool) -> None:
         tid = str(thread_id or "").strip()
@@ -357,20 +358,20 @@ class ChatServiceRuntime:
                 session.idle_timer_started_at = occurred_at
             session.updated_at = occurred_at
 
-    def _discard_pending_think_life_user_turn(self, thread_id: str) -> None:
+    def _discard_pending_runtime_user_turn(self, thread_id: str) -> None:
         """Resolve the FIFO user turn whose processing ended in failure."""
         tid = str(thread_id or "").strip()
         if not tid:
             return
         with self._threads_lock:
-            queue = self._think_life_pending_users.get(tid)
+            queue = self._runtime_pending_users.get(tid)
             if not queue:
                 return
             queue.popleft()
             if not queue:
-                self._think_life_pending_users.pop(tid, None)
+                self._runtime_pending_users.pop(tid, None)
 
-    def _enqueue_think_life_user_turn(
+    def _enqueue_runtime_user_turn(
         self,
         thread_id: str,
         *,
@@ -383,7 +384,7 @@ class ChatServiceRuntime:
         session = self._get_or_create_thread(tid)
         submitted_at = _now_utc()
         with self._threads_lock:
-            queue = self._think_life_pending_users.setdefault(tid, deque())
+            queue = self._runtime_pending_users.setdefault(tid, deque())
             queue.append(
                 {
                     "user_message": _normalize_text(user_message),
@@ -395,16 +396,16 @@ class ChatServiceRuntime:
             session.idle_timer_started_at = submitted_at
             session.updated_at = submitted_at
 
-    def _capture_think_life_round(self, thread_id: str, *, assistant_message: str) -> None:
-        """Buffer a completed user/assistant round for flush (think_life async path)."""
+    def _capture_runtime_round(self, thread_id: str, *, assistant_message: str) -> None:
+        """Buffer a completed user/assistant round for flush (runtime async path)."""
         tid = str(thread_id or "").strip()
         if not tid:
             return
         with self._threads_lock:
-            queue = self._think_life_pending_users.get(tid)
+            queue = self._runtime_pending_users.get(tid)
             if not queue:
                 logger.warning(
-                    "Think-life reply_emitted finalize with no pending user turn thread_id=%s",
+                    "Runtime reply_emitted finalize with no pending user turn thread_id=%s",
                     tid,
                 )
                 return
@@ -463,21 +464,11 @@ class ChatServiceRuntime:
             systems=self._systems_override,
         )
         owner_slug = chat_user_slug(str(getattr(self._agent, "user_name", "") or "anonymous"))
-        raw_runtime = (
-            self._agent.config.get("runtime")
-            if isinstance(self._agent.config.get("runtime"), dict)
-            else {}
-        )
-        self._runtime_engine_id = resolve_runtime_engine_from_config(raw_runtime)
         self._runtime_host = create_runtime_host(
             agent=self._agent,
             owner_id=owner_slug,
-            runtime_engine=self._runtime_engine_id,
         )
-        if isinstance(self._runtime_host, ThinkLifeRuntimeHost):
-            self._engine = self._runtime_host.runtime
-        else:
-            self._engine = self._runtime_host
+        self._engine = self._runtime_host
         self._wire_runtime_host()
         logger.info(
             "Chat runtime initialized: runtime_engine=%s default_thread_id=%s persist_memory=%s",
@@ -498,17 +489,12 @@ class ChatServiceRuntime:
 
     @property
     def runtime_engine_id(self) -> str:
-        return str(self._runtime_engine_id or DEFAULT_RUNTIME_ENGINE)
+        return LANGGRAPH_RUNTIME_ENGINE
 
     @property
     def runtime_profile(self) -> str:
         """Return the stable runtime identifier exposed by the HTTP API."""
         return self.runtime_engine_id
-
-    @property
-    def think_life(self) -> Any:
-        """Active product engine (ThinkLife or LangGraph). Kept for callers."""
-        return self._engine
 
     @property
     def default_thread_id(self) -> str:
@@ -545,28 +531,30 @@ class ChatServiceRuntime:
                 logger.exception("Idle flush loop failed")
 
     def _load_conversation_seq(self, thread_id: str) -> int:
-        store = getattr(getattr(self._engine, "scene_system", None), "store", None)
-        load_fn = getattr(store, "load_conversation_seq", None)
-        if not callable(load_fn):
-            return 0
         try:
-            value = load_fn(thread_id)
-            if not isinstance(value, (int, str)):
-                return 0
-            return max(0, int(value))
+            return max(
+                0,
+                int(self._runtime_host.load_conversation_seq(thread_id) or 0),
+            )
         except Exception:
-            logger.exception("Failed to restore conversation sequence thread_id=%s", thread_id)
+            logger.exception(
+                "Failed to restore conversation sequence thread_id=%s",
+                thread_id,
+            )
             return 0
 
+    def _persist_conversation_seq_value(
+        self,
+        thread_id: str,
+        sequence: int,
+    ) -> None:
+        self._runtime_host.persist_conversation_seq(thread_id, int(sequence))
+
     def _persist_conversation_seq(self, session: ThreadSessionState) -> None:
-        store = getattr(getattr(self._engine, "scene_system", None), "store", None)
-        persist_fn = getattr(store, "persist_conversation_seq", None)
-        if not callable(persist_fn):
-            return
-        try:
-            persist_fn(session.thread_id, session.conversation_seq)
-        except Exception:
-            logger.exception("Failed to persist conversation sequence thread_id=%s", session.thread_id)
+        self._persist_conversation_seq_value(
+            session.thread_id,
+            session.conversation_seq,
+        )
 
     def _get_or_create_thread(self, thread_id: str) -> ThreadSessionState:
         active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
@@ -587,20 +575,20 @@ class ChatServiceRuntime:
             return session
 
     # ------------------------------------------------------------------
-    # Working-memory plumbing — Think-life stores WM on transaction records;
+    # Working-memory plumbing — Runtime stores WM on transaction records;
     # the service runtime only projects it for API and SSE consumers.
     # ------------------------------------------------------------------
 
     def _current_wm_entries(self, session: ThreadSessionState) -> List[Dict[str, Any]]:
         """Return WM entries for the active user transaction."""
-        transaction = self._engine.registry.get_active_user_transaction(
+        transaction = self._runtime_host.active_user_transaction(
             session.conversation_id
         )
         return list(transaction.wm_entries) if transaction is not None else []
 
     def _current_task_progress(self, session: ThreadSessionState) -> Dict[str, Any]:
         """Return task progress for the active user transaction."""
-        transaction = self._engine.registry.get_active_user_transaction(
+        transaction = self._runtime_host.active_user_transaction(
             session.conversation_id
         )
         return (
@@ -618,7 +606,7 @@ class ChatServiceRuntime:
     # ``ThinkingAgent.handle`` to SSE. Anything outside this set is silently
     # dropped so a misbehaving custom thinking layer cannot inject arbitrary
     # event types into the protocol.
-    _THINK_LIFE_PLANNING_EVENTS = frozenset(
+    _RUNTIME_PLANNING_EVENTS = frozenset(
         {
             "thinking_started",
             "thinking_task_state",
@@ -629,12 +617,12 @@ class ChatServiceRuntime:
     )
 
     def _build_thinking_event_emitter(self, thread_id: str):
-        """Return an emitter bound to ``thread_id`` for Think-life planning events."""
+        """Return an emitter bound to ``thread_id`` for Runtime planning events."""
 
         def _emit(event_type: str, payload: Dict[str, Any]) -> None:
             if self._force_stop_requested(thread_id):
                 raise ThinkingForceStoppedError("thinking force stopped")
-            if event_type not in self._THINK_LIFE_PLANNING_EVENTS:
+            if event_type not in self._RUNTIME_PLANNING_EVENTS:
                 return
             safe_payload = dict(payload) if isinstance(payload, dict) else {"data": payload}
             safe_payload.setdefault("thread_id", thread_id)
@@ -663,13 +651,13 @@ class ChatServiceRuntime:
             return bool(event is not None and event.is_set())
 
     def force_stop_thread(self, thread_id: str, *, reason: str = "user_requested") -> Dict[str, Any]:
-        """Request cancellation for the active thread and clear queued Think-life work."""
+        """Request cancellation for the active thread and clear queued Runtime work."""
         active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
         self._force_stop_event(active_thread_id).set()
         safe_reason = str(reason or "user_requested").strip() or "user_requested"
         cleared_pending_users = 0
         with self._threads_lock:
-            pending = self._think_life_pending_users.pop(active_thread_id, None)
+            pending = self._runtime_pending_users.pop(active_thread_id, None)
             cleared_pending_users = len(pending or [])
 
         result = self._engine.force_stop_thread(active_thread_id, reason=safe_reason)
@@ -769,16 +757,23 @@ class ChatServiceRuntime:
         """Project persisted Scene turns into the current conversation transcript.
 
         ``session.rounds`` is intentionally hot, in-memory state. Scene is the
-        durable source for an unflushed Think-life conversation, so this
+        durable source for an unflushed Runtime conversation, so this
         projection lets API clients restore the visible transcript after a
         service restart without treating internal thought/tool entries as chat.
         """
         conversation_id = session.conversation_id
         try:
-            self._engine.ensure_scene_thread_loaded(conversation_id)
-            reader = self._engine.scene_system.reader
-            entries_fn = getattr(reader, "entries_since_flush", None)
-            entries = list(entries_fn(conversation_id)) if callable(entries_fn) else []
+            scene = self._runtime_host.list_scene(
+                session.thread_id,
+                conversation_id=conversation_id,
+                limit=max(40, self.history_max_rounds * 2),
+                since_flush=True,
+            )
+            entries = (
+                list(scene.get("entries", []))
+                if isinstance(scene, dict)
+                else []
+            )
         except Exception:
             logger.exception(
                 "Failed to restore Scene conversation messages thread_id=%s",
@@ -788,10 +783,10 @@ class ChatServiceRuntime:
 
         messages: List[Dict[str, str]] = []
         for entry in entries:
-            if hasattr(entry, "to_dict"):
-                data = entry.to_dict()
-            elif isinstance(entry, dict):
+            if isinstance(entry, dict):
                 data = dict(entry)
+            elif hasattr(entry, "to_dict"):
+                data = entry.to_dict()
             else:
                 continue
             actor = str(data.get("actor", "") or "").strip().lower()
@@ -866,7 +861,7 @@ class ChatServiceRuntime:
                     session.last_activity_at = restored_at
         except Exception:
             logger.exception(
-                "Think-life scene_pending_flush_metrics failed thread_id=%s",
+                "Runtime scene_pending_flush_metrics failed thread_id=%s",
                 session.thread_id,
             )
 
@@ -913,21 +908,20 @@ class ChatServiceRuntime:
             "episodic_persistence": self._episodic_persistence_payload(),
         }
         snap = THREAD_RUNTIME_STATUS.snapshot(session.thread_id)
+        context_engine_id = self.runtime_engine_id
         engine_block = {
             "pending_stimuli": snap.pending_stimuli,
             "busy": snap.busy,
             "busy_reason": snap.busy_reason,
-            "runtime_profile": self.runtime_engine_id,
-            "runtime_engine_id": self.runtime_engine_id,
+            "runtime_profile": context_engine_id,
+            "runtime_engine_id": context_engine_id,
             "runtime_phase": snap.runtime_phase,
             "effective_depth": snap.effective_depth,
             "in_flight_stimulus_id": snap.in_flight_stimulus_id,
             "preempt_enabled": snap.preempt_enabled,
         }
-        # Keep think_life key for existing UI clients; also publish engine-neutral alias.
-        snapshot["think_life"] = engine_block
         snapshot["runtime"] = dict(engine_block)
-        snapshot["runtime_engine_id"] = self.runtime_engine_id
+        snapshot["runtime_engine_id"] = context_engine_id
         return snapshot
 
     def get_thread_state(self, thread_id: str) -> Dict[str, Any]:
@@ -983,7 +977,7 @@ class ChatServiceRuntime:
 
         THREAD_RUNTIME_STATUS.mark_busy(active_thread_id, reason="chat_run")
         try:
-            self._enqueue_think_life_user_turn(
+            self._enqueue_runtime_user_turn(
                 active_thread_id,
                 user_message=_normalize_text(normalized_user_turn.get("text")) or rendered_message,
                 user_turn=normalized_user_turn,
@@ -1003,7 +997,7 @@ class ChatServiceRuntime:
             THREAD_RUNTIME_STATUS.clear_busy(active_thread_id, reason="chat_run")
             THREAD_RUNTIME_STATUS.set_pending_stimuli(
                 active_thread_id,
-                self._engine.inbox.pending_count(active_thread_id),
+                self._runtime_host.pending_count(active_thread_id),
             )
 
         if cancel_event.is_set():
@@ -1032,16 +1026,59 @@ class ChatServiceRuntime:
 
     @staticmethod
     def _schedule_system_context(schedule_item: Any) -> Dict[str, Any]:
+        schedule_id = str(
+            getattr(schedule_item, "schedule_id", "") or ""
+        ).strip()
+        due_at_utc = str(
+            getattr(schedule_item, "due_at_utc", "") or ""
+        ).strip()
+        timezone_name = str(
+            getattr(schedule_item, "timezone_name", "") or ""
+        ).strip()
+        raw_objective = getattr(schedule_item, "deferred_objective", None)
+        if hasattr(raw_objective, "to_dict"):
+            objective = dict(raw_objective.to_dict())
+        elif isinstance(raw_objective, dict):
+            objective = dict(raw_objective)
+        else:
+            objective = {
+                "description": str(
+                    getattr(schedule_item, "text", "") or ""
+                ).strip(),
+                "encoding": "legacy_text",
+            }
+        objective.setdefault("role", "deferred_objective")
+        origin = getattr(schedule_item, "origin", None)
+        origin = dict(origin) if isinstance(origin, dict) else {}
+        activation = {
+            "schema_version": 1,
+            "event": {
+                "role": "activation_event",
+                "type": "schedule_due",
+                "source": "heartbeat",
+                "subject_ref": schedule_id,
+                "facts": {
+                    "due_at_utc": due_at_utc,
+                    "timezone_name": timezone_name,
+                },
+            },
+            "objective": objective,
+            "evidence": [],
+            "origin": origin,
+        }
         return {
             "trigger_source": "schedule",
-            "schedule_id": str(getattr(schedule_item, "schedule_id", "") or "").strip(),
-            "due_at_utc": str(getattr(schedule_item, "due_at_utc", "") or "").strip(),
-            "timezone_name": str(getattr(schedule_item, "timezone_name", "") or "").strip(),
+            "schedule_id": schedule_id,
+            "due_at_utc": due_at_utc,
+            "timezone_name": timezone_name,
+            "semantic_frame_version": 1,
+            "activation": activation,
         }
 
     @staticmethod
     def _schedule_prompt(schedule_item: Any) -> str:
-        return str(getattr(schedule_item, "text", "") or "").strip()
+        del schedule_item
+        return "schedule_due"
 
     def import_dialogues(
         self,
@@ -1121,12 +1158,8 @@ class ChatServiceRuntime:
             yield {"seq": seq, **event}
 
     def _scene_flush_through_seq(self, conversation_id: str) -> int:
-        reader = self._engine.scene_system.reader
-        entries_fn = getattr(reader, "entries_since_flush", None)
-        if not callable(entries_fn):
-            return 0
-        entries = list(entries_fn(str(conversation_id or "").strip()))
-        return max((int(getattr(entry, "seq", 0) or 0) for entry in entries), default=0)
+        method = getattr(self._runtime_host, "scene_flush_through_seq", None)
+        return int(method(conversation_id) or 0) if callable(method) else 0
 
     def _scene_flush_payload(
         self, thread_id: str, conversation_id: str
@@ -1139,10 +1172,61 @@ class ChatServiceRuntime:
             )
         except Exception:
             logger.exception(
-                "Think-life build_dialogue_flush_payload failed thread_id=%s",
+                "Runtime build_dialogue_flush_payload failed thread_id=%s",
                 thread_id,
             )
             return None
+
+    def _prepare_runtime_flush_plan(
+        self,
+        thread_id: str,
+        conversation_id: str,
+    ) -> Dict[str, Any]:
+        plan = self._runtime_host.prepare_flush_segment(
+            thread_id,
+            conversation_id=conversation_id,
+            source="chat_api_thread_flush",
+        )
+        if not isinstance(plan, dict):
+            raise TypeError("runtime FlushSnapshot plan must be a mapping")
+        if not str(plan.get("flush_id", "") or "").strip():
+            raise ValueError("runtime FlushSnapshot plan has no flush_id")
+        if not isinstance(plan.get("flush_snapshot"), dict):
+            raise ValueError("runtime FlushSnapshot plan has no snapshot")
+        return plan
+
+    def _buffered_dialogue_flush_payload(
+        self,
+        thread_id: str,
+        pending_rounds: Sequence[BufferedRound],
+    ) -> Dict[str, Any]:
+        if not pending_rounds:
+            raise ValueError("pending_rounds are required")
+        rounds = [
+            {
+                "user_message": item.user_message,
+                "assistant_message": item.assistant_message,
+                "user_turn": deepcopy(item.user_turn),
+                "assistant_turn": deepcopy(item.assistant_turn),
+                "user_at": item.user_at,
+                "assistant_at": item.assistant_at,
+            }
+            for item in pending_rounds
+        ]
+        return build_dialogue_payload(
+            dialogue_id=build_dialogue_id(
+                thread_id=thread_id,
+                created_at=pending_rounds[0].user_at,
+            ),
+            thread_id=thread_id,
+            rounds=rounds,
+            source="chat_api_thread_flush",
+            user_name=str(getattr(self.agent, "user_name", "User") or "User"),
+            assistant_name=str(
+                getattr(self.agent, "assistant_name", "Memory Assistant")
+                or "Memory Assistant"
+            ),
+        )
 
     def _scene_payload_covers_pending_rounds(
         self,
@@ -1194,7 +1278,7 @@ class ChatServiceRuntime:
         if snap.in_flight_stimulus_id:
             return "stimulus_in_flight"
         with self._threads_lock:
-            if self._think_life_pending_users.get(tid):
+            if self._runtime_pending_users.get(tid):
                 return "reply_pending"
         return None
 
@@ -1235,16 +1319,89 @@ class ChatServiceRuntime:
                 block_reason=block_reason,
             )
         operation_id = f"flush_{uuid.uuid4().hex}"
+        staged_dialogue_materialization: Optional[Dict[str, Any]] = None
+        delivered_dialogue_result: Optional[Dict[str, Any]] = None
         with self._threads_lock:
             pending_rounds = list(self._pending_rounds(session))
             session.last_flush_attempt_at = _now_utc()
             session.updated_at = session.last_flush_attempt_at
-            scene_payload = self._scene_flush_payload(
-                session.thread_id, session.conversation_id
-            )
-            scene_flush_through_seq = (
-                self._scene_flush_through_seq(session.conversation_id) if scene_payload else 0
-            )
+            try:
+                runtime_flush_plan = self._prepare_runtime_flush_plan(
+                    session.thread_id,
+                    session.conversation_id,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Failed to prepare durable FlushSnapshot thread_id=%s",
+                    session.thread_id,
+                )
+                session.last_flush_result = {
+                    "success": False,
+                    "status": "failed",
+                    "error": str(exc),
+                    "conversation_id": session.conversation_id,
+                }
+                snapshot = self._thread_state_snapshot(session)
+                return {
+                    "success": False,
+                    "retryable": True,
+                    "thread_id": session.thread_id,
+                    "flush_reason": reason,
+                    "status": "failed",
+                    "message": "runtime flush snapshot failed",
+                    "error": str(exc),
+                    "thread_state": snapshot,
+                }
+            if runtime_flush_plan is not None:
+                planned_payload = runtime_flush_plan.get("dialogue_payload")
+                scene_payload = (
+                    deepcopy(planned_payload)
+                    if isinstance(planned_payload, dict)
+                    else None
+                )
+                scene_flush_through_seq = int(
+                    runtime_flush_plan.get("through_seq", 0) or 0
+                )
+                runtime_flush_id = str(
+                    runtime_flush_plan.get("flush_id", "") or ""
+                ).strip()
+                materializations = runtime_flush_plan.get(
+                    "materializations"
+                )
+                materializations = (
+                    materializations
+                    if isinstance(materializations, dict)
+                    else {}
+                )
+                dialogue_state = materializations.get("dialogue")
+                dialogue_state = (
+                    dialogue_state if isinstance(dialogue_state, dict) else {}
+                )
+                delivered_result = dialogue_state.get("result")
+                if (
+                    dialogue_state.get("status") == "delivered"
+                    and isinstance(delivered_result, dict)
+                ):
+                    delivered_dialogue_result = deepcopy(delivered_result)
+                staged_payload = dialogue_state.get("payload")
+                if isinstance(staged_payload, dict):
+                    staged_dialogue_materialization = deepcopy(
+                        staged_payload
+                    )
+                    frozen_dialogue = staged_payload.get("dialogue_payload")
+                    if isinstance(frozen_dialogue, dict):
+                        scene_payload = deepcopy(frozen_dialogue)
+            else:
+                scene_payload = self._scene_flush_payload(
+                    session.thread_id, session.conversation_id
+                )
+                # Advance the Scene watermark even when the pending slice only
+                # contains internal/action entries and therefore produces no
+                # user-visible Dialogue payload.
+                scene_flush_through_seq = self._scene_flush_through_seq(
+                    session.conversation_id
+                )
+                runtime_flush_id = operation_id
             if scene_payload and not self._scene_payload_covers_pending_rounds(
                 scene_payload,
                 pending_rounds,
@@ -1259,22 +1416,103 @@ class ChatServiceRuntime:
 
             if not scene_payload and not pending_rounds:
                 old_conversation_id = session.conversation_id
-                think_life_segment: Optional[Dict[str, Any]] = None
+                runtime_segment: Optional[Dict[str, Any]] = None
                 try:
-                    think_life_segment = self._engine.on_flush_segment(
+                    flush_kwargs: Dict[str, Any] = {
+                        "conversation_id": old_conversation_id,
+                        "flush_id": runtime_flush_id,
+                        "through_seq": scene_flush_through_seq,
+                        "payload": {
+                            "reason": reason,
+                            "flush_mode": "noop",
+                            "external_dialogue_written": False,
+                        },
+                    }
+                    if runtime_flush_plan is not None:
+                        flush_kwargs.update(
+                            {
+                                "flush_snapshot": runtime_flush_plan[
+                                    "flush_snapshot"
+                                ],
+                                "defer_completion": True,
+                            }
+                        )
+                    runtime_segment = self._engine.on_flush_segment(
                         session.thread_id,
+                        **flush_kwargs,
+                    )
+                    if runtime_flush_plan is not None:
+                        self._runtime_host.complete_flush_segment(
+                            runtime_flush_id
+                        )
+                except Exception as exc:
+                    logger.exception(
+                        "Runtime on_flush_segment failed thread_id=%s (noop flush)",
+                        session.thread_id,
+                    )
+                    session.last_flush_result = {
+                        "success": False,
+                        "status": "failed",
+                        "error": str(exc),
+                        "conversation_id": old_conversation_id,
+                    }
+                    snapshot = self._thread_state_snapshot(session)
+                    return {
+                        "success": False,
+                        "retryable": True,
+                        "thread_id": session.thread_id,
+                        "flush_reason": reason,
+                        "status": "failed",
+                        "message": "runtime flush commit failed",
+                        "error": str(exc),
+                        "thread_state": snapshot,
+                        "runtime_flush": None,
+                    }
+                next_conversation_seq = int(session.conversation_seq) + 1
+                try:
+                    self._persist_conversation_seq_value(
+                        session.thread_id,
+                        next_conversation_seq,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Conversation boundary persistence failed thread_id=%s",
+                        session.thread_id,
+                    )
+                    session.last_flush_result = {
+                        "success": False,
+                        "status": "failed",
+                        "error": str(exc),
+                        "conversation_id": old_conversation_id,
+                    }
+                    snapshot = self._thread_state_snapshot(session)
+                    return {
+                        "success": False,
+                        "retryable": True,
+                        "thread_id": session.thread_id,
+                        "flush_reason": reason,
+                        "status": "failed",
+                        "message": "conversation boundary persistence failed",
+                        "error": str(exc),
+                        "thread_state": snapshot,
+                        "runtime_flush": runtime_segment,
+                    }
+                try:
+                    self._agent.on_flush(
                         conversation_id=old_conversation_id,
+                        thread_id=session.thread_id,
                     )
                 except Exception:
                     logger.exception(
-                        "Think-life on_flush_segment failed thread_id=%s (noop flush)",
+                        "ThreeLayerChatAgent.on_flush failed for conversation_id=%s thread_id=%s",
+                        old_conversation_id,
                         session.thread_id,
                     )
                 message = "no pending rounds to flush"
                 status = "noop"
-                if think_life_segment and think_life_segment.get("completed_transaction_id"):
-                    message = "think_life user segment closed (no pending dialogue turns)"
-                    status = "think_life_segment"
+                if runtime_segment and runtime_segment.get("completed_transaction_id"):
+                    message = "runtime user segment closed (no pending dialogue turns)"
+                    status = "runtime_segment"
                 session.idle_timer_started_at = None
                 session.last_flush_at = session.last_flush_attempt_at
                 session.last_flush_reason = reason
@@ -1284,8 +1522,7 @@ class ChatServiceRuntime:
                     "conversation_id": old_conversation_id,
                 }
                 session.flush_count += 1
-                session.conversation_seq += 1
-                self._persist_conversation_seq(session)
+                session.conversation_seq = next_conversation_seq
                 snapshot = self._thread_state_snapshot(session)
                 result = {
                     "success": True,
@@ -1294,7 +1531,7 @@ class ChatServiceRuntime:
                     "status": status,
                     "message": message,
                     "thread_state": snapshot,
-                    "think_life_flush": think_life_segment,
+                    "runtime_flush": runtime_segment,
                 }
                 self._emit_thread_event(
                     snapshot["thread_id"],
@@ -1314,7 +1551,20 @@ class ChatServiceRuntime:
                 self._emit_thread_event(snapshot["thread_id"], "thread_state_updated", {"thread_state": snapshot})
                 return result
 
-        if scene_payload:
+        if staged_dialogue_materialization is not None:
+            flush_mode = str(
+                staged_dialogue_materialization.get("flush_mode", "scene")
+                or "scene"
+            )
+            rounds_flushed = int(
+                staged_dialogue_materialization.get("rounds_flushed", 0)
+                or 0
+            )
+            turns_flushed = int(
+                staged_dialogue_materialization.get("turns_flushed", 0)
+                or 0
+            )
+        elif scene_payload:
             turns = scene_payload.get("turns") if isinstance(scene_payload.get("turns"), list) else []
             meta = scene_payload.get("meta") if isinstance(scene_payload.get("meta"), dict) else {}
             rounds_flushed = int(meta.get("round_count", 0) or 0)
@@ -1324,8 +1574,52 @@ class ChatServiceRuntime:
             turns_flushed = len(pending_rounds) * 2
             rounds_flushed = len(pending_rounds)
             # Recovery path for a missing Scene payload. Buffered rounds are
-            # maintained by Think-life for hot history and prevent data loss.
+            # maintained by Runtime for hot history and prevent data loss.
             flush_mode = "buffered_rounds"
+
+        if runtime_flush_plan is not None and staged_dialogue_materialization is None:
+            try:
+                if scene_payload is None:
+                    scene_payload = self._buffered_dialogue_flush_payload(
+                        session.thread_id,
+                        pending_rounds,
+                    )
+                staged_dialogue_materialization = {
+                    "dialogue_payload": deepcopy(scene_payload),
+                    "flush_mode": flush_mode,
+                    "rounds_flushed": rounds_flushed,
+                    "turns_flushed": turns_flushed,
+                }
+                runtime_flush_plan = (
+                    self._runtime_host.stage_flush_materialization(
+                        runtime_flush_id,
+                        destination="dialogue",
+                        payload=staged_dialogue_materialization,
+                    )
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Failed to stage durable dialogue materialization thread_id=%s",
+                    session.thread_id,
+                )
+                with self._threads_lock:
+                    session.last_flush_result = {
+                        "success": False,
+                        "status": "failed",
+                        "error": str(exc),
+                        "conversation_id": session.conversation_id,
+                    }
+                    snapshot = self._thread_state_snapshot(session)
+                return {
+                    "success": False,
+                    "retryable": True,
+                    "thread_id": session.thread_id,
+                    "flush_reason": reason,
+                    "status": "failed",
+                    "message": "dialogue materialization staging failed",
+                    "error": str(exc),
+                    "thread_state": snapshot,
+                }
 
         self._emit_thread_event(
             session.thread_id,
@@ -1353,55 +1647,187 @@ class ChatServiceRuntime:
                 event_payload.update(payload)
             self._emit_thread_event(session.thread_id, event_type, event_payload)
 
-        with self._operation_lock:
-            if scene_payload:
-                persist_dialogue_payload = getattr(self.agent, "persist_dialogue_payload", None)
-                if callable(persist_dialogue_payload):
-                    flush_result = persist_dialogue_payload(
-                        dialogue_payload=scene_payload,
-                        thread_id=session.thread_id,
-                        reason=f"chat_thread_{reason}",
-                        source="chat_api_thread_flush",
-                        progress_callback=progress_callback,
-                    )
-                else:
-                    flush_result = {
-                        "success": False,
-                        "error": "agent does not support persist_dialogue_payload",
-                    }
+        runtime_segment: Optional[Dict[str, Any]] = None
+        old_conversation_id = session.conversation_id
+        flush_result: Dict[str, Any]
+        if runtime_flush_plan is not None:
+            try:
+                runtime_segment = self._engine.on_flush_segment(
+                    session.thread_id,
+                    conversation_id=old_conversation_id,
+                    flush_id=runtime_flush_id,
+                    through_seq=scene_flush_through_seq,
+                    flush_snapshot=runtime_flush_plan["flush_snapshot"],
+                    defer_completion=True,
+                    payload={
+                        "flush_mode": flush_mode,
+                        "rounds_flushed": rounds_flushed,
+                        "turns_flushed": turns_flushed,
+                        "external_dialogue_written": False,
+                    },
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Runtime flush commit failed before dialogue write thread_id=%s",
+                    session.thread_id,
+                )
+                flush_result = {
+                    "success": False,
+                    "external_write_success": False,
+                    "runtime_flush_id": runtime_flush_id,
+                    "error": (
+                    f"runtime flush commit failed: {exc}"
+                    ),
+                }
             else:
-                round_payloads = [
-                    {
-                        "user_message": item.user_message,
-                        "assistant_message": item.assistant_message,
-                        "user_turn": deepcopy(item.user_turn),
-                        "assistant_turn": deepcopy(item.assistant_turn),
-                        "user_at": item.user_at,
-                        "assistant_at": item.assistant_at,
-                    }
-                    for item in pending_rounds
-                ]
-                persist_dialogue = getattr(self.agent, "persist_dialogue", None)
-                if callable(persist_dialogue):
-                    flush_result = persist_dialogue(
-                        thread_id=session.thread_id,
-                        rounds=round_payloads,
-                        reason=f"chat_thread_{reason}",
-                        source="chat_api_thread_flush",
-                        progress_callback=progress_callback,
+                flush_result = {}
+        else:
+            flush_result = {}
+
+        if delivered_dialogue_result is not None:
+            flush_result = deepcopy(delivered_dialogue_result)
+        elif not flush_result:
+            with self._operation_lock:
+                if scene_payload:
+                    persist_dialogue_payload = getattr(
+                        self.agent,
+                        "persist_dialogue_payload",
+                        None,
                     )
+                    if callable(persist_dialogue_payload):
+                        flush_result = persist_dialogue_payload(
+                            dialogue_payload=scene_payload,
+                            thread_id=session.thread_id,
+                            reason=f"chat_thread_{reason}",
+                            source="chat_api_thread_flush",
+                            progress_callback=progress_callback,
+                        )
+                    else:
+                        flush_result = {
+                            "success": False,
+                            "error": "agent does not support persist_dialogue_payload",
+                        }
                 else:
-                    flush_result = self.agent.memory_persistence.persist_dialogue(
-                        thread_id=session.thread_id,
-                        rounds=round_payloads,
-                        reason=f"chat_thread_{reason}",
-                        source="chat_api_thread_flush",
-                        progress_callback=progress_callback,
+                    round_payloads = [
+                        {
+                            "user_message": item.user_message,
+                            "assistant_message": item.assistant_message,
+                            "user_turn": deepcopy(item.user_turn),
+                            "assistant_turn": deepcopy(item.assistant_turn),
+                            "user_at": item.user_at,
+                            "assistant_at": item.assistant_at,
+                        }
+                        for item in pending_rounds
+                    ]
+                    persist_dialogue = getattr(
+                        self.agent,
+                        "persist_dialogue",
+                        None,
                     )
+                    if callable(persist_dialogue):
+                        flush_result = persist_dialogue(
+                            thread_id=session.thread_id,
+                            rounds=round_payloads,
+                            reason=f"chat_thread_{reason}",
+                            source="chat_api_thread_flush",
+                            progress_callback=progress_callback,
+                        )
+                    else:
+                        flush_result = self.agent.memory_persistence.persist_dialogue(
+                            thread_id=session.thread_id,
+                            rounds=round_payloads,
+                            reason=f"chat_thread_{reason}",
+                            source="chat_api_thread_flush",
+                            progress_callback=progress_callback,
+                        )
 
         flush_success = bool(flush_result.get("success", False))
+        if flush_success and runtime_flush_plan is not None:
+            try:
+                self._runtime_host.mark_flush_materialization_delivered(
+                    runtime_flush_id,
+                    destination="dialogue",
+                    result=_summarize_memory_write_result(flush_result),
+                )
+                completion = self._runtime_host.complete_flush_segment(
+                    runtime_flush_id
+                )
+                if runtime_segment is not None:
+                    runtime_segment["journal_status"] = completion.get(
+                        "status",
+                        "completed",
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "Runtime flush finalization failed after dialogue write thread_id=%s",
+                    session.thread_id,
+                )
+                failed_result = deepcopy(flush_result)
+                failed_result["success"] = False
+                failed_result["external_write_success"] = True
+                failed_result["runtime_flush_id"] = runtime_flush_id
+                failed_result["error"] = (
+                    f"runtime flush finalization failed: {exc}"
+                )
+                flush_result = failed_result
+                flush_success = False
+        elif flush_success:
+            runtime_flush_id = (
+                str(flush_result.get("dialogue_id", "") or "").strip()
+                or operation_id
+            )
+            try:
+                runtime_segment = self._engine.on_flush_segment(
+                    session.thread_id,
+                    conversation_id=old_conversation_id,
+                    flush_id=runtime_flush_id,
+                    through_seq=scene_flush_through_seq,
+                    payload={
+                        "flush_mode": flush_mode,
+                        "dialogue_id": str(
+                            flush_result.get("dialogue_id", "") or ""
+                        ).strip(),
+                        "rounds_flushed": rounds_flushed,
+                        "turns_flushed": turns_flushed,
+                        "external_dialogue_written": True,
+                    },
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Runtime flush commit failed after dialogue write thread_id=%s",
+                    session.thread_id,
+                )
+                failed_result = deepcopy(flush_result)
+                failed_result["success"] = False
+                failed_result["external_write_success"] = True
+                failed_result["error"] = (
+                    f"runtime flush commit failed: {exc}"
+                )
+                flush_result = failed_result
+                flush_success = False
         drained_episode_notes: List[Dict[str, Any]] = []
-        conversation_seq_changed = False
+        next_conversation_seq: Optional[int] = None
+        if flush_success:
+            next_conversation_seq = int(session.conversation_seq) + 1
+            try:
+                self._persist_conversation_seq_value(
+                    session.thread_id,
+                    next_conversation_seq,
+                )
+            except Exception as exc:
+                logger.exception(
+                    "Conversation boundary persistence failed thread_id=%s",
+                    session.thread_id,
+                )
+                failed_result = deepcopy(flush_result)
+                failed_result["success"] = False
+                failed_result["external_write_success"] = True
+                failed_result["runtime_flush_id"] = runtime_flush_id
+                failed_result["error"] = (
+                    f"conversation boundary persistence failed: {exc}"
+                )
+                flush_result = failed_result
+                flush_success = False
         with self._threads_lock:
             session.last_flush_attempt_at = _now_utc()
             session.last_flush_reason = reason
@@ -1416,19 +1842,6 @@ class ChatServiceRuntime:
                 session.flush_count += 1
                 session.idle_timer_started_at = None
 
-                if scene_flush_through_seq > 0:
-                    try:
-                        self._engine.mark_scene_flushed(
-                            session.conversation_id,
-                            through_seq=scene_flush_through_seq,
-                        )
-                    except Exception:
-                        logger.exception(
-                            "Think-life mark_scene_flushed failed thread_id=%s",
-                            session.thread_id,
-                        )
-
-                old_conversation_id = session.conversation_id
                 try:
                     drained_episode_notes = list(
                         self._agent.on_flush(
@@ -1443,25 +1856,11 @@ class ChatServiceRuntime:
                         old_conversation_id,
                         session.thread_id,
                     )
-                session.conversation_seq += 1
-                conversation_seq_changed = True
-
-                try:
-                    self._engine.on_flush_segment(
-                        session.thread_id,
-                        conversation_id=old_conversation_id,
-                    )
-                except Exception:
-                    logger.exception(
-                        "Think-life on_flush_segment failed thread_id=%s",
-                        session.thread_id,
-                    )
+                assert next_conversation_seq is not None
+                session.conversation_seq = next_conversation_seq
 
                 self._trim_history(session)
             snapshot = self._thread_state_snapshot(session)
-
-        if conversation_seq_changed:
-            self._persist_conversation_seq(session)
 
         if drained_episode_notes:
             logger.info(
@@ -1479,6 +1878,7 @@ class ChatServiceRuntime:
 
         result = {
             "success": flush_success,
+            "retryable": not flush_success,
             "thread_id": session.thread_id,
             "flush_reason": reason,
             "status": "written" if flush_success else "failed",
@@ -1486,6 +1886,7 @@ class ChatServiceRuntime:
             "rounds_flushed": rounds_flushed if flush_success else 0,
             "turns_flushed": turns_flushed if flush_success else 0,
             "memory_write": flush_result,
+            "runtime_flush": runtime_segment,
             "thread_state": snapshot,
             "error": None if flush_success else str(flush_result.get("error", "memory flush failed")),
         }
@@ -1588,7 +1989,7 @@ class ChatServiceRuntime:
             )
             rendered_message = _render_turn_for_llm(normalized_user_turn)
             user_text = _normalize_text(normalized_user_turn.get("text")) or rendered_message
-            self._enqueue_think_life_user_turn(
+            self._enqueue_runtime_user_turn(
                 active_thread_id,
                 user_message=user_text,
                 user_turn=normalized_user_turn,
@@ -1617,7 +2018,7 @@ class ChatServiceRuntime:
             since_flush=since_flush,
         )
 
-    def get_think_life_transactions(
+    def get_transactions(
         self,
         thread_id: str,
         *,
@@ -1682,7 +2083,7 @@ class ChatServiceRuntime:
                 "last_idle_flush_scan_at": self._last_idle_flush_scan_at,
             }
         host_health = dict(self._runtime_host.health())
-        engine_metrics = {
+        runtime_metrics = {
             "runtime_engine_id": host_health.get(
                 "runtime_engine_id", self.runtime_engine_id
             ),
@@ -1693,13 +2094,9 @@ class ChatServiceRuntime:
             "turn_loop": host_health.get("turn_loop"),
             "delegate_executor": host_health.get("delegate_executor"),
             "profile": host_health.get("profile"),
+            "checkpoint": host_health.get("checkpoint"),
+            "turn_checkpoint": host_health.get("turn_checkpoint"),
+            "flush_journal": host_health.get("flush_journal"),
         }
-        # Backward-compatible nested block + engine-neutral aliases.
-        payload["think_life"] = {
-            "pending_stimuli_total": engine_metrics["pending_stimuli_total"],
-            "active_drainer_threads": engine_metrics["active_drainer_threads"],
-            "preempt_enabled": engine_metrics["preempt_enabled"],
-        }
-        payload["runtime_engine"] = engine_metrics
-        payload["engines"] = {self.runtime_engine_id: engine_metrics}
+        payload["runtime"] = runtime_metrics
         return payload

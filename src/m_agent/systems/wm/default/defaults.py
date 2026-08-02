@@ -1,7 +1,7 @@
 """Default WMReader / WMWriter implementations.
 
 These are thin wrappers around the existing
-:mod:`m_agent.chat.working_memory` helpers used by Think-life transactions.
+:mod:`m_agent.chat.working_memory` helpers used by Runtime transactions.
 
 Pluggable callers may swap in custom implementations by satisfying the
 :class:`~m_agent.systems.wm.protocols.WMReader` /
@@ -67,7 +67,7 @@ class DefaultWMWriter:
 class DefaultWMDisplay:
     """Default :class:`WMDisplay` — recent tail via ``inject_max_entries``.
 
-    Uses the same renderer as :class:`DefaultWMReader`. Think-life does not
+    Uses the same renderer as :class:`DefaultWMReader`. Runtime does not
     inject this display into capability calls, but custom integrations may.
     """
 

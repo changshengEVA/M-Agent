@@ -9,7 +9,7 @@ from m_agent.chat.chat_memory_persistence import (
 )
 from m_agent.chat.dialogue_import import turns_to_rounds
 from m_agent.chat.dialogue_validation import validate_dialogue_payload
-from m_agent.runtime.think_life.contracts import SceneActor, SceneEntry, SceneEntryType
+from m_agent.runtime.domain.contracts import SceneActor, SceneEntry, SceneEntryType
 
 
 def _entry(
@@ -67,14 +67,14 @@ def test_scene_export_v1_shape_chronological_user_assistant_only() -> None:
         thread_id="demo-thread-1",
         entries=entries,
         source="chat_api_thread_flush",
-        user_name="think_life_test",
+        user_name="runtime_test",
         assistant_name="Memory Assistant",
     )
 
     assert payload["meta"]["version"] == 1
     assert len(payload["turns"]) == 3
     assert set(payload["turns"][0].keys()) <= {"speaker", "text", "turn_id", "timestamp"}
-    assert payload["turns"][0]["speaker"] == "think_life_test"
+    assert payload["turns"][0]["speaker"] == "runtime_test"
     assert payload["turns"][0]["text"] == "你好"
     assert payload["turns"][0]["timestamp"] == "2026-05-29T14:14:03.063233Z"
     assert payload["turns"][1]["text"] == "补充一句"
@@ -84,7 +84,7 @@ def test_scene_export_v1_shape_chronological_user_assistant_only() -> None:
 
     rounds = turns_to_rounds(
         payload["turns"],
-        user_speaker="think_life_test",
+        user_speaker="runtime_test",
         assistant_speaker="Memory Assistant",
     )
     assert len(rounds) == 1

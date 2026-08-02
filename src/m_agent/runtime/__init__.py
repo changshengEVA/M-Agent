@@ -1,4 +1,4 @@
-"""Runtimes for M-Agent (Think-life, LangGraph, and shared host)."""
+"""Runtimes for M-Agent (Runtime, LangGraph, and shared host)."""
 
 from __future__ import annotations
 

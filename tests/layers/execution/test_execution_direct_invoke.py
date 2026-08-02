@@ -1,4 +1,4 @@
-"""Tests for Think-life's single-capability direct invocation."""
+"""Tests for single-capability direct invocation."""
 from __future__ import annotations
 
 from typing import Any, Dict

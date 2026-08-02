@@ -1,32 +1,31 @@
-# Tools 子系统——插件指南
+# Tools 子系统——可插拔说明
 
 > English: [tools.md](./tools.md) · 总索引：[README.zh-CN.md](./README.zh-CN.md)
 
 ## 职责
 
-Tools 子系统向执行层暴露 LangChain capability。默认工具集采用**每个工具一个 YAML 清单**，使注册、提示词、默认参数、参数路由和集成元数据集中在一个位置。
+Tools 子系统向执行层暴露 LangChain capability。当前工具集为每个 capability 使用一份
+YAML 清单，使注册、prompt 描述、参数路由、结果投影、限流和依赖元数据共享唯一事实源。
 
-## 目录结构
+## 目录与工具集配置
 
 ```text
 config/systems/tools/
-├── default.yaml                 # 工具集组合及跨工具策略
+├── default.yaml
 └── capabilities/
-    ├── web_search.yaml          # 一个工具的一份完整描述
+    ├── web_search.yaml
     ├── schedule_create.yaml
     └── ...
 ```
 
-Chat controller 仍然只挂载一个工具集：
-
 ```yaml
+# config/agents/chat/chat_controller.yaml
 systems:
   tools: ../../systems/tools/default.yaml
 ```
 
-`default.yaml` 指向清单目录，并控制启用白名单：
-
 ```yaml
+# config/systems/tools/default.yaml
 system: tools
 capabilities_dir: ./capabilities
 enabled: [reply_to_user, get_current_time, web_search]
@@ -35,49 +34,104 @@ defaults:
     max_calls_per_turn: 12
 ```
 
-如果省略 `enabled`，则启用 `capabilities_dir` 下的全部清单。旧版第三方工具集仍可继续使用 `registry` 和 `runtime_descriptions_path`。
+省略 `enabled` 时，启用 `capabilities_dir` 内全部有效清单。
 
-## 工具清单
+## Capability 清单
 
-每份清单可包含以下字段：
+```yaml
+name: web_search
+version: 1
+category: information
+builder: m_agent.systems.tools.default.capabilities.web_search_ops:_build_web_search_tool
 
-| 字段 | 运行时含义 |
-|---|---|
-| `name` | 规划、调用、日志和记忆共同使用的稳定工具名 |
+descriptions:
+  en: Search the public web or inspect a known URL.
+  zh: 搜索公开网络或读取指定 URL。
+
+input:
+  mode: param_llm
+  schema: inferred_from_tool
+
+output:
+  schema: builtins:dict
+  feedback_projector: m_agent.runtime.turn_support.execution_feedback:feedback_summary_from_tool_history
+  memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
+
+policy:
+  side_effect: read
+  max_calls_per_turn: 3
+
+dependencies: [web_search_client, api_credentials]
+
+defaults:
+  provider: auto
+  max_results: 5
+```
+
+| 字段 | 含义 |
+|------|------|
+| `name` | 规划、调用、日志和记忆共同使用的稳定 capability 名 |
 | `version` | 大于零的契约版本 |
-| `category` | capability descriptor 对外暴露的分类 |
-| `builder` | 构建 LangChain 工具的可导入 callable；路径错误会在启动时失败 |
-| `descriptions` | 注入思考层 capability 列表的多语言描述 |
+| `category` | Descriptor 分类 |
+| `builder` | 返回 LangChain 工具的可导入 callable |
+| `descriptions` | 暴露给思考层的多语言描述 |
 | `input.mode` | `param_llm`、`instruction_arg`、`no_args` 或 `reply` |
-| `input.instruction_arg` | 直接映射思考层 instruction 时使用的参数名 |
-| `input.schema` | 输入 schema 来源；`inferred_from_tool` 表示从 LangChain 工具推导 |
-| `output.*` | 保存在 `ControllerCapabilitySpec` 上的输出契约和投影元数据 |
-| `policy.max_calls_per_turn` | 通过现有默认参数和限流机制执行 |
-| `policy.side_effect` | 审查与安全元数据，如 `read`、`write`、`send` |
-| `dependencies` | 所需后端、服务或认证资源 |
-| `defaults` | 该工具的默认运行参数 |
+| `input.instruction_arg` | 直接映射 instruction 的目标键 |
+| `input.schema` | Schema 引用；`inferred_from_tool` 读取 LangChain args schema |
+| `output.*` | 结果 schema 与经过校验的 feedback/WM projector 路径 |
+| `policy.max_calls_per_turn` | 单 capability 调用上限 |
+| `policy.side_effect` | `read`、`write`、`send`、`emit` 等审查元数据 |
+| `dependencies` | 由 capability context 提供的所需服务 |
+| `defaults` | 单 capability runtime 默认参数 |
 
-目前 `side_effect`、`dependencies` 和输出 projector 路径属于描述性元数据。工具仍需通过 `ControllerCapabilityContext` 获取依赖；复杂结果仍需在 `src/m_agent/chat/working_memory.py` 中接入专用投影。
+加载工具集时会解析所有可执行 dotted path，因此无效清单会在启动阶段失败。
 
 ## 参数模式
 
 | 模式 | 行为 |
-|---|---|
-| `param_llm` | 从工具 schema 生成结构化参数 |
-| `instruction_arg` | 将思考层 instruction 直接写入指定参数 |
-| `no_args` | 使用 `{}` 调用工具 |
-| `reply` | 直接构建 `reply_to_user` 参数，不运行参数 LLM |
+|------|------|
+| `param_llm` | 按工具 schema 填充结构化参数 |
+| `instruction_arg` | 把思考层 instruction 映射到声明的键 |
+| `no_args` | 使用 `{}` 调用 |
+| `reply` | 不经参数填充，直接构建 `reply_to_user` payload |
 
-通过 `capabilities_dir` 加载的工具集以清单为准。旧的跳过参数表只作为程序化 legacy registry 的兼容回退。
+文件型 capability 的参数路由完全由清单控制。
 
-## 新增工具
+## Runtime 与 `runtime_hooks` 契约
+
+LangGraph turn port 通过
+`ExecutionAgent.invoke_tool_direct(..., runtime_hooks=...)` 调用且只调用一个
+capability。执行层把该映射复制到
+`ControllerCapabilityContext.controller_state["runtime"]`。
+
+当前 hook 可包括：
+
+| Hook | 用途 |
+|------|------|
+| `transaction_id`, `conversation_id`, `delegate_id`, `effect_id` | 持久化归属 |
+| `idempotency_key`, `delivery_guarantee` | 副作用标识与投递策略 |
+| `on_reply` | 投递用户可见回复 |
+| `on_schedule_created` | 把新 schedule 关联到 runtime state |
+| `scene_writer` | 追加受 transaction fence 保护的 Scene entry |
+
+Hook 属于单次调用；除非 capability 契约明确要求，否则均为可选。Capability 从
+`controller_state["runtime"]` 读取 hook，通过 `ControllerCapabilityContext` 获取服务，
+且不导入 graph 内部实现。
+
+Builder 应在外部操作前后调用 `start_tool_call`、`check_tool_call_limits`、
+`record_tool_use` 和 `finish_tool_call`。Episodic 访问通过
+`context.get_episodic_backend()` 完成。
+
+## 新增 capability
 
 1. 在 `src/m_agent/systems/tools/default/capabilities/` 或其他可导入包中实现 builder。
-2. 在 `config/systems/tools/capabilities/` 下新增且只新增一份工具清单。
-3. 如果工具集使用显式白名单，将工具名加入 `default.yaml` 的 `enabled`。
-4. 按需增加依赖注入、工作记忆投影和专用执行反馈。
-5. 测试清单加载、参数路由、调用、限流和记忆投影。
+2. 在 `config/systems/tools/capabilities/` 下新增且只新增一份清单。
+3. 工具集使用显式列表时，把名称加入 `enabled`。
+4. 按需接入 context 依赖和 feedback/WM 投影。
+5. 测试加载、参数路由、调用、限流、投影与 hook。
 
 ```bash
-pytest tests/systems/ tests/runtime/test_think_life_tool_args.py tests/test_chat_controller_tool_limits.py
+pytest tests/systems/
+pytest tests/runtime/test_turn_support_tool_args.py tests/test_chat_controller_tool_limits.py
+pytest tests/chat/test_working_memory.py tests/runtime/test_langgraph_turn_loop.py
 ```

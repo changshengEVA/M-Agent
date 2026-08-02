@@ -754,18 +754,41 @@ class ThreeLayerChatAgent:
             backend = self.systems.episodic.backend
             if getattr(backend, "persistence", None) is archive:
                 return archive_result
+            dialogue_id = str(
+                archive_result.get("dialogue_id", "") or ""
+            ).strip()
+            backend_rounds = [
+                {
+                    **dict(item),
+                    **({"dialogue_id": dialogue_id} if dialogue_id else {}),
+                }
+                for item in rounds
+                if isinstance(item, dict)
+            ]
             try:
                 rag_result = backend.persist_dialogue(
                     thread_id=thread_id,
-                    rounds=rounds,
+                    rounds=backend_rounds,
                     reason=reason,
                     source=source,
                     progress_callback=progress_callback,
                 )
                 if isinstance(archive_result, dict) and isinstance(rag_result, dict):
                     archive_result.setdefault("rag_store", rag_result)
-            except Exception:
+                    if rag_result.get("success") is False:
+                        archive_result["success"] = False
+                        archive_result["archive_write_success"] = True
+                        archive_result["error"] = str(
+                            rag_result.get("error", "episodic backend write failed")
+                            or "episodic backend write failed"
+                        )
+            except Exception as exc:
                 logger.exception("Episodic backend persist_dialogue failed for thread_id=%s", thread_id)
+                archive_result["success"] = False
+                archive_result["archive_write_success"] = True
+                archive_result["error"] = (
+                    f"episodic backend persist_dialogue failed: {exc}"
+                )
             return archive_result
 
         return self.systems.episodic.backend.persist_dialogue(
@@ -810,6 +833,11 @@ class ThreeLayerChatAgent:
             else getattr(self, "assistant_name", "Memory Assistant") or "Memory Assistant"
         )
         rounds = turns_to_rounds(turns, user_speaker=user_name, assistant_speaker=assistant_name)
+        rounds = [
+            {**dict(item), "dialogue_id": dialogue_id}
+            for item in rounds
+            if isinstance(item, dict)
+        ]
 
         backend = self.systems.episodic.backend
         if rounds and getattr(backend, "persistence", None) is not archive:
@@ -823,8 +851,20 @@ class ThreeLayerChatAgent:
                 )
                 if isinstance(archive_result, dict) and isinstance(rag_result, dict):
                     archive_result.setdefault("rag_store", rag_result)
-            except Exception:
+                    if rag_result.get("success") is False:
+                        archive_result["success"] = False
+                        archive_result["archive_write_success"] = True
+                        archive_result["error"] = str(
+                            rag_result.get("error", "episodic backend write failed")
+                            or "episodic backend write failed"
+                        )
+            except Exception as exc:
                 logger.exception("Episodic backend persist_dialogue failed for thread_id=%s", tid)
+                archive_result["success"] = False
+                archive_result["archive_write_success"] = True
+                archive_result["error"] = (
+                    f"episodic backend persist_dialogue failed: {exc}"
+                )
 
         return archive_result
 

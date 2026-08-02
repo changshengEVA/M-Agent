@@ -111,9 +111,9 @@ class StandaloneTransactionState(ConversationState):
 
 
 class ConversationStateRegistry:
-    """Registry for compatibility state used outside the Think-life runtime.
+    """Registry for compatibility state used outside the Runtime runtime.
 
-    Think-life passes its authoritative ``TransactionRecord`` directly to the
+    Runtime passes its authoritative ``TransactionRecord`` directly to the
     thinking layer and does not use this registry for transaction working
     memory or task state.
     """

@@ -6,20 +6,20 @@ from pathlib import Path
 import sqlite3
 
 from m_agent.layers.perception.contracts import Stimulus, StimulusKind
-from m_agent.runtime.think_life.contracts import (
+from m_agent.runtime.domain.contracts import (
     ActivationStatus,
     PauseReason,
     StimulusEnvelope,
     TransactionKind,
     TransactionState,
 )
-from m_agent.runtime.think_life.perception.inbox import StimulusInbox
-from m_agent.runtime.think_life.transaction.predicates import (
+from m_agent.runtime.perception.inbox import StimulusInbox
+from m_agent.runtime.transaction.predicates import (
     is_runnable_record,
     project_compat_status,
 )
-from m_agent.runtime.think_life.transaction.store import SQLiteRuntimeStore
-from m_agent.runtime.think_life.transaction_registry import TransactionRegistry
+from m_agent.runtime.transaction.store import SQLiteRuntimeStore
+from m_agent.runtime.transaction.registry import TransactionRegistry
 
 
 def test_failure_is_a_restorable_pause_and_closes_live_work() -> None:

@@ -75,9 +75,9 @@ def test_catalog_exposes_stable_hierarchy_and_profile_case_counts() -> None:
         )
         for item in payload["groups"]
     } == {
-        "outer_runtime": (3, 4, 8, 3),
+        "outer_runtime": (3, 4, 8, 2),
         "transaction_state": (3, 4, 7, 1),
-        "reasoning_execution": (5, 6, 11, 1),
+        "reasoning_execution": (5, 6, 11, 0),
         "scene_memory": (2, 5, 9, 0),
         "recovery_idempotency": (1, 1, 1, 1),
     }

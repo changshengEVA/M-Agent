@@ -1,21 +1,18 @@
-# 架构与迁移文档
+# 架构文档
 
-本目录描述目标语义和迁移路线，不代表当前 `think_life_v1` 已经实现全部内容。
+活动架构文档描述当前 LangGraph 单宿主实现。已经完成阶段的规格、语义基线、差距矩阵和迁移计划保存在 [`archive/`](archive/README.md)，仅用于历史追溯。
 
 建议按以下顺序阅读：
 
-1. [总体设计架构](overall-design-architecture.md)  
-   最稳定的领域设计总线，定义 Transaction、Scene、刺激池和归因的职责边界。
-2. [Runtime 迁移语义测试规格](runtime-migration-semantic-test-spec.zh-CN.md)  
-   把目标语义展开成可执行验收场景和详细约束。
-3. [当前项目进度与设计计划](current-project-progress-and-design-plan.md)  
-   记录当前完成度、缺口、P0～P8 顺序和下一步；属于时间敏感文档。
-4. [LangGraph Runtime 迁移计划](langgraph-runtime-migration-plan.zh-CN.md)  
-   候选实现路径；是否采用 LangGraph 仍由 PoC 结果决定。
-5. [生产 Runtime 层实施计划](production-runtime-layer-plan.zh-CN.md)  
-   P8 之后：RuntimeHost、LangGraphRuntime 生产接线、Chat API 灰度与旧 loop 收缩（时间敏感）。
+1. [总体设计架构](overall-design-architecture.md)
+   定义 Transaction、Scene、刺激池、归因和三层 Agent 的稳定职责边界。
+2. [当前项目进度与设计](current-project-progress-and-design-plan.md)
+   说明当前 RuntimeHost、LangGraph、checkpoint、flush journal 和验收状态。
+3. [当前 Runtime 文档](../runtime/README.md)
+   说明配置、协议名称与运行 Gate。
+4. [Runtime 语义验收平台](../runtime/semantic-acceptance-platform.zh-CN.md)
+   说明 38 个 LangGraph 场景、CLI 和 Web UI。
+5. [历史归档](archive/README.md)
+   保存已完成阶段的原始规格和计划，不作为当前部署依据。
 
-当前实现行为见 [`../runtime/`](../runtime/README.md)。
-
-状态提示：截至 2026-07-30，P0～P8 与 acceptance 双 Runtime 矩阵已完成；
-生产 Runtime 接线见第 5 份文档；完整阶段 Gate 以第 3 份文档为准。
+当前产品只构造 `langgraph_v1`。通用配置位于 `runtime.common`，图配置位于 `runtime.langgraph`；能力上下文、Flush 和事务查询分别使用 `runtime_hooks`、`runtime_flush` 与 `get_transactions()`。

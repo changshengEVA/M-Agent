@@ -3,6 +3,10 @@ pyyaml
 llama-index
 neo4j
 langchain
+langgraph>=1.0.10
+langgraph-checkpoint>=4.1.1,<5.0.0
+langgraph-checkpoint-sqlite>=3.1.1,<4.0.0
+langgraph-prebuilt>=1.0.8
 pyvis
 pypdf
 Ipython

@@ -79,11 +79,11 @@ INVARIANTS: Tuple[InvariantSpec, ...] = (
         ),
         supporting_tests=(
             _test(
-                "tests/runtime/test_think_life_core.py::test_gateway_submits_user_utterance_to_scene",
+                "tests/runtime/test_runtime_core.py::test_gateway_writes_scene_for_already_attributed_utterance",
                 "用户入口同时保留 Scene ingress 语义。",
             ),
             _test(
-                "tests/runtime/test_think_life_core.py::test_gateway_execution_feedback_does_not_schedule_drainer_by_default",
+                "tests/runtime/test_runtime_core.py::test_gateway_execution_feedback_does_not_schedule_drainer_by_default",
                 "feedback 使用统一入口但不递归启动 drainer。",
             ),
         ),
@@ -127,7 +127,7 @@ INVARIANTS: Tuple[InvariantSpec, ...] = (
         ),
         supporting_tests=(
             _test(
-                "tests/runtime/test_think_life_core.py::test_execution_feedback_attribution",
+                "tests/runtime/test_runtime_core.py::test_execution_feedback_attribution",
                 "合法 feedback 被解析到原 transaction。",
             ),
         ),
@@ -169,11 +169,11 @@ INVARIANTS: Tuple[InvariantSpec, ...] = (
         ),
         supporting_tests=(
             _test(
-                "tests/runtime/test_think_life_core.py::test_transaction_wm_isolation",
+                "tests/runtime/test_runtime_core.py::test_transaction_wm_isolation",
                 "WM 列表独立。",
             ),
             _test(
-                "tests/runtime/test_think_life_core.py::test_transaction_task_state_isolation",
+                "tests/runtime/test_runtime_core.py::test_transaction_task_state_isolation",
                 "TaskState 对象独立。",
             ),
         ),
@@ -196,11 +196,11 @@ INVARIANTS: Tuple[InvariantSpec, ...] = (
         ),
         supporting_tests=(
             _test(
-                "tests/runtime/test_think_life_core.py::test_scene_chronological_cross_transaction",
+                "tests/runtime/test_runtime_core.py::test_scene_chronological_cross_transaction",
                 "跨 transaction 的 Scene 顺序和持久化。",
             ),
             _test(
-                "tests/runtime/test_think_life_core.py::test_scene_append_after_restart_continues_seq",
+                "tests/runtime/test_runtime_core.py::test_scene_append_after_restart_continues_seq",
                 "进程重启后 Scene seq 继续递增。",
             ),
         ),
@@ -260,17 +260,17 @@ INVARIANTS: Tuple[InvariantSpec, ...] = (
         risk="猜测参数会产生错误邮件、日程或其他外部副作用。",
         gate_tests=(
             _test(
-                "tests/runtime/test_think_life_param_gap.py::test_delegate_and_wait_submits_feedback_without_invoke_on_param_gap",
+                "tests/runtime/test_turn_support_tool_args.py::test_resolve_delegate_tool_input_returns_clarify_from_fill_tool_args",
                 "参数缺口短路真实工具，并生成结构化 feedback。",
             ),
         ),
         supporting_tests=(
             _test(
-                "tests/runtime/test_think_life_tool_args.py::test_fill_tool_args_returns_clarify_outcome",
+                "tests/runtime/test_turn_support_tool_args.py::test_fill_tool_args_returns_clarify_outcome",
                 "参数模型的澄清结果结构稳定。",
             ),
             _test(
-                "tests/runtime/test_think_life_tool_args.py::test_fill_tool_args_returns_clarify_on_model_failure",
+                "tests/runtime/test_turn_support_tool_args.py::test_fill_tool_args_returns_clarify_on_model_failure",
                 "参数模型失败也安全降级为澄清。",
             ),
         ),
@@ -294,7 +294,6 @@ INVARIANTS: Tuple[InvariantSpec, ...] = (
                 "reply capability 写入 conversation Scene。",
             ),
         ),
-        known_gap="真实 reply_to_user 尚未调用 record_tool_use，ExecutionResult.tool_history 为空。",
     ),
     InvariantSpec(
         invariant_id="INV-11",
@@ -307,13 +306,13 @@ INVARIANTS: Tuple[InvariantSpec, ...] = (
         risk="把传输完成当语义完成会提前关闭多步骤任务。",
         gate_tests=(
             _test(
-                "tests/runtime/test_think_life_param_gap.py::test_finalized_reply_submits_feedback_instead_of_completing_task",
+                "tests/runtime/test_langgraph_turn_loop.py::test_turn_loop_runs_think_delegate_feedback_reply",
                 "finalized reply 后 transaction 仍等待 feedback。",
             ),
         ),
         supporting_tests=(
             _test(
-                "tests/runtime/test_think_life_silent_mode.py::test_finish_silent_plan_turn_keeps_transaction_open",
+                "tests/runtime/test_langgraph_turn_loop.py::test_silent_turn_with_request_complete_closes_user_task",
                 "未显式完成的 silent turn 也保持 transaction 打开。",
             ),
         ),
@@ -329,21 +328,20 @@ INVARIANTS: Tuple[InvariantSpec, ...] = (
         risk="任意点中断会丢刺激或重复非幂等工具。",
         gate_tests=(
             _test(
-                f"{_ACCEPTANCE}::test_inv_12_preemption_suspends_and_requeues_at_boundary",
+                f"{_ACCEPTANCE}::test_inv_12_preemption_keeps_state_and_requeues_at_boundary",
                 "安全边界的 suspend/requeue/checkpoint 元数据完整。",
             ),
         ),
         supporting_tests=(
             _test(
-                "tests/runtime/test_think_life_core.py::test_inbox_priority_order",
+                "tests/runtime/test_runtime_core.py::test_inbox_priority_order",
                 "外层 inbox 保持优先级。",
             ),
             _test(
-                "tests/runtime/test_think_life_core.py::test_preempt_disabled_reuses_active_user_transaction",
+                "tests/acceptance/scenarios/test_sp_scenarios.py::test_sp_07_next_selection_priority",
                 "关闭抢占时不拆分活跃任务。",
             ),
         ),
-        known_gap="requeue 虽保留 transaction_id，但 attributor 会忽略它并创建新 transaction。",
     ),
     InvariantSpec(
         invariant_id="INV-13",
@@ -377,25 +375,25 @@ INVARIANTS: Tuple[InvariantSpec, ...] = (
                 "drainer、queued、in-flight、pending reply 四类义务逐项阻断 flush。",
             ),
             _test(
-                "tests/api/test_think_life_memory_capture.py::test_idle_flush_skips_active_drainer_even_after_deadline",
+                "tests/api/test_runtime_memory_capture.py::test_idle_flush_skips_active_drainer_even_after_deadline",
                 "active drainer 阻止 idle flush。",
             ),
             _test(
-                "tests/api/test_think_life_memory_capture.py::test_manual_flush_is_retryable_while_reply_is_pending",
+                "tests/api/test_runtime_memory_capture.py::test_manual_flush_is_retryable_while_reply_is_pending",
                 "pending reply 阻止 flush 且保持可重试。",
             ),
             _test(
-                "tests/api/test_think_life_memory_capture.py::test_flush_cannot_interleave_half_admitted_stimulus",
+                "tests/api/test_runtime_memory_capture.py::test_flush_cannot_interleave_half_admitted_stimulus",
                 "stimulus admission 临界区阻止 flush 交错。",
             ),
         ),
         supporting_tests=(
             _test(
-                "tests/api/test_think_life_memory_capture.py::test_successful_flush_disarms_idle_timer",
+                "tests/api/test_runtime_memory_capture.py::test_successful_flush_disarms_idle_timer",
                 "成功 flush 后才提交生命周期状态。",
             ),
             _test(
-                "tests/runtime/test_think_life_core.py::test_scene_flush_watermark_persists_across_restart",
+                "tests/runtime/test_runtime_core.py::test_scene_flush_watermark_persists_across_restart",
                 "已提交 watermark 在重启后保持。",
             ),
         ),

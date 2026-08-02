@@ -15,8 +15,8 @@ from m_agent.integrations.web_search_client import (
     list_web_search_provider_status,
     resolve_web_search_provider,
 )
-from m_agent.runtime.think_life.scheduler.delegate import uses_param_llm
-from m_agent.runtime.think_life.scheduler.tool_runner import SKIP_PARAM_LLM_TOOLS
+from m_agent.runtime.turn_support.delegate import uses_param_llm
+from m_agent.runtime.turn_support.tool_runner import SKIP_PARAM_LLM_TOOLS
 from m_agent.systems.tools.base import ControllerCapabilityContext
 from m_agent.systems.tools.default.capabilities import web_search_ops
 from m_agent.systems.tools.default.capabilities.web_search_ops import _build_web_search_tool
@@ -324,6 +324,6 @@ def test_web_search_tool_can_pass_url_to_client(monkeypatch: pytest.MonkeyPatch)
     )
 
 
-def test_web_search_uses_param_llm_in_think_life() -> None:
+def test_web_search_uses_runtime_param_model() -> None:
     assert "web_search" not in SKIP_PARAM_LLM_TOOLS
     assert uses_param_llm("web_search") is True

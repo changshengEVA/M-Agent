@@ -16,7 +16,7 @@ M-Agent/
 │  ├─ layers/              # perception / thinking / execution 三层
 │  ├─ api/                 # FastAPI、ChatServiceRuntime、SSE
 │  ├─ chat/                # ThreeLayerChatAgent（组装 layers + systems）
-│  ├─ runtime/             # Think-life 产品 Runtime
+│  ├─ runtime/             # 共享运行内核、LangGraph 与 RuntimeHost
 │  ├─ schedule/            # 日程领域与服务
 │  ├─ integrations/        # 外部服务集成
 │  ├─ systems/             # wm / episodic / tools（协议 + loader）
@@ -33,8 +33,8 @@ M-Agent/
 │  └─ systems/             # wm / episodic / tools 子系统 YAML
 ├─ data/
 └─ docs/
-   ├─ architecture/        # 目标架构、语义基线、迁移与阶段计划
-   ├─ runtime/             # 当前 Runtime 规格与验收平台
+   ├─ architecture/        # 当前架构、状态与历史归档
+   ├─ runtime/             # LangGraph Runtime 与验收平台
    ├─ chat_api/            # Chat API 参考与请求样例
    ├─ systems-plugin/      # 子系统插件指南（中英）
    ├─ development/         # 项目结构与开发流程
@@ -45,8 +45,8 @@ M-Agent/
 约定：
 
 - **三层栈**：`layers/perception`（`PerceptionInput` 组装）、`layers/thinking`、`layers/execution`。
-- **当前产品 Runtime**：[`runtime/think-life-runtime-spec.zh-CN.md`](../runtime/think-life-runtime-spec.zh-CN.md)。
-- **目标架构与迁移**：[`architecture/README.md`](../architecture/README.md)。
+- **当前产品 Runtime**：[`runtime/README.md`](../runtime/README.md)。
+- **当前架构与历史归档**：[`architecture/README.md`](../architecture/README.md)。
 - **子系统插件开发**：[`systems-plugin/README.zh-CN.md`](../systems-plugin/README.zh-CN.md)。
 - **工具能力** 只在 `src/m_agent/systems/tools/capabilities/` 实现；`chat/capabilities` 等旧路径已移除。
 - **Episodic 默认实现**：见 [`systems-plugin/episodic.zh-CN.md`](../systems-plugin/episodic.zh-CN.md)。

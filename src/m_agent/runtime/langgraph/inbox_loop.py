@@ -23,24 +23,29 @@ from m_agent.runtime.langgraph.turn_graph import (
     TransactionTurnEngine,
 )
 from m_agent.runtime.routing import LANGGRAPH_RUNTIME_ENGINE
-from m_agent.runtime.think_life.contracts import (
+from m_agent.runtime.domain.contracts import (
     SceneActor,
     SceneEntry,
     SceneEntryType,
     StimulusEnvelope,
     StimulusKind,
+    TransactionKind,
     TransactionRecord,
+    TransactionState,
 )
-from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
-from m_agent.runtime.think_life.perception.inbox import StimulusInbox
-from m_agent.runtime.think_life.perception.matcher_scene_view import (
+from m_agent.runtime.perception.attributor import TransactionAttributor
+from m_agent.runtime.perception.inbox import StimulusInbox
+from m_agent.runtime.perception.matcher_scene_view import (
     is_user_visible_scene_interaction,
 )
-from m_agent.runtime.think_life.scheduler.cpu_state import THREAD_CPU_STATE
-from m_agent.runtime.think_life.scheduler.think_context import read_scene_segment
-from m_agent.runtime.think_life.transaction_registry import TransactionRegistry
-from m_agent.runtime.think_life.transaction.store import StaleClaimError
-from m_agent.runtime.think_life.transaction.predicates import (
+from m_agent.runtime.dispatch.cpu_state import THREAD_CPU_STATE
+from m_agent.runtime.dispatch.schedule_lifecycle import (
+    ScheduleLifecycleHook,
+)
+from m_agent.runtime.turn_support.think_context import read_scene_segment
+from m_agent.runtime.transaction.registry import TransactionRegistry
+from m_agent.runtime.transaction.store import StaleClaimError
+from m_agent.runtime.transaction.predicates import (
     is_open_continue,
     is_runnable_record,
 )
@@ -62,6 +67,7 @@ class LangGraphInboxLoop:
         scene_reader: SceneReader,
         scene_context_max_entries: int = 40,
         turn_engine: Optional[TransactionTurnEngine] = None,
+        schedule_lifecycle: ScheduleLifecycleHook = None,
         on_runtime_updated: Optional[Callable[[str], None]] = None,
     ) -> None:
         self.registry = registry
@@ -75,6 +81,7 @@ class LangGraphInboxLoop:
             int(scene_context_max_entries or 40),
         )
         self.turn_engine = turn_engine
+        self._schedule_lifecycle = schedule_lifecycle
         self._on_runtime_updated = on_runtime_updated
 
     @property
@@ -86,6 +93,7 @@ class LangGraphInboxLoop:
         thread_id: str,
         *,
         history_messages: Optional[List[Dict[str, Any]]] = None,
+        event_emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> List[Dict[str, Any]]:
         results: List[Dict[str, Any]] = []
         while self.inbox.has_pending(thread_id):
@@ -97,25 +105,22 @@ class LangGraphInboxLoop:
                 result = self._process_one(
                     stimulus,
                     history_messages=history_messages,
+                    event_emitter=event_emitter,
                 )
                 results.append(result)
                 if result.get("success"):
                     self._finalize_claim(stimulus, disposition="consumed")
+                else:
+                    self._terminalize_failed_claim(
+                        stimulus,
+                        reason=str(result.get("error", "") or "turn failed"),
+                    )
             except Exception as exc:
                 logger.exception(
                     "LangGraph inbox processing failed thread_id=%s",
                     thread_id,
                 )
-                current = self._load_stimulus_disposition(
-                    stimulus.stimulus_id
-                )
-                if current not in {"aborted", "expected_discard"}:
-                    self._mark_stimulus_disposition(
-                        stimulus,
-                        disposition="failed",
-                        stage="final",
-                        reason=str(exc),
-                    )
+                self._terminalize_failed_claim(stimulus, reason=str(exc))
                 results.append(
                     {
                         "success": False,
@@ -130,6 +135,7 @@ class LangGraphInboxLoop:
         stimulus: StimulusEnvelope,
         *,
         history_messages: Optional[List[Dict[str, Any]]] = None,
+        event_emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         routing_scene = read_scene_segment(
             self.scene_reader,
@@ -194,12 +200,20 @@ class LangGraphInboxLoop:
         )
         THREAD_RUNTIME_STATUS.set_cpu_holder(tid, txn_id)
         self._refresh_pending_stimuli(tid)
+        schedule_started = False
         try:
+            if stimulus.kind == StimulusKind.SCHEDULED_PLAN:
+                with self.registry._lock:
+                    schedule_started = self._notify_schedule_started(
+                        stimulus,
+                        transaction,
+                    )
             if self.turn_engine is not None:
                 result = self._run_turn(
                     stimulus,
                     transaction,
                     history_messages=history_messages,
+                    event_emitter=event_emitter,
                 )
             else:
                 result = self._run_mvp_step(stimulus, transaction)
@@ -211,25 +225,50 @@ class LangGraphInboxLoop:
                 == "transaction_deleted"
                 or (current is not None and current.deleted)
             ):
-                return self._handle_transaction_deleted(
+                deleted_result = self._handle_transaction_deleted(
                     stimulus,
                     transaction,
                 )
+                self._notify_schedule_finished(transaction, deleted_result)
+                return deleted_result
+            refreshed = self.registry.refresh_from_store(txn_id) or transaction
+            is_schedule_delivery = bool(
+                refreshed.kind == TransactionKind.SCHEDULE
+                or refreshed.correlation.schedule_run_id
+            )
+            schedule_terminal = bool(
+                refreshed.state == TransactionState.COMPLETE
+                or not result.get("success", False)
+                or result.get("cancelled")
+            )
+            if (
+                is_schedule_delivery
+                and schedule_terminal
+                and not result.get("waiting_feedback")
+            ):
+                self._notify_schedule_finished(refreshed, result)
             return result
         except Exception as exc:
             current = self.registry.get(txn_id) or transaction
             if current.deleted:
-                return self._handle_transaction_deleted(
+                deleted_result = self._handle_transaction_deleted(
                     stimulus,
                     current,
                 )
+                self._notify_schedule_finished(current, deleted_result)
+                return deleted_result
             if is_open_continue(current):
-                self.registry.fail(
+                current = self.registry.fail(
                     txn_id,
                     error=(
                         str(exc or "langgraph processing failed").strip()
                         or "langgraph processing failed"
                     ),
+                )
+            if schedule_started or current.correlation.schedule_run_id:
+                self._notify_schedule_finished(
+                    current,
+                    {"success": False, "error": str(exc)},
                 )
             raise
         finally:
@@ -312,6 +351,7 @@ class LangGraphInboxLoop:
         transaction: TransactionRecord,
         *,
         history_messages: Optional[List[Dict[str, Any]]] = None,
+        event_emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None,
     ) -> Dict[str, Any]:
         assert self.turn_engine is not None
         txn_id = transaction.transaction_id
@@ -319,6 +359,7 @@ class LangGraphInboxLoop:
             record=transaction,
             stimulus=stimulus,
             history_messages=history_messages,
+            event_emitter=event_emitter,
         )
         state = turn.state
         updated = self.registry.get(txn_id) or transaction
@@ -451,6 +492,98 @@ class LangGraphInboxLoop:
                 pass
         self.scene_writer.append(record.conversation_id, entry)
 
+    def _notify_schedule_started(
+        self,
+        stimulus: StimulusEnvelope,
+        transaction: TransactionRecord,
+    ) -> bool:
+        hook = self._schedule_lifecycle
+        if hook is None:
+            return False
+        payload = stimulus.payload if isinstance(stimulus.payload, dict) else {}
+        owner_id = str(
+            payload.get("owner_id")
+            or transaction.correlation.schedule_owner_id
+            or ""
+        ).strip()
+        schedule_id = str(
+            stimulus.schedule_id
+            or payload.get("schedule_id")
+            or transaction.correlation.schedule_id
+            or ""
+        ).strip()
+        run_id = str(
+            stimulus.schedule_run_id
+            or payload.get("schedule_run_id")
+            or payload.get("run_id")
+            or transaction.correlation.schedule_run_id
+            or ""
+        ).strip()
+        if not owner_id or not schedule_id:
+            return False
+        try:
+            hook.on_schedule_processing_started(
+                owner_id=owner_id,
+                thread_id=transaction.thread_id,
+                schedule_id=schedule_id,
+                run_id=run_id,
+                stimulus_id=stimulus.stimulus_id,
+            )
+        except Exception:
+            logger.exception(
+                "schedule processing_started failed schedule_id=%s",
+                schedule_id,
+            )
+        return True
+
+    def _notify_schedule_finished(
+        self,
+        transaction: TransactionRecord,
+        result: Dict[str, Any],
+    ) -> None:
+        hook = self._schedule_lifecycle
+        if hook is None:
+            return
+        owner_id = str(
+            transaction.correlation.schedule_owner_id or ""
+        ).strip()
+        schedule_id = str(transaction.correlation.schedule_id or "").strip()
+        run_id = str(
+            transaction.correlation.schedule_run_id or ""
+        ).strip()
+        if not owner_id or not schedule_id:
+            return
+        answer = str(result.get("answer", "") or "").strip()
+        if not answer:
+            for entry in reversed(
+                read_scene_segment(
+                    self.scene_reader,
+                    transaction.conversation_id,
+                    max_entries=self.scene_context_max_entries,
+                )
+            ):
+                if (
+                    entry.entry_type == SceneEntryType.REPLY
+                    and entry.transaction_id == transaction.transaction_id
+                ):
+                    answer = str(entry.text or "").strip()
+                    break
+        try:
+            hook.on_schedule_processing_finished(
+                owner_id=owner_id,
+                thread_id=transaction.thread_id,
+                schedule_id=schedule_id,
+                run_id=run_id,
+                success=bool(result.get("success", False)),
+                answer=answer,
+                error=str(result.get("error", "") or ""),
+            )
+        except Exception:
+            logger.exception(
+                "schedule processing_finished failed schedule_id=%s",
+                schedule_id,
+            )
+
     def _refresh_pending_stimuli(self, thread_id: str) -> None:
         tid = str(thread_id or "").strip()
         THREAD_RUNTIME_STATUS.set_pending_stimuli(
@@ -494,6 +627,26 @@ class LangGraphInboxLoop:
             logger.info(
                 "stale stimulus claim ignored stimulus_id=%s",
                 stimulus.stimulus_id,
+            )
+
+    def _terminalize_failed_claim(
+        self,
+        stimulus: StimulusEnvelope,
+        *,
+        reason: str,
+    ) -> None:
+        current = self._load_stimulus_disposition(stimulus.stimulus_id)
+        if current in {"aborted", "expected_discard", "consumed", "failed"}:
+            return
+        if current == "claimed" and stimulus.claimed_by:
+            self._finalize_claim(stimulus, disposition="failed")
+            return
+        if current == "ready":
+            self._mark_stimulus_disposition(
+                stimulus,
+                disposition="failed",
+                stage="final",
+                reason=str(reason or "langgraph turn failed"),
             )
 
     def _mark_stimulus_disposition(

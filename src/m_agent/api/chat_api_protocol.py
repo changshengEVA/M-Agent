@@ -18,8 +18,8 @@ protocol_logger = logging.getLogger("m_agent.api.protocol")
 # logging for documented SSE types. Treat additions as frontend-visible
 # protocol changes and update the API reference with the code.
 #
-# Think-life planning events (``thinking_*``) are additionally guarded by
-# ``ChatServiceRuntime._THINK_LIFE_PLANNING_EVENTS`` so a misbehaving
+# Runtime planning events (``thinking_*``) are additionally guarded by
+# ``ChatServiceRuntime._RUNTIME_PLANNING_EVENTS`` so a misbehaving
 # subsystem cannot inject arbitrary types.
 # =====================================================================
 _PROTOCOL_SSE_EVENTS = frozenset({
@@ -36,7 +36,7 @@ _PROTOCOL_SSE_EVENTS = frozenset({
     "flush_stage",
     "flush_completed",
     "thread_state_updated",
-    # Think-life planning events. Delegated tool work is reported separately by
+    # Runtime planning events. Delegated tool work is reported separately by
     # Scene/runtime events rather than an inline execution pass.
     "thinking_started",
     "thinking_task_state",

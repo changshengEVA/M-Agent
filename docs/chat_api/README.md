@@ -25,8 +25,10 @@ The current Chat API is not a per-request config override service. It uses a sta
 
 ### 1.1 Core runtime model / 核心运行模型
 
-- Default product runtime is Think-life (`think_life_v1`); Chat API dispatches through `RuntimeHost` and can select LangGraph via `runtime.default_engine` / `M_AGENT_DEFAULT_RUNTIME_ENGINE`.
-- 默认产品运行时是 Think-life（`think_life_v1`）；Chat API 经 `RuntimeHost` 分发，可用 `runtime.default_engine` / `M_AGENT_DEFAULT_RUNTIME_ENGINE` 选择 LangGraph。
+- The product runtime is the single LangGraph-backed `RuntimeHost` (`langgraph_v1`). Shared settings live under `runtime.common`, and graph settings live under `runtime.langgraph`.
+- 产品只启动 LangGraph `RuntimeHost`（`langgraph_v1`）。通用配置位于 `runtime.common`，图执行配置位于 `runtime.langgraph`。
+- Capability execution receives neutral `runtime_hooks`; flush responses expose `runtime_flush`; transaction endpoints call `get_transactions()` internally.
+- 能力执行使用中性 `runtime_hooks`；flush 响应公开 `runtime_flush`；事务端点通过 `get_transactions()` 查询。
 - `POST /v1/chat/runs` creates an asynchronous chat run.
 - `GET /v1/chat/runs/{run_id}/events` is the main real-time event stream for one chat run.
 - `GET /v1/chat/runs/{run_id}` returns the final run snapshot.
@@ -178,7 +180,7 @@ The table below is normative for browser integrations. “Available” means the
 
 For both authenticated streams:
 
-- use streaming `fetch()` with `Authorization: Bearer <token>`; `X-Session-Token` is accepted but is the fallback header
+- use streaming `fetch()` with `Authorization: Bearer <token>`; `X-Session-Token` is also accepted as a secondary header
 - do not use `?token=...`, because query strings can enter browser history, access logs, analytics, referrers, and screenshots
 - do not use native `EventSource` when auth is enabled; its constructor cannot attach the required session header
 - on `401`, stop reconnecting, obtain a new session through the login flow, then resume with the last processed `seq`
@@ -255,7 +257,7 @@ Answer delivery is final-only:
 
 Run creation does not accept `Idempotency-Key` or a client request id. Every accepted `POST /v1/chat/runs` allocates a new `run_id`. If the client receives `201`, retain that id and retry only the subsequent GET/SSE reads. If the connection fails before the response is known, do not silently submit again; ask the user or use an application-level draft/submission ledger until server idempotency is implemented.
 
-`POST /v1/chat/threads/{thread_id}/thinking/stop` requests a best-effort stop for the active thread and clears queued Think-life user turns. It can affect work beyond one `run_id`, can race with completion, and does not define a dedicated `canceled` run status. Treat a resulting `run_failed` as terminal and reconcile with `GET /v1/chat/runs/{run_id}`. This endpoint must not be presented as precise run cancellation.
+`POST /v1/chat/threads/{thread_id}/thinking/stop` requests a best-effort stop for the active thread and clears queued runtime user turns. It can affect work beyond one `run_id`, can race with completion, and does not define a dedicated `canceled` run status. Treat a resulting `run_failed` as terminal and reconcile with `GET /v1/chat/runs/{run_id}`. This endpoint must not be presented as precise run cancellation.
 
 ### 4.9 Security, limits, and deployment / 安全、限制与部署
 
@@ -483,7 +485,7 @@ The durable record contains only the first seven fields. `due_at_local` and `due
 | `effective_depth` | `integer` | inbox + 在途刺激数 | Effective queue depth |
 | `pending_stimuli` | `integer` | 感知 inbox 深度（未 pop） | Perception inbox depth |
 | `in_flight_stimulus_id` | `string \| null` | 当前正在消费的刺激 id | In-flight stimulus |
-| `runtime_profile` | `string` | 当前引擎 id（如 `think_life_v1` / `langgraph_v1`） | Active engine id |
+| `runtime_profile` | `string` | 当前引擎 id，固定为 `langgraph_v1` | Active engine id; always `langgraph_v1` |
 | `active_transaction_id` | `string \| null` | 当前 CPU 事务 | Active transaction |
 | `preempt_enabled` | `boolean` | 是否启用刺激抢占 | Preemption enabled |
 
@@ -959,8 +961,8 @@ Important note / 重要说明:
 
 ### 6.11a `GET /v1/chat/threads/{thread_id}/transactions`
 
-- Returns Think-life transaction state for the public thread, including `transactions`, `active_transaction_id`, `cpu_transaction_id`, and `transaction_count`.
-- 返回该公开线程的 Think-life 事务状态。
+- Returns runtime transaction state for the public thread, including `transactions`, `active_transaction_id`, `cpu_transaction_id`, and `transaction_count`.
+- 返回该公开线程的 Runtime 事务状态。
 - 默认 `include_history=false`，只返回当前 `conversation_id` 的事务；传
   `include_history=true` 可读取同一 thread 的历史 tombstone/归档记录用于审计。
 - By default, `include_history=false` scopes the result to the current
@@ -1017,7 +1019,7 @@ Queues a user stimulus and returns `202`. Request fields are `kind` (currently d
 
 ### 6.11d `POST /v1/chat/threads/{thread_id}/thinking/stop`
 
-Requests a best-effort stop for the active thread, clears queued Think-life work, and returns the resulting thread/runtime snapshot. Authorization is thread-owner scoped when auth is enabled.
+Requests a best-effort stop for the active thread, clears queued runtime work, and returns the resulting thread/runtime snapshot. Authorization is thread-owner scoped when auth is enabled.
 
 This is thread-wide control, not `run_id` cancellation. It can race with natural completion, may affect queued work as well as the active run, and does not introduce a `canceled` run status. See section 4.8.
 
@@ -1093,20 +1095,21 @@ Success response fields:
 | `success` | `boolean` | flush 是否成功 | Whether flush succeeded |
 | `thread_id` | `string` | 公开线程 ID | Public thread id |
 | `flush_reason` | `string` | flush reason | Flush reason |
-| `status` | `string` | `noop` / `think_life_segment` / `written` / `failed` / `busy` | Flush status |
+| `status` | `string` | `noop` / `runtime_segment` / `written` / `failed` / `busy` | Flush status |
 | `retryable` | `boolean \| null` | `busy` 时表示客户端可稍后重试 | For `busy`, indicates that the client may retry later |
 | `block_reason` | `string \| null` | 阻止 flush 的运行时原因 | Runtime reason that prevented the flush |
 | `message` | `string \| null` | 无待写回时的提示文本 | Message for noop cases |
 | `rounds_flushed` | `integer` | 本次写入轮次数 | Number of flushed rounds |
 | `turns_flushed` | `integer` | 本次写入 turn 数 | Number of flushed turns |
 | `memory_write` | `object \| null` | 记忆写入结果摘要 | Memory write result |
+| `runtime_flush` | `object \| null` | Runtime flush segment、journal 与 checkpoint 摘要 | Runtime flush segment, journal, and checkpoint summary |
 | `thread_state` | `ThreadState` | flush 后线程状态 | Thread state after flush |
 | `error` | `string \| null` | 失败错误 | Error text on failure |
 
 Notes / 说明:
 
 - if there are no pending rounds, the endpoint returns `success: true` and `status: "noop"`
-- every successful flush, including `noop` and `think_life_segment`, closes the
+- every successful flush, including `noop` and `runtime_segment`, closes the
   old conversation and advances to a fresh `conversation_id`; the default
   transaction/Scene views are therefore empty after the UI refresh, while
   `include_history=true` retains the old transactions for audit
@@ -1289,7 +1292,7 @@ Success response:
     "effective_depth": 0,
     "pending_stimuli": 0,
     "in_flight_stimulus_id": null,
-    "runtime_profile": "think_life",
+    "runtime_profile": "langgraph_v1",
     "preempt_enabled": false
   }
 }
@@ -1446,7 +1449,7 @@ The following event types may appear on `GET /v1/chat/threads/{thread_id}/events
 | `schedule_created` | 手动创建日程 | Schedule created | `thread_id`, `schedule` |
 | `schedule_canceled` | 手动取消日程 | Schedule canceled | `thread_id`, `schedule` |
 | `schedule_due` | 心跳发现到点任务 | A due schedule was leased by heartbeat | `thread_id`, `schedule_id`, `text`, `status`, `due_at_utc`, `timezone_name` |
-| `schedule_queued` | 到点任务进入 Think-life inbox | Due schedule enqueued in the Think-life inbox | `thread_id`, `schedule_id`, `run_id`, `stimulus_id`, `pending_count`, `runtime_phase` |
+| `schedule_queued` | 到点任务进入 Runtime inbox | Due schedule enqueued in the runtime inbox | `thread_id`, `schedule_id`, `run_id`, `stimulus_id`, `pending_count`, `runtime_phase` |
 | `schedule_started` | 到点任务开始执行 | Due schedule execution started | `thread_id`, `schedule_id`, `run_id` |
 | `schedule_completed` | 到点任务执行完成 | Due schedule execution completed | `thread_id`, `schedule_id`, `run_id`, `status`, `answer` |
 | `schedule_failed` | 到点任务执行失败 | Due schedule execution failed | `thread_id`, `schedule_id`, `run_id`, `error` |

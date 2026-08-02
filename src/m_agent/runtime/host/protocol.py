@@ -2,20 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Protocol, runtime_checkable
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, runtime_checkable
 
 ThreadEventEmitter = Callable[[str, str, Dict[str, Any]], None]
 
 
 @runtime_checkable
 class RuntimeHost(Protocol):
-    """Product-facing runtime facade shared by ThinkLife and LangGraph engines.
-
-    Chat API and future orchestrators should depend on this protocol rather than
-    concrete engine classes. MVP surfaces the minimum thread lifecycle needed
-    for internal gray rollout; flush/schedule helpers remain engine-specific
-    extensions until the host contract stabilizes.
-    """
+    """Complete product-facing contract of the LangGraph runtime host."""
 
     @property
     def runtime_engine_id(self) -> str:
@@ -41,6 +35,12 @@ class RuntimeHost(Protocol):
     ) -> Dict[str, Any]:
         """Drain the conversation inbox for one thread (blocking)."""
 
+    def pending_count(self, thread_id: Optional[str] = None) -> int:
+        """Count queued stimuli globally or for one thread."""
+
+    def active_user_transaction(self, conversation_id: str) -> Any:
+        """Return the active user transaction, if one exists."""
+
     def list_transactions(
         self,
         thread_id: str,
@@ -60,6 +60,59 @@ class RuntimeHost(Protocol):
         idempotency_key: str,
     ) -> Dict[str, Any]:
         """Tombstone one transaction and cancel its pending runtime work."""
+
+    def list_scene(
+        self,
+        thread_id: str,
+        *,
+        conversation_id: Optional[str] = None,
+        limit: int = 40,
+        before_seq: Optional[int] = None,
+        since_flush: bool = True,
+    ) -> Dict[str, Any]:
+        """Return the product Scene projection."""
+
+    def enqueue_schedule(self, **kwargs: Any) -> Dict[str, Any]:
+        """Durably enqueue one schedule stimulus."""
+
+    def prepare_flush_segment(
+        self,
+        thread_id: str,
+        *,
+        conversation_id: str,
+        source: str = "chat_api_thread_flush",
+    ) -> Dict[str, Any]:
+        """Persist an immutable runtime/materialization snapshot."""
+
+    def stage_flush_materialization(
+        self,
+        flush_id: str,
+        *,
+        destination: str,
+        payload: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Persist an external materialization payload before commit."""
+
+    def on_flush_segment(self, thread_id: str, **kwargs: Any) -> Dict[str, Any]:
+        """Commit a staged runtime flush boundary idempotently."""
+
+    def mark_flush_materialization_delivered(
+        self,
+        flush_id: str,
+        *,
+        destination: str,
+        result: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Record successful materialization delivery idempotently."""
+
+    def complete_flush_segment(self, flush_id: str) -> Dict[str, Any]:
+        """Close a fully committed and materialized flush."""
+
+    def load_conversation_seq(self, thread_id: str) -> int:
+        """Load the persisted conversation segment sequence."""
+
+    def persist_conversation_seq(self, thread_id: str, sequence: int) -> None:
+        """Persist the conversation segment sequence."""
 
     def health(self) -> Dict[str, Any]:
         """Return a small health snapshot for observability endpoints."""

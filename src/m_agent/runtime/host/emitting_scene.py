@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, Optional
 
-from m_agent.runtime.think_life.contracts import SceneEntry
+from m_agent.runtime.domain.contracts import SceneEntry
 from m_agent.systems.scene.protocols import SceneWriter
 
 logger = logging.getLogger(__name__)

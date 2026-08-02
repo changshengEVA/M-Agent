@@ -21,10 +21,7 @@ systems:
   tools:    ../../systems/tools/default.yaml
 
 runtime:
-  # Default product engine for new Chat API transactions.
-  # Override with M_AGENT_DEFAULT_RUNTIME_ENGINE or set langgraph_v1 for R3 gray.
-  default_engine: think_life_v1
-  think_life:
+  common:
     # max_delegates_per_transaction / max_think_rounds: omit or null = unlimited
     scene_context_max_entries: 40
     scene_persist_jsonl: true

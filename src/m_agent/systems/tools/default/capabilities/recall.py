@@ -4,9 +4,9 @@ The two LangChain tools defined here (``shallow_recall`` / ``deep_recall``)
 call ``context.get_episodic_backend()``, which returns the configured
 :class:`~m_agent.systems.episodic.protocols.EpisodicMemoryBackend`.
 
-Think-life: both tools are registered in
+Runtime: both tools are registered in
 their capability manifests (``instruction`` → ``question``); legacy registries
-fall back to ``THINK_LIFE_SKIP_PARAM_INSTRUCTION_ARG`` in ``tool_runner.py``.
+fall back to ``RUNTIME_SKIP_PARAM_INSTRUCTION_ARG`` in ``tool_runner.py``.
 """
 from __future__ import annotations
 

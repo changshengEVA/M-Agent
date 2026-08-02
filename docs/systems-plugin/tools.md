@@ -1,35 +1,33 @@
 # Tools Subsystem — Plug-in Guide
 
-> Chinese: [tools.zh-CN.md](./tools.zh-CN.md) · Index: [README.md](./README.md)
+> 中文版：[tools.zh-CN.md](./tools.zh-CN.md) · Index: [README.md](./README.md)
 
 ## Role
 
-The tools subsystem exposes LangChain capabilities to the execution layer. The
-default suite uses **one YAML manifest per tool** so registration, prompting,
-defaults, parameter routing, and integration metadata are discoverable in one
-place.
+The tools subsystem exposes LangChain capabilities to the execution layer.
+The current suite uses one YAML manifest per capability so registration,
+prompt descriptions, argument routing, result projection, limits, and
+dependency metadata have one source of truth.
 
-## Layout
+## Layout and suite configuration
 
 ```text
 config/systems/tools/
-├── default.yaml                 # suite composition and cross-tool policy
+├── default.yaml
 └── capabilities/
-    ├── web_search.yaml          # one complete tool descriptor
+    ├── web_search.yaml
     ├── schedule_create.yaml
     └── ...
 ```
 
-The chat controller still mounts one suite:
-
 ```yaml
+# config/agents/chat/chat_controller.yaml
 systems:
   tools: ../../systems/tools/default.yaml
 ```
 
-`default.yaml` points to the directory and controls the enabled whitelist:
-
 ```yaml
+# config/systems/tools/default.yaml
 system: tools
 capabilities_dir: ./capabilities
 enabled: [reply_to_user, get_current_time, web_search]
@@ -38,9 +36,7 @@ defaults:
     max_calls_per_turn: 12
 ```
 
-If `enabled` is omitted, every manifest in `capabilities_dir` is enabled. The
-legacy `registry` and `runtime_descriptions_path` fields remain supported for
-older third-party suites.
+If `enabled` is omitted, every valid manifest in `capabilities_dir` is enabled.
 
 ## Capability manifest
 
@@ -60,7 +56,7 @@ input:
 
 output:
   schema: builtins:dict
-  feedback_projector: m_agent.runtime.think_life.scheduler.execution_feedback:feedback_summary_from_tool_history
+  feedback_projector: m_agent.runtime.turn_support.execution_feedback:feedback_summary_from_tool_history
   memory_projector: m_agent.chat.working_memory:project_tool_call_to_entry
 
 policy:
@@ -74,61 +70,72 @@ defaults:
   max_results: 5
 ```
 
-| Field | Runtime meaning |
-|---|---|
-| `name` | Stable tool name used by planning, invocation, logs, and memory |
+| Field | Meaning |
+|-------|---------|
+| `name` | Stable capability name used by planning, invocation, logs, and memory |
 | `version` | Positive contract version |
-| `category` | Category exposed by capability descriptors |
-| `builder` | Importable callable used to build the LangChain tool; loading fails early if invalid |
-| `descriptions` | Localized descriptions injected into the thinking-layer capability block |
+| `category` | Descriptor category |
+| `builder` | Importable callable that returns a LangChain tool |
+| `descriptions` | Localized descriptions shown to the thinking layer |
 | `input.mode` | `param_llm`, `instruction_arg`, `no_args`, or `reply` |
-| `input.instruction_arg` | Target kwarg for direct instruction mapping |
-| `input.schema` | Schema origin/documentation; `inferred_from_tool` uses the LangChain args schema |
-| `output.*` | Result-contract and projection metadata retained on `ControllerCapabilitySpec` |
-| `policy.max_calls_per_turn` | Enforced through the tool defaults/limit mechanism |
-| `policy.side_effect` | Review and safety metadata (`read`, `write`, `send`, etc.) |
-| `dependencies` | Declared backend/service requirements |
-| `defaults` | Per-tool runtime defaults |
+| `input.instruction_arg` | Target key for direct instruction mapping |
+| `input.schema` | Schema reference; `inferred_from_tool` reads the LangChain args schema |
+| `output.*` | Result schema and validated feedback/WM projector paths |
+| `policy.max_calls_per_turn` | Per-capability invocation limit |
+| `policy.side_effect` | Review metadata such as `read`, `write`, `send`, or `emit` |
+| `dependencies` | Required services supplied through capability context |
+| `defaults` | Per-capability runtime defaults |
 
-`side_effect`, `dependencies`, and output projector paths are currently
-descriptive metadata. Tool code must still obtain dependencies from
-`ControllerCapabilityContext`, and non-trivial result projections must be
-routed in `src/m_agent/chat/working_memory.py`.
+All dotted executable references are resolved while loading the suite, so an
+invalid manifest fails during startup.
 
 ## Input modes
 
 | Mode | Behavior |
-|---|---|
-| `param_llm` | Build the tool schema and let the parameter LLM fill structured arguments |
-| `instruction_arg` | Map the thinking-layer instruction directly to `instruction_arg` |
+|------|----------|
+| `param_llm` | Fill structured arguments from the tool schema |
+| `instruction_arg` | Map the thinking-layer instruction to the declared key |
 | `no_args` | Invoke with `{}` |
-| `reply` | Build the `reply_to_user` payload without parameter filling |
+| `reply` | Build a `reply_to_user` payload without parameter filling |
 
-The manifest is now authoritative for suites loaded from `capabilities_dir`.
-The old hard-coded skip-parameter table remains only as a compatibility
-fallback for programmatically constructed legacy registries.
+The manifest controls argument routing for every file-backed capability.
 
-## Implementation requirements
+## Runtime and `runtime_hooks` contract
 
-The builder must return a LangChain tool and should use:
+The LangGraph turn port invokes exactly one capability through
+`ExecutionAgent.invoke_tool_direct(..., runtime_hooks=...)`. The execution
+layer copies that mapping into
+`ControllerCapabilityContext.controller_state["runtime"]`.
 
-- `start_tool_call` and `finish_tool_call` for observability;
-- `check_tool_call_limits` before external work;
-- `record_tool_use` with a structured result;
-- `context.get_episodic_backend()` or another explicit context dependency.
+Current hooks may include:
 
-If the result contains evidence needed later, also add a projection route and
-formatter in `src/m_agent/chat/working_memory.py`, plus tests in
-`tests/chat/test_working_memory.py`.
+| Hook | Purpose |
+|------|---------|
+| `transaction_id`, `conversation_id`, `delegate_id`, `effect_id` | Durable attribution |
+| `idempotency_key`, `delivery_guarantee` | Side-effect identity and delivery policy |
+| `on_reply` | Deliver a user-visible reply |
+| `on_schedule_created` | Attach a created schedule to runtime state |
+| `scene_writer` | Append a transaction-fenced Scene entry |
 
-## Adding a tool
+Hooks are per invocation and optional unless a capability's contract requires
+one. Capability code reads them from `controller_state["runtime"]`, obtains
+services from `ControllerCapabilityContext`, and does not import graph internals.
 
-1. Implement its builder in `src/m_agent/systems/tools/default/capabilities/` or another importable package.
+Builders should call `start_tool_call`, `check_tool_call_limits`,
+`record_tool_use`, and `finish_tool_call` around external work. Episodic access
+goes through `context.get_episodic_backend()`.
+
+## Adding a capability
+
+1. Implement a builder under
+   `src/m_agent/systems/tools/default/capabilities/` or another importable package.
 2. Add exactly one manifest under `config/systems/tools/capabilities/`.
-3. Add its name to the suite `enabled` list when the suite uses an explicit whitelist.
-4. Add dependency wiring, memory projection, and specialized feedback behavior when required.
-5. Test manifest loading, argument routing, invocation, limits, and projection.
+3. Add the name to `enabled` when the suite uses an explicit list.
+4. Wire context dependencies and add feedback/WM projection when required.
+5. Test loading, argument routing, invocation, limits, projection, and hooks.
 
 ```bash
-pytest tests/systems/ tests/runtime/test_think_life_tool_args.py tests/test_chat_controller_tool_limits.py
+pytest tests/systems/
+pytest tests/runtime/test_turn_support_tool_args.py tests/test_chat_controller_tool_limits.py
+pytest tests/chat/test_working_memory.py tests/runtime/test_langgraph_turn_loop.py
 ```

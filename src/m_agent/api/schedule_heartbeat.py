@@ -3,10 +3,13 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import logging
 import threading
-import uuid
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 from m_agent.api.user_access import UserAccessService
+from m_agent.runtime.transaction import (
+    stable_schedule_delivery_id,
+    stable_schedule_run_id,
+)
 from m_agent.schedule.store import ANONYMOUS_OWNER_ID
 
 from .chat_api_runtime import ChatServiceRuntime, ThreadEventSink
@@ -133,6 +136,18 @@ class ScheduleHeartbeatCoordinator:
         run_id: str = "",
         error: str = "",
     ) -> Dict[str, Any]:
+        raw_objective = getattr(schedule_item, "deferred_objective", None)
+        if hasattr(raw_objective, "to_dict"):
+            deferred_objective = dict(raw_objective.to_dict())
+        elif isinstance(raw_objective, dict):
+            deferred_objective = dict(raw_objective)
+        else:
+            deferred_objective = {
+                "description": str(
+                    getattr(schedule_item, "text", "") or ""
+                ).strip(),
+                "encoding": "legacy_text",
+            }
         payload = {
             "thread_id": (
                 str(public_thread_id or "").strip()
@@ -140,6 +155,7 @@ class ScheduleHeartbeatCoordinator:
             ),
             "schedule_id": str(getattr(schedule_item, "schedule_id", "") or "").strip(),
             "text": str(getattr(schedule_item, "text", "") or "").strip(),
+            "deferred_objective": deferred_objective,
             "status": str(getattr(schedule_item, "status", "") or "").strip(),
             "due_at_utc": str(getattr(schedule_item, "due_at_utc", "") or "").strip(),
             "timezone_name": str(getattr(schedule_item, "timezone_name", "") or "").strip(),
@@ -193,17 +209,47 @@ class ScheduleHeartbeatCoordinator:
                 )
                 self._emit_thread_event(target_thread_id, "schedule_due", payload)
 
-                run_id = f"schedule_run_{uuid.uuid4().hex}"
                 item_owner_id = owner_id
                 schedule_id = str(getattr(schedule_item, "schedule_id", "") or "")
+                due_at = str(
+                    getattr(schedule_item, "due_at_utc", "") or ""
+                ).strip()
+                raw_origin = getattr(schedule_item, "origin", None)
+                origin = dict(raw_origin) if isinstance(raw_origin, dict) else {}
+                origin_transaction_id = str(
+                    origin.get("transaction_id", "") or ""
+                ).strip()
+                origin_conversation_id = str(
+                    origin.get("conversation_id", "") or ""
+                ).strip()
+                run_binding = origin_transaction_id or (
+                    f"external:{item_owner_id}:{stored_thread_id}"
+                )
+                run_id = stable_schedule_run_id(
+                    schedule_id,
+                    run_binding,
+                    due_at,
+                )
+                delivery_id = stable_schedule_delivery_id(run_id, 1)
                 schedule_prompt = runtime._schedule_prompt(schedule_item)
                 system_context = runtime._schedule_system_context(schedule_item)
+                system_context["schedule_run_id"] = run_id
+                system_context["schedule_delivery_id"] = delivery_id
+                if origin_transaction_id:
+                    system_context["transaction_id"] = origin_transaction_id
+                if origin_conversation_id:
+                    system_context["origin_conversation_id"] = (
+                        origin_conversation_id
+                    )
                 try:
-                    queued = runtime.think_life.enqueue_schedule(
+                    queued = runtime.runtime_host.enqueue_schedule(
                         thread_id=target_thread_id,
-                        conversation_id=runtime._get_or_create_thread(
-                            target_thread_id
-                        ).conversation_id,
+                        conversation_id=(
+                            origin_conversation_id
+                            or runtime._get_or_create_thread(
+                                target_thread_id
+                            ).conversation_id
+                        ),
                         schedule_id=schedule_id,
                         text=schedule_prompt,
                         payload=system_context,
@@ -225,7 +271,7 @@ class ScheduleHeartbeatCoordinator:
                     )
                 except Exception as exc:
                     logger.exception(
-                        "Think-life schedule enqueue failed owner_id=%s thread_id=%s schedule_id=%s",
+                        "Runtime schedule enqueue failed owner_id=%s thread_id=%s schedule_id=%s",
                         item_owner_id,
                         target_thread_id,
                         schedule_id,

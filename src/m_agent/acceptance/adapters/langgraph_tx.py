@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict
 
-from m_agent.runtime.think_life.contracts import (
+from m_agent.runtime.domain.contracts import (
     SceneActor,
     SceneEntry,
     SceneEntryType,
@@ -13,7 +13,7 @@ from m_agent.runtime.think_life.contracts import (
 from ..scenario_catalog import registered_known_gap_key
 from .base import HarnessResult, RuntimeAdapterError, ScenarioExecution
 from .evidence import EvidenceBuilder
-from . import think_life_tx as tl_tx
+from . import shared_tx
 from .langgraph_harness import LangGraphV1Harness
 from .transaction_fixtures import FixtureTransactionStatus as TransactionStatus
 
@@ -603,7 +603,7 @@ def run_tx_scenario(
             evidence,
             registered_known_gap_key(variant),
         )
-    delegated = tl_tx._HANDLERS.get((scenario, variant))
+    delegated = shared_tx._HANDLERS.get((scenario, variant))
     if delegated is not None:
         evidence = _builder(scenario, variant)
         return delegated(

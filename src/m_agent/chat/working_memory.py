@@ -325,7 +325,10 @@ def _project_schedule(tool_name: str, params: Dict[str, Any], result: Dict[str, 
         extra = _truncate(f"{kw}|{start}|{end}".strip("|"), 200)
     elif tool_name == "schedule_create":
         extra = _truncate(
-            f"{params.get('due_at', '')} {params.get('text', '')}".strip(),
+            (
+                f"{params.get('due_at', '')} "
+                f"{params.get('deferred_objective', params.get('text', ''))}"
+            ).strip(),
             200,
         )
     elif tool_name == "schedule_delete":

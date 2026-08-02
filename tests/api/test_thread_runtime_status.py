@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS
-from m_agent.runtime.think_life.scheduler.cpu_state import THREAD_CPU_STATE
+from m_agent.runtime.dispatch.cpu_state import THREAD_CPU_STATE
 
 
 def test_thread_runtime_processing_when_in_flight() -> None:

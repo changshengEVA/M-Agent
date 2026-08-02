@@ -1,4 +1,4 @@
-"""Per-thread queue and CPU status exposed by the Think-life runtime."""
+"""Per-thread queue and CPU status exposed by the Runtime runtime."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from m_agent.api.chat_api_shared import _get_thread_lock, _now_iso
 
 @dataclass
 class ThreadRuntimeSnapshot:
-    """Read-only projection of one thread's Think-life scheduler state."""
+    """Read-only projection of one thread's Runtime scheduler state."""
 
     thread_id: str
     busy: bool = False
@@ -21,7 +21,7 @@ class ThreadRuntimeSnapshot:
     active_transaction_id: Optional[str] = None
     pending_stimuli: int = 0
     drainer_active: bool = False
-    runtime_profile: str = "think_life"
+    runtime_profile: str = "langgraph_v1"
     lock_holder: str = "none"
     runtime_phase: str = "ready"
     effective_depth: int = 0
@@ -61,7 +61,7 @@ class _ThreadRuntimeState:
 
 
 class ThreadRuntimeStatusRegistry:
-    """Process-wide registry for Think-life queue and execution metadata."""
+    """Process-wide registry for Runtime queue and execution metadata."""
 
     def __init__(self) -> None:
         self._lock = threading.RLock()
@@ -127,7 +127,7 @@ class ThreadRuntimeStatusRegistry:
             state.preempt_enabled = bool(enabled)
 
     def snapshot(self, thread_id: str) -> ThreadRuntimeSnapshot:
-        """Return queue-derived phase data for one Think-life thread."""
+        """Return queue-derived phase data for one Runtime thread."""
         tid = str(thread_id or "").strip()
         state = self._state(tid)
         lock_held = _get_thread_lock(tid).locked()
@@ -141,7 +141,7 @@ class ThreadRuntimeStatusRegistry:
             active_txn = state.active_transaction_id or cpu_txn
             preempt_enabled = bool(state.preempt_enabled)
 
-        from m_agent.runtime.think_life.scheduler.cpu_state import (
+        from m_agent.runtime.dispatch.cpu_state import (
             THREAD_CPU_STATE,
             compute_runtime_phase,
         )

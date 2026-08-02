@@ -138,7 +138,8 @@ pip install -r requirements-server-lock.txt
 langchain==1.2.10
 langchain-core==1.2.16
 langgraph==1.0.10
-langgraph-checkpoint==4.0.1
+langgraph-checkpoint==4.1.1
+langgraph-checkpoint-sqlite==3.1.1
 langgraph-prebuilt==1.0.8
 langgraph-sdk==0.3.9
 fastapi==0.104.1
@@ -153,7 +154,8 @@ pip install --force-reinstall \
   "langchain==1.2.10" \
   "langchain-core==1.2.16" \
   "langgraph==1.0.10" \
-  "langgraph-checkpoint==4.0.1" \
+  "langgraph-checkpoint==4.1.1" \
+  "langgraph-checkpoint-sqlite==3.1.1" \
   "langgraph-prebuilt==1.0.8" \
   "langgraph-sdk==0.3.9" \
   "fastapi==0.104.1" \

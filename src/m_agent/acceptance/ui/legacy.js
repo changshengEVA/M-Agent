@@ -351,8 +351,7 @@ async function loadContractCatalog() {
       `${finiteNumber(coverage.required_robustness, 7)} Robustness · ` +
       `${finiteNumber(coverage.specified_matcher, 0)} Matcher`;
     elements.p1ContractExecution.textContent =
-      `可执行覆盖：ThinkLife ${finiteNumber(byRuntime.think_life_v1, 0)} · ` +
-      `LangGraph ${finiteNumber(byRuntime.langgraph_v1, 0)}`;
+      `可执行覆盖：LangGraph ${finiteNumber(byRuntime.langgraph_v1, 0)}`;
     const ready = Boolean(coverage.p1_exit_ready);
     elements.p1ContractState.textContent = ready ? "P1 可退出" : "P1 进行中";
     elements.p1ContractState.className = ready

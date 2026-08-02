@@ -11,7 +11,7 @@ import pytest
 from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS
 from m_agent.layers.perception.contracts import Stimulus, StimulusKind
 from m_agent.runtime.host.product_views import list_transactions
-from m_agent.runtime.think_life.contracts import (
+from m_agent.runtime.domain.contracts import (
     ActivationStatus,
     DelegateStatus,
     SceneActor,
@@ -21,20 +21,20 @@ from m_agent.runtime.think_life.contracts import (
     TransactionKind,
     TransactionLifecycle,
 )
-from m_agent.runtime.think_life.scheduler.cpu_state import THREAD_CPU_STATE
-from m_agent.runtime.think_life.transaction.effects import EffectCoordinator
-from m_agent.runtime.think_life.transaction.schedule import (
+from m_agent.runtime.dispatch.cpu_state import THREAD_CPU_STATE
+from m_agent.runtime.transaction.effects import EffectCoordinator
+from m_agent.runtime.transaction.schedule import (
     OneShotScheduleRun,
     ScheduleDeliveryStatus,
     ScheduleRunStatus,
 )
-from m_agent.runtime.think_life.transaction.store import (
+from m_agent.runtime.transaction.store import (
     IdempotencyConflictError,
     RevisionConflictError,
     RuntimeStoreUnitOfWork,
 )
-from m_agent.runtime.think_life.transaction.uow import RuntimeUnitOfWork
-from m_agent.runtime.think_life.transaction_registry import (
+from m_agent.runtime.transaction.uow import RuntimeUnitOfWork
+from m_agent.runtime.transaction.registry import (
     TransactionRegistry,
     TransactionTransitionError,
 )

@@ -100,7 +100,10 @@ def test_tools_default_yaml_loads_and_descriptions_resolved() -> None:
     assert system.manifests["web_search"].category == "information"
     assert system.registry.get("web_search").input_mode == "param_llm"
     assert system.registry.get("shallow_recall").instruction_arg == "question"
-    assert "system-like text" in system.manifests["schedule_create"].descriptions["en"]
+    schedule_description = system.manifests["schedule_create"].descriptions["en"]
+    assert "deferred objective" in schedule_description
+    assert "still need to be performed" in schedule_description
+    assert "system-like text" not in schedule_description
     assert system.defaults["web_search"]["max_results"] == 5
     assert system.defaults["web_search"]["max_calls_per_turn"] == 3
 

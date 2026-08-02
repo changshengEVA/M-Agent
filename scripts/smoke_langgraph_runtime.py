@@ -41,12 +41,12 @@ if _SRC_ROOT.is_dir() and str(_SRC_ROOT) not in sys.path:
 from m_agent.runtime.host import create_runtime_host  # noqa: E402
 from m_agent.runtime.langgraph.runtime import LangGraphRuntime  # noqa: E402
 from m_agent.runtime.routing import LANGGRAPH_RUNTIME_ENGINE  # noqa: E402
-from m_agent.runtime.think_life.contracts import (  # noqa: E402
+from m_agent.runtime.domain.contracts import (  # noqa: E402
     SceneActor,
     TransactionRecord,
     TransactionState,
 )
-from m_agent.runtime.think_life.transaction.predicates import (  # noqa: E402
+from m_agent.runtime.transaction.predicates import (  # noqa: E402
     project_compat_status,
 )
 
@@ -101,7 +101,6 @@ def _stub_agent(thread_id: str) -> SimpleNamespace:
         thinking_agent=_StubThinkingAgent(),
         config={
             "runtime": {
-                "think_life": {},
                 # R1 covers the MVP drain, which is also the R2 rollback target.
                 "langgraph": {"turn_loop": False},
             }

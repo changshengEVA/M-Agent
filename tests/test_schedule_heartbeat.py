@@ -10,7 +10,12 @@ import yaml
 
 from m_agent.agents.schedule_agent import ScheduleAgent
 from m_agent.api.chat_api_shared import _get_thread_lock
+from m_agent.api.chat_api_runtime import ChatServiceRuntime
 from m_agent.api.schedule_heartbeat import ScheduleHeartbeatCoordinator
+from m_agent.runtime.transaction import (
+    stable_schedule_delivery_id,
+    stable_schedule_run_id,
+)
 from m_agent.schedule.models import ScheduleItem
 from m_agent.schedule.store import ANONYMOUS_OWNER_ID
 
@@ -23,7 +28,7 @@ class _DummyAgent:
         return self._schedule_agent
 
 
-class _ThinkLifeFake:
+class _RuntimeHostFake:
     def __init__(self) -> None:
         self.enqueued_schedules: list[dict[str, Any]] = []
 
@@ -61,7 +66,7 @@ class _HeartbeatRuntime:
         self.config_path = config_path
         self.default_thread_id = "demo-thread"
         self.agent = _DummyAgent(schedule_agent)
-        self.think_life = _ThinkLifeFake()
+        self.runtime_host = _RuntimeHostFake()
         self._thread_event_sink = None
 
     def set_thread_event_sink(self, sink) -> None:
@@ -69,16 +74,11 @@ class _HeartbeatRuntime:
 
     @staticmethod
     def _schedule_prompt(schedule_item: ScheduleItem) -> str:
-        return schedule_item.text
+        return ChatServiceRuntime._schedule_prompt(schedule_item)
 
     @staticmethod
     def _schedule_system_context(schedule_item: ScheduleItem) -> dict[str, Any]:
-        return {
-            "trigger_source": "schedule",
-            "schedule_id": schedule_item.schedule_id,
-            "due_at_utc": schedule_item.due_at_utc,
-            "timezone_name": schedule_item.timezone_name,
-        }
+        return ChatServiceRuntime._schedule_system_context(schedule_item)
 
     @staticmethod
     def _get_or_create_thread(thread_id: str) -> SimpleNamespace:
@@ -142,7 +142,7 @@ def test_heartbeat_queues_due_schedule(tmp_path: Path) -> None:
         thread_id="demo-thread",
         due_at_utc=_past_due_iso(),
         timezone_name="Asia/Shanghai",
-        text="The scheduled team sync time has arrived; prepare to join the meeting.",
+        deferred_objective="Remind the user to prepare for the team sync.",
     )
 
     coordinator = ScheduleHeartbeatCoordinator(
@@ -157,13 +157,25 @@ def test_heartbeat_queues_due_schedule(tmp_path: Path) -> None:
     updated = schedule_agent.store.find_by_id(created.schedule_id, owner_id=ANONYMOUS_OWNER_ID)
     assert updated is not None
     assert updated.status == "leased"
-    assert len(runtime.think_life.enqueued_schedules) == 1
-    queued = runtime.think_life.enqueued_schedules[0]
+    assert len(runtime.runtime_host.enqueued_schedules) == 1
+    queued = runtime.runtime_host.enqueued_schedules[0]
     assert queued["thread_id"] == "demo-thread"
     assert queued["conversation_id"] == "conversation-demo-thread"
     assert queued["schedule_id"] == created.schedule_id
-    assert queued["text"] == "The scheduled team sync time has arrived; prepare to join the meeting."
+    assert queued["text"] == "schedule_due"
     assert queued["payload"]["trigger_source"] == "schedule"
+    assert queued["payload"]["semantic_frame_version"] == 1
+    activation = queued["payload"]["activation"]
+    assert activation["event"]["role"] == "activation_event"
+    assert activation["event"]["type"] == "schedule_due"
+    assert activation["event"]["facts"]["due_at_utc"] == created.due_at_utc
+    assert activation["objective"] == {
+        "description": "Remind the user to prepare for the team sync.",
+        "encoding": "native",
+        "role": "deferred_objective",
+    }
+    assert activation["evidence"] == []
+    assert queued["text"] != activation["objective"]["description"]
     assert result["leased"] == 1
     assert result["started"] == 1
     assert result["completed"] == 0
@@ -173,6 +185,49 @@ def test_heartbeat_queues_due_schedule(tmp_path: Path) -> None:
     assert "schedule_queued" in event_types
     assert "schedule_started" not in event_types
     assert "schedule_completed" not in event_types
+
+
+def test_heartbeat_reenters_origin_transaction_with_stable_delivery(
+    tmp_path: Path,
+) -> None:
+    schedule_agent = _build_schedule_agent(tmp_path)
+    runtime = _HeartbeatRuntime(
+        schedule_agent,
+        config_path=tmp_path / "chat.yaml",
+    )
+    created = schedule_agent.service.create_schedule(
+        owner_id=ANONYMOUS_OWNER_ID,
+        thread_id="demo-thread",
+        due_at_utc=_past_due_iso(),
+        timezone_name="Asia/Shanghai",
+        deferred_objective="Resume the original task.",
+        origin={
+            "transaction_id": "txn-origin",
+            "conversation_id": "demo-thread::7",
+        },
+    )
+    coordinator = ScheduleHeartbeatCoordinator(
+        service_runtime=runtime,
+        user_access=None,
+        autostart=False,
+    )
+
+    result = coordinator.beat_once()
+
+    assert result["started"] == 1
+    queued = runtime.runtime_host.enqueued_schedules[0]
+    expected_run_id = stable_schedule_run_id(
+        created.schedule_id,
+        "txn-origin",
+        created.due_at_utc,
+    )
+    assert queued["conversation_id"] == "demo-thread::7"
+    assert queued["run_id"] == expected_run_id
+    assert queued["payload"]["transaction_id"] == "txn-origin"
+    assert queued["payload"]["schedule_run_id"] == expected_run_id
+    assert queued["payload"]["schedule_delivery_id"] == (
+        stable_schedule_delivery_id(expected_run_id, 1)
+    )
 
 
 def test_authenticated_heartbeat_routes_legacy_schedule_to_canonical_thread(tmp_path: Path) -> None:
@@ -200,8 +255,8 @@ def test_authenticated_heartbeat_routes_legacy_schedule_to_canonical_thread(tmp_
 
     assert result["leased"] == 1
     assert result["started"] == 1
-    assert len(runtime.think_life.enqueued_schedules) == 1
-    queued = runtime.think_life.enqueued_schedules[0]
+    assert len(runtime.runtime_host.enqueued_schedules) == 1
+    queued = runtime.runtime_host.enqueued_schedules[0]
     assert queued["thread_id"] == "alice::alice-thread"
     assert queued["conversation_id"] == "conversation-alice::alice-thread"
     assert {thread_id for thread_id, _, _ in events} == {"alice::alice-thread"}
@@ -210,6 +265,9 @@ def test_authenticated_heartbeat_routes_legacy_schedule_to_canonical_thread(tmp_
     assert stored is not None
     assert stored.thread_id == "alice::client-supplied-thread"
     assert stored.status == "leased"
+    queued_activation = queued["payload"]["activation"]
+    assert queued_activation["objective"]["encoding"] == "legacy_text"
+    assert queued_activation["evidence"] == []
 
 
 def test_heartbeat_enqueues_while_thread_lock_is_held(tmp_path: Path) -> None:
@@ -243,8 +301,8 @@ def test_heartbeat_enqueues_while_thread_lock_is_held(tmp_path: Path) -> None:
     updated = schedule_agent.store.find_by_id(created.schedule_id, owner_id=ANONYMOUS_OWNER_ID)
     assert updated is not None
     assert updated.status == "leased"
-    assert len(runtime.think_life.enqueued_schedules) == 1
-    assert runtime.think_life.enqueued_schedules[0]["schedule_id"] == created.schedule_id
+    assert len(runtime.runtime_host.enqueued_schedules) == 1
+    assert runtime.runtime_host.enqueued_schedules[0]["schedule_id"] == created.schedule_id
     assert result["started"] == 1
     assert result["completed"] == 0
     event_types = [event_type for _, event_type, _ in events]

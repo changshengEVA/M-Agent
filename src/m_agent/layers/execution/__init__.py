@@ -1,4 +1,4 @@
-"""Single-capability execution primitives used by the Think-life scheduler.
+"""Single-capability execution primitives used by the Runtime scheduler.
 
 The layer exposes capability metadata, structured argument filling, and direct
 tool invocation. Persona and planning remain in the thinking layer.

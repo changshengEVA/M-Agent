@@ -16,15 +16,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from m_agent.acceptance.adapters import LangGraphV1Adapter
 from m_agent.acceptance.trace import SemanticTrace
 from m_agent.api.chat_api_runtime import ChatServiceRuntime
 from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS
-from m_agent.layers.execution.contracts import ExecutionResult
 from m_agent.layers.execution.core import ExecutionAgent
 from m_agent.layers.execution.model_provider import ModelProvider
 from m_agent.layers.perception.contracts import Stimulus, StimulusKind
-from m_agent.runtime.think_life.config import ThinkLifeConfig, ThinkLifeSchedulerConfig
-from m_agent.runtime.think_life.contracts import (
+from m_agent.runtime.config import RuntimeConfig
+from m_agent.runtime.domain.contracts import (
     DelegateStatus,
     SceneActor,
     SceneEntry,
@@ -33,15 +33,12 @@ from m_agent.runtime.think_life.contracts import (
     TransactionKind,
     TransactionState,
 )
-from m_agent.runtime.think_life.drainer import ThreadDrainerService
-from m_agent.runtime.think_life.perception.attributor import TransactionAttributor
-from m_agent.runtime.think_life.perception.gateway import PerceptionGateway
-from m_agent.runtime.think_life.perception.inbox import StimulusInbox
-from m_agent.runtime.think_life.scheduler.delegate import DelegateTarget
-from m_agent.runtime.think_life.scheduler.cpu_state import THREAD_CPU_STATE
-from m_agent.runtime.think_life.scheduler.loop import ThinkLifeLoop
-from m_agent.runtime.think_life.runtime import ThinkLifeRuntime
-from m_agent.runtime.think_life.transaction_registry import TransactionRegistry
+from m_agent.runtime.dispatch.drainer import ThreadDrainerService
+from m_agent.runtime.perception.attributor import TransactionAttributor
+from m_agent.runtime.perception.gateway import PerceptionGateway
+from m_agent.runtime.perception.inbox import StimulusInbox
+from m_agent.runtime.dispatch.cpu_state import THREAD_CPU_STATE
+from m_agent.runtime.transaction.registry import TransactionRegistry
 from m_agent.systems.scene.default.jsonl_store import SceneLogStore
 
 
@@ -64,31 +61,6 @@ def _stimulus(
         delegate_id=delegate_id,
         activation_id=activation_id,
     )
-
-
-def _minimal_loop(
-    *,
-    registry: TransactionRegistry,
-    inbox: StimulusInbox,
-    attributor: Any,
-    execution_agent: Any,
-    gateway: Any | None = None,
-) -> ThinkLifeLoop:
-    loop = ThinkLifeLoop(
-        config=ThinkLifeConfig(),
-        registry=registry,
-        inbox=inbox,
-        gateway=gateway or MagicMock(),
-        attributor=attributor,
-        thinking_agent=MagicMock(),
-        execution_agent=execution_agent,
-        wm_system=MagicMock(),
-        scene_writer=MagicMock(),
-        scene_reader=MagicMock(),
-    )
-    loop._should_yield_to_inbox = MagicMock(return_value=False)  # type: ignore[method-assign]
-    loop._append_tool_scene = MagicMock()  # type: ignore[method-assign]
-    return loop
 
 
 def test_inv_01_all_stimuli_enter_inbox_before_processing(request: Any) -> None:
@@ -127,7 +99,7 @@ def test_inv_01_all_stimuli_enter_inbox_before_processing(request: Any) -> None:
         inbox=inbox,
         attributor=TransactionAttributor(
             registry=registry,
-            config=ThinkLifeConfig(),
+            config=RuntimeConfig(),
         ),
         scene_writer=_RecordingSceneWriter(),
     )
@@ -306,7 +278,7 @@ def test_inv_03_feedback_bypasses_semantic_reattribution(request: Any) -> None:
 
     attributor = TransactionAttributor(
         registry=registry,
-        config=ThinkLifeConfig(),
+        config=RuntimeConfig(),
         semantic_resolver=semantic_resolver,
     )
     selected, created = attributor.resolve(
@@ -351,7 +323,7 @@ def test_inv_04_feedback_requires_transaction_and_active_delegate(request: Any) 
     )
     delegated = registry.begin_delegate(transaction.transaction_id, "delegate-active")
     activation_id = delegated.current_activation_id
-    attributor = TransactionAttributor(registry=registry, config=ThinkLifeConfig())
+    attributor = TransactionAttributor(registry=registry, config=RuntimeConfig())
 
     valid, created = attributor.resolve(
         _stimulus(
@@ -504,58 +476,17 @@ def test_inv_06_scene_is_one_monotonic_conversation_timeline(
 
 
 def test_inv_08_delegate_invokes_at_most_one_capability(request: Any) -> None:
-    trace = SemanticTrace(scenario_id="INV-08")
-    registry = TransactionRegistry()
-    inbox = StimulusInbox()
-    execution_agent = MagicMock()
-    # An empty registry exercises the compatibility no-args mapping for the
-    # deterministic fake capability without invoking a parameter model.
-    execution_agent.registry = MagicMock()
-    execution_agent.registry.get.return_value = None
-    execution_agent.invoke_tool_direct.return_value = ExecutionResult(
-        summary="time returned",
-        tool_history=[
-            {
-                "tool_name": "get_current_time",
-                "params": {},
-                "result": {"success": True, "answer": "12:00"},
-            }
-        ],
-        success=True,
+    execution = LangGraphV1Adapter().run_scenario(
+        "TX-01",
+        "TX-01/poc_sequential_fake_effects",
     )
-    gateway = MagicMock()
-    loop = _minimal_loop(
-        registry=registry,
-        inbox=inbox,
-        attributor=MagicMock(priority_for=MagicMock(return_value=10)),
-        execution_agent=execution_agent,
-        gateway=gateway,
-    )
-    record = registry.create(thread_id="thread-1", kind=TransactionKind.USER_TASK)
-    stimulus = _stimulus(
-        stimulus_id="user-tool",
-        kind=StimulusKind.USER_MESSAGE,
-        conversation_id=record.conversation_id,
-    )
-    result = loop._delegate_and_wait(
-        record,
-        target=DelegateTarget(tool_name="get_current_time"),
-        perception=MagicMock(),
-        stimulus=stimulus,
-    )
-    trace.record(
-        "delegate.completed",
-        transaction_id=record.transaction_id,
-        delegate_id=result["delegate_id"],
-        invoke_count=execution_agent.invoke_tool_direct.call_count,
-    )
-    trace.attach(request)
-
-    execution_agent.invoke_tool_direct.assert_called_once()
-    gateway.submit_execution_feedback.assert_called_once()
-    feedback = gateway.submit_execution_feedback.call_args.kwargs
-    assert len(feedback["tool_history"]) == 1
-    assert feedback["delegate_id"] == result["delegate_id"]
+    execution.attach(request)
+    execution.observation.assert_satisfied()
+    checks = {
+        item["id"]: item
+        for item in execution.observation.checks
+    }
+    assert checks["poc_effects.one_effect_per_delegate"]["passed"] is True
 
 
 def test_inv_10_reply_uses_capability_and_audit_path(request: Any) -> None:
@@ -593,7 +524,7 @@ def test_inv_10_reply_uses_capability_and_audit_path(request: Any) -> None:
         tool_input={"message": "hello", "finalize": True},
         thread_id="thread-1",
         correlation_id="delegate-reply",
-        think_life_hooks={
+        runtime_hooks={
             "conversation_id": "thread-1::0",
             "transaction_id": "transaction-reply",
             "delegate_id": "delegate-reply",
@@ -622,66 +553,15 @@ def test_inv_10_reply_uses_capability_and_audit_path(request: Any) -> None:
 
 
 def test_inv_12_preemption_keeps_state_and_requeues_at_boundary(request: Any) -> None:
-    trace = SemanticTrace(scenario_id="INV-12")
-    registry = TransactionRegistry()
-    inbox = StimulusInbox()
-    config = ThinkLifeConfig(
-        scheduler=ThinkLifeSchedulerConfig(
-            preempt_enabled=True,
-            max_preempt_per_stimulus=2,
-        )
-    )
-    attributor = TransactionAttributor(registry=registry, config=config)
-    loop = _minimal_loop(
-        registry=registry,
-        inbox=inbox,
-        attributor=attributor,
-        execution_agent=MagicMock(),
-    )
-    loop.config = config
-    record = registry.create(
-        thread_id="thread-1",
-        conversation_id="thread-1::0",
-        kind=TransactionKind.USER_TASK,
-        priority=50,
-    )
-    registry.set_active_user_transaction(record.conversation_id, record.transaction_id)
-    stimulus = _stimulus(
-        stimulus_id="preempted",
-        kind=StimulusKind.USER_MESSAGE,
-        conversation_id=record.conversation_id,
-    )
-
-    result = loop._handle_preempt(stimulus, record, phase="think")
-    requeued = inbox.pop_next("thread-1")
-    assert requeued is not None
-    trace.record(
-        "preempt.requeued",
-        stimulus_id=requeued.stimulus_id,
-        transaction_id=requeued.transaction_id,
-        checkpoint=requeued.payload.get("_checkpoint"),
-        preempt_count=requeued.payload.get("_preempt_count"),
-    )
-    resumed, created = attributor.resolve(requeued)
-    trace.record(
-        "transaction.resolved_after_preempt",
-        transaction_id=resumed.transaction_id,
-        created=created,
-    )
-    trace.attach(request)
-
-    assert result["preempted"] is True
-    current = registry.get(record.transaction_id)
-    assert current is not None
-    assert current.state == TransactionState.CONTINUE
-    assert requeued.stimulus_id == stimulus.stimulus_id
-    assert requeued.payload["_preempt_count"] == 1
-    if resumed.transaction_id != record.transaction_id:
-        pytest.xfail(
-            "Known gap: the attributor ignores the transaction_id on a requeued "
-            "non-feedback stimulus and creates a new transaction."
-        )
-    assert created is False
+    execution = LangGraphV1Adapter().run_scenario("SP-07", "SP-07/core")
+    execution.attach(request)
+    execution.observation.assert_satisfied()
+    checks = {
+        item["id"]: item
+        for item in execution.observation.checks
+    }
+    assert checks["sp07_requeue_preserves_envelope_identity"]["passed"] is True
+    assert checks["sp07_requeue_skips_reattribution"]["passed"] is True
 
 
 def test_inv_13_duplicate_feedback_is_consumed_once(request: Any) -> None:
@@ -693,7 +573,7 @@ def test_inv_13_duplicate_feedback_is_consumed_once(request: Any) -> None:
         kind=TransactionKind.USER_TASK,
     )
     delegated = registry.begin_delegate(record.transaction_id, "delegate-once")
-    attributor = TransactionAttributor(registry=registry, config=ThinkLifeConfig())
+    attributor = TransactionAttributor(registry=registry, config=RuntimeConfig())
     feedback = _stimulus(
         stimulus_id="feedback-duplicate",
         kind=StimulusKind.EXECUTION_FEEDBACK,
@@ -743,7 +623,7 @@ def test_inv_14_flush_gate_covers_every_unresolved_obligation(request: Any) -> N
     runtime = ChatServiceRuntime.__new__(ChatServiceRuntime)
     runtime._threads_lock = threading.Lock()
     runtime._threads = {}
-    runtime._think_life_pending_users = {}
+    runtime._runtime_pending_users = {}
     thread_id = "acceptance-flush-gate"
 
     try:
@@ -769,10 +649,10 @@ def test_inv_14_flush_gate_covers_every_unresolved_obligation(request: Any) -> N
             stimulus_id="stimulus-in-flight",
         )
 
-        runtime._think_life_pending_users[thread_id] = [{"text": "waiting"}]
+        runtime._runtime_pending_users[thread_id] = [{"text": "waiting"}]
         assert runtime._flush_block_reason(thread_id) == "reply_pending"
         trace.record("flush.blocked", reason="reply_pending")
-        runtime._think_life_pending_users.clear()
+        runtime._runtime_pending_users.clear()
 
         assert runtime._flush_block_reason(thread_id) is None
         trace.record("flush.allowed")

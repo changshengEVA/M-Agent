@@ -163,8 +163,8 @@ def create_app(
             return active_scenario_manager.start(
                 scenario_ids=scenario_ids,
                 runtime_id=str(
-                    body.get("runtime_id", "think_life_v1")
-                    or "think_life_v1"
+                    body.get("runtime_id", "langgraph_v1")
+                    or "langgraph_v1"
                 ),
                 layers=[str(item) for item in layers],
                 timeout_seconds=float(
@@ -178,7 +178,7 @@ def create_app(
 
     @app.get("/api/contract/runs/latest")
     def get_latest_contract_run(
-        runtime_id: str = "think_life_v1",
+        runtime_id: str = "langgraph_v1",
     ) -> Dict[str, Any]:
         try:
             payload = active_scenario_manager.latest(runtime_id)

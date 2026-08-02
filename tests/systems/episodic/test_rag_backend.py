@@ -46,3 +46,40 @@ def test_rag_on_flush_merges_notes(tmp_path: Path) -> None:
     assert chunks
     notes = chunks[-1].get("meta", {}).get("trace_summary", {}).get("episode_notes")
     assert notes == [{"note": "remember this"}]
+
+
+def test_rag_dialogue_materialization_is_idempotent_by_dialogue_id(
+    tmp_path: Path,
+) -> None:
+    backend = SimpleRagEpisodicBackend(
+        storage_dir=str(tmp_path / "rag-idempotent"),
+        workflow_id="flush-idempotent",
+        embed_model="hash",
+    )
+    rounds = [
+        {
+            "user_message": "hello",
+            "assistant_message": "hi",
+            "dialogue_id": "dialogue-stable-1",
+        }
+    ]
+
+    first = backend.persist_dialogue(
+        thread_id="t-idempotent",
+        rounds=rounds,
+        reason="flush",
+        source="test",
+    )
+    replay = backend.persist_dialogue(
+        thread_id="t-idempotent",
+        rounds=rounds,
+        reason="flush",
+        source="test",
+    )
+
+    assert first["success"] is True
+    assert first["replayed"] is False
+    assert replay["success"] is True
+    assert replay["replayed"] is True
+    assert replay["chunk_ids"] == first["chunk_ids"]
+    assert len(backend.store._chunks) == 1

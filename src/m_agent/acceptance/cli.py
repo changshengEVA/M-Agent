@@ -234,8 +234,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     contract_run.add_argument(
         "--runtime",
-        choices=("think_life_v1", "langgraph_v1"),
-        default="think_life_v1",
+        choices=("langgraph_v1",),
+        default="langgraph_v1",
     )
     contract_run.add_argument(
         "--layer",

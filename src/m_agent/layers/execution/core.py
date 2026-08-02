@@ -1,4 +1,4 @@
-"""Single-capability execution for the Think-life scheduler.
+"""Single-capability execution for the Runtime scheduler.
 
 The execution layer exposes capability metadata, fills one selected tool's
 arguments, and invokes that tool directly. It is persona-less and never runs
@@ -34,7 +34,7 @@ logger = logging.getLogger(__name__)
 _CONTROLLER_LIMIT_KEY = "__controller__"
 
 class _ParamFillOutcome(BaseModel):
-    """Structured output schema for Think-life param fill."""
+    """Structured output schema for Runtime param fill."""
 
     outcome: Literal["invoke", "clarify"]
     args: Optional[Dict[str, Any]] = None
@@ -124,7 +124,7 @@ class ExecutionAgent:
         pending_user_request: str = "",
         correlation_id: str = "",
     ) -> ParamFillResult:
-        """Think-life param pass: structured LLM call to fill args or report gaps."""
+        """Runtime param pass: structured LLM call to fill args or report gaps."""
         name = str(tool_name or "").strip()
         if not name:
             raise ValueError("tool_name must be a non-empty string")
@@ -209,13 +209,13 @@ class ExecutionAgent:
         *,
         tool_name: str,
         thread_id: str,
-        think_life_hooks: Optional[Dict[str, Any]] = None,
+        runtime_hooks: Optional[Dict[str, Any]] = None,
     ) -> tuple[Any, Dict[str, Any], Dict[str, Any]]:
         name = str(tool_name or "").strip()
         recall_state: Dict[str, Any] = {"mode": None, "result": None, "history": []}
         controller_state: Dict[str, Any] = {"history": [], "call_seq": 0}
-        if think_life_hooks:
-            controller_state["think_life"] = dict(think_life_hooks)
+        if runtime_hooks:
+            controller_state["runtime"] = dict(runtime_hooks)
         tool_defaults = copy.deepcopy(self.tool_defaults)
         controller_defaults = dict(tool_defaults.get(_CONTROLLER_LIMIT_KEY) or {})
         controller_defaults["max_calls_per_turn"] = 1
@@ -248,12 +248,12 @@ class ExecutionAgent:
         *,
         tool_name: str,
         thread_id: str,
-        think_life_hooks: Optional[Dict[str, Any]] = None,
+        runtime_hooks: Optional[Dict[str, Any]] = None,
     ) -> Any:
         tool_obj, _, _ = self._build_single_tool_bundle(
             tool_name=tool_name,
             thread_id=thread_id,
-            think_life_hooks=think_life_hooks,
+            runtime_hooks=runtime_hooks,
         )
         return tool_obj
 
@@ -264,14 +264,14 @@ class ExecutionAgent:
             schema_block = f"\n目标工具参数 schema（JSON）：\n{safe_schema}\n"
         if self.prompt_language == "zh":
             return (
-                f"你是 Think-life 工具参数助手。思考层已选定唯一工具 `{tool_name}`。\n"
+                f"你是 Runtime 工具参数助手。思考层已选定唯一工具 `{tool_name}`。\n"
                 "请输出结构化结果：\n"
                 "- outcome=invoke：args 必须符合工具 schema，且不得猜测关键字段（时间、收件人等）。\n"
                 "- outcome=clarify：信息不足时列出 missing_fields 与 reason，禁止勉强填参。\n"
                 f"{schema_block}"
             )
         return (
-            f"You are the Think-life tool-argument assistant. The thinking layer chose `{tool_name}` only.\n"
+            f"You are the Runtime tool-argument assistant. The thinking layer chose `{tool_name}` only.\n"
             "Return structured output:\n"
             "- outcome=invoke: args must match the tool schema; do not guess critical fields.\n"
             "- outcome=clarify: list missing_fields and reason when required args are unavailable.\n"
@@ -313,9 +313,9 @@ class ExecutionAgent:
         tool_input: Dict[str, Any],
         thread_id: str,
         correlation_id: str = "",
-        think_life_hooks: Optional[Dict[str, Any]] = None,
+        runtime_hooks: Optional[Dict[str, Any]] = None,
     ) -> ExecutionResult:
-        """Think-life: invoke one capability without an execution-layer LLM."""
+        """Runtime: invoke one capability without an execution-layer LLM."""
         name = str(tool_name or "").strip()
         if not name:
             raise ValueError("tool_name must be a non-empty string")
@@ -332,7 +332,7 @@ class ExecutionAgent:
         tool_obj, controller_state, recall_state = self._build_single_tool_bundle(
             tool_name=name,
             thread_id=active_thread_id,
-            think_life_hooks=think_life_hooks,
+            runtime_hooks=runtime_hooks,
         )
         invoke_fn = getattr(tool_obj, "invoke", None) or getattr(tool_obj, "run", None)
         if invoke_fn is None:
@@ -390,7 +390,7 @@ class ExecutionAgent:
 
     @staticmethod
     def _summary_from_tool_history(tool_history: List[Dict[str, Any]]) -> str:
-        from m_agent.runtime.think_life.scheduler.execution_feedback import (
+        from m_agent.runtime.turn_support.execution_feedback import (
             feedback_summary_from_tool_history,
         )
 

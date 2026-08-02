@@ -12,7 +12,17 @@
 
 Run the agent as a **long-lived HTTP / SSE service** (`python -m m_agent.api.chat_api`). You create a run per user message, subscribe to the event stream, and read the final result while the server keeps **thread-level** session state.
 
-**Think-life is the sole product runtime.** Stimuli go through a **perception bus**, WM is isolated by transaction, the **Scene log** records a chronological timeline, and user-visible text is emitted only through the **`reply_to_user`** tool. Schedule heartbeat and execution feedback use the same runtime path. See the **[current runtime specification](docs/runtime/think-life-runtime-spec.zh-CN.md)**.
+The product runs one **LangGraph-backed `RuntimeHost`** (`langgraph_v1`).
+Stimuli enter through the shared perception path, working memory is isolated by
+transaction, and the **Scene log** records one chronological conversation
+timeline. User-visible text is emitted only through **`reply_to_user`**.
+Schedule heartbeat and execution feedback use the same runtime path.
+
+Runtime tuning is split between `runtime.common` and `runtime.langgraph`.
+Execution capabilities receive the neutral `runtime_hooks` context. Conversation
+Flush is reported as `runtime_flush`, and transaction queries use
+`get_transactions()`. The durable flush journal resumes the same immutable
+snapshot after retry or restart, including Dialogue/RAG materialization.
 
 ### Client side
 
@@ -91,7 +101,7 @@ TAVILY_API_KEY=YOUR_TAVILY_KEY
 
 ## Usage 1: Chat API as a Long-Running Backend (FastAPI)
 
-The repo ships an HTTP / SSE chat service built on **fixed startup-time config + thread-level session state** (i.e. *not* the "send full config with every request" pattern). The service always runs the Think-life runtime.
+The repo ships an HTTP / SSE chat service built on **fixed startup-time config + thread-level session state** (i.e. *not* the "send full config with every request" pattern). The service starts one LangGraph runtime host and resumes durable transactions from its shared runtime store and checkpoint database.
 
 ### Start the service
 
@@ -108,7 +118,21 @@ python -m m_agent.api.chat_api `
   --session-ttl-seconds 43200
 ```
 
-Think-life tuning (delegates per transaction, Scene context window, preemption) lives under `runtime.think_life` in `chat_controller.yaml`.
+Runtime tuning lives under `runtime.common` and `runtime.langgraph` in
+`chat_controller.yaml`; `langgraph_v1` is the only supported engine. Unsupported
+runtime settings are rejected at startup. Persistent startup is
+fail-fast: `langgraph-checkpoint-sqlite` and a compatible checkpoint schema
+must be available; in-memory checkpoints require an explicit test-only opt-out.
+The Final runtime also refuses to start while a retired runtime database is
+still present in an online user persistence directory. Complete the separately
+authorized backup, audit, and quarantine batch first; never delete that file as
+an ordinary deployment cleanup step.
+
+Before a release, run the repeatable LangGraph runtime gate:
+
+```powershell
+python scripts/run_runtime_migration_gate.py --rounds 3
+```
 
 ### After startup
 
@@ -170,7 +194,7 @@ For markers and policy, see `[tool.pytest.ini_options]` in `pyproject.toml`.
 | [docs/README.md](docs/README.md) | Documentation index and reading order |
 | [docs/development/project-structure.md](docs/development/project-structure.md) | Directory conventions and common commands |
 | [docs/chat_api/README.md](docs/chat_api/README.md) | Full Chat API reference |
-| [docs/runtime/think-life-runtime-spec.zh-CN.md](docs/runtime/think-life-runtime-spec.zh-CN.md) | Current Think-life runtime spec (Chinese) |
+| [docs/runtime/README.md](docs/runtime/README.md) | Current LangGraph runtime and acceptance guide |
 | [docs/architecture/README.md](docs/architecture/README.md) | Target architecture and migration documents |
 | [tools/M-Agent-UI/API.md](tools/M-Agent-UI/API.md) | Frontend integration API |
 

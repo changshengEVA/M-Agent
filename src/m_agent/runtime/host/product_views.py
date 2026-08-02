@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional
+import uuid
+from typing import Any, Dict, List, Mapping, Optional
 
 from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS, ThreadRuntimeSnapshot
-from m_agent.runtime.think_life.contracts import (
+from m_agent.runtime.domain.contracts import (
     SceneActor,
     SceneEntryType,
     TransactionKind,
     TransactionRecord,
 )
-from m_agent.runtime.think_life.transaction.predicates import (
+from m_agent.runtime.transaction.predicates import (
     is_live_record,
     is_open_continue,
     project_compat_status,
@@ -251,6 +252,15 @@ def build_dialogue_flush_payload(
     entries = list(entries_fn(cid))
     if not entries:
         return None
+    dialogue_entries = [
+        entry
+        for entry in entries
+        if entry.actor in {SceneActor.USER, SceneActor.ASSISTANT}
+        or entry.entry_type
+        in {SceneEntryType.UTTERANCE, SceneEntryType.REPLY}
+    ]
+    if not dialogue_entries:
+        return None
 
     from m_agent.chat.chat_memory_persistence import (
         build_dialogue_id,
@@ -262,20 +272,24 @@ def build_dialogue_flush_payload(
     assistant_name = str(
         getattr(agent, "assistant_name", "Memory Assistant") or "Memory Assistant"
     )
-    start_ts = entries[0].occurred_at
+    start_ts = dialogue_entries[0].occurred_at
+    from datetime import datetime, timezone
+
     try:
-        from datetime import datetime, timezone
-
-        created_at = datetime.fromisoformat(str(start_ts).replace("Z", "+00:00"))
-    except Exception:
-        from datetime import datetime, timezone
-
-        created_at = datetime.now(timezone.utc)
+        created_at = datetime.fromisoformat(
+            str(start_ts).replace("Z", "+00:00")
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            "Scene dialogue entry has an invalid occurred_at timestamp"
+        ) from exc
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=timezone.utc)
     dialogue_id = build_dialogue_id(thread_id=tid, created_at=created_at)
     return build_dialogue_payload_from_scene_entries(
         dialogue_id=dialogue_id,
         thread_id=tid,
-        entries=entries,
+        entries=dialogue_entries,
         source=source,
         user_name=user_name,
         assistant_name=assistant_name,
@@ -300,37 +314,53 @@ def on_flush_segment(
     thread_id: str,
     *,
     conversation_id: Optional[str] = None,
+    flush_id: Optional[str] = None,
+    through_seq: Optional[int] = None,
+    eligible_revisions: Optional[Mapping[str, int]] = None,
+    payload: Optional[Dict[str, Any]] = None,
     emit_runtime_updated: Optional[Any] = None,
 ) -> Dict[str, Any]:
     tid = str(thread_id or "").strip()
     cid = str(conversation_id or "").strip()
-    drained: List[Dict[str, Any]] = []
-    flush_key = cid
-    agent = getattr(runtime, "agent", None)
-    thinking = getattr(agent, "thinking_agent", None)
-    if flush_key and thinking is not None:
-        try:
-            drained = list(thinking.on_flush(flush_key, thread_id=tid) or [])
-        except Exception:
-            logger.exception(
-                "on_flush failed conversation_id=%s thread_id=%s",
-                flush_key,
-                tid,
-            )
-    archived = (
-        runtime.registry.archive_completed_for_flush(cid)
-        if cid
-        else []
+    stable_flush_id = (
+        str(flush_id or "").strip()
+        or f"flush_{uuid.uuid4().hex}"
     )
+    coordinator = getattr(runtime, "flush_coordinator", None)
+    if cid and coordinator is None:
+        raise RuntimeError(
+            "runtime flush coordinator is required for an atomic boundary"
+        )
+    if cid:
+        committed = coordinator.trigger(
+            conversation_id=cid,
+            flush_id=stable_flush_id,
+            through_seq=through_seq,
+            eligible_revisions=eligible_revisions,
+            payload=dict(payload or {}),
+        )
+        archived_ids = list(
+            committed.get("archived_transaction_ids", []) or []
+        )
+    else:
+        archived = (
+            runtime.registry.archive_completed_for_flush(cid)
+            if cid
+            else []
+        )
+        archived_ids = [record.transaction_id for record in archived]
+
     if callable(emit_runtime_updated):
         emit_runtime_updated(tid)
     return {
         "thread_id": tid,
+        "flush_id": stable_flush_id,
         "completed_transaction_id": None,
-        "archived_transaction_ids": [
-            record.transaction_id for record in archived
-        ],
-        "episode_notes_drained": len(drained),
+        "archived_transaction_ids": archived_ids,
+        # Product-level episode materialisation runs after this durable commit
+        # in ChatServiceRuntime. It must not be drained inside the engine or a
+        # later backend callback would observe an empty buffer.
+        "episode_notes_drained": 0,
     }
 
 

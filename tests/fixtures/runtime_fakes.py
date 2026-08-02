@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 import threading
 from typing import Any, Dict, Iterator, Optional, Sequence, Tuple
 from uuid import uuid4
+
+from m_agent.runtime.routing import LANGGRAPH_RUNTIME_ENGINE
 
 
 def _now_iso() -> str:
@@ -46,6 +48,7 @@ class FakeScheduleItem:
     due_at_utc: str
     timezone_name: str
     text: str
+    deferred_objective: Dict[str, str] = field(default_factory=dict)
     status: str = "pending"
     created_at: str = ""
 
@@ -77,6 +80,7 @@ class FakeScheduleService:
             "due_at_utc": item.due_at_utc,
             "timezone_name": item.timezone_name,
             "text": item.text,
+            "deferred_objective": dict(item.deferred_objective),
             "status": item.status,
             "created_at": item.created_at,
             "due_at_local": item.due_at_utc,
@@ -116,14 +120,20 @@ class FakeScheduleService:
         thread_id: str,
         due_at_utc: str,
         timezone_name: str,
-        text: str,
+        deferred_objective: str = "",
+        text: str = "",
     ) -> FakeScheduleItem:
+        objective = str(deferred_objective or text or "").strip()
         item = FakeScheduleItem(
             schedule_id=f"sch_{uuid4().hex[:10]}",
             thread_id=thread_id,
             due_at_utc=due_at_utc,
             timezone_name=timezone_name,
-            text=text,
+            text=objective,
+            deferred_objective={
+                "description": objective,
+                "encoding": "native" if deferred_objective else "legacy_text",
+            },
             status="pending",
             created_at=_now_iso(),
         )
@@ -216,7 +226,7 @@ class FakeRuntime:
 
     @property
     def runtime_profile(self) -> str:
-        return "think_life"
+        return LANGGRAPH_RUNTIME_ENGINE
 
     def set_thread_event_sink(self, sink) -> None:
         self._thread_event_sink = sink
@@ -226,13 +236,19 @@ class FakeRuntime:
 
     def health_payload(self) -> Dict[str, Any]:
         with self._threads_lock:
+            pending_stimuli_total = sum(
+                int(state.get("runtime", {}).get("pending_stimuli", 0) or 0)
+                for state in self._threads.values()
+            )
             payload: Dict[str, Any] = {
                 "config_path": str(self.config_path),
                 "default_thread_id": self.default_thread_id,
-                "runtime_profile": "think_life",
+                "runtime_profile": LANGGRAPH_RUNTIME_ENGINE,
+                "runtime_engine_id": LANGGRAPH_RUNTIME_ENGINE,
                 "thread_count": len(self._threads),
-                "think_life": {
-                    "pending_stimuli_total": 0,
+                "runtime": {
+                    "runtime_engine_id": LANGGRAPH_RUNTIME_ENGINE,
+                    "pending_stimuli_total": pending_stimuli_total,
                     "active_drainer_threads": 0,
                     "preempt_enabled": False,
                 },
@@ -250,15 +266,15 @@ class FakeRuntime:
         stimulus_id = f"stim_{uuid4().hex[:12]}"
         with self._threads_lock:
             state = self._ensure_state(tid)
-            if "think_life" not in state:
-                state["think_life"] = {
-                    "pending_stimuli": 0,
-                    "busy": False,
-                    "busy_reason": "idle",
-                    "runtime_profile": "think_life",
-                }
-            state["think_life"]["pending_stimuli"] = int(state["think_life"].get("pending_stimuli", 0)) + 1
-            pending = int(state["think_life"]["pending_stimuli"])
+            runtime_state = state["runtime"]
+            runtime_state["pending_stimuli"] = int(
+                runtime_state.get("pending_stimuli", 0)
+            ) + 1
+            runtime_state["runtime_phase"] = "queued"
+            runtime_state["effective_depth"] = int(
+                runtime_state["pending_stimuli"]
+            )
+            pending = int(runtime_state["pending_stimuli"])
         if callable(self._thread_event_sink):
             self._thread_event_sink(
                 tid,
@@ -269,6 +285,9 @@ class FakeRuntime:
             "stimulus_id": stimulus_id,
             "thread_id": tid,
             "pending_count": pending,
+            "effective_depth": pending,
+            "runtime_phase": "queued",
+            "runtime_engine_id": LANGGRAPH_RUNTIME_ENGINE,
             "accepted": True,
         }
 
@@ -322,6 +341,7 @@ class FakeRuntime:
             },
             "kind": "user_task",
             "priority": 50,
+            "runtime_engine": LANGGRAPH_RUNTIME_ENGINE,
             "think_rounds": 0,
             "delegate_count": 0,
             "is_active_user": True,
@@ -330,7 +350,7 @@ class FakeRuntime:
         self._transactions[transaction_id] = record
         return deepcopy(record)
 
-    def get_think_life_transactions(
+    def get_transactions(
         self,
         thread_id: str,
         *,
@@ -368,6 +388,8 @@ class FakeRuntime:
                 for item in self._transactions.values()
             ),
             "include_history": bool(include_history),
+            "runtime_phase": "ready",
+            "effective_depth": 0,
         }
 
     def delete_transaction(
@@ -382,7 +404,7 @@ class FakeRuntime:
         from m_agent.runtime.transaction_control import (
             RuntimeTransactionNotFoundError,
         )
-        from m_agent.runtime.think_life.transaction.store import (
+        from m_agent.runtime.transaction.store import (
             IdempotencyConflictError,
             RevisionConflictError,
         )
@@ -484,6 +506,18 @@ class FakeRuntime:
                     "ui_expose_max_entries": 200,
                     "entries": [],
                 },
+                "runtime_engine_id": LANGGRAPH_RUNTIME_ENGINE,
+                "runtime": {
+                    "pending_stimuli": 0,
+                    "busy": False,
+                    "busy_reason": "idle",
+                    "runtime_profile": LANGGRAPH_RUNTIME_ENGINE,
+                    "runtime_engine_id": LANGGRAPH_RUNTIME_ENGINE,
+                    "runtime_phase": "ready",
+                    "effective_depth": 0,
+                    "in_flight_stimulus_id": None,
+                    "preempt_enabled": False,
+                },
             }
             self._threads[normalized] = state
         return state
@@ -541,20 +575,25 @@ class FakeRuntime:
         tid = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
         with self._threads_lock:
             state = self._ensure_state(tid)
-            state.setdefault(
-                "think_life",
-                {
-                    "pending_stimuli": 0,
-                    "busy": False,
-                    "busy_reason": "idle",
-                    "runtime_profile": "think_life",
-                },
-            )
-            cleared = int(state["think_life"].get("pending_stimuli", 0) or 0)
-            state["think_life"]["pending_stimuli"] = 0
-            state["think_life"]["busy"] = False
-            state["think_life"]["busy_reason"] = "idle"
+            runtime_state = state["runtime"]
+            cleared = int(runtime_state.get("pending_stimuli", 0) or 0)
+            runtime_state["pending_stimuli"] = 0
+            runtime_state["busy"] = False
+            runtime_state["busy_reason"] = "idle"
+            runtime_state["runtime_phase"] = "ready"
+            runtime_state["effective_depth"] = 0
             snapshot = deepcopy(state)
+            thread_runtime = {
+                "thread_id": tid,
+                "busy": False,
+                "busy_reason": "idle",
+                "pending_stimuli": 0,
+                "runtime_profile": LANGGRAPH_RUNTIME_ENGINE,
+                "runtime_phase": "ready",
+                "effective_depth": 0,
+                "in_flight_stimulus_id": None,
+                "preempt_enabled": False,
+            }
         if callable(self._thread_event_sink):
             self._thread_event_sink(
                 tid,
@@ -562,18 +601,19 @@ class FakeRuntime:
                 {
                     "thread_id": tid,
                     "reason": reason,
-                    "cancelled_in_flight": True,
+                    "cancelled_in_flight": False,
                     "cleared_pending_stimuli": cleared,
-                    "cancelled_transactions": [],
+                    "paused_transactions": [],
                 },
             )
         return {
             "success": True,
             "thread_id": tid,
-            "runtime_profile": "think_life",
-            "cancelled_in_flight": True,
+            "runtime_profile": LANGGRAPH_RUNTIME_ENGINE,
+            "cancelled_in_flight": False,
             "cleared_pending_stimuli": cleared,
-            "cancelled_transactions": [],
+            "paused_transactions": [],
+            "thread_runtime": thread_runtime,
             "thread_state": snapshot,
         }
 
@@ -615,6 +655,7 @@ class FakeRuntime:
             "results": [],
             "replies": [answer],
             "answer": answer,
+            "runtime_engine_id": LANGGRAPH_RUNTIME_ENGINE,
             "memory_write": None,
             "memory_capture": {
                 "mode": snapshot["mode"],

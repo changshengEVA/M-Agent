@@ -29,6 +29,10 @@ def _build_base_configs(tmp_path: Path) -> Path:
             "runtime_prompt_config_path": "./runtime/chat_controller_runtime.yaml",
             "email_agent_config_path": "../email/gmail_email_agent.yaml",
             "schedule_agent_config_path": "../schedule/schedule_agent.yaml",
+            "runtime": {
+                "common": {"scene_context_max_entries": 40},
+                "langgraph": {"turn_loop": True},
+            },
             "enabled_tools": [
                 "shallow_recall",
                 "deep_recall",
@@ -191,6 +195,41 @@ def test_register_user_rewrites_email_agent_config_path_for_user_dir(tmp_path: P
     refreshed_user = store.get_user(username="bob")
     assert refreshed_user is not None
     assert refreshed_user.canonical_thread_id == "configured-public-thread"
+
+
+def test_verify_credentials_syncs_single_runtime_settings(
+    tmp_path: Path,
+) -> None:
+    base_chat_config_path = _build_base_configs(tmp_path)
+    users_root = tmp_path / "users"
+    store = UserAccountStore(
+        base_chat_config_path=base_chat_config_path,
+        users_root_dir=users_root,
+        users_db_path=users_root / "users.json",
+    )
+    user = store.register_user(
+        username="rollout-user",
+        password="password123",
+        role="advanced",
+    )
+    initial = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    assert "default_engine" not in initial["runtime"]
+    assert initial["runtime"]["common"]["scene_context_max_entries"] == 40
+    initial["runtime"]["default_engine"] = "obsolete_selector"
+    _write_yaml(user.config_path, initial)
+
+    base = yaml.safe_load(base_chat_config_path.read_text(encoding="utf-8"))
+    base["runtime"]["common"]["scheduler"] = {"preempt_enabled": False}
+    base["runtime"]["langgraph"]["turn_loop"] = False
+    _write_yaml(base_chat_config_path, base)
+
+    store.verify_credentials(username="rollout-user", password="password123")
+    migrated = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    assert "default_engine" not in migrated["runtime"]
+    assert migrated["runtime"]["common"]["scheduler"] == {
+        "preempt_enabled": False
+    }
+    assert migrated["runtime"]["langgraph"]["turn_loop"] is False
 
 
 def test_get_user_config_schema_exposes_field_metadata(tmp_path: Path) -> None:

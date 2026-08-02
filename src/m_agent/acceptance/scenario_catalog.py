@@ -339,27 +339,10 @@ def _binding(
     variant_id: str,
     test: TestRef,
 ) -> RuntimeBindingSpec:
-    if runtime_id == "think_life_v1":
-        return RuntimeBindingSpec(
-            runtime_id=runtime_id,
-            availability="executable",
-            tests=(test,),
-            known_gap=_KNOWN_GAPS.get(variant_id),
-            known_gap_keys=(
-                (known_gap_key(variant_id),)
-                if variant_id in _KNOWN_GAPS
-                else ()
-            ),
-        )
-    if _LANGGRAPH_P8_EXECUTABLE or variant_id in _LANGGRAPH_P6_EXECUTABLE:
-        return RuntimeBindingSpec(
-            runtime_id=runtime_id,
-            availability="executable",
-            tests=(test,),
-        )
     return RuntimeBindingSpec(
         runtime_id=runtime_id,
-        availability="not_implemented",
+        availability="executable",
+        tests=(test,),
     )
 
 
@@ -595,20 +578,15 @@ def contract_catalog_payload() -> Dict[str, Any]:
         }
         for layer, layer_variants in by_layer.items()
     }
-    think_life_ready = all(
-        variant.binding_for("think_life_v1").availability == "executable"
-        for variant in variants
-    )
-    langgraph_explicit = all(
-        variant.binding_for("langgraph_v1").availability
-        in {"executable", "not_implemented"}
+    langgraph_ready = all(
+        variant.binding_for("langgraph_v1").availability == "executable"
         for variant in variants
     )
     return {
         "suite": P1_CONTRACT_SUITE,
-        "title": "M-Agent P1 跨 Runtime 语义契约",
+        "title": "M-Agent LangGraph Runtime 语义契约",
         "description": (
-            "TX/SP/AT × 测试层级 × Runtime；旧 INV 目录仅作为 Supporting Tests 保留。"
+            "TX/SP/AT × 测试层级；旧 INV 目录仅作为 Supporting Tests 保留。"
         ),
         "runtime_ids": list(RUNTIME_IDS),
         "layers": [
@@ -633,8 +611,7 @@ def contract_catalog_payload() -> Dict[str, Any]:
             "catalog_complete": not errors,
             "p1_exit_ready": (
                 not errors
-                and think_life_ready
-                and langgraph_explicit
+                and langgraph_ready
             ),
             "errors": errors,
         },
@@ -658,15 +635,6 @@ def contract_catalog_payload() -> Dict[str, Any]:
                 "parent_scenario_id": variant_id.split("/", 1)[0],
                 "variant_id": variant_id,
                 "layer": "robustness",
-                "think_life_v1": {
-                    "availability": "executable",
-                    "registered_status": (
-                        "known_gap"
-                        if variant_id in _KNOWN_GAPS
-                        else "implemented"
-                    ),
-                    "known_gap": _KNOWN_GAPS.get(variant_id),
-                },
                 "langgraph_v1": {
                     "availability": "executable",
                     "registered_status": "implemented",

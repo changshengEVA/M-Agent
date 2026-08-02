@@ -403,6 +403,59 @@ class UserAccountStore:
             changed = True
         return changed
 
+    @staticmethod
+    def _sync_runtime_settings(
+        user_chat_config: Dict[str, Any],
+        *,
+        base_chat_config: Dict[str, Any],
+    ) -> bool:
+        """Migrate user runtime config to the LangGraph-only schema."""
+
+        base_runtime = base_chat_config.get("runtime")
+        if not isinstance(base_runtime, dict):
+            return False
+        user_runtime = user_chat_config.get("runtime")
+        if not isinstance(user_runtime, dict):
+            user_runtime = {}
+            user_chat_config["runtime"] = user_runtime
+
+        changed = False
+        legacy_key = "_".join(("think", "life"))
+        legacy_common = user_runtime.get(legacy_key)
+        if "common" not in user_runtime and isinstance(legacy_common, dict):
+            user_runtime["common"] = deepcopy(legacy_common)
+            changed = True
+        for key in (legacy_key, "default_engine", "engine", "runtime_engine"):
+            if key in user_runtime:
+                user_runtime.pop(key, None)
+                changed = True
+
+        base_common = base_runtime.get("common")
+        if isinstance(base_common, dict):
+            user_common = user_runtime.get("common")
+            if not isinstance(user_common, dict):
+                user_common = {}
+                user_runtime["common"] = user_common
+                changed = True
+            if UserAccountStore._merge_missing_mappings(
+                user_common,
+                base_common,
+            ):
+                changed = True
+
+        base_langgraph = base_runtime.get("langgraph")
+        if isinstance(base_langgraph, dict) and "turn_loop" in base_langgraph:
+            user_langgraph = user_runtime.get("langgraph")
+            if not isinstance(user_langgraph, dict):
+                user_langgraph = {}
+                user_runtime["langgraph"] = user_langgraph
+            if user_langgraph.get("turn_loop") != base_langgraph.get("turn_loop"):
+                user_langgraph["turn_loop"] = deepcopy(
+                    base_langgraph.get("turn_loop")
+                )
+                changed = True
+        return changed
+
     def _sync_chat_tool_settings(
         self,
         *,
@@ -413,6 +466,12 @@ class UserAccountStore:
         changed = False
 
         if self._migrate_legacy_chat_config(user_chat_config, base_chat_config=base_chat_config):
+            changed = True
+
+        if self._sync_runtime_settings(
+            user_chat_config,
+            base_chat_config=base_chat_config,
+        ):
             changed = True
 
         if self._merge_missing_mappings(user_chat_config, base_chat_config):
@@ -683,6 +742,8 @@ class UserAccountStore:
             record = self._user_record(users_payload, normalized_username)
             if record is None:
                 return None
+            if self._sync_user_tool_related_configs(record=record):
+                self._save_users_payload(users_payload)
             return self._to_authenticated_user(username=normalized_username, record=record)
 
     def get_user_config_schema(self, *, username: str) -> Dict[str, Any]:

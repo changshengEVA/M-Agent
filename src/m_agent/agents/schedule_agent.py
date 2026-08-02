@@ -81,13 +81,25 @@ class ScheduleAgent:
         *,
         thread_id: str,
         due_at: str,
-        text: str,
+        deferred_objective: str = "",
+        text: str = "",
         owner_id: Optional[str] = None,
         timezone_name: Optional[str] = None,
         now_context: Optional[Dict[str, Any]] = None,
+        origin: Optional[Dict[str, str]] = None,
     ) -> Dict[str, Any]:
         safe_due_at = str(due_at or "").strip()
-        safe_text = str(text or "").strip()
+        safe_objective = str(deferred_objective or "").strip()
+        legacy_text = str(text or "").strip()
+        if safe_objective and legacy_text and safe_objective != legacy_text:
+            return self._result(
+                success=False,
+                tool="schedule_create",
+                action="create",
+                answer="deferred_objective 与兼容字段 text 的内容冲突。",
+                needs_clarification=True,
+            )
+        safe_objective = safe_objective or legacy_text
         if not safe_due_at:
             return self._result(
                 success=False,
@@ -96,12 +108,12 @@ class ScheduleAgent:
                 answer="请提供 due_at（ISO-8601 时间）。",
                 needs_clarification=True,
             )
-        if not safe_text:
+        if not safe_objective:
             return self._result(
                 success=False,
                 tool="schedule_create",
                 action="create",
-                answer="请提供 text：日程到期时发送给智能体的、自包含的系统式刺激信息。",
+                answer="请提供 deferred_objective：日程到期后仍需要执行的目标。",
                 needs_clarification=True,
             )
 
@@ -131,13 +143,15 @@ class ScheduleAgent:
             thread_id=scope["thread_id"],
             due_at_utc=parsed_due.due_local.astimezone(timezone.utc).isoformat().replace("+00:00", "Z"),
             timezone_name=effective_timezone,
-            text=safe_text,
+            deferred_objective=(safe_objective if str(deferred_objective or "").strip() else ""),
+            text=(legacy_text if not str(deferred_objective or "").strip() else ""),
+            origin=origin,
         )
         serialized = self.service.serialize_item(item)
         answer = f"已创建日程：{serialized['due_display']} {serialized['text']}。"
         if parsed_due.assumed_date:
             answer += " 我默认使用了最近的这个日期。"
-        partial = self._text_looks_bulk(safe_text)
+        partial = self._text_looks_bulk(safe_objective)
         if partial:
             answer += " 本次仅创建 1 条日程；若用户要求多条/重复，请继续逐条创建。"
         return self._result(

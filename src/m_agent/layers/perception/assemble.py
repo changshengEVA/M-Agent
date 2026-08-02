@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from m_agent.layers.perception.contracts import PerceptionInput, Stimulus
+from m_agent.layers.perception.contracts import ActivationFrame, PerceptionInput, Stimulus
 
 
 def normalize_history_messages(
@@ -31,6 +31,7 @@ def build_perception_input(
     stimulus: Stimulus,
     history_messages: Optional[List[Dict[str, Any]]] = None,
     scene_context: str = "",
+    activation: Optional[ActivationFrame] = None,
 ) -> PerceptionInput:
     """Build the normalized thinking-layer input."""
     return PerceptionInput(
@@ -40,4 +41,5 @@ def build_perception_input(
         stimulus=stimulus,
         dialogue_history=normalize_history_messages(history_messages),
         scene_context=str(scene_context or "").strip(),
+        activation=activation,
     )

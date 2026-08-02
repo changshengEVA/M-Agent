@@ -1,4 +1,4 @@
 # Scene log: cross-transaction chronological narrative per thread.
 system: scene
 persist_jsonl: true
-# persist_dir resolved at runtime from owner_id (see ThinkLifeRuntime)
+# persist_dir is resolved by the active runtime from owner_id.

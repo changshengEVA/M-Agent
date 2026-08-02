@@ -5,7 +5,7 @@ from __future__ import annotations
 from enum import Enum
 from typing import Any
 
-from m_agent.runtime.think_life.contracts import (
+from m_agent.runtime.domain.contracts import (
     PauseReason,
     TransactionRecord,
 )

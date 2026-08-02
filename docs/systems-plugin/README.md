@@ -2,33 +2,35 @@
 
 > 中文版：[README.zh-CN.md](./README.zh-CN.md)
 
-This is the **index** (rules, architecture, shared YAML, delivery, testing). The six
-per-subsystem guides live in this directory.
+This is the index for the three pluggable subsystems: working memory (WM),
+episodic memory, and tools. It documents their shared rules, the production
+runtime boundary, configuration, delivery, and verification.
 
-- **Code:** `src/m_agent/systems/`
-- **Config:** `config/systems/`
-- **Mount point:** `config/agents/chat/chat_controller.yaml` → `systems:` (three paths only)
+- Code: `src/m_agent/systems/`
+- Configuration: `config/systems/`
+- Chat mount point: `config/agents/chat/chat_controller.yaml` → `systems:`
 
-**Out of scope here:** the full MemoryAgent / MemoryCore / LoCoMo evaluation stack,
-which is maintained in the separate WorkspaceMem repository.
+The full MemoryAgent / MemoryCore / LoCoMo evaluation stack is maintained in
+the separate WorkspaceMem repository and is outside this guide.
 
 ---
 
-## 1. Rules of the road
+## 1. Rules
 
 | Rule | Detail |
 |------|--------|
-| Single plug-in surface | Replaceable pieces go through `m_agent.systems`; do not patch `layers/` or `chat/` to reach a backend. |
-| No inline subsystem params | `chat_controller.yaml` holds **paths only**; all knobs live in per-system YAML files. |
-| Skeleton vs integration package | `protocols.py` + `system.py` at subsystem root; implementations under `default/` or your own package directory. |
-| Do not experiment in `default/` | Fork a new subpackage + YAML for private variants. |
-| Duck-typed protocols | No inheritance required; loader validates with `@runtime_checkable`. |
+| One subsystem surface | Replaceable components are exposed through `m_agent.systems`; callers do not reach into an implementation package. |
+| Paths at the chat layer | `chat_controller.yaml` contains subsystem YAML paths; implementation parameters live in those subsystem files. |
+| Protocol plus implementation | A subsystem declares runtime-checkable protocols at its root and places implementations under `default/` or another package. |
+| Stable built-ins | Put an experimental implementation in a new package and YAML file instead of changing `default/`. |
+| Duck typing | Implementations need not inherit a protocol; loading validates the required shape with `isinstance`. |
 
 ---
 
-## 2. Subsystem guides (6 files)
+## 2. Subsystem guides
 
-Plug-in applies at **agent construction** (reload after YAML change). Slot details, LLM surfaces, and delivery steps:
+Subsystems are loaded when the chat agent is constructed. Reload the agent
+after changing a subsystem YAML file.
 
 | Subsystem | 中文 | English |
 |-----------|------|---------|
@@ -43,106 +45,155 @@ systems:
   tools:    ../../systems/tools/default.yaml
 ```
 
-Five public `path` slots: WM writer/reader/display; episodic `backend`; tools `registry`. `EpisodeRecorder` is system-internal — see episodic guide.
+The five public `path` slots are WM `writer` / `reader` / `display`, episodic
+`backend`, and tools `registry`. `EpisodeRecorder` is internal to the episodic
+integration.
 
 ---
 
-## 3. Architecture
+## 3. Production runtime boundary
 
-### Config + load chain
+The product has one runtime host. `create_runtime_host()` constructs
+`LangGraphRuntime`, which satisfies the neutral `RuntimeHost` protocol and
+persists the engine id `langgraph_v1`.
 
 ```text
-chat_controller.yaml  →  systems.{wm,episodic,tools}  →  load_*_system()
-  →  SystemsBundle  →  ThreeLayerChatAgent  →  ThinkingAgent / ExecutionAgent
+ChatServiceRuntime
+  → create_runtime_host()
+  → RuntimeHost (LangGraphRuntime)
+      ├─ runtime transaction / perception / dispatch kernel
+      ├─ LangGraph transaction and turn graphs
+      ├─ RuntimeFlushOrchestrator
+      └─ ThreeLayerChatAgent
+          ├─ ThinkingAgent ← WM reader
+          └─ ExecutionAgent ← tools registry + episodic backend
 ```
 
-### Source layout
+| Contract | Current location | Purpose |
+|----------|------------------|---------|
+| `RuntimeHost` | `m_agent.runtime.host` | Product-facing thread, transaction, Scene, schedule, flush, health, and shutdown operations |
+| `LangGraphRuntime` | `m_agent.runtime.langgraph.runtime` | The production implementation of `RuntimeHost` |
+| `RuntimeConfig` | `m_agent.runtime.config` | Engine-neutral runtime and scheduler configuration |
+| `runtime_hooks` | `ExecutionAgent.invoke_tool_direct` | Per-delegate callbacks and durable identity passed to a capability invocation |
 
-See [README.zh-CN.md §3.3](./README.zh-CN.md) (same tree).
-
-### Plug-in access points
-
-See the six subsystem guides listed in [§2](#2-subsystem-guides-6-files).
-
----
-
-## 4. YAML reference (summary)
-
-Shared rules: [zh-CN guide §4](./README.zh-CN.md). Per-subsystem YAML fields are
-documented in the six guides in this directory.
-
-**Common**
-
-- Top-level `system: wm | episodic | tools`
-- Slots: string `path` or `{ path, kwargs }`
-- Loader does **not** expand `${ENV}` placeholders
-
-**Chat controller** (`config/agents/chat/chat_controller.yaml`)
-
-- Must have `systems.wm`, `systems.episodic`, `systems.tools` paths
-- Must **not** duplicate `enabled_tools`, `working_memory`, etc. (legacy still accepted in old user files)
-
-**Swap implementation:** change one line under `systems:`.
-
-**On-disk defaults**
-
-| File | Role |
-|------|------|
-| `config/systems/wm/default.yaml` | WM reader/writer/display + `config:` block |
-| `config/systems/episodic/rag_default.yaml` | RAG backend kwargs |
-| `config/systems/tools/default.yaml` | registry, enabled, defaults |
-| `config/systems/tools/capabilities/<tool>.yaml` | one executable descriptor per tool |
+The execution layer copies `runtime_hooks` into
+`ControllerCapabilityContext.controller_state["runtime"]`. Capabilities may
+consume only the hooks they need. This keeps subsystem code independent of the
+graph implementation and gives reply, schedule, Scene, and effect handling a
+single neutral protocol.
 
 ---
 
-## 5. Delivery checklist
+## 4. Configuration
 
-1. Pick subsystem (`wm` / `episodic` / `tools`).
-2. Implement protocol in-repo (`systems/<name>/<package>/`) or external pip package.
-3. Export symbols referenced by YAML `path`.
-4. Copy nearest variant YAML → `my_variant.yaml`, edit `path`/`kwargs`.
-5. Point `chat_controller.yaml` `systems.<name>` at it.
-6. Run `pytest tests/systems/` (+ checklist in §8 of zh-CN doc).
-7. Do not patch `default/` for one-off trials.
+### Subsystem YAML
+
+- Top-level `system` is exactly `wm`, `episodic`, or `tools`.
+- A replaceable slot is either a string `path` or `{ path, kwargs }`.
+- Paths use `pkg.module:Symbol` or `pkg.module.Symbol`.
+- The loader calls `Symbol(**kwargs)` and does not expand `${ENV}` values.
+
+### Chat controller
+
+The chat controller points to the three subsystem files and contains only the
+current runtime sections:
+
+```yaml
+systems:
+  wm:       ../../systems/wm/default.yaml
+  episodic: ../../systems/episodic/rag_default.yaml
+  tools:    ../../systems/tools/default.yaml
+
+runtime:
+  common:
+    scene_context_max_entries: 40
+    scene_persist_jsonl: true
+  langgraph:
+    turn_loop: true
+    delegate_executor: execution_agent
+```
+
+An explicit `systems=SystemsBundle(...)` argument is useful in tests and
+embedding applications. Normal product startup loads the `systems:` paths.
 
 ---
 
-## 6. Implementation notes
+## 5. Source and configuration layout
 
-See [wm.md](./wm.md), [episodic.md](./episodic.md), and [tools.md](./tools.md).
+```text
+src/m_agent/systems/
+├── loader.py, bundles.py
+├── wm/          protocols.py, system.py, default/
+├── episodic/    protocols.py, system.py, query_module.py, default/
+└── tools/       base.py, registry.py, manifest.py, system.py, default/
 
----
-
-## 7. Override precedence
-
-`systems=` arg → legacy `plugins=` → YAML `systems:` → legacy flat fields → built-in defaults.
-
-```python
-from m_agent.systems import SystemsBundle, load_episodic_system
-bundle = SystemsBundle(episodic=load_episodic_system({...}))
+config/systems/
+├── wm/default.yaml
+├── episodic/rag_default.yaml
+└── tools/default.yaml, capabilities/<tool>.yaml
 ```
 
 ---
 
-## 8. Testing
+## 6. Delivering an implementation
+
+1. Choose `wm`, `episodic`, or `tools`.
+2. Read its protocol or base types and implement every required method.
+3. Export the class or factory from an importable package.
+4. Copy the nearest subsystem YAML to a new variant and update `path` / `kwargs`.
+5. Point `chat_controller.yaml` at the variant.
+6. Add protocol, YAML-loading, behavior, and runtime-boundary tests.
+7. Run the verification commands below.
+
+---
+
+## 7. Verification
 
 ```bash
 pytest tests/systems/
+pytest tests/runtime/test_runtime_host.py tests/runtime/test_chat_api_runtime_host.py
+pytest tests/runtime/test_langgraph_turn_loop.py
 ```
 
-See zh-CN §8 for file-level map and PR checklist.
+Useful focused tests:
+
+| Concern | Test |
+|---------|------|
+| Protocol shapes | `tests/systems/test_protocol_shapes.py` |
+| On-disk YAML loading | `tests/systems/test_system_yaml_loader.py` |
+| RAG backend | `tests/systems/episodic/test_rag_backend.py` |
+| Runtime systems injection | `tests/systems/test_runtime_systems_override.py` |
+| Tool argument routing | `tests/runtime/test_turn_support_tool_args.py` |
+| Tool call limits | `tests/test_chat_controller_tool_limits.py` |
 
 ---
 
-## 9. Pitfalls
+## 8. Review checklist
 
-Wrong dotted path · kwargs mismatch · `query.enabled` vs recall tools mismatch · global registry mutation · bypassing episodic backend · inlining params in chat_controller · configuring episodic `recorder:` (not a public plug-in slot).
+- [ ] Every new `path` imports in the target environment.
+- [ ] `kwargs` match the constructor.
+- [ ] `isinstance(instance, Protocol)` succeeds.
+- [ ] The subsystem YAML is present and loadable.
+- [ ] Recall capabilities match `episodic.query.enabled` and `tools.enabled`.
+- [ ] Capability code uses `ControllerCapabilityContext` dependencies.
+- [ ] Runtime-aware capabilities use `runtime_hooks` through `controller_state["runtime"]`.
+- [ ] The focused tests and `pytest tests/systems/` pass.
 
 ---
 
-## 10. Related docs
+## 9. Common mistakes
+
+Incorrect dotted paths; mismatched constructor arguments; enabling recall in
+only one subsystem; mutating a process-global registry; bypassing the episodic
+backend; putting subsystem parameters in the chat controller; or configuring
+an episodic `recorder` as a public slot.
+
+---
+
+## 10. Related documentation
 
 - [Project structure](../development/project-structure.md)
 - [Chat API](../chat_api/README.md)
 
-**Maintenance:** keep the six subsystem guides and both index languages in sync.
+Keep every English/Chinese guide pair synchronized when contracts, paths, or
+verification commands change.

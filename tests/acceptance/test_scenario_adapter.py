@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from m_agent.acceptance.adapters import ThinkLifeV1Adapter
+from m_agent.acceptance.adapters import LangGraphV1Adapter
 from m_agent.acceptance.adapters.base import REQUIRED_HARNESS_OPERATIONS
-from m_agent.acceptance.adapters.think_life_harness import (
-    ThinkLifeV1Harness,
+from m_agent.acceptance.adapters.langgraph_harness import (
+    LangGraphV1Harness,
 )
 from m_agent.acceptance.scenario_catalog import SCENARIOS
 
 
-def test_think_life_harness_implements_every_required_operation() -> None:
-    harness = ThinkLifeV1Harness()
+def test_langgraph_harness_implements_every_required_operation() -> None:
+    harness = LangGraphV1Harness()
 
     assert REQUIRED_HARNESS_OPERATIONS
     missing = [
@@ -20,13 +20,13 @@ def test_think_life_harness_implements_every_required_operation() -> None:
     assert missing == []
 
 
-def test_every_think_life_variant_emits_evidence_matching_registered_status() -> None:
-    adapter = ThinkLifeV1Adapter()
+def test_every_langgraph_variant_emits_evidence_matching_registered_status() -> None:
+    adapter = LangGraphV1Adapter()
     empty_fact_variants = []
 
     for scenario in SCENARIOS:
         for variant in scenario.variants:
-            binding = variant.binding_for("think_life_v1")
+            binding = variant.binding_for("langgraph_v1")
             execution = adapter.run_scenario(
                 scenario.scenario_id,
                 variant.variant_id,
@@ -37,7 +37,7 @@ def test_every_think_life_variant_emits_evidence_matching_registered_status() ->
             assert payload["schema_version"] == 1
             assert payload["scenario_id"] == scenario.scenario_id
             assert payload["variant_id"] == variant.variant_id
-            assert payload["runtime_id"] == "think_life_v1"
+            assert payload["runtime_id"] == "langgraph_v1"
             assert isinstance(payload["data"]["facts"], dict)
             if not payload["data"]["facts"]:
                 empty_fact_variants.append(variant.variant_id)

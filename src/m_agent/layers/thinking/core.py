@@ -1,8 +1,8 @@
-"""Persona-owning, plan-only thinking layer for the Think-life runtime.
+"""Persona-owning, plan-only thinking layer for the Runtime runtime.
 
 Each stimulus updates transaction task state and produces one structured
 decision. Tool execution and user-visible replies are delegated by the
-Think-life scheduler, so this layer never invokes capabilities directly.
+Runtime scheduler, so this layer never invokes capabilities directly.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ ThinkingEventEmitter = Callable[[str, Dict[str, Any]], None]
 
 
 class ThinkingAgent:
-    """Update task state and choose the next Think-life action."""
+    """Update task state and choose the next Runtime action."""
 
     def __init__(
         self,
@@ -102,13 +102,13 @@ class ThinkingAgent:
         """Return a turn-local candidate ref / durable id, or ``None`` to create."""
         use_zh = self.prompt_language.startswith("zh")
         default_base = (
-            "你是 think-life 的事务归属解析器。只根据当前 conversation 中按时间顺序"
+            "你是 runtime 的事务归属解析器。只根据当前 conversation 中按时间顺序"
             "排列、带事务来源标签的用户可见交互，判断 CURRENT 是否明确承接某个 "
             "candidate_N；不要仅凭主题、关键词或措辞相似强行匹配，也不要检索其他 "
             "conversation 的事务。"
             if use_zh
             else (
-                "You are the think-life transaction resolver. Use only the chronological, "
+                "You are the runtime transaction resolver. Use only the chronological, "
                 "transaction-labeled, user-visible interactions from the current "
                 "conversation to decide whether CURRENT clearly continues one candidate_N. "
                 "Do not force a match from topic, keyword, or wording similarity alone, and "
@@ -219,8 +219,13 @@ class ThinkingAgent:
     ) -> ThinkingDecision:
         if not isinstance(perception, PerceptionInput):
             raise TypeError("ThinkingAgent.handle expects PerceptionInput")
-        if not str(perception.stimulus.text or "").strip():
-            raise ValueError("PerceptionInput.stimulus.text must be a non-empty string")
+        if (
+            not str(perception.stimulus.text or "").strip()
+            and perception.activation is None
+        ):
+            raise ValueError(
+                "PerceptionInput requires stimulus text or a typed activation"
+            )
 
         if transaction_state is not None:
             scratch = self._scratch_for(perception.conversation_id)
@@ -506,7 +511,7 @@ class ThinkingAgent:
         state.task_progress.completion_status = TASK_COMPLETION_PROCESSING
 
     # ------------------------------------------------------------------
-    # Task-state pre-generation pass (LLM #1 in think-life)
+    # Task-state pre-generation pass (LLM #1 in runtime)
     # ------------------------------------------------------------------
 
     def _pre_gen_task_state(
@@ -560,7 +565,7 @@ class ThinkingAgent:
 
         system_text = "\n\n".join(section for section in sections if section).strip()
         messages: List[Dict[str, str]] = [{"role": "system", "content": system_text}]
-        messages.append({"role": "user", "content": str(perception.stimulus.text or "").strip()})
+        messages.append(self._model_turn_message(perception))
         return messages
 
     def _task_state_base_block(self) -> str:
@@ -569,12 +574,12 @@ class ThinkingAgent:
         if self.prompt_language == "zh":
             return (
                 "[任务状态预处理]\n"
-                "你是 think-life 思考层的任务状态预处理器。你的工作是先阅读当前输入、隐藏运行时上下文、"
+                "你是 runtime 思考层的任务状态预处理器。你的工作是先阅读当前输入、隐藏运行时上下文、"
                 "场景片段和工作记忆，然后只更新可读的任务进度状态。不要决定是否调用工具，不要回复用户。"
             )
         return (
             "[Task-State Preprocessor]\n"
-            "You are the task-state preprocessor for the think-life thinking layer. Read the current stimulus, "
+            "You are the task-state preprocessor for the runtime thinking layer. Read the current stimulus, "
             "dialogue history, conversation scene, and selected transaction working memory, then update only "
             "that transaction's readable task state. Do not choose tools and do not reply to the user."
         )
@@ -593,6 +598,10 @@ class ThinkingAgent:
                 "- 只输出任务状态更新，不要输出 mode/tool_name/instruction/answer。\n"
                 "- 不要把原始工具结果复制进状态；只写短、可读、可执行的任务步骤。\n"
                 "- 新的用户请求必须是 processing，即使它可以直接回答。\n"
+                "- [Activation Event] 只说明本轮为何被激活，不代表激活后的工作已经完成。\n"
+                "- [Current Objective] 是仍待评估或执行的目标，即使它的表面措辞像完成态。\n"
+                "- 只有 [Observed Evidence] 可以证明下游工作完成；[Scene Context] 仅供理解。\n"
+                "- 只有当目标本身明确是观察某个事件时，该激活事件才可直接满足目标。\n"
                 "- 当前刺激为 execution_feedback 时，根据可读反馈和证据更新 completion_status/completed/remaining。\n"
                 "- 工具结果尚需告知用户、参数缺口可改用其他工具补参时，一律保持 processing。\n"
                 "- 澄清问题已通过 reply 发给用户、仍需用户协作时，completion_status 用 awaiting_user（宏观决策）；运行时会 pause，本轮不再做动作规划。\n"
@@ -608,6 +617,10 @@ class ThinkingAgent:
             "- Output only task-state updates; do not output mode/tool_name/instruction/answer.\n"
             "- Do not copy raw tool results into state; write short, readable, actionable steps.\n"
             "- A new user request is processing even when it can be answered directly.\n"
+            "- [Activation Event] states why this turn exists; it is not an execution result.\n"
+            "- [Current Objective] is work to assess or carry out, even when its wording sounds result-like.\n"
+            "- Only [Observed Evidence] may prove downstream work complete; [Scene Context] is context only.\n"
+            "- An activation event may satisfy an objective only when that objective is explicitly to observe that event.\n"
             "- For execution_feedback, update completion_status/completed/remaining from readable feedback and visible evidence.\n"
             "- Keep processing when tool results still need a user reply, or when a param gap can be filled by another tool.\n"
             "- After a clarification reply is delivered and you still need the user, set completion_status=awaiting_user (macro decision); runtime will pause and skip action planning this turn.\n"
@@ -622,13 +635,81 @@ class ThinkingAgent:
         return text[: max(0, limit - 3)].rstrip() + "..."
 
     def _render_perception_input_block(self, perception: PerceptionInput) -> str:
+        activation = perception.activation
+        if activation is not None:
+            event = activation.event
+            lines = [
+                "[Current Stimulus]",
+                f"kind: {perception.stimulus.kind.value}",
+                "semantic_role: runtime_activation",
+                "",
+                "[Activation Event]",
+                "role: activation_event",
+                f"type: {str(event.event_type or '').strip() or '(unknown)'}",
+                f"source: {str(event.source or '').strip() or '(unknown)'}",
+                f"occurred_at: {str(event.occurred_at or '').strip() or '(unknown)'}",
+                "facts:",
+                self._safe_prompt_json(event.facts, limit=2000) or "{}",
+                "",
+                "[Current Objective]",
+            ]
+            if activation.objective is None:
+                lines.append("(none)")
+            else:
+                lines.extend(
+                    [
+                        "role: deferred_objective",
+                        f"encoding: {activation.objective.encoding}",
+                        "description:",
+                        self._truncate_prompt_value(
+                            activation.objective.description,
+                            2000,
+                        )
+                        or "(empty)",
+                    ]
+                )
+            lines.extend(["", "[Observed Evidence]"])
+            if not activation.evidence:
+                lines.append("(none)")
+            else:
+                for index, item in enumerate(activation.evidence, start=1):
+                    lines.extend(
+                        [
+                            f"- evidence_{index}:",
+                            f"  type: {item.evidence_type}",
+                            f"  source: {item.source}",
+                            f"  summary: {self._truncate_prompt_value(item.summary, 800) or '(empty)'}",
+                            "  facts: "
+                            + self._safe_prompt_json(item.facts, limit=1200),
+                        ]
+                    )
+            return "\n".join(lines).strip()
         lines = [
             "[Current Stimulus]",
             f"kind: {perception.stimulus.kind.value}",
+            "semantic_role: user_utterance"
+            if perception.stimulus.kind == StimulusKind.USER_MESSAGE
+            else "semantic_role: runtime_event",
             "text:",
             self._truncate_prompt_value(perception.stimulus.text, 2000) or "(empty)",
         ]
         return "\n".join(lines).strip()
+
+    @staticmethod
+    def _model_turn_message(perception: PerceptionInput) -> Dict[str, str]:
+        if perception.stimulus.kind == StimulusKind.USER_MESSAGE:
+            return {
+                "role": "user",
+                "content": str(perception.stimulus.text or "").strip(),
+            }
+        return {
+            "role": "user",
+            "content": (
+                "[Runtime semantic input — not a user utterance]\n"
+                "Process the typed event, objective, evidence, and context "
+                "provided above according to their declared roles."
+            ),
+        }
 
     def _render_dialogue_history_block(self, perception: PerceptionInput) -> str:
         history = list(perception.dialogue_history or [])
@@ -654,7 +735,7 @@ class ThinkingAgent:
         return text[: max(0, limit - 3)].rstrip() + "..."
 
     # ------------------------------------------------------------------
-    # Decision pass (LLM #2 in think-life)
+    # Decision pass (LLM #2 in runtime)
     # ------------------------------------------------------------------
 
     def _plan(self, perception: PerceptionInput, state: ConversationState) -> ThinkingDecision:
@@ -716,7 +797,7 @@ class ThinkingAgent:
 
         system_text = "\n\n".join(section for section in sections if section).strip()
         messages: List[Dict[str, str]] = [{"role": "system", "content": system_text}]
-        messages.append({"role": "user", "content": str(perception.stimulus.text or "").strip()})
+        messages.append(self._model_turn_message(perception))
         return messages
 
     def _plan_instructions_block(self) -> str:
@@ -734,6 +815,7 @@ class ThinkingAgent:
                 "- request_complete: 由任务状态决定；仅当 completion_status==completed 时为 true。\n"
                 "- reasoning: 可选；简要说明本轮选择 mode 的理由，便于审计。\n"
                 "[硬约束]\n"
+                "- 对运行时激活，以 [Current Objective] 为行动目标；不要把 [Activation Event] 当成执行结果，也不要把 [Scene Context] 当成 [Observed Evidence]。\n"
                 "- 你本身没有工具权限，所有外部动作只能通过 execute 委托，且每轮最多一个 tool_name。\n"
                 "- 多步任务：以 feedback 中 Structured tool result 的 count 为准；未完成时 request_complete=false。\n"
                 "- 当 mode==execute 时，不要在 answer 中给出最终回复，让执行层先工作。\n"
@@ -758,6 +840,7 @@ class ThinkingAgent:
             "- You hold no tools yourself; delegate via execute with at most one tool_name per round.\n"
             "- Multi-step tasks: trust Structured tool result count on feedback; request_complete=false until done.\n"
             "- Read [Current Stimulus], [Scene Context], [Task State], and [Working Memory] before deciding.\n"
+            "- For runtime activations, act on [Current Objective]; do not treat [Activation Event] as an executed outcome or [Scene Context] as [Observed Evidence].\n"
             "- When mode==execute, leave answer empty and let the execution layer work first.\n"
             "- When completion_status==processing, request_complete=false; answer_directly must be followed by execution feedback.\n"
             "- Waiting for the user is expressed by macro task status awaiting_user, not by a pause mode.\n"

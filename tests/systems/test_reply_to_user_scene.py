@@ -25,7 +25,7 @@ def test_reply_is_appended_to_conversation_segment() -> None:
         active_thread_id="owner::thread",
         recall_state={},
         controller_state={
-            "think_life": {
+            "runtime": {
                 "conversation_id": "owner::thread::7",
                 "transaction_id": "txn-1",
                 "scene_writer": writer,
@@ -45,3 +45,14 @@ def test_reply_is_appended_to_conversation_segment() -> None:
     assert entry.actor.value == "assistant"
     assert entry.entry_type.value == "reply"
     assert entry.text == "Hello"
+    assert context.controller_state["history"] == [
+        {
+            "tool_name": "reply_to_user",
+            "params": {"message": "Hello", "finalize": True},
+            "result": {
+                "success": True,
+                "message": "Hello",
+                "finalize": True,
+            },
+        }
+    ]
