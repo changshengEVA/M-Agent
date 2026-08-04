@@ -2,9 +2,9 @@
 
 > 中文版：[README.zh-CN.md](./README.zh-CN.md)
 
-This is the index for the three pluggable subsystems: working memory (WM),
-episodic memory, and tools. It documents their shared rules, the production
-runtime boundary, configuration, delivery, and verification.
+This is the index for the three pluggable subsystems: working memory (WM), the
+current episodic tool-memory slot, and tools. It documents their shared rules,
+the production runtime boundary, configuration, delivery, and verification.
 
 - Code: `src/m_agent/systems/`
 - Configuration: `config/systems/`
@@ -12,6 +12,26 @@ runtime boundary, configuration, delivery, and verification.
 
 The full MemoryAgent / MemoryCore / LoCoMo evaluation stack is maintained in
 the separate WorkspaceMem repository and is outside this guide.
+
+## Current capability and roadmap boundary
+
+The subsystem names describe extension slots; they must not be read as claims
+that the complete cognitive-runtime roadmap is already implemented.
+
+| Area | Current status | Planned integration |
+|------|----------------|---------------------|
+| Episodic subsystem | `SimpleRagEpisodicBackend` is **tool memory**: the model explicitly invokes recall capabilities to search materialized dialogue. It is not runtime-owned System Memory. | System Memory SPI and shadow evaluation in v0.5; automatic selection into the Context Compiler main path in v0.6, subject to release gates. |
+| Strategy | No production `StrategySystem` is mounted by this subsystem bundle. Design documents are roadmap material, not current capability. | Shadow-only matching in v0.6; opt-in guidance in v0.7; a default candidate in v0.8 only if published evaluations pass. |
+
+See the episodic guide for important v0.2 limitations, including identical
+default implementations of `shallow_recall` and `deep_recall`, and the current
+best-effort `episode_note` / flush path.
+
+> **Safety:** the current default tools bundle includes capabilities with
+> external side effects. YAML exposure means that a capability is available;
+> it is not a user-authorization or approval guarantee. Review and restrict
+> enabled capabilities before deployment. Deterministic bounded-autonomy
+> policy is roadmap work, not a current runtime guarantee.
 
 ---
 

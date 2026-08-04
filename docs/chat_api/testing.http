@@ -6,7 +6,13 @@
 @runId = run_xxx
 @dialogueId = chat_xxx
 @scheduleId = sch_xxx
+@transactionId = tx_xxx
+@transactionRevision = 1
+@deleteIdempotencyKey = delete-demo-001
 @afterSeq = 0
+@sceneBeforeSeq = 1000000
+@imageFile = ./test-image.png
+@dialogueFile = ./dialogue.json
 
 ### Health
 GET {{baseUrl}}/healthz
@@ -64,6 +70,30 @@ Content-Type: application/json
   }
 }
 
+### Image upload
+### The server must have a working CHAT_IMAGE_CAPTION_PROVIDER configuration.
+### Supported types: JPEG, PNG, WebP, GIF; maximum size: 10 MiB.
+# @name uploadImage
+POST {{baseUrl}}/v1/chat/uploads/images
+Authorization: Bearer {{accessToken}}
+Content-Type: multipart/form-data; boundary=ImageBoundary
+
+--ImageBoundary
+Content-Disposition: form-data; name="thread_id"
+
+{{threadId}}
+--ImageBoundary
+Content-Disposition: form-data; name="file"; filename="test-image.png"
+Content-Type: image/png
+
+< {{imageFile}}
+--ImageBoundary--
+
+###
+### Verify the stored bytes through the owner-scoped content route.
+GET {{baseUrl}}/v1/chat/uploads/images/{{uploadImage.response.body.$.upload_id}}/content
+Authorization: Bearer {{accessToken}}
+
 ### Chat run
 
 POST {{baseUrl}}/v1/chat/runs
@@ -73,6 +103,26 @@ Content-Type: application/json
 {
   "thread_id": "{{threadId}}",
   "message": "Please summarize the main points we discussed before."
+}
+
+###
+### Chat run with the metadata returned by the image upload.
+### Current Runtime projects only the first attachment into user_turn.
+POST {{baseUrl}}/v1/chat/runs
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "thread_id": "{{threadId}}",
+  "message": "Use this image as context for the current task.",
+  "attachments": [
+    {
+      "upload_id": "{{uploadImage.response.body.$.upload_id}}",
+      "image_url": "{{uploadImage.response.body.$.image_url}}",
+      "blip_caption": "{{uploadImage.response.body.$.blip_caption}}",
+      "mime_type": "{{uploadImage.response.body.$.mime_type}}"
+    }
+  ]
 }
 
 ###
@@ -94,6 +144,52 @@ Authorization: Bearer {{accessToken}}
 
 GET {{baseUrl}}/v1/chat/threads/{{threadId}}/events?after_seq={{afterSeq}}
 Authorization: Bearer {{accessToken}}
+
+### Submit a user stimulus asynchronously
+### ThreadStimulusRequest.kind and priority_override are currently NOT forwarded to Runtime.
+### Omit both fields; this endpoint always submits user_message at the default user priority.
+# @name enqueueStimulus
+POST {{baseUrl}}/v1/chat/threads/{{threadId}}/stimuli
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "text": "Continue the existing task with this new information.",
+  "attachments": [
+    {
+      "upload_id": "{{uploadImage.response.body.$.upload_id}}",
+      "image_url": "{{uploadImage.response.body.$.image_url}}",
+      "blip_caption": "{{uploadImage.response.body.$.blip_caption}}",
+      "mime_type": "{{uploadImage.response.body.$.mime_type}}"
+    }
+  ]
+}
+
+###
+### Run after the 202 response; poll until the submitted stimulus is attributed.
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/transactions?include_history=false
+Authorization: Bearer {{accessToken}}
+
+###
+### Use include_history=true only for a thread-wide audit across conversations.
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/transactions?include_history=true
+Authorization: Bearer {{accessToken}}
+
+###
+### Scene seq is independent from run/thread SSE seq.
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/scene?limit=40&since_flush=true
+Authorization: Bearer {{accessToken}}
+
+###
+GET {{baseUrl}}/v1/chat/threads/{{threadId}}/scene?limit=40&before_seq={{sceneBeforeSeq}}&since_flush=false
+Authorization: Bearer {{accessToken}}
+
+###
+### Optional destructive control: paste transaction_id/revision from the transaction response above.
+DELETE {{baseUrl}}/v1/chat/threads/{{threadId}}/transactions/{{transactionId}}
+Authorization: Bearer {{accessToken}}
+If-Match: W/"{{transactionRevision}}"
+Idempotency-Key: {{deleteIdempotencyKey}}
 
 ### Best-effort thread-wide stop (not run-specific cancellation)
 
@@ -148,6 +244,27 @@ Authorization: Bearer {{accessToken}}
 
 GET {{baseUrl}}/v1/chat/dialogues/{{dialogueId}}
 Authorization: Bearer {{accessToken}}
+
+###
+### Batch dialogue upload returns SSE progress events.
+POST {{baseUrl}}/v1/chat/dialogues/upload
+Authorization: Bearer {{accessToken}}
+Content-Type: multipart/form-data; boundary=DialogueBoundary
+
+--DialogueBoundary
+Content-Disposition: form-data; name="rebuild_rag"
+
+false
+--DialogueBoundary
+Content-Disposition: form-data; name="index_rag"
+
+true
+--DialogueBoundary
+Content-Disposition: form-data; name="files"; filename="dialogue.json"
+Content-Type: application/json
+
+< {{dialogueFile}}
+--DialogueBoundary--
 
 ### Schedules
 

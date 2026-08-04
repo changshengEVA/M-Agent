@@ -23,4 +23,4 @@ python -m m_agent.acceptance contract run --runtime langgraph_v1 --all-layers
 python scripts/run_runtime_migration_gate.py --rounds 3
 ```
 
-旧实现规格、P1 差距矩阵和迁移过程已经归档，入口见 [`../architecture/archive/`](../architecture/archive/README.md)。归档内容只用于历史追溯。
+旧实现规格、P1 差距矩阵和迁移过程已经归档，入口见 [`../archive/architecture/`](../archive/architecture/README.md)。归档内容只用于历史追溯。

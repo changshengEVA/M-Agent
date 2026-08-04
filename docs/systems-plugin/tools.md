@@ -30,13 +30,30 @@ systems:
 # config/systems/tools/default.yaml
 system: tools
 capabilities_dir: ./capabilities
-enabled: [reply_to_user, get_current_time, web_search]
+enabled:
+  - shallow_recall
+  - deep_recall
+  - reply_to_user
+  - get_current_time
+  - web_search
+  - schedule_create
+  - schedule_query
+  - schedule_delete
+  - email_ask
+  - email_read
+  - email_send
 defaults:
   __controller__:
     max_calls_per_turn: 12
 ```
 
 If `enabled` is omitted, every valid manifest in `capabilities_dir` is enabled.
+
+> **Current safety boundary:** the checked-in default suite includes capabilities
+> that can create or delete schedules and send email. `policy.side_effect` is
+> descriptive review metadata in v0.2; it is not a deterministic authorization
+> or approval gate. Review and reduce `enabled` before using untrusted input or
+> real external accounts. Runtime-enforced approval policy is a later roadmap item.
 
 ## Capability manifest
 
@@ -82,7 +99,7 @@ defaults:
 | `input.schema` | Schema reference; `inferred_from_tool` reads the LangChain args schema |
 | `output.*` | Result schema and validated feedback/WM projector paths |
 | `policy.max_calls_per_turn` | Per-capability invocation limit |
-| `policy.side_effect` | Review metadata such as `read`, `write`, `send`, or `emit` |
+| `policy.side_effect` | Descriptive review metadata such as `read`, `write`, `send`, or `emit`; v0.2 does not enforce authorization from this field |
 | `dependencies` | Required services supplied through capability context |
 | `defaults` | Per-capability runtime defaults |
 

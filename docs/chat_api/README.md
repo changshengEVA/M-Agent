@@ -4,7 +4,7 @@
 >
 > Audience / 读者: backend developers, frontend developers, QA, and integration testers
 >
-> Scope / 范围: HTTP JSON APIs, SSE streams, auth, user config, chat runs, dialogue archives, thread memory, and schedules
+> Scope / 范围: HTTP JSON APIs, multipart image/dialogue uploads, SSE streams, auth, user config, chat runs, dialogue archives, thread memory, and schedules
 
 > Production-readiness notice / 生产就绪提示: this reference documents the API as it exists today. Items marked **gap** in section 4 are not contractual features and must not be assumed by a production browser client. / 本文描述当前真实实现；第 4 节标为 **gap** 的能力尚不是稳定契约，生产浏览器客户端不得依赖。
 
@@ -13,8 +13,11 @@
 This reference is maintained against the current FastAPI implementation in:
 
 - `src/m_agent/api/chat_api_web.py`
+- `src/m_agent/api/chat_api_models.py`
 - `src/m_agent/api/chat_api_runtime.py`
 - `src/m_agent/api/chat_api_records.py`
+- `src/m_agent/api/chat_image_store.py`
+- `src/m_agent/api/chat_image_captioner.py`
 - `src/m_agent/api/user_access.py`
 - `src/m_agent/api/chat_dialogue_store.py`
 - `src/m_agent/api/schedule_heartbeat.py`
@@ -59,6 +62,7 @@ In the current implementation:
 | Health | `GET /` `GET /healthz` | 服务健康、运行参数、端点清单 | Service health, runtime metadata, endpoint map |
 | Auth | `POST /v1/auth/register` `POST /v1/auth/login` `GET /v1/auth/me` `POST /v1/auth/logout` | 用户注册、登录、会话信息、登出 | Registration, login, session inspection, logout |
 | User config | `GET /v1/users/me/config/schema` `PATCH /v1/users/me/config` | 当前用户可编辑配置元数据与更新接口 | Editable config metadata and patch API |
+| Image uploads | `POST /v1/chat/uploads/images` `GET /v1/chat/uploads/images/{upload_id}/content` | 上传图片、生成 caption 并读取原图 | Upload an image, generate a caption, and fetch its content |
 | Chat runs | `POST /v1/chat/runs` `GET /v1/chat/runs/{run_id}` `GET /v1/chat/runs/{run_id}/events` | 创建对话、获取结果、订阅 run 级事件 | Create run, fetch final result, subscribe to run events |
 | Thread events | `GET /v1/chat/threads/{thread_id}/events` | 线程级事件流 | Thread-level SSE stream |
 | Thread runtime | `GET /v1/chat/threads/{thread_id}/transactions` `DELETE /v1/chat/threads/{thread_id}/transactions/{transaction_id}` `GET /v1/chat/threads/{thread_id}/scene` `POST /v1/chat/threads/{thread_id}/stimuli` `POST /v1/chat/threads/{thread_id}/thinking/stop` | 事务查看/删除、场景、刺激入队与线程级停止 | Transaction inspection/deletion, scene, stimulus enqueue, and thread-level stop |
@@ -175,6 +179,7 @@ The table below is normative for browser integrations. “Available” means the
 | IR-07 Schedule scope | **Available, owner-scoped** | Use `item.thread_id` as the actual binding; the path `thread_id` does not filter list/get/cancel operations. |
 | IR-08 Published rate/concurrency/retention limits | **Gap** | Apply client-side timeouts/backoff and coordinate production limits with the deployment owner. |
 | IR-09 Maintained browser SDK | **Reference client only** | Use `browser_client.ts` as an example, not as a versioned npm package. |
+| IR-10 Generic stimulus kind/priority | **Gap** | `ThreadStimulusRequest` exposes `kind` and `priority_override`, but the current HTTP route does not forward either field to Runtime. Omit them, or send only the compatibility value `kind: "user_message"`; every accepted request currently becomes a normal user-message stimulus with Runtime default priority. |
 
 ### 4.5 Browser authentication and CORS / 浏览器鉴权与跨域
 
@@ -270,6 +275,7 @@ Published limits in the current implementation:
 | Resource | Current behavior |
 | --- | --- |
 | Dialogue upload | At most 100 `.json` files per request; at most 5 MiB per file |
+| Image upload | One JPEG, PNG, WebP, or GIF per request; at most 10 MiB; upload succeeds only when the configured caption provider returns a caption |
 | Schedule list | `limit` is clamped to `1..100`; default `20` |
 | Dialogue list | Default `limit=30`, `offset=0`; see endpoint section for current pagination behavior |
 | SSE idle keep-alive | Approximately 10 seconds |
@@ -352,6 +358,36 @@ The `result` object inside a completed run snapshot.
 `results` entries are scheduler outcomes, not a second answer schema. Depending on the stimulus and transaction phase, an entry may include fields such as `transaction_id`, `delegate_id`, `waiting_feedback`, `completed`, `silent`, `preempted`, `cancelled`, `summary`, or `error`.
 
 `results` 中的条目是调度结果，不是另一套回答 schema。字段随刺激类型和事务阶段变化，常见字段包括 `transaction_id`、`delegate_id`、`waiting_feedback`、`completed`、`silent`、`preempted`、`cancelled`、`summary` 与 `error`。
+
+### 5.5.1 `ChatImageAttachment`
+
+`POST /v1/chat/runs` 和 `POST /v1/chat/threads/{thread_id}/stimuli` 可在
+`attachments` 数组中接收以下字段。当前实现只把数组中的**第一项**投影到本轮
+`user_turn`；不要依赖多图片处理。
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `upload_id` | `string \| null` | `POST /v1/chat/uploads/images` 返回的图片 ID |
+| `image_url` | `string \| null` | 图片内容路由，通常为 `/v1/chat/uploads/images/{upload_id}/content` |
+| `image_file` | `string \| null` | 服务端文件路径；当前接口会返回，但不应展示或记录到浏览器遥测 |
+| `blip_caption` | `string \| null` | 上传时由当前 caption provider 生成的图片描述 |
+| `mime_type` | `string \| null` | 图片 MIME type |
+| `width` / `height` | `integer \| null` | Pillow 能够读取时返回的像素尺寸 |
+
+当前运行接口不会根据 `upload_id` 重新读取服务端 metadata，也不会替客户端补全缺失字段；
+调用方应直接转发上传响应中的 attachment 字段。图片内容 GET 路由仍会独立执行 owner
+校验。
+
+### 5.5.2 `ThreadStimulusRequest`
+
+| Field | Type | Effective behavior today |
+| --- | --- | --- |
+| `text` | `string \| null` | 作为用户消息正文传入 Runtime |
+| `attachments` | `array[ChatImageAttachment] \| null` | 第一项被投影到 `user_turn`；可与空 `text` 配合使用 |
+| `kind` | `string \| null` | **兼容字段，当前未传入 Runtime**；请求仍按 `user_message` 处理 |
+| `priority_override` | `integer \| null` | **兼容字段，当前未传入 Runtime**；请求使用 Runtime 默认用户优先级 |
+
+因此该端点当前是“异步提交用户输入”的接口，还不是开放的任意刺激类型入口。
 
 ### 5.6 `MemoryCapture`
 
@@ -831,6 +867,60 @@ Success response:
 }
 ```
 
+### 6.7a `POST /v1/chat/uploads/images`
+
+上传单张图片并同步生成 caption。请求使用 `multipart/form-data`：
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `file` | file | yes | JPEG、PNG、WebP 或 GIF；最大 10 MiB |
+| `thread_id` | string | no | 公开 thread id；认证模式下服务端会在内部增加用户作用域 |
+
+```http
+POST /v1/chat/uploads/images
+Authorization: Bearer <token>
+Content-Type: multipart/form-data; boundary=ImageBoundary
+
+--ImageBoundary
+Content-Disposition: form-data; name="thread_id"
+
+demo-thread
+--ImageBoundary
+Content-Disposition: form-data; name="file"; filename="desk.png"
+Content-Type: image/png
+
+<binary image bytes>
+--ImageBoundary--
+```
+
+成功返回 `200`。响应可直接作为后续 run/stimulus 的第一项 attachment：
+
+```json
+{
+  "upload_id": "img_123",
+  "owner": "alice",
+  "thread_id": "demo-thread",
+  "original_filename": "desk.png",
+  "mime_type": "image/png",
+  "size_bytes": 18231,
+  "width": 1280,
+  "height": 720,
+  "image_file": "<server-local path>",
+  "image_url": "/v1/chat/uploads/images/img_123/content",
+  "blip_caption": "a laptop and notebook on a desk",
+  "created_at": "2026-08-04T12:00:00Z"
+}
+```
+
+上传本身不会创建 run 或 stimulus。Caption provider 未配置、不可用或返回空结果时，
+服务端返回 `503` 并清理本次文件；不应把 image upload 当成无 caption 的普通对象存储接口。
+
+### 6.7b `GET /v1/chat/uploads/images/{upload_id}/content`
+
+返回上传的原始图片文件和对应 `Content-Type`。认证开启时仅 owner 可读取；未知 ID、
+其他用户的 ID 或缺失文件统一返回 `404`。调用方优先使用上传响应里的 `image_url`，
+不要根据服务端 `image_file` 拼接 URL。
+
 ### 6.8 `POST /v1/chat/runs`
 
 用途 / Purpose:
@@ -848,12 +938,15 @@ Request body:
 | Field | Type | Required | 中文说明 | English description |
 | --- | --- | --- | --- | --- |
 | `thread_id` | `string` | no | 线程 ID；为空时使用默认线程 | Thread id; defaults to runtime default thread |
-| `message` | `string` | yes | 用户消息 | User message |
+| `message` | `string` | conditional | 用户消息；没有有效 attachment 时必填 | User message; required unless an effective attachment is present |
 | `config` | `string` | no | 当前实现不支持，请勿传 | Not supported in current implementation |
+| `attachments` | `array[ChatImageAttachment]` | no | 图片 attachment；当前只投影第一项 | Image attachments; only the first item is projected today |
 
 Behavior notes / 行为说明:
 
 - if `config` is provided and non-empty, the server returns `400`
+- at least a non-empty `message` or one effective attachment is required
+- upload the image first, then forward the upload metadata in `attachments`; the run endpoint does not resolve metadata from `upload_id`
 - successful creation returns only run metadata, not the final answer
 - the operation is not idempotent: each accepted request creates a new `run_id`, and `Idempotency-Key` is not supported
 - after receiving `201`, retry GET/SSE reads by `run_id`; do not automatically repeat an ambiguous POST
@@ -864,6 +957,26 @@ Example request:
 {
   "thread_id": "demo-thread",
   "message": "帮我回忆一下我上次提到的旅行计划。"
+}
+```
+
+Example after image upload:
+
+```json
+{
+  "thread_id": "demo-thread",
+  "message": "把这张图作为后续任务的背景信息。",
+  "attachments": [
+    {
+      "upload_id": "img_123",
+      "image_url": "/v1/chat/uploads/images/img_123/content",
+      "image_file": "<copy exactly from the upload response>",
+      "blip_caption": "a laptop and notebook on a desk",
+      "mime_type": "image/png",
+      "width": 1280,
+      "height": 720
+    }
+  ]
 }
 ```
 
@@ -882,7 +995,7 @@ Success response:
 
 Common errors:
 
-- `400`: message empty or unsupported request-level config override
+- `400`: message and attachments both empty, or unsupported request-level config override
 - `401`: missing/invalid token when auth is enabled
 
 ### 6.9 `GET /v1/chat/runs/{run_id}`
@@ -958,6 +1071,7 @@ Important note / 重要说明:
 - memory flush progress
 - schedule CRUD events
 - schedule execution events
+- runtime stimulus, transaction, reply, and Scene lifecycle events
 
 ### 6.11a `GET /v1/chat/threads/{thread_id}/transactions`
 
@@ -971,6 +1085,44 @@ Important note / 重要说明:
 - 客户端应以 `state`（`continue | pause | complete | archive`）和
   `lifecycle_status`（`active | deleted`）为准；暂停原因由 `pause_reason` 表达。
   `status` 仅为旧客户端保留的计算投影，不可作为控制命令或权威状态。
+
+Verification example / 可验证示例：
+
+```http
+GET /v1/chat/threads/demo-thread/transactions?include_history=false
+Authorization: Bearer <token>
+```
+
+```json
+{
+  "thread_id": "demo-thread",
+  "conversation_id": "demo-thread::0",
+  "transactions": [
+    {
+      "transaction_id": "tx_123",
+      "state": "continue",
+      "lifecycle_status": "active",
+      "revision": 3,
+      "kind": "user_task",
+      "task_state": {
+        "goal": "continue the submitted request",
+        "completion_status": "processing",
+        "completed": [],
+        "remaining": ["wait for the next result"]
+      }
+    }
+  ],
+  "active_transaction_id": "tx_123",
+  "cpu_transaction_id": null,
+  "transaction_count": 1,
+  "include_history": false,
+  "runtime_phase": "ready",
+  "effective_depth": 0
+}
+```
+
+字段值随实际推理而变化；验证时应断言结构、ID 关联与权威状态字段，而不是复制上述
+自然语言 `task_state`。
 
 ### 6.11a.1 `DELETE /v1/chat/threads/{thread_id}/transactions/{transaction_id}`
 
@@ -1013,9 +1165,89 @@ Query parameters:
 
 The response is a chronological Scene log with `entries` and pagination state. Use the returned entry sequence with `before_seq`; do not confuse Scene entry sequences with run/thread SSE sequences.
 
+```http
+GET /v1/chat/threads/demo-thread/scene?limit=40&since_flush=true
+Authorization: Bearer <token>
+```
+
+```json
+{
+  "thread_id": "demo-thread",
+  "conversation_id": "alice::demo-thread::0",
+  "entries": [
+    {
+      "seq": 1,
+      "occurred_at": "2026-08-04T12:00:00Z",
+      "entry_type": "utterance",
+      "actor": "user",
+      "text": "继续跟进这件事",
+      "transaction_id": "tx_123"
+    }
+  ],
+  "has_more": false,
+  "since_flush": true
+}
+```
+
+认证模式下顶层 `thread_id` 会转换成公开值；`conversation_id`、Scene entry 和其他诊断
+字段当前仍可能包含内部作用域信息，适用第 4.9 节的数据最小化警告。
+
 ### 6.11c `POST /v1/chat/threads/{thread_id}/stimuli`
 
-Queues a user stimulus and returns `202`. Request fields are `kind` (currently defaults to `user_message`), `text`, optional `attachments`, and optional `priority_override`. At least `text` or one effective attachment is required. Acceptance means queued, not completed; observe the thread stream and runtime state for subsequent processing.
+Queues a user stimulus and returns `202`. At least `text` or one effective attachment is required.
+Acceptance means queued, not completed; this endpoint does not create a run resource or return a
+`run_id`. Observe the thread stream, transaction view, and Scene for subsequent processing.
+
+Although the Pydantic `ThreadStimulusRequest` currently declares `kind` and `priority_override`,
+`post_thread_stimulus()` forwards only `text` plus the normalized first attachment. Consequently:
+
+- `kind` does **not** select `scheduled_plan`, `execution_feedback`, or `observation_trigger`;
+- `priority_override` does **not** change inbox priority;
+- every accepted request currently enters Runtime as `user_message` with the default user priority.
+
+Clients should omit both no-op fields. Their presence in OpenAPI is compatibility shape, not a
+generic stimulus-ingress contract.
+
+Text-only request:
+
+```json
+{
+  "text": "继续跟进这件事"
+}
+```
+
+Request using metadata returned by the image-upload endpoint:
+
+```json
+{
+  "text": "把图片内容加入当前事务。",
+  "attachments": [
+    {
+      "upload_id": "img_123",
+      "image_url": "/v1/chat/uploads/images/img_123/content",
+      "image_file": "<copy exactly from the upload response>",
+      "blip_caption": "a laptop and notebook on a desk",
+      "mime_type": "image/png",
+      "width": 1280,
+      "height": 720
+    }
+  ]
+}
+```
+
+Example `202` response:
+
+```json
+{
+  "stimulus_id": "stim_123",
+  "thread_id": "demo-thread",
+  "pending_count": 1,
+  "effective_depth": 1,
+  "runtime_phase": "ready",
+  "runtime_engine_id": "langgraph_v1",
+  "accepted": true
+}
+```
 
 ### 6.11d `POST /v1/chat/threads/{thread_id}/thinking/stop`
 
@@ -1480,7 +1712,16 @@ Notes / 说明:
 4. Render `assistant_message` and/or `run_completed.payload.result.answer`.
 5. Optionally fetch `GET /v1/chat/runs/{run_id}` as a final snapshot.
 
-### 8.2 Thread memory verification / 线程记忆验证
+### 8.2 Upload → stimulus → transaction → Scene verification
+
+1. Upload one image with `POST /v1/chat/uploads/images`; retain the complete response metadata.
+2. Fetch the returned `image_url` and verify its MIME type and bytes.
+3. Submit `POST /v1/chat/threads/{thread_id}/stimuli` with `text` and the upload metadata as the first attachment. Omit `kind` and `priority_override` because they are not forwarded today.
+4. Verify the `202` response contains `accepted=true` and a non-empty `stimulus_id`.
+5. Poll `GET /v1/chat/threads/{thread_id}/transactions` until the stimulus is attributed; retain the resulting `transaction_id` and `revision`.
+6. Fetch `GET /v1/chat/threads/{thread_id}/scene`; verify chronological `seq` values and that relevant entries carry the same `transaction_id`.
+
+### 8.3 Thread memory verification / 线程记忆验证
 
 1. Run several chat turns on the same `thread_id`.
 2. Call `GET /v1/chat/threads/{thread_id}/memory/state`.
@@ -1488,7 +1729,7 @@ Notes / 说明:
 4. Call `POST /v1/chat/threads/{thread_id}/memory/flush`.
 5. Verify `status`, `memory_write`, and `pending_rounds == 0`.
 
-### 8.3 Schedule verification / 日程验证
+### 8.4 Schedule verification / 日程验证
 
 1. Create a schedule with `POST /v1/chat/threads/{thread_id}/schedules`.
 2. Verify it appears in `GET /v1/chat/threads/{thread_id}/schedules`.
@@ -1496,7 +1737,7 @@ Notes / 说明:
 4. Wait for `schedule_due`, `schedule_started`, and `schedule_completed`.
 5. Verify the schedule status becomes `done`.
 
-### 8.4 Recommended companion file / 推荐配套文件
+### 8.5 Recommended companion file / 推荐配套文件
 
 Use the request collection in:
 
@@ -1510,9 +1751,11 @@ It contains ready-to-edit requests for:
 - health
 - register / login / me / logout
 - config schema and patch
+- image upload/content and attachment submission
 - create run / get run
+- asynchronous stimulus enqueue, transaction inspection/deletion, and Scene inspection
 - memory state / mode / flush
-- dialogue list / detail
+- dialogue list / detail / multipart upload
 - schedule list / create / cancel
 
 ## 9. Coverage Notes / 覆盖范围
@@ -1525,6 +1768,9 @@ This reference covers the following implementation details:
 - per-user runtime scoping
 - user config schema and patch semantics
 - dialogue archive APIs
+- image upload/content APIs and first-attachment projection
+- the current `ThreadStimulusRequest.kind` / `priority_override` forwarding gap
+- transaction and Scene inspection APIs
 - thread events versus run events
 - schedule heartbeat and owner-scoped schedule behavior
 - current request/response shapes from the actual implementation

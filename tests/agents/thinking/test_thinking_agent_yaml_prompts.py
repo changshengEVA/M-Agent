@@ -72,10 +72,11 @@ def test_runtime_context_block_skipped_when_user_and_empty_context() -> None:
     assert build_runtime_context_block(source="user", system_context={}, language="en") == ""
 
 
-def test_thinking_agent_uses_override_plan_and_fallback_prompts() -> None:
+def test_thinking_agent_uses_override_joint_plan_and_fallback_prompts() -> None:
     custom_task_base = "[CUSTOM TASK STATE BASE]"
     custom_task_instructions = "[CUSTOM TASK STATE INSTRUCTIONS]"
     custom_plan = "[CUSTOM PLAN BLOCK]"
+    custom_thinking_turn = "[CUSTOM THINKING TURN BLOCK]"
     custom_fallback = "兜底 OVERRIDE"
     custom_cap_header = "[CUSTOM CAP HEADER]"
 
@@ -90,14 +91,16 @@ def test_thinking_agent_uses_override_plan_and_fallback_prompts() -> None:
         task_state_base_prompt=custom_task_base,
         task_state_instructions_prompt=custom_task_instructions,
         plan_instructions_prompt=custom_plan,
+        thinking_turn_instructions_prompt=custom_thinking_turn,
         capability_boundary_header=custom_cap_header,
         fallback_answer_prompt=custom_fallback,
     )
 
-    # Task-state and plan instruction blocks.
+    # Joint, task-state, and legacy plan instruction blocks.
     assert agent._task_state_base_block() == custom_task_base
     assert agent._task_state_instructions_block() == custom_task_instructions
     assert agent._plan_instructions_block() == custom_plan
+    assert agent._thinking_turn_instructions_block() == custom_thinking_turn
 
     # capability boundary header propagates into the assembled plan messages
     state = agent.state_registry.get_or_create("c::0", thread_id="t1")
@@ -118,6 +121,13 @@ def test_thinking_agent_uses_override_plan_and_fallback_prompts() -> None:
     assert "kind: scheduled_plan" in sys_text
     assert custom_plan in sys_text
 
+    joint_messages = agent._build_thinking_turn_messages(perception, state)
+    joint_sys_text = joint_messages[0]["content"]
+    assert custom_cap_header in joint_sys_text
+    assert "[Previous Task State]" in joint_sys_text
+    assert custom_thinking_turn in joint_sys_text
+    assert custom_plan not in joint_sys_text
+
     # fallback answer override
     assert agent._fallback_answer(perception) == custom_fallback
 
@@ -136,6 +146,24 @@ def test_chat_controller_runtime_yaml_contains_thinking_prompt_sections() -> Non
         "persona_merge_template",
     ):
         assert isinstance(thinking.get(key), str) and thinking[key].strip(), f"missing or empty: thinking.{key}"
+
+    thinking_turn = thinking.get("thinking_turn")
+    assert isinstance(thinking_turn, dict), "chat_controller.thinking.thinking_turn must be defined"
+    for key in ("base_prompt", "instructions"):
+        assert isinstance(thinking_turn.get(key), str) and thinking_turn[key].strip(), f"missing or empty: thinking_turn.{key}"
+    joint_instructions = thinking_turn["instructions"]
+    assert "reason → task_state → decision" in joint_instructions
+    assert joint_instructions.index("reason") < joint_instructions.index("task_state") < joint_instructions.index("decision")
+    assert "不要输出 request_complete" in joint_instructions
+    assert "完整快照" in joint_instructions
+    assert "remaining[0]" in joint_instructions
+    assert "stage=param_fill" in joint_instructions
+    assert "schedule_create" in joint_instructions
+    assert "[输出示例：仅演示结构与状态语义]" in joint_instructions
+    assert '"mode": "answer_directly"' in joint_instructions
+    assert '"completion_status": "processing"' in joint_instructions
+    assert '"request_complete":' not in joint_instructions
+
     pre_gen = thinking.get("pre_gen_task_state")
     assert isinstance(pre_gen, dict), "chat_controller.thinking.pre_gen_task_state must be defined"
     for key in ("base_prompt", "instructions"):

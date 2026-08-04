@@ -19,13 +19,16 @@ from m_agent.layers.thinking.persona import (
     build_capability_boundary_block,
 )
 from m_agent.layers.thinking.contracts import (
+    DecisionOutput,
     TASK_COMPLETION_AWAITING_USER,
     TASK_COMPLETION_COMPLETED,
     TASK_COMPLETION_PROCESSING,
     TaskProgress,
     TaskProgressUpdate,
+    TaskStateOutput,
     TransactionResolution,
     ThinkingDecision,
+    ThinkingTurnOutput,
     is_silent_mode,
     normalize_task_completion_status,
     normalize_thinking_mode,
@@ -36,14 +39,17 @@ from m_agent.layers.thinking.state import (
     ThinkingScratch,
     TransactionBoundState,
 )
-from m_agent.utils.api_error_utils import is_network_api_error
-
-
 logger = logging.getLogger(__name__)
 
 #: Callback signature for streaming planning state to the perception layer,
 #: which forwards it to SSE. Implementations must be cheap and must not raise.
 ThinkingEventEmitter = Callable[[str, Dict[str, Any]], None]
+
+THINKING_MODE_SINGLE_CALL = "single_call"
+THINKING_MODE_LEGACY_TWO_CALL = "legacy_two_call"
+_THINKING_MODES = frozenset(
+    {THINKING_MODE_SINGLE_CALL, THINKING_MODE_LEGACY_TWO_CALL}
+)
 
 
 class ThinkingAgent:
@@ -63,6 +69,8 @@ class ThinkingAgent:
         task_state_base_prompt: str = "",
         task_state_instructions_prompt: str = "",
         plan_instructions_prompt: str = "",
+        thinking_turn_instructions_prompt: str = "",
+        thinking_mode: str = THINKING_MODE_SINGLE_CALL,
         capability_boundary_header: str = "",
         fallback_answer_prompt: str = "",
         transaction_resolution_base_prompt: str = "",
@@ -82,6 +90,16 @@ class ThinkingAgent:
         self._task_state_base_override = str(task_state_base_prompt or "").strip()
         self._task_state_instructions_override = str(task_state_instructions_prompt or "").strip()
         self._plan_instructions_override = str(plan_instructions_prompt or "").strip()
+        self._thinking_turn_instructions_override = str(
+            thinking_turn_instructions_prompt or ""
+        ).strip()
+        normalized_thinking_mode = str(thinking_mode or "").strip().lower()
+        if normalized_thinking_mode not in _THINKING_MODES:
+            supported = ", ".join(sorted(_THINKING_MODES))
+            raise ValueError(
+                f"unsupported thinking_mode={thinking_mode!r}; expected one of: {supported}"
+            )
+        self.thinking_mode = normalized_thinking_mode
         self._capability_boundary_header_override = str(capability_boundary_header or "").strip()
         self._fallback_answer_override = str(fallback_answer_prompt or "").strip()
         self._transaction_resolution_base_override = str(
@@ -239,6 +257,7 @@ class ThinkingAgent:
                 thread_id=perception.thread_id,
             )
         state.turn_count += 1
+        previous_completion_status = state.task_progress.completion_status
         if perception.stimulus.kind == StimulusKind.USER_MESSAGE:
             # Transaction attribution has already selected the relevant task
             # (or created a new one). A user continuation re-opens that task
@@ -262,8 +281,33 @@ class ThinkingAgent:
             },
         )
 
-        task_progress_update = self._pre_gen_task_state(perception, state)
+        if self.thinking_mode == THINKING_MODE_SINGLE_CALL:
+            try:
+                thinking_turn = self._think_once(perception, state)
+                self._validate_turn_output_against_runtime(
+                    thinking_turn,
+                    perception,
+                    state,
+                )
+            except Exception:
+                # A failed/invalid joint response must not leak the speculative
+                # user-message reopen into the live transaction record.
+                state.task_progress.completion_status = previous_completion_status
+                raise
+            task_progress_update = self._task_update_from_turn_output(
+                thinking_turn.task_state,
+                state,
+            )
+            candidate_decision = self._decision_from_turn_output(thinking_turn)
+        else:
+            task_progress_update = self._pre_gen_task_state(perception, state)
+            candidate_decision = None
+
         self._apply_task_progress_update(state, task_progress_update)
+        if perception.stimulus.kind == StimulusKind.USER_MESSAGE:
+            # The model cannot close a request in the same turn in which that
+            # user request arrived; delivery feedback owns completion proof.
+            state.task_progress.completion_status = TASK_COMPLETION_PROCESSING
         self._force_processing_on_param_gap(perception, state)
         self._coerce_awaiting_user_without_reply(state)
         emit(
@@ -271,39 +315,9 @@ class ThinkingAgent:
             self._task_state_event_payload(task_progress_update, perception, state),
         )
 
-        completion_status = normalize_task_completion_status(
-            state.task_progress.completion_status
-        )
-        tx_state = getattr(state, "state", None)
-        tx_state_value = (
-            tx_state.value if hasattr(tx_state, "value") else str(tx_state or "")
-        ).strip().lower()
-        # Action planning is gated by domain lifecycle / macro status, not by
-        # stuffing pause into ThinkingDecision.mode.
-        if tx_state_value == "pause":
-            decision = ThinkingDecision(
-                mode="silent",
-                request_complete=False,
-                reasoning="Transaction is paused waiting for user collaboration.",
-            )
-        elif completion_status == TASK_COMPLETION_COMPLETED:
-            decision = ThinkingDecision(
-                mode="silent",
-                request_complete=True,
-                reasoning="Task state confirms that the complete request is fulfilled.",
-            )
-        elif completion_status == TASK_COMPLETION_AWAITING_USER:
-            # Macro wait-for-user: skip action plan; runtime maps this to pause.
-            decision = ThinkingDecision(
-                mode="silent",
-                request_complete=False,
-                reasoning="Task state is awaiting user collaboration.",
-            )
-        else:
-            decision = self._plan(perception, state)
-            # Completion is an evidence-backed task-state fact, not an
-            # implication of the action selected by the planning model.
-            decision.request_complete = False
+        if candidate_decision is None:
+            candidate_decision = self._legacy_decision_for_state(perception, state)
+        decision = self._normalize_decision_for_state(candidate_decision, state)
         emit("thinking_plan", self._decision_event_payload(decision, perception, state))
 
         mode = normalize_thinking_mode(decision.mode)
@@ -326,6 +340,130 @@ class ThinkingAgent:
                 "phases": ["plan"],
             },
         )
+        return decision
+
+    @staticmethod
+    def _stable_unique_strings(values: List[Any]) -> List[str]:
+        normalized: List[str] = []
+        seen = set()
+        for value in values:
+            item = str(value or "").strip()
+            if not item or item in seen:
+                continue
+            seen.add(item)
+            normalized.append(item)
+        return normalized
+
+    @classmethod
+    def _task_update_from_turn_output(
+        cls,
+        output: TaskStateOutput,
+        state: ConversationState,
+    ) -> TaskProgressUpdate:
+        """Project a full model snapshot while preserving durable completions."""
+
+        current = state.task_progress
+        goal = str(output.goal or "").strip()
+        if not goal:
+            goal = str(current.goal or "").strip()
+
+        completed = cls._stable_unique_strings(
+            [*list(current.completed), *list(output.completed)]
+        )
+        completed_set = set(completed)
+        remaining = [
+            item
+            for item in cls._stable_unique_strings(list(output.remaining))
+            if item not in completed_set
+        ]
+        return TaskProgressUpdate(
+            goal=goal,
+            completion_status=output.completion_status,
+            completed=completed,
+            remaining=remaining,
+        )
+
+    @staticmethod
+    def _decision_from_turn_output(output: ThinkingTurnOutput) -> ThinkingDecision:
+        decision: DecisionOutput = output.decision
+        return ThinkingDecision(
+            mode=decision.mode,
+            tool_name=str(decision.tool_name or "").strip() or None,
+            instruction=str(decision.instruction or "").strip() or None,
+            answer=str(decision.answer or "").strip() or None,
+            episode_note=str(decision.episode_note or "").strip() or None,
+            # Filled only after all deterministic task-state corrections.
+            request_complete=None,
+            # ``reason`` is deliberately turn-local: do not project it into
+            # ThinkingDecision, SSE, graph checkpoints, Scene, or memory.
+            reasoning=None,
+        )
+
+    def _legacy_decision_for_state(
+        self,
+        perception: PerceptionInput,
+        state: ConversationState,
+    ) -> ThinkingDecision:
+        """Preserve the old two-pass short-circuit behavior for rollback mode."""
+
+        completion_status = normalize_task_completion_status(
+            state.task_progress.completion_status
+        )
+        tx_state = getattr(state, "state", None)
+        tx_state_value = (
+            tx_state.value if hasattr(tx_state, "value") else str(tx_state or "")
+        ).strip().lower()
+        if tx_state_value == "pause":
+            return ThinkingDecision(
+                mode="silent",
+                request_complete=False,
+                reasoning="Transaction is paused waiting for user collaboration.",
+            )
+        if completion_status == TASK_COMPLETION_COMPLETED:
+            return ThinkingDecision(
+                mode="silent",
+                request_complete=True,
+                reasoning="Task state confirms that the complete request is fulfilled.",
+            )
+        if completion_status == TASK_COMPLETION_AWAITING_USER:
+            return ThinkingDecision(
+                mode="silent",
+                request_complete=False,
+                reasoning="Task state is awaiting user collaboration.",
+            )
+        return self._plan(perception, state)
+
+    @staticmethod
+    def _normalize_decision_for_state(
+        decision: ThinkingDecision,
+        state: ConversationState,
+    ) -> ThinkingDecision:
+        """Apply server-owned lifecycle gates after accepting joint output."""
+
+        completion_status = normalize_task_completion_status(
+            state.task_progress.completion_status
+        )
+        tx_state = getattr(state, "state", None)
+        tx_state_value = (
+            tx_state.value if hasattr(tx_state, "value") else str(tx_state or "")
+        ).strip().lower()
+        if (
+            tx_state_value == "pause"
+            or completion_status == TASK_COMPLETION_AWAITING_USER
+            or completion_status == TASK_COMPLETION_COMPLETED
+        ):
+            return ThinkingDecision(
+                mode="silent",
+                request_complete=(
+                    completion_status == TASK_COMPLETION_COMPLETED
+                    and tx_state_value != "pause"
+                ),
+                episode_note=decision.episode_note,
+                reasoning=decision.reasoning,
+            )
+
+        decision.mode = normalize_thinking_mode(decision.mode)
+        decision.request_complete = False
         return decision
 
     def _scratch_for(self, conversation_id: str) -> ThinkingScratch:
@@ -435,11 +573,11 @@ class ThinkingAgent:
             return self.wm_reader.render(state.wm_entries, language=self.prompt_language)
 
     @staticmethod
-    def _render_task_state(state: Any) -> str:
+    def _render_task_state(state: Any, *, header: str = "Task State") -> str:
         task_state = getattr(state, "task_state", None) or getattr(
             state, "task_progress", TaskProgress()
         )
-        lines = ["[Task State]", f"goal: {str(task_state.goal or '').strip() or '(empty)'}"]
+        lines = [f"[{header}]", f"goal: {str(task_state.goal or '').strip() or '(empty)'}"]
         lines.append(
             "completion_status: "
             f"{normalize_task_completion_status(task_state.completion_status)}"
@@ -449,6 +587,19 @@ class ThinkingAgent:
         lines.append("remaining:")
         lines.extend(f"- {item}" for item in task_state.remaining) if task_state.remaining else lines.append("- (none)")
         return "\n".join(lines)
+
+    @staticmethod
+    def _render_runtime_guard_facts(state: Any) -> str:
+        tx_state = getattr(state, "state", None)
+        tx_state_value = (
+            tx_state.value if hasattr(tx_state, "value") else str(tx_state or "")
+        ).strip().lower()
+        return (
+            "[Deterministic Runtime Facts]\n"
+            "reply_finalized_in_activation: "
+            f"{str(bool(getattr(state, 'reply_finalized_in_activation', False))).lower()}\n"
+            f"transaction_paused: {str(tx_state_value == 'pause').lower()}"
+        )
 
     @staticmethod
     def _apply_task_progress_update(
@@ -473,28 +624,32 @@ class ThinkingAgent:
             ]
 
     @staticmethod
-    def _force_processing_on_param_gap(
-        perception: PerceptionInput,
-        state: ConversationState,
-    ) -> None:
-        """Param-fill short-circuits must not enter wait-for-user semantics."""
-
+    def _is_param_gap(perception: PerceptionInput) -> bool:
         if perception.stimulus.kind != StimulusKind.EXECUTION_FEEDBACK:
-            return
+            return False
         payload = perception.stimulus.payload if isinstance(
             perception.stimulus.payload, dict
         ) else {}
         history = payload.get("tool_history")
         if not isinstance(history, list) or not history:
-            return
+            return False
         step = history[-1] if isinstance(history[-1], dict) else {}
         result = step.get("result") if isinstance(step.get("result"), dict) else {}
-        is_param_gap = (
+        return (
             bool(result.get("needs_clarification"))
             or str(result.get("stage", "") or "").strip() == "param_fill"
             or result.get("tool_invoked") is False
         )
-        if is_param_gap:
+
+    @classmethod
+    def _force_processing_on_param_gap(
+        cls,
+        perception: PerceptionInput,
+        state: ConversationState,
+    ) -> None:
+        """Param-fill short-circuits must not enter wait-for-user semantics."""
+
+        if cls._is_param_gap(perception):
             state.task_progress.completion_status = TASK_COMPLETION_PROCESSING
 
     @staticmethod
@@ -509,6 +664,192 @@ class ThinkingAgent:
         if bool(getattr(state, "reply_finalized_in_activation", False)):
             return
         state.task_progress.completion_status = TASK_COMPLETION_PROCESSING
+
+    # ------------------------------------------------------------------
+    # Joint task-state + decision pass (single LLM call)
+    # ------------------------------------------------------------------
+
+    def _validate_turn_output_against_runtime(
+        self,
+        output: ThinkingTurnOutput,
+        perception: PerceptionInput,
+        state: ConversationState,
+    ) -> None:
+        """Reject joint states that deterministic post-processing cannot repair."""
+
+        status = output.task_state.completion_status
+        must_be_processing = (
+            perception.stimulus.kind == StimulusKind.USER_MESSAGE
+            or self._is_param_gap(perception)
+            or (
+                status == TASK_COMPLETION_AWAITING_USER
+                and not bool(
+                    getattr(state, "reply_finalized_in_activation", False)
+                )
+            )
+        )
+        if (
+            must_be_processing
+            and status != TASK_COMPLETION_PROCESSING
+            and output.decision.mode == "silent"
+        ):
+            # The state can be corrected deterministically, but a silent action
+            # cannot be repaired into the execute/reply that legacy planning
+            # would have produced after that correction.
+            raise ValueError(
+                "joint output becomes processing but contains an irreparable silent decision"
+            )
+        if output.decision.mode == "execute":
+            enabled_names = getattr(
+                self.execution_agent,
+                "enabled_capability_names",
+                None,
+            )
+            if enabled_names is not None:
+                enabled = {
+                    str(name or "").strip()
+                    for name in enabled_names
+                    if str(name or "").strip()
+                }
+                tool_name = str(output.decision.tool_name or "").strip()
+                if tool_name not in enabled:
+                    supported = ", ".join(sorted(enabled)) or "(none)"
+                    raise ValueError(
+                        f"unknown or disabled tool {tool_name!r}; enabled: {supported}"
+                    )
+
+    def _think_once(
+        self,
+        perception: PerceptionInput,
+        state: ConversationState,
+    ) -> ThinkingTurnOutput:
+        prompt_messages = self._build_thinking_turn_messages(perception, state)
+        try:
+            structured_model = self.model_provider.model.with_structured_output(
+                ThinkingTurnOutput,
+                include_raw=False,
+            )
+        except Exception:
+            structured_model = self.model_provider.model.with_structured_output(
+                ThinkingTurnOutput
+            )
+
+        result = self._invoke_structured(
+            structured_model,
+            messages=prompt_messages,
+            call_name="thinking.turn",
+        )
+        if isinstance(result, ThinkingTurnOutput):
+            return result
+        return ThinkingTurnOutput.model_validate(result)
+
+    def _build_thinking_turn_messages(
+        self,
+        perception: PerceptionInput,
+        state: ConversationState,
+    ) -> List[Dict[str, str]]:
+        sections: List[str] = []
+        if self.system_prompt:
+            sections.append(self.system_prompt)
+        if self.persona_prompt:
+            sections.append(self.persona_prompt)
+
+        capability_block = self.execution_agent.describe_capabilities_block()
+        capability_section = build_capability_boundary_block(
+            capability_block,
+            language=self.prompt_language,
+            header_template=self._capability_boundary_header_override,
+        )
+        if capability_section:
+            sections.append(capability_section)
+
+        input_block = self._render_perception_input_block(perception)
+        if input_block:
+            sections.append(input_block)
+        dialogue_block = self._render_dialogue_history_block(perception)
+        if dialogue_block:
+            sections.append(dialogue_block)
+        if perception.scene_context:
+            sections.append(f"[Scene Context]\n{perception.scene_context}")
+
+        sections.append(
+            self._render_task_state(state, header="Previous Task State")
+        )
+        sections.append(self._render_runtime_guard_facts(state))
+
+        if self.wm_reader is not None:
+            wm_block = self._render_working_memory(state)
+            if wm_block:
+                sections.append(wm_block)
+
+        sections.append(self._thinking_turn_instructions_block())
+        system_text = "\n\n".join(section for section in sections if section).strip()
+        return [
+            {"role": "system", "content": system_text},
+            self._model_turn_message(perception),
+        ]
+
+    def _thinking_turn_instructions_block(self) -> str:
+        if self._thinking_turn_instructions_override:
+            return self._thinking_turn_instructions_override
+        if self.prompt_language.startswith("zh"):
+            return (
+                "[Thinking Turn 要求]\n"
+                "只输出 ThinkingTurnOutput 对应的结构化内容，并按 reason → task_state → decision 的顺序生成。\n"
+                "1. reason：用一至三句话分析当前刺激、Previous Task State、Observed Evidence 与可委托能力；"
+                "Scene Context 只帮助理解，不能单独证明任务完成。\n"
+                "2. task_state：输出完整新快照。目标未变化时保留 goal；不得无依据删除、改写或重复 completed；"
+                "remaining[0] 是当前步骤，之后的元素是后续步骤；只有可信证据能推进 completed；不要复制原始工具结果。\n"
+                "新的用户请求必须保持 processing。仍需发送结果时不能 completed。仅当完整请求及必要回复均已完成时 completed。"
+                "只有澄清回复已经送达且仍需用户输入时才能 awaiting_user。\n"
+                "3. decision：必须依据刚生成的 task_state。execute 只选一个已启用 tool_name 并给出详细 instruction；"
+                "answer_directly 给出完整 answer；silent 不执行也不回复。"
+                "不要输出 request_complete；reason 不得复制到 answer 或 episode_note。\n"
+                "- episode_note 只记录后续真正值得记住的一两句话，不要写原始工具结果或临时分析。\n"
+                "- 多步任务每轮只委托当前一步，并以 execution feedback 的 Structured tool result/count 为准。\n"
+                "- 闲聊、致谢或与可委托能力无关且需要回应的请求用 answer_directly；无需回复时用 silent。\n"
+                "- 若 feedback 显示 stage=param_fill 或 tool_invoked=false，目标工具尚未执行；优先用其他已启用工具补参，无法补参再直接追问。\n"
+                "- 邮件/日程必须选择对应能力；schedule_create 每次只创建一条，删除使用 schedule_delete(schedule_id)。\n"
+                "字段组合必须严格：execute 的 answer 为空；answer_directly 的 tool_name/instruction 为空；"
+                "silent 的 tool_name/instruction/answer 均为空。\n"
+                "[输出示例：仅演示结构与状态语义]\n"
+                "不得复制示例内容；实际字段必须依据当前上下文生成。\n"
+                '{"reason":"这是普通知识问答，不需要外部能力；回复送达前任务仍保持 processing。",'
+                '"task_state":{"goal":"向用户解释 DNS 的作用","completion_status":"processing",'
+                '"completed":[],"remaining":["形成并发送简明解释"]},'
+                '"decision":{"mode":"answer_directly","tool_name":null,"instruction":null,'
+                '"answer":"DNS 可以理解为互联网的电话簿，它把域名转换成服务器的 IP 地址。",'
+                '"episode_note":null}}'
+            )
+        return (
+            "[Thinking Turn Requirements]\n"
+            "Output only the structured ThinkingTurnOutput and generate it in reason → task_state → decision order.\n"
+            "1. reason: use one to three sentences to assess the stimulus, Previous Task State, Observed Evidence, and delegated capabilities. "
+            "Scene Context aids understanding but cannot prove completion by itself.\n"
+            "2. task_state: emit a complete new snapshot. Preserve goal when unchanged; never delete, rewrite, or duplicate completed items without evidence; "
+            "remaining[0] is the current step and later items are future steps; advance completed only from trustworthy evidence; never copy raw tool output.\n"
+            "A new user request stays processing. Do not mark completed while a result still needs delivery. Use completed only when the full request and required replies are done. "
+            "Use awaiting_user only after a clarification reply was delivered and user input is still required.\n"
+            "3. decision: base it on the task_state just generated. execute selects exactly one enabled tool_name with a detailed instruction; "
+            "answer_directly supplies the complete answer; silent neither delegates nor replies. "
+            "Do not output request_complete, and never copy reason into answer or episode_note.\n"
+            "- episode_note contains only one or two facts genuinely worth remembering; never raw tool output or temporary analysis.\n"
+            "- Delegate only the current step of a multi-step task and trust Structured tool result/count in execution feedback.\n"
+            "- Use answer_directly for small talk, thanks, or requests unrelated to delegated capabilities that need a response; use silent when no reply is needed.\n"
+            "- If feedback says stage=param_fill or tool_invoked=false, the target tool did not run; prefer another enabled tool to fill the gap, then ask the user directly if still blocked.\n"
+            "- Email and schedule work must select the matching capability; schedule_create creates one item per call and deletion uses schedule_delete(schedule_id).\n"
+            "Field combinations are strict: execute leaves answer empty; answer_directly leaves tool_name/instruction empty; "
+            "silent leaves tool_name/instruction/answer empty.\n"
+            "[Output Example: structure and state semantics only]\n"
+            "Do not copy the example content; derive every actual field from the current context.\n"
+            '{"reason":"This is a general-knowledge question that needs no external capability; '
+            'the task stays processing until the reply is delivered.",'
+            '"task_state":{"goal":"Explain what DNS does","completion_status":"processing",'
+            '"completed":[],"remaining":["compose and deliver a concise explanation"]},'
+            '"decision":{"mode":"answer_directly","tool_name":null,"instruction":null,'
+            '"answer":"DNS works like the internet\'s phone book, translating domain names into server IP addresses.",'
+            '"episode_note":null}}'
+        )
 
     # ------------------------------------------------------------------
     # Task-state pre-generation pass (LLM #1 in runtime)

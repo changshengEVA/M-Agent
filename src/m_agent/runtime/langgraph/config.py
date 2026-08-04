@@ -8,6 +8,13 @@ from typing import Any, Mapping, Optional, Tuple
 
 TURN_LOOP_ENV = "M_AGENT_LANGGRAPH_TURN_LOOP"
 
+THINKING_MODE_SINGLE_CALL = "single_call"
+THINKING_MODE_LEGACY_TWO_CALL = "legacy_two_call"
+THINKING_MODES: Tuple[str, ...] = (
+    THINKING_MODE_SINGLE_CALL,
+    THINKING_MODE_LEGACY_TWO_CALL,
+)
+
 FAKE_DELEGATE_EXECUTOR = "fake"
 EXECUTION_AGENT_DELEGATE_EXECUTOR = "execution_agent"
 DELEGATE_EXECUTORS: Tuple[str, ...] = (
@@ -69,6 +76,7 @@ class LangGraphRuntimeConfig:
     """Engine-local knobs; shared semantics stay in :class:`RuntimeConfig`."""
 
     turn_loop_enabled: bool = True
+    thinking_mode: str = THINKING_MODE_SINGLE_CALL
     delegate_executor: str = FAKE_DELEGATE_EXECUTOR
     delivery_guarantee: str = DEFAULT_DELIVERY_GUARANTEE
     max_delegate_chain: int = DEFAULT_MAX_DELEGATE_CHAIN
@@ -91,6 +99,12 @@ def load_langgraph_config(
     ).strip()
     if executor not in DELEGATE_EXECUTORS:
         raise ValueError(f"unsupported delegate executor: {executor!r}")
+
+    thinking_mode = str(
+        data.get("thinking_mode", THINKING_MODE_SINGLE_CALL) or ""
+    ).strip().lower()
+    if thinking_mode not in THINKING_MODES:
+        raise ValueError(f"unsupported thinking_mode: {thinking_mode!r}")
 
     capabilities_raw = data.get("fake_capabilities")
     if isinstance(capabilities_raw, (list, tuple)):
@@ -115,6 +129,7 @@ def load_langgraph_config(
         turn_loop_enabled=resolve_turn_loop_enabled(
             configured=data.get("turn_loop"),
         ),
+        thinking_mode=thinking_mode,
         delegate_executor=executor,
         delivery_guarantee=str(
             data.get("delivery_guarantee", DEFAULT_DELIVERY_GUARANTEE) or ""
@@ -133,6 +148,9 @@ __all__ = [
     "EXECUTION_AGENT_DELEGATE_EXECUTOR",
     "FAKE_DELEGATE_EXECUTOR",
     "LangGraphRuntimeConfig",
+    "THINKING_MODES",
+    "THINKING_MODE_LEGACY_TWO_CALL",
+    "THINKING_MODE_SINGLE_CALL",
     "TURN_LOOP_ENV",
     "load_langgraph_config",
     "parse_bool",

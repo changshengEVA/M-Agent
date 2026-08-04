@@ -15,6 +15,8 @@ from m_agent.layers.perception.contracts import Stimulus, StimulusKind
 from m_agent.layers.thinking.contracts import ThinkingDecision
 from m_agent.runtime.langgraph.config import (
     EXECUTION_AGENT_DELEGATE_EXECUTOR,
+    THINKING_MODE_LEGACY_TWO_CALL,
+    THINKING_MODE_SINGLE_CALL,
     TURN_LOOP_ENV,
     load_langgraph_config,
     resolve_turn_loop_enabled,
@@ -1219,6 +1221,21 @@ def test_resolve_turn_loop_precedence(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_load_langgraph_config_rejects_unknown_executor() -> None:
     with pytest.raises(ValueError, match="unsupported delegate executor"):
         load_langgraph_config({"delegate_executor": "nope"})
+
+
+def test_load_langgraph_config_defaults_to_single_call_thinking() -> None:
+    assert load_langgraph_config({}).thinking_mode == THINKING_MODE_SINGLE_CALL
+    assert (
+        load_langgraph_config(
+            {"thinking_mode": THINKING_MODE_LEGACY_TWO_CALL}
+        ).thinking_mode
+        == THINKING_MODE_LEGACY_TWO_CALL
+    )
+
+
+def test_load_langgraph_config_rejects_unknown_thinking_mode() -> None:
+    with pytest.raises(ValueError, match="unsupported thinking_mode"):
+        load_langgraph_config({"thinking_mode": "multi_call"})
 
 
 def test_completed_non_user_task_closes_after_turn(tmp_path: Path) -> None:

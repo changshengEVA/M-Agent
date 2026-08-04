@@ -175,6 +175,11 @@ class ThreeLayerChatAgent:
             name: self._get_capability_description(name) for name in all_enabled
         }
         thinking_prompts = self._get_runtime_section("thinking", "thinking_layer")
+        thinking_turn_prompts = (
+            thinking_prompts.get("thinking_turn")
+            if isinstance(thinking_prompts.get("thinking_turn"), dict)
+            else {}
+        )
         resolution_prompts = (
             thinking_prompts.get("resolve_transaction")
             if isinstance(thinking_prompts.get("resolve_transaction"), dict)
@@ -194,10 +199,16 @@ class ThreeLayerChatAgent:
         legacy_persona = self._legacy_persona_prompts()
 
         base_prompt = self._nested_runtime_text(
-            decision_prompts,
+            thinking_turn_prompts,
             "base_prompt",
             legacy_keys=("base_role_prompt",),
         )
+        if not base_prompt:
+            base_prompt = self._nested_runtime_text(
+                decision_prompts,
+                "base_prompt",
+                legacy_keys=("base_role_prompt",),
+            )
         if not base_prompt:
             base_prompt = self._nested_runtime_text(
                 thinking_prompts,
@@ -225,9 +236,25 @@ class ThreeLayerChatAgent:
             )
         if not base_prompt:
             raise ValueError(
-                f"`chat_controller.thinking.make_decision.base_prompt` is required in runtime prompt config: "
+                f"`chat_controller.thinking.thinking_turn.base_prompt` is required in runtime prompt config: "
                 f"{self.runtime_prompt_config_path}"
             )
+
+        runtime_config = self.config.get("runtime")
+        runtime_config = runtime_config if isinstance(runtime_config, dict) else {}
+        langgraph_config = runtime_config.get("langgraph")
+        langgraph_config = langgraph_config if isinstance(langgraph_config, dict) else {}
+        thinking_mode = str(
+            langgraph_config.get("thinking_mode", "single_call") or "single_call"
+        ).strip()
+        if thinking_mode.lower() == "legacy_two_call":
+            legacy_decision_base = self._nested_runtime_text(
+                decision_prompts,
+                "base_prompt",
+                legacy_keys=("base_role_prompt",),
+            )
+            if legacy_decision_base:
+                base_prompt = legacy_decision_base
 
         persona_tone_prompt = self._nested_runtime_text(
             thinking_prompts,
@@ -306,6 +333,11 @@ class ThreeLayerChatAgent:
                 self._nested_runtime_text(decision_prompts, "instructions")
                 or str(thinking_prompts.get("plan_instructions", "") or "").strip()
             ),
+            thinking_turn_instructions_prompt=self._nested_runtime_text(
+                thinking_turn_prompts,
+                "instructions",
+            ),
+            thinking_mode=thinking_mode,
             capability_boundary_header=(
                 self._nested_runtime_text(decision_prompts, "capability_boundary_header")
                 or str(thinking_prompts.get("capability_boundary_header", "") or "").strip()

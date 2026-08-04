@@ -1,147 +1,145 @@
 # M-Agent
 
-**M-Agent** is a **memory-centric** agent framework for **personal information life**.
-![pipeline_img](docs/M-Agent.png)
+**A Stimulus-Native Cognitive Runtime**
 
+> Move agent cognition beyond user-message boundaries, so it can be driven by changes in the world, action outcomes, temporal conditions, and internal expectations.
 
+M-Agent is building a runtime that persists beyond a single LLM call. It admits asynchronous stimuli, maintains transactions and state, compiles context `c` when cognition is needed, governs actions, and feeds effects back into the same cognitive loop.
 
+For a personal assistant, the intended experience is simple:
 
-## How to Run
+> **Say it once. It keeps up—and only comes to you when needed.**
 
-### Server side (Chat API)
+[Vision and goals (Chinese)](docs/vision-and-goals.zh-CN.md) · [v0.2.0–v1.0.0 roadmap](docs/roadmap-v0.2.0-v1.0.0.zh-CN.md) · [Target architecture](docs/architecture/cognitive-runtime-architecture.zh-CN.md) · [Roadmap PDF](docs/pdf/M-Agent-Roadmap-v0.2.0-v1.0.0.zh-CN.pdf)
 
-Run the agent as a **long-lived HTTP / SSE service** (`python -m m_agent.api.chat_api`). You create a run per user message, subscribe to the event stream, and read the final result while the server keeps **thread-level** session state.
+> **Current stage: v0.2.0 development baseline.** This README deliberately separates implemented behavior from target capabilities; the cognitive-runtime vision is not a claim that every target subsystem already exists.
 
-The product runs one **LangGraph-backed `RuntimeHost`** (`langgraph_v1`).
-Stimuli enter through the shared perception path, working memory is isolated by
-transaction, and the **Scene log** records one chronological conversation
-timeline. User-visible text is emitted only through **`reply_to_user`**.
-Schedule heartbeat and execution feedback use the same runtime path.
+## Why “stimulus,” not just “message”
 
-Runtime tuning is split between `runtime.common` and `runtime.langgraph`.
-Execution capabilities receive the neutral `runtime_hooks` context. Conversation
-Flush is reported as `runtime_flush`, and transaction queries use
-`get_transactions()`. The durable flush journal resumes the same immutable
-snapshot after retry or restart, including Dialogue/RAG materialization.
+A user message is only one kind of stimulus. A persistent agent may also need to reconsider its state because of:
 
-### Client side
+- a message, email, calendar event, web change, or other external observation;
+- a successful tool call, execution failure, permission denial, or other action outcome;
+- an approaching deadline, a missing expected response, or a stalled task;
+- new evidence that conflicts with an existing belief.
 
-- **M-Agent-UI**: the simplest information-interaction surface **[available now]**
-- **M-Agent-desktop**: a desktop-form personal assistant
+The core technical direction is **Stimulus-to-Cognition Compilation**:
 
----
+```text
+Signal
+→ Observation
+→ Stimulus
+→ Admission / Attention
+→ Goal / Transaction Attribution
+→ Cognitive State Transition
+→ Context Snapshot c
+→ Action / Silence
+→ Effect Feedback
+```
 
-## Repository Layout
+The goal is not to collect the largest number of connectors. It is to determine whether an agent should wake after the world changes, which persistent transaction should wake, what cognitive context it should receive, and why it should act or remain silent.
 
-Core source code lives under `src/m_agent/`, runnable entry scripts under `scripts/`, automated tests under `tests/`, examples under `examples/`, and experimental integrations under `experiments/`. Configuration lives under `config/`, while runtime artifacts mostly land in `data/` and `log/`.
+## What v0.2.0 implements today
 
-For a fuller directory layout and design conventions, see the **[project structure guide](docs/development/project-structure.md)**.
+The repository currently provides the reliability skeleton of the future cognitive runtime:
 
----
+- one LangGraph-backed `RuntimeHost` (`langgraph_v1`);
+- persistent Transaction, TaskState, Activation, and Scene timelines;
+- a Stimulus Inbox with priority, admission order, attribution, and source validation;
+- a shared runtime path for user messages, due schedules, and execution feedback;
+- Thinking, Delegate, Effect, Feedback, and user-reply loops;
+- SQLite checkpoints, an effect ledger, a flush journal, and restart-recovery foundations;
+- transaction-scoped working memory plus simple RAG exposed as model-invoked tool memory;
+- executable semantic acceptance scenarios for Transaction, Stimulus Pool, Attribution, and recovery behavior.
 
-## Requirements
+Not implemented yet:
 
-- **Python**: `>= 3.10` (see `pyproject.toml`)
-- **Neo4j (optional)**: required when graph storage / entity-relation features are enabled (install separately and ensure connection settings match the project)
-- **LLM / Embedding / Rerank**: configured via `.env` and YAML files under `config/`, supporting OpenAI-compatible providers, Alibaba Cloud (DashScope), etc. (see below)
+- a general Observation Source SDK and public `runtime.ingest(observation)` API;
+- full Attention and `ignored / merged / deferred / activated` dispositions;
+- Goal, Expectation, Evidence, Belief, and replayable `Context Snapshot` contracts;
+- system memory automatically maintained and injected by the Runtime;
+- endogenous stimuli such as an unmet expectation;
+- a production Strategy System;
+- bounded autonomy built from permissions, budgets, approvals, and a kill switch.
 
----
+These capabilities belong to v0.3.0–v0.8.0 and are not presented as existing v0.2.0 behavior.
+
+## Roadmap at a glance
+
+| Version | Theme | Primary objective |
+| --- | --- | --- |
+| v0.2.0 | Runtime baseline | Establish Transaction, Scene, Stimulus, Schedule, Effect/Feedback, and tool-memory foundations |
+| v0.2.1 | Trusted baseline | Fix recovery, context and memory correctness, safe defaults, and open-source delivery |
+| v0.3.0 | Stimulus Kernel | Publish Observation/Stimulus contracts, `runtime.ingest()`, disposition traces, and adapters |
+| v0.4.0 | Attention & Attribution | Filter noise and decide whether to wake and which transaction to wake |
+| v0.5.0 | Cognitive State & Context Compiler | Introduce cognitive state and traceable Context Snapshots; run system memory in Shadow mode |
+| v0.6.0 | System Memory & Temporal Runtime | Put system memory on the main path; make time and expectations computable; shadow Strategy |
+| v0.7.0 | Endogenous Cognition & Strategy | Generate endogenous stimuli and apply constrained, measurable Strategy guidance |
+| v0.8.0 | Bounded Autonomy & Cognitive SDK | Add permissions, budgets, approvals, a kill switch, and the cognitive plug-in SDK |
+| v0.9.0 | Release Candidate | Freeze contracts and validate migrations, security, and long-running behavior |
+| v1.0.0 | Stable Cognitive Runtime | Deliver stable public contracts for a stimulus-native cognitive runtime |
+
+See the [full roadmap](docs/roadmap-v0.2.0-v1.0.0.zh-CN.md) or the [distributable PDF](docs/pdf/M-Agent-Roadmap-v0.2.0-v1.0.0.zh-CN.pdf) for goals, deliverables, and release gates.
+
+## System memory vs. tool memory
+
+M-Agent distinguishes two control models:
+
+- **Tool memory:** the model notices that it needs to remember and explicitly calls RAG, search, or archive tools. The current `SimpleRagEpisodicBackend` belongs here.
+- **System memory:** the Runtime projects, consolidates, and retrieves committed Scene, TaskState, Evidence, and Effect data; the Context Compiler evaluates it before a decision is made.
+
+System memory enters Shadow integration in v0.5.0 and the main cognitive path in v0.6.0. Strategy is procedural knowledge: Shadow in v0.6.0, opt-in in v0.7.0, and eligible to become a default candidate only after ablation and safety gates.
 
 ## Installation
 
-From the project root:
+Python `>=3.10` is required. For the current development repository, install the complete dependency set and then the editable package:
 
 ```powershell
-# Windows PowerShell example
 python -m venv .venv
 .\.venv\Scripts\activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-```
-
-Editable install (recommended for local development):
-
-```bash
 pip install -e .
 ```
 
----
+On Linux or macOS, activate the environment with `source .venv/bin/activate`.
 
-## Environment Variables (`.env`)
+## Minimal configuration
 
-Create a `.env` file in the project root and fill in keys / base URLs as needed. Common entries are listed below (defer to in-repo config comments for the source of truth):
+Create `.env` in the repository root. The current chat model uses an OpenAI-compatible API; either key variable is accepted:
 
 ```dotenv
-# Chat / RAG LLM (e.g. src/m_agent/load_model/OpenAIcall.py)
-# Fill in either API_SECRET_KEY or OPENAI_API_KEY
-API_SECRET_KEY=YOUR_OPENAI_COMPATIBLE_KEY
-OPENAI_API_KEY=
-BASE_URL=https://api.openai.com/v1
-
-# Chat model (config/agents/chat/chat_model.yaml)
-DEEPSEEK_API_KEY=YOUR_DEEPSEEK_KEY
-
-# RAG embedding (config/systems/episodic/rag_default.yaml)
-ALIBABA_API_KEY=YOUR_ALIBABA_KEY
-ALIBABA_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-ALIBABA_EMBED_MODEL=text-embedding-v4
-# Rerank: compatible-API example; for the Singapore region switch to dashscope-intl
-
-# Optional switches (keep aligned with current repo defaults)
-LANGUAGE=zh
-EMBED_PROVIDER=aliyun
-LLM_PROVIDER=deepseek
-
-# Web search (Tavily / You.com — optional, for the web_search tool)
-YDC_API_KEY=YOUR_YOU_COM_KEY
-TAVILY_API_KEY=YOUR_TAVILY_KEY
+API_SECRET_KEY=YOUR_COMPATIBLE_API_KEY
+# OPENAI_API_KEY=YOUR_COMPATIBLE_API_KEY
+BASE_URL=https://your-provider.example/v1
 ```
 
----
+The default simple RAG backend uses local `hash` representations and does not require an embedding-service key. Configure optional credentials only when the corresponding integration is enabled in YAML:
 
-## Usage 1: Chat API as a Long-Running Backend (FastAPI)
+```dotenv
+# Alibaba embedding / rerank (optional)
+ALIBABA_API_KEY=
+ALIBABA_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+ALIBABA_EMBED_MODEL=text-embedding-v4
 
-The repo ships an HTTP / SSE chat service built on **fixed startup-time config + thread-level session state** (i.e. *not* the "send full config with every request" pattern). The service starts one LangGraph runtime host and resumes durable transactions from its shared runtime store and checkpoint database.
+# Web search (optional; set the key for the selected provider)
+YDC_API_KEY=
+TAVILY_API_KEY=
+```
 
-### Start the service
+## Start the Chat API
+
+Windows PowerShell:
 
 ```powershell
 $env:PYTHONPATH = "src"
 python -m m_agent.api.chat_api `
   --host 127.0.0.1 `
   --port 8777 `
-  --config config/agents/chat/chat_controller.yaml `
-  --idle-flush-seconds 1800 `
-  --history-max-rounds 12 `
-  --schedule-beat-seconds 10 `
-  --users-db config/users/users.json `
-  --session-ttl-seconds 43200
+  --config config/agents/chat/chat_controller.yaml
 ```
 
-Runtime tuning lives under `runtime.common` and `runtime.langgraph` in
-`chat_controller.yaml`; `langgraph_v1` is the only supported engine. Unsupported
-runtime settings are rejected at startup. Persistent startup is
-fail-fast: `langgraph-checkpoint-sqlite` and a compatible checkpoint schema
-must be available; in-memory checkpoints require an explicit test-only opt-out.
-The Final runtime also refuses to start while a retired runtime database is
-still present in an online user persistence directory. Complete the separately
-authorized backup, audit, and quarantine batch first; never delete that file as
-an ordinary deployment cleanup step.
-
-Before a release, run the repeatable LangGraph runtime gate:
-
-```powershell
-python scripts/run_runtime_migration_gate.py --rounds 3
-```
-
-### After startup
-
-- Swagger UI: `http://127.0.0.1:8777/docs`
-- OpenAPI JSON: `http://127.0.0.1:8777/openapi.json`
-
-Full API reference, authentication, thread events and schedule details: **[docs/chat_api/README.md](docs/chat_api/README.md)**.
-
-### Bash (Linux / macOS)
+Linux / macOS:
 
 ```bash
 export PYTHONPATH=src
@@ -151,31 +149,23 @@ python -m m_agent.api.chat_api \
   --config config/agents/chat/chat_controller.yaml
 ```
 
+After startup:
 
+- Swagger UI: `http://127.0.0.1:8777/docs`
+- OpenAPI JSON: `http://127.0.0.1:8777/openapi.json`
+- Health check: `http://127.0.0.1:8777/healthz`
 
-## Episodic memory in this repo (simple RAG)
+See the [Chat API reference](docs/chat_api/README.md) for authentication, HTTP, SSE, Thread, Transaction, Scene, Memory, and Schedule contracts. The current `/threads/{thread_id}/stimuli` endpoint remains a user-style input surface; the general Observation admission protocol is a v0.3.0 target.
 
-The **chat stack** uses a **RAG episodic backend** (`SimpleRagEpisodicBackend`) by default, configured via `config/systems/episodic/rag_default.yaml`. It writes to the per-user vector index after each turn and flush, and serves `shallow_recall` / `deep_recall` queries.
+## Current persistence boundaries
 
-- **Pluggable subsystem guides:** [docs/systems-plugin/](docs/systems-plugin/) (one Chinese and one English guide for each of WM, episodic memory, and tools)
-- **RAG index:** `data/memory/chat-api/<user>/episodic/` (`chunks.jsonl`, `embeddings.npy`)
-- **Dialogue archive** (flush): `data/memory/chat-api/<user>/dialogues/`
-- **Scene log**: `data/memory/chat-api/<user>/scene/<thread_id>.jsonl` — a chronological, cross-transaction record of what was said and done
-- **How this differs from WM:** WM is isolated by **transaction** and provides hot in-process context; episodic memory and Scene logs can be retrieved across turns or read chronologically
+- Transaction WM: hot context for one active transaction;
+- Scene: `data/memory/chat-api/<user>/scene/<thread_id>.jsonl`;
+- Dialogue: archives materialized by Flush;
+- Episodic index: `data/memory/chat-api/<user>/episodic/`;
+- Runtime/checkpoint/journal: recovery foundations for transactions, stimuli, effects, and flushes.
 
-For persistence details, see **[docs/systems-plugin/episodic.md](docs/systems-plugin/episodic.md)**. `GET .../memory/state` returns `thread_state.episodic_persistence`.
-
-## WorkspaceMem (full memory stack + benchmarks)
-
-The evidence-driven **MemoryAgent / MemoryCore** implementation and **LoCoMo / LongMemEval / REALTALK** evaluation pipelines have moved to a standalone repository:
-
-**[F:/AI/WorkspaceMem](F:/AI/WorkspaceMem)** (`workspace_mem` Python package)
-
-- **[docs/development/project-structure.md](docs/development/project-structure.md)** — M-Agent layout
-- **[src/m_agent/systems/README.md](src/m_agent/systems/README.md)** — plug-in contracts
-
----
-
+See the [pluggable-subsystem guide](docs/systems-plugin/README.md) and [current Runtime documentation](docs/runtime/README.md) for implementation details.
 
 ## Tests
 
@@ -183,27 +173,34 @@ The evidence-driven **MemoryAgent / MemoryCore** implementation and **LoCoMo / L
 pytest
 ```
 
-For markers and policy, see `[tool.pytest.ini_options]` in `pyproject.toml`.
+Runtime semantic acceptance:
 
----
+```powershell
+python -m m_agent.acceptance contract run --runtime langgraph_v1 --all-layers
+python scripts/run_runtime_migration_gate.py --rounds 3
+```
 
-## Documentation Index
+See the [Runtime semantic acceptance platform](docs/runtime/semantic-acceptance-platform.zh-CN.md).
 
-| Document | Content |
+## Documentation
+
+| Document | Scope |
 | --- | --- |
-| [docs/README.md](docs/README.md) | Documentation index and reading order |
-| [docs/development/project-structure.md](docs/development/project-structure.md) | Directory conventions and common commands |
-| [docs/chat_api/README.md](docs/chat_api/README.md) | Full Chat API reference |
-| [docs/runtime/README.md](docs/runtime/README.md) | Current LangGraph runtime and acceptance guide |
-| [docs/architecture/README.md](docs/architecture/README.md) | Target architecture and migration documents |
-| [tools/M-Agent-UI/API.md](tools/M-Agent-UI/API.md) | Frontend integration API |
+| [Vision and goals](docs/vision-and-goals.zh-CN.md) | Positioning, user value, memory boundaries, and success criteria |
+| [Version roadmap](docs/roadmap-v0.2.0-v1.0.0.zh-CN.md) | Goals, deliverables, and gates from v0.2.0 to v1.0.0 |
+| [Roadmap PDF](docs/pdf/M-Agent-Roadmap-v0.2.0-v1.0.0.zh-CN.pdf) | Distributable version of the roadmap |
+| [Cognitive Runtime target architecture](docs/architecture/cognitive-runtime-architecture.zh-CN.md) | Target path from Signal to Effect Feedback |
+| [Current Runtime](docs/runtime/README.md) | Current v0.2.0 implementation facts |
+| [Chat API](docs/chat_api/README.md) | HTTP and SSE reference |
+| [Subsystem plug-ins](docs/systems-plugin/README.md) | Current WM, Episodic, and Tools extension contracts |
+| [Documentation index](docs/README.md) | Active docs, target designs, and historical archives |
 
----
+## Repository layout
+
+Source code lives in `src/m_agent/`, configuration in `config/`, tests in `tests/`, scripts in `scripts/`, and reference clients in `tools/`. See the [project structure guide](docs/development/project-structure.md).
 
 ## License
 
-This project is released under the **MIT License**. See the root [LICENSE](LICENSE) file for details.
+M-Agent is released under the [MIT License](LICENSE).
 
----
-
-**中文 README:** [README-zh.md](README-zh.md)
+**中文：** [README-zh.md](README-zh.md)

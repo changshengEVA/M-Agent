@@ -346,7 +346,7 @@ def create_app(
             if user_access is not None:
                 user_access.shutdown()
 
-    app = FastAPI(title="M-Agent Chat API", version="2.0", lifespan=lifespan)
+    app = FastAPI(title="M-Agent Chat API", version="0.2.0", lifespan=lifespan)
     app.state.service_runtime = service_runtime
     app.state.user_access = user_access
     app.state.schedule_heartbeat = schedule_heartbeat

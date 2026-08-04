@@ -25,6 +25,7 @@ from langgraph.graph import END, START, StateGraph
 
 from m_agent.layers.thinking.contracts import (
     TASK_COMPLETION_AWAITING_USER,
+    TaskState,
     ThinkingDecision,
     is_execute_mode,
     is_reply_mode,
@@ -482,9 +483,29 @@ def build_turn_graph(ports: TurnGraphPorts) -> StateGraph:
             return _deleted_state(state, phase="thought commit")
         decision = decision_from_dict(state.get("decision"))
         rounds = int(state.get("think_rounds", 0) or 0) or record.think_rounds + 1
-        # The thinking layer's task-state pass mutates the live record; copy it
-        # into the store-loaded record so the CAS write carries it.
-        task_state = deepcopy(record.task_state)
+        # Commit the checkpointed candidate rather than re-reading the live
+        # registry object. This keeps task state and Decision aligned across a
+        # crash/resume boundary between ``think`` and ``commit_thought``.
+        task_snapshot = dict(state.get("task_state_snapshot") or {})
+        if task_snapshot:
+            task_state = TaskState(
+                goal=str(task_snapshot.get("goal", "") or "").strip(),
+                completion_status=normalize_task_completion_status(
+                    task_snapshot.get("completion_status")
+                ),
+                completed=[
+                    str(item or "").strip()
+                    for item in list(task_snapshot.get("completed") or [])
+                    if str(item or "").strip()
+                ],
+                remaining=[
+                    str(item or "").strip()
+                    for item in list(task_snapshot.get("remaining") or [])
+                    if str(item or "").strip()
+                ],
+            )
+        else:
+            task_state = deepcopy(record.task_state)
         transition_id = (
             f"lg-turn:{tx_id}:{state.get('current_stimulus_ref', '')}:thought"
         )

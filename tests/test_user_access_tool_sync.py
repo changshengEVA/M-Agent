@@ -31,7 +31,10 @@ def _build_base_configs(tmp_path: Path) -> Path:
             "schedule_agent_config_path": "../schedule/schedule_agent.yaml",
             "runtime": {
                 "common": {"scene_context_max_entries": 40},
-                "langgraph": {"turn_loop": True},
+                "langgraph": {
+                    "turn_loop": True,
+                    "thinking_mode": "single_call",
+                },
             },
             "enabled_tools": [
                 "shallow_recall",
@@ -230,6 +233,7 @@ def test_verify_credentials_syncs_single_runtime_settings(
         "preempt_enabled": False
     }
     assert migrated["runtime"]["langgraph"]["turn_loop"] is False
+    assert migrated["runtime"]["langgraph"]["thinking_mode"] == "single_call"
 
 
 def test_get_user_config_schema_exposes_field_metadata(tmp_path: Path) -> None:

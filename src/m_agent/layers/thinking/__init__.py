@@ -9,6 +9,7 @@ from __future__ import annotations
 from m_agent.layers.perception.contracts import PerceptionInput
 
 from .contracts import (
+    DecisionOutput,
     TASK_COMPLETION_AWAITING_USER,
     TASK_COMPLETION_COMPLETED,
     TASK_COMPLETION_PROCESSING,
@@ -16,8 +17,10 @@ from .contracts import (
     TaskProgressUpdate,
     TaskCompletionStatus,
     TaskState,
+    TaskStateOutput,
     TaskStateUpdate,
     ThinkingDecision,
+    ThinkingTurnOutput,
     TransactionResolution,
     normalize_task_completion_status,
 )
@@ -30,6 +33,7 @@ from .state import (
 __all__ = [
     "ConversationState",
     "ConversationStateRegistry",
+    "DecisionOutput",
     "PerceptionInput",
     "TASK_COMPLETION_AWAITING_USER",
     "TASK_COMPLETION_COMPLETED",
@@ -38,9 +42,11 @@ __all__ = [
     "TaskProgress",
     "TaskProgressUpdate",
     "TaskState",
+    "TaskStateOutput",
     "TaskStateUpdate",
     "ThinkingAgent",
     "ThinkingDecision",
+    "ThinkingTurnOutput",
     "TransactionResolution",
     "normalize_task_completion_status",
 ]

@@ -11,15 +11,15 @@ from tempfile import TemporaryDirectory
 import markdown
 
 
-def resolve_edge_path() -> Path:
+def resolve_browser_paths() -> list[Path]:
     candidates = [
         Path(r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe"),
         Path(r"C:\Program Files\Microsoft\Edge\Application\msedge.exe"),
         Path(r"C:\Program Files\Google\Chrome\Application\chrome.exe"),
     ]
-    for path in candidates:
-        if path.exists():
-            return path
+    browsers = [path for path in candidates if path.exists()]
+    if browsers:
+        return browsers
     raise FileNotFoundError("No Edge/Chrome executable found in standard install paths.")
 
 
@@ -143,6 +143,17 @@ def validate_pdf(
         raise RuntimeError(f"generated PDF contains forbidden text: {forbidden}")
 
 
+def set_pdf_metadata(pdf_path: Path, *, title: str) -> None:
+    """Normalize metadata after Chromium printing, which can mis-encode CJK titles."""
+    import fitz
+
+    with fitz.open(pdf_path) as document:
+        metadata = dict(document.metadata or {})
+        metadata["title"] = title
+        document.set_metadata(metadata)
+        document.saveIncr()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Convert Markdown to PDF via Edge/Chrome headless print.")
     parser.add_argument("markdown_file", type=str, help="Path to source markdown file.")
@@ -180,7 +191,7 @@ def main() -> int:
         source_label=md_path.name,
     )
 
-    with TemporaryDirectory(prefix="m-agent-pdf-") as temp_dir:
+    with TemporaryDirectory(prefix="m-agent-pdf-", ignore_cleanup_errors=True) as temp_dir:
         temp_root = Path(temp_dir)
         html_path = (
             Path(args.html_out).resolve()
@@ -189,22 +200,38 @@ def main() -> int:
         )
         html_path.parent.mkdir(parents=True, exist_ok=True)
         html_path.write_text(html, encoding="utf-8")
-        browser = resolve_edge_path()
-        cmd = [
-            str(browser),
-            "--headless=new",
-            "--disable-gpu",
-            "--disable-extensions",
-            "--allow-file-access-from-files",
-            "--no-pdf-header-footer",
-            f"--user-data-dir={temp_root / 'browser-profile'}",
-            f"--print-to-pdf={pdf_path}",
-            html_path.as_uri(),
-        ]
-        subprocess.run(cmd, check=True)
+        failures: list[str] = []
+        for index, browser in enumerate(resolve_browser_paths()):
+            if pdf_path.exists():
+                pdf_path.unlink()
+            cmd = [
+                str(browser),
+                "--headless=new",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--allow-file-access-from-files",
+                "--no-pdf-header-footer",
+                f"--user-data-dir={temp_root / f'browser-profile-{index}'}",
+                f"--print-to-pdf={pdf_path}",
+                html_path.as_uri(),
+            ]
+            result = subprocess.run(
+                cmd,
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+            )
+            if result.returncode == 0 and pdf_path.exists() and pdf_path.stat().st_size > 0:
+                break
+            failures.append(f"{browser.name}: exit {result.returncode}")
+        else:
+            raise RuntimeError("All PDF browsers failed: " + "; ".join(failures))
         if args.html_out:
             print(f"HTML: {html_path}")
 
+    set_pdf_metadata(pdf_path, title=title)
     validate_pdf(
         pdf_path,
         required_text=list(args.require_text),

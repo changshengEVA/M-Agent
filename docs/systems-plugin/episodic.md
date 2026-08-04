@@ -4,13 +4,42 @@
 
 ## Role
 
-The episodic subsystem persists dialogue across turns and answers “what was
-said before” through recall capabilities. The default implementation is the
-local `SimpleRagEpisodicBackend`.
+The `episodic` name currently identifies a compatibility and extension slot.
+In v0.2, it persists dialogue across turns and answers “what was said before”
+through recall capabilities. The default implementation is the local
+`SimpleRagEpisodicBackend`.
+
+This is **tool memory**: the model must explicitly invoke a recall capability.
+It is not the planned **System Memory**, which will be owned by the Runtime and
+evaluated automatically while the Context Compiler builds a cognitive context.
+The roadmap introduces the System Memory SPI in v0.5 in shadow mode and moves
+eligible memory into the main context path in v0.6.
+
+Strategy is a separate planned subsystem, not a current episodic feature or a
+production capability. Its roadmap status is v0.6 shadow-only matching, v0.7
+opt-in guidance, and v0.8 default-candidate consideration only after published
+evaluation gates pass.
 
 The runtime owns Scene capture, flush ordering, and Dialogue archives. The
 episodic backend consumes the resulting round lists, builds a searchable
 index, and serves recall. It does not parse Scene storage or schedule flushes.
+
+## Current v0.2 limitations
+
+- The default backend implements `shallow_recall` and `deep_recall` by calling
+  the same `_recall` method. The two capability names therefore have identical
+  retrieval behavior today; they are not yet two semantic recall depths.
+- `episode_note` is an optional, process-local annotation buffer. On the current
+  transaction-bound runtime path, notes are kept in a conversation scratch
+  while `ThinkingAgent.on_flush()` drains registry-owned conversation state.
+  The path is not uniformly drained, so callers must not rely on
+  `episode_note` as durable memory.
+- When notes do reach the default backend, `on_flush()` only merges them into
+  metadata on the last indexed chunk. It does not create a typed, immutable
+  Episode or a Runtime-managed cognitive memory item.
+- The dialogue RAG index does not maintain Goals, Beliefs, Expectations,
+  provenance-aware state transitions, or automatic Context injection. Those
+  belong to the future System Memory and Cognitive State roadmap.
 
 ## Single-host persistence boundary
 
@@ -40,7 +69,7 @@ in Scene chronological order, using `speaker`, `text`, `turn_id`, and
 |-------|------|--------------|
 | `RuntimeHost` / `RuntimeFlushOrchestrator` | Scene events, immutable flush snapshot, runtime commit, materialization journal, completion | RAG chunks, embeddings, recall ranking |
 | Chat memory persistence | Dialogue validation, archive write, `turns_to_rounds` conversion | Runtime transaction state, recall ranking |
-| `EpisodicMemoryBackend` | `persist_round`, `persist_dialogue`, shallow/deep recall, episode-note merge on flush | Scene parsing, timestamp repair, flush scheduling |
+| `EpisodicMemoryBackend` | `persist_round`, `persist_dialogue`, the shallow/deep recall API (identical in the default backend today), and optional episode-note merge when notes are delivered | Scene parsing, timestamp repair, flush scheduling |
 
 Scene is the authoritative source for a normal Dialogue materialization. A
 Dialogue archive is the system artifact; the episodic index is the subsystem
@@ -66,7 +95,8 @@ systems:
 | `query.capability_names` | List | `shallow_recall`, `deep_recall` | Recall capability names |
 
 The product configuration uses `DefaultEpisodeRecorder` to buffer
-thinking-layer `episode_note` values until flush.
+thinking-layer `episode_note` values in memory. This is a best-effort
+annotation path, not a durability boundary; see the limitations above.
 
 ### Default backend arguments
 
@@ -100,7 +130,7 @@ does not depend on Scene paths.
 |---------|-------|-------|
 | `shallow_recall`, `deep_recall` | Execution capabilities | Call the backend through `ControllerCapabilityContext` |
 | Capability descriptions | Thinking prompt | `config/systems/tools/capabilities/<tool>.yaml` |
-| `episode_note` | Thinking output | Buffered internally and supplied to `on_flush` |
+| `episode_note` | Thinking output | Best-effort in-memory buffer; the current transaction-bound path is not uniformly drained into `on_flush` |
 | Recall policy | Runtime prompt | `config/agents/chat/runtime/chat_controller_runtime.yaml` |
 
 Scene files, archive paths, chunks, embeddings, and `persist_*` are not exposed
@@ -119,7 +149,7 @@ The root is `M_AGENT_MEMORY_ROOT`, `M_AGENT_DATA_DIR/memory`, or the project
 `chat_user_episodic_rag_paths()`; custom backends may expose details through
 `describe_persistence()`.
 
-## Flush lifecycle
+## Dialogue flush lifecycle
 
 1. `RuntimeHost.prepare_flush_segment()` persists an immutable snapshot.
 2. `RuntimeHost.stage_flush_materialization()` persists the Dialogue payload.
@@ -128,8 +158,12 @@ The root is `M_AGENT_MEMORY_ROOT`, `M_AGENT_DATA_DIR/memory`, or the project
    `backend.persist_dialogue()`.
 5. The host records the delivered materialization and completes the segment.
 
-The journal keeps identifiers and payload digests stable so a process restart
-can resume an incomplete flush without duplicating the archive or index write.
+The journal is designed to keep identifiers and payload digests stable so a
+process restart can resume an incomplete Dialogue materialization without
+duplicating an acknowledged archive or index write. This contract does not
+make `episode_note` uniformly durable: transaction-bound notes may not reach
+the registry-based drain, and delivered notes are only attached to the last
+default RAG chunk.
 
 ## Delivery and verification
 

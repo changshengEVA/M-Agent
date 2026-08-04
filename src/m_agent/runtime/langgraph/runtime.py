@@ -103,6 +103,9 @@ class LangGraphRuntime:
             if isinstance(raw_runtime.get("langgraph"), dict)
             else {}
         )
+        thinking_agent = getattr(agent, "thinking_agent", None)
+        if thinking_agent is not None and hasattr(thinking_agent, "thinking_mode"):
+            thinking_agent.thinking_mode = self.engine_config.thinking_mode
         self._external_on_reply = on_reply
         self._reply_lock = threading.Lock()
         self._last_replies: Dict[str, List[str]] = {}
@@ -567,6 +570,7 @@ class LangGraphRuntime:
                 "answer": answer,
                 "runtime_engine_id": self.runtime_engine_id,
                 "turn_loop": self.turn_loop_enabled,
+                "thinking_mode": self.engine_config.thinking_mode,
             }
 
     def advance_transaction(
@@ -963,6 +967,7 @@ class LangGraphRuntime:
             "active_drainer_threads": self.drainer.active_drainer_count(),
             "preempt_enabled": self.config.scheduler.preempt_enabled,
             "turn_loop": self.turn_loop_enabled,
+            "thinking_mode": self.engine_config.thinking_mode,
             "delegate_executor": self.engine_config.delegate_executor,
             "checkpoint": self.graph_engine.checkpoint_metadata,
             "turn_checkpoint": (

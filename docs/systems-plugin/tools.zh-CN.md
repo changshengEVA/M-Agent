@@ -28,13 +28,29 @@ systems:
 # config/systems/tools/default.yaml
 system: tools
 capabilities_dir: ./capabilities
-enabled: [reply_to_user, get_current_time, web_search]
+enabled:
+  - shallow_recall
+  - deep_recall
+  - reply_to_user
+  - get_current_time
+  - web_search
+  - schedule_create
+  - schedule_query
+  - schedule_delete
+  - email_ask
+  - email_read
+  - email_send
 defaults:
   __controller__:
     max_calls_per_turn: 12
 ```
 
 省略 `enabled` 时，启用 `capabilities_dir` 内全部有效清单。
+
+> **当前安全边界：**仓库默认工具集包含创建/删除日程和发送邮件等外部副作用能力。
+> v0.2 中的 `policy.side_effect` 只是供审查的描述性元数据，不是确定性的授权或审批
+> Gate。接入不可信输入或真实外部账户前，必须检查并收紧 `enabled`。Runtime 强制审批
+> 策略属于后续路线图能力。
 
 ## Capability 清单
 
@@ -80,7 +96,7 @@ defaults:
 | `input.schema` | Schema 引用；`inferred_from_tool` 读取 LangChain args schema |
 | `output.*` | 结果 schema 与经过校验的 feedback/WM projector 路径 |
 | `policy.max_calls_per_turn` | 单 capability 调用上限 |
-| `policy.side_effect` | `read`、`write`、`send`、`emit` 等审查元数据 |
+| `policy.side_effect` | `read`、`write`、`send`、`emit` 等描述性审查元数据；v0.2 不依据该字段执行授权 |
 | `dependencies` | 由 capability context 提供的所需服务 |
 | `defaults` | 单 capability runtime 默认参数 |
 

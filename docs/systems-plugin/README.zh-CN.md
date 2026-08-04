@@ -2,8 +2,8 @@
 
 > English: [README.md](./README.md)
 
-本文是三个可插拔子系统的总索引：工作记忆（WM）、情景记忆和工具。内容包括
-通用规则、生产运行时边界、配置、交付与验证。
+本文是三个可插拔子系统的总索引：工作记忆（WM）、当前的 episodic 工具记忆槽位和
+工具。内容包括通用规则、生产运行时边界、配置、交付与验证。
 
 - 源码：`src/m_agent/systems/`
 - 配置：`config/systems/`
@@ -11,6 +11,22 @@
 
 完整的 MemoryAgent / MemoryCore / LoCoMo 评测由独立的 WorkspaceMem 仓库维护，
 不在本文范围内。
+
+## 当前能力与路线图边界
+
+子系统名称描述的是扩展槽位，不能据此认为完整的认知运行时路线图已经实现。
+
+| 领域 | 当前状态 | 计划接入阶段 |
+|------|----------|--------------|
+| Episodic 子系统 | `SimpleRagEpisodicBackend` 属于**工具记忆**：模型显式调用 recall capability，检索已物化的对话。它不是由 Runtime 管理的系统记忆。 | v0.5 接入 System Memory SPI 并进行 Shadow 评估；v0.6 在满足放行条件后，由 Context Compiler 自动选择并进入认知主链。 |
+| Strategy | 当前子系统 bundle 没有挂载生产可用的 `StrategySystem`。现有设计文档属于路线图材料，不代表当前能力。 | v0.6 仅 Shadow 匹配；v0.7 可选注入；v0.8 只有在公开评测达标后才成为默认候选。 |
+
+v0.2 的重要限制见 Episodic 专题，包括默认 `shallow_recall` 与 `deep_recall`
+实现相同，以及当前 `episode_note` / flush 链路只具备 best-effort 语义。
+
+> **安全提示：**当前默认 tools bundle 包含具有外部副作用的 capability。YAML 中暴露
+> capability 只表示它可被使用，不等于已经获得用户授权或审批。部署前必须检查并收紧
+> 启用项。确定性的受控自主策略属于后续路线图，不是当前 Runtime 的保证。
 
 ---
 

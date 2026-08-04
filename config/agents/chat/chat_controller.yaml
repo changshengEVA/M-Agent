@@ -33,6 +33,8 @@ runtime:
       default_heartbeat_priority: 40
   langgraph:
     turn_loop: true
+    # One joint task-state + decision call; legacy_two_call is rollback-only.
+    thinking_mode: single_call
     # Use execution_agent when routing Chat API traffic to LangGraph.
     delegate_executor: execution_agent
 

@@ -1,13 +1,15 @@
-"""Plan-only flow tests for :class:`ThinkingAgent`.
+"""Single-call and rollback coverage for :class:`ThinkingAgent`.
 
-The fake model returns deterministic task-state updates and decisions.  These
-tests deliberately give the thinking layer a capability catalog that raises
-if invocation is attempted: runtime orchestration delegates execution outside
-``ThinkingAgent.handle``.
+The production path must obtain task state and the current action from one
+``ThinkingTurnOutput`` invocation.  The fake model below deliberately owns one
+global response queue so a test cannot accidentally hide a second model call
+behind a schema-specific queue.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, List
+
+import pytest
 
 from m_agent.layers.execution.model_provider import ModelProvider
 from m_agent.layers.perception.contracts import (
@@ -19,10 +21,13 @@ from m_agent.layers.perception.contracts import (
 )
 from m_agent.layers.thinking import (
     ConversationStateRegistry,
+    DecisionOutput,
     PerceptionInput,
     TaskProgressUpdate,
+    TaskStateOutput,
     ThinkingAgent,
     ThinkingDecision,
+    ThinkingTurnOutput,
     TransactionResolution,
 )
 from m_agent.runtime.domain.contracts import TransactionRecord, TransactionState
@@ -30,37 +35,47 @@ from m_agent.systems.episodic import DefaultEpisodeRecorder
 
 
 class _FakeStructuredModel:
-    def __init__(self, responses: List[Any]) -> None:
-        self._queue = list(responses)
-        self.calls: List[List[Dict[str, str]]] = []
+    def __init__(self, owner: "_FakeChatModel", schema: type) -> None:
+        self._owner = owner
+        self._schema = schema
 
     def invoke(self, messages: List[Dict[str, str]]) -> Any:
-        self.calls.append(list(messages))
-        if not self._queue:
-            raise AssertionError("FakeStructuredModel ran out of canned responses")
-        return self._queue.pop(0)
+        self._owner.calls.append((self._schema, list(messages)))
+        if not self._owner.responses:
+            raise AssertionError("FakeChatModel ran out of canned responses")
+        return self._owner.responses.pop(0)
 
 
 class _FakeChatModel:
-    def __init__(self, schema_to_queue: Dict[type, List[Any]]) -> None:
-        self._schema_to_queue = schema_to_queue
-        self._created: Dict[type, _FakeStructuredModel] = {}
+    """Record schema bindings while consuming exactly one shared queue."""
 
-    def with_structured_output(self, schema: type, **_: Any) -> _FakeStructuredModel:
-        if schema not in self._created:
-            self._created[schema] = _FakeStructuredModel(
-                self._schema_to_queue.get(schema, [])
-            )
-        return self._created[schema]
+    def __init__(self, responses: List[Any]) -> None:
+        self.responses = list(responses)
+        self.calls: List[tuple[type, List[Dict[str, str]]]] = []
+        self.bindings: List[tuple[type, Dict[str, Any]]] = []
+        self.call_names: List[str] = []
+
+    def with_structured_output(
+        self,
+        schema: type,
+        **kwargs: Any,
+    ) -> _FakeStructuredModel:
+        self.bindings.append((schema, dict(kwargs)))
+        return _FakeStructuredModel(self, schema)
 
     def structured_calls(self, schema: type) -> List[List[Dict[str, str]]]:
-        bound = self._created.get(schema)
-        return [] if bound is None else list(bound.calls)
+        return [messages for bound, messages in self.calls if bound is schema]
+
+    @property
+    def called_schemas(self) -> List[type]:
+        return [schema for schema, _messages in self.calls]
 
 
 class _CapabilityCatalog:
+    enabled_capability_names = ["deep_recall", "email_ask"]
+
     def describe_capabilities_block(self) -> str:
-        return "[Available Tools]\n- deep_recall"
+        return "[Available Tools]\n- deep_recall\n- email_ask"
 
     def fill_tool_args(self, **_: Any) -> None:
         raise AssertionError("ThinkingAgent must not fill tool arguments")
@@ -90,247 +105,430 @@ def _make_perception(**overrides: Any) -> PerceptionInput:
     return PerceptionInput(**defaults)
 
 
-def _make_agent(
+def _turn(
     *,
-    decisions: List[ThinkingDecision],
-    task_updates: List[TaskProgressUpdate] | None = None,
-    transaction_resolutions: List[TransactionResolution] | None = None,
+    mode: str = "silent",
+    reason: str = "The current state supports this action.",
+    goal: str = "handle the request",
+    completion_status: str = "processing",
+    completed: List[str] | None = None,
+    remaining: List[str] | None = None,
+    tool_name: str | None = None,
+    instruction: str | None = None,
+    answer: str | None = None,
+    episode_note: str | None = None,
+) -> ThinkingTurnOutput:
+    if mode == "execute":
+        tool_name = tool_name or "deep_recall"
+        instruction = instruction or "Find the relevant detail"
+    elif mode == "answer_directly":
+        answer = answer or "OK"
+    return ThinkingTurnOutput(
+        reason=reason,
+        task_state=TaskStateOutput(
+            goal=goal,
+            completion_status=completion_status,  # type: ignore[arg-type]
+            completed=list(completed or []),
+            remaining=list(
+                ["finish the request"] if remaining is None else remaining
+            ),
+        ),
+        decision=DecisionOutput(
+            mode=mode,  # type: ignore[arg-type]
+            tool_name=tool_name,
+            instruction=instruction,
+            answer=answer,
+            episode_note=episode_note,
+        ),
+    )
+
+
+def _make_agent(
+    responses: List[Any],
+    *,
+    thinking_mode: str = "single_call",
     prompt_language: str = "en",
 ) -> tuple[ThinkingAgent, _FakeChatModel]:
-    updates = (
-        list(task_updates)
-        if task_updates is not None
-        else [TaskProgressUpdate() for _ in decisions]
-    )
-    fake_model = _FakeChatModel(
-        {
-            TaskProgressUpdate: updates,
-            ThinkingDecision: decisions,
-            TransactionResolution: list(transaction_resolutions or []),
-        }
-    )
+    fake_model = _FakeChatModel(responses)
+    provider = ModelProvider(model=fake_model, network_retry_attempts=1)
+    invoke_with_retry = provider.invoke_with_network_retry
+
+    def _record_call_name(fn: Any, *, call_name: str) -> Any:
+        fake_model.call_names.append(call_name)
+        return invoke_with_retry(fn, call_name=call_name)
+
+    provider.invoke_with_network_retry = _record_call_name  # type: ignore[method-assign]
     agent = ThinkingAgent(
         execution_agent=_CapabilityCatalog(),  # type: ignore[arg-type]
-        model_provider=ModelProvider(model=fake_model, network_retry_attempts=1),
+        model_provider=provider,
         system_prompt="You are a memory assistant.",
         persona_prompt="",
         episode_recorder=DefaultEpisodeRecorder(),
         state_registry=ConversationStateRegistry(),
         prompt_language=prompt_language,
+        thinking_mode=thinking_mode,
     )
     return agent, fake_model
 
 
-def test_answer_directly_returns_answer_and_buffers_episode_note() -> None:
-    agent, fake_model = _make_agent(
-        decisions=[
-            ThinkingDecision(
-                mode="answer_directly",
-                answer="Hello!",
-                episode_note="user greeted the assistant",
-                request_complete=True,
-            )
-        ]
-    )
-
-    turn = agent.handle(_make_perception())
-
-    assert turn.answer == "Hello!"
-    assert turn.mode == "answer_directly"
-    assert turn.request_complete is False
-    assert len(fake_model.structured_calls(TaskProgressUpdate)) == 1
-    assert len(fake_model.structured_calls(ThinkingDecision)) == 1
-    state = agent.snapshot_conversation("t1::0")
-    assert state is not None
-    assert state.turn_count == 1
-    assert any(
-        entry["note"] == "user greeted the assistant"
-        for entry in state.episode_buffer
-    )
-
-
-def test_execute_decision_is_returned_without_inline_tool_work() -> None:
-    decision = ThinkingDecision(
-        mode="execute",
-        tool_name="deep_recall",
-        instruction="Find the relevant travel detail",
-        request_complete=False,
-    )
-    agent, _ = _make_agent(decisions=[decision])
-
-    turn = agent.handle(_make_perception(user_message="What did I plan?"))
-
-    assert turn is decision
-    assert turn.answer is None
-    assert turn.tool_name == "deep_recall"
-    assert turn.instruction == "Find the relevant travel detail"
-
-
-def test_silent_decision_has_no_fallback_answer() -> None:
-    agent, _ = _make_agent(
-        decisions=[ThinkingDecision(mode="silent", reasoning="No reply needed")]
-    )
-
-    turn = agent.handle(_make_perception())
-
-    assert turn.answer is None
-
-
-def test_task_progress_update_is_rendered_in_next_plan_prompt() -> None:
-    agent, fake_model = _make_agent(
-        decisions=[
-            ThinkingDecision(
+@pytest.mark.parametrize(
+    ("output", "expected"),
+    [
+        (
+            _turn(
                 mode="execute",
                 tool_name="deep_recall",
                 instruction="Find the travel detail",
             ),
-            ThinkingDecision(mode="answer_directly", answer="Done"),
-        ],
-        task_updates=[
-            TaskProgressUpdate(
-                goal="answer the travel question",
-                completion_status="processing",
-                completed=["identify the trip"],
-                remaining=["find the departure time"],
+            ("execute", "deep_recall", "Find the travel detail", None),
+        ),
+        (
+            _turn(mode="answer_directly", answer="Hello!"),
+            ("answer_directly", None, None, "Hello!"),
+        ),
+        (
+            _turn(mode="silent"),
+            ("silent", None, None, None),
+        ),
+    ],
+    ids=["execute", "answer-directly", "silent"],
+)
+def test_single_call_projects_all_three_decision_modes(
+    output: ThinkingTurnOutput,
+    expected: tuple[str, str | None, str | None, str | None],
+) -> None:
+    agent, fake_model = _make_agent([output])
+
+    decision = agent.handle(_make_perception())
+
+    assert (
+        decision.mode,
+        decision.tool_name,
+        decision.instruction,
+        decision.answer,
+    ) == expected
+    assert decision.request_complete is False
+    assert fake_model.called_schemas == [ThinkingTurnOutput]
+    assert len(fake_model.structured_calls(ThinkingTurnOutput)) == 1
+    assert fake_model.call_names == ["thinking.turn"]
+    assert fake_model.responses == []
+
+
+def test_single_call_accepts_a_raw_dict_and_validates_it_as_joint_output() -> None:
+    raw = _turn(mode="answer_directly", answer="Validated").model_dump()
+    agent, fake_model = _make_agent([raw])
+
+    decision = agent.handle(_make_perception())
+
+    assert decision.answer == "Validated"
+    assert fake_model.called_schemas == [ThinkingTurnOutput]
+
+
+def test_full_task_state_preserves_goal_and_completed_history_across_turns() -> None:
+    agent, fake_model = _make_agent(
+        [
+            _turn(
+                mode="execute",
+                goal="plan the trip",
+                completed=["choose a city"],
+                remaining=["book train", "book hotel"],
+                instruction="Book the train first",
             ),
-            TaskProgressUpdate(),
-        ],
+            _turn(
+                mode="execute",
+                goal="",
+                completed=["book train", "book train"],
+                remaining=["book train", "book hotel", "book hotel"],
+                instruction="Book the hotel next",
+            ),
+        ]
     )
 
-    first = agent.handle(_make_perception(user_message="Check my travel plan"))
+    first = agent.handle(_make_perception(user_message="Plan my trip"))
     second = agent.handle(_make_perception(user_message="Continue"))
 
-    assert first.answer is None
-    assert second.answer == "Done"
+    assert first.instruction == "Book the train first"
+    assert second.instruction == "Book the hotel next"
     state = agent.snapshot_conversation("t1::0")
     assert state is not None
-    assert state.task_progress.goal == "answer the travel question"
-    assert state.task_progress.completion_status == "processing"
-    assert state.task_progress.completed == ["identify the trip"]
-    assert state.task_progress.remaining == ["find the departure time"]
+    assert state.task_progress.goal == "plan the trip"
+    assert state.task_progress.completed == ["choose a city", "book train"]
+    assert state.task_progress.remaining == ["book hotel"]
+    assert fake_model.called_schemas == [ThinkingTurnOutput, ThinkingTurnOutput]
 
-    second_plan_prompt = fake_model.structured_calls(ThinkingDecision)[1][0]["content"]
-    assert "[Task State]" in second_plan_prompt
-    assert "goal: answer the travel question" in second_plan_prompt
-    assert "completion_status: processing" in second_plan_prompt
-    assert "identify the trip" in second_plan_prompt
-    assert "find the departure time" in second_plan_prompt
+    second_prompt = fake_model.structured_calls(ThinkingTurnOutput)[1][0]["content"]
+    assert "[Previous Task State]" in second_prompt
+    assert "goal: plan the trip" in second_prompt
+    assert "choose a city" in second_prompt
+    assert "book train" in second_prompt
+    assert "book hotel" in second_prompt
 
 
-def test_completed_task_state_short_circuits_plan_to_silent_completion() -> None:
+def test_new_user_stimulus_reopens_completed_state_before_joint_prompt() -> None:
     agent, fake_model = _make_agent(
-        decisions=[],
-        task_updates=[
-            TaskProgressUpdate(
-                goal="answer the network question",
-                completion_status="completed",
-                completed=["deliver the final answer"],
-                remaining=[],
+        [_turn(mode="answer_directly", answer="One more answer")]
+    )
+    state = agent.state_registry.get_or_create("t1::0", thread_id="t1")
+    state.task_progress.goal = "the original request"
+    state.task_progress.completion_status = "completed"
+
+    decision = agent.handle(_make_perception(user_message="One more thing"))
+
+    assert decision.answer == "One more answer"
+    assert state.task_progress.completion_status == "processing"
+    prompt = fake_model.structured_calls(ThinkingTurnOutput)[0][0]["content"]
+    assert "completion_status: processing" in prompt
+    assert "completion_status: completed" not in prompt
+
+
+def test_param_gap_requires_and_keeps_processing_in_joint_output() -> None:
+    agent, fake_model = _make_agent(
+        [
+            _turn(
+                mode="execute",
+                completion_status="processing",
+                remaining=["find the missing message id"],
+                tool_name="email_ask",
+                instruction="List recent mail to recover the message id",
             )
-        ],
+        ]
+    )
+    perception = _make_perception(
+        source="execution_feedback",
+        user_message="email_read parameter fill failed",
+        system_context={
+            "tool_history": [
+                {
+                    "tool_name": "email_read",
+                    "result": {
+                        "stage": "param_fill",
+                        "tool_invoked": False,
+                        "needs_clarification": True,
+                    },
+                }
+            ]
+        },
     )
 
-    turn = agent.handle(
+    decision = agent.handle(perception)
+
+    state = agent.snapshot_conversation("t1::0")
+    assert state is not None
+    assert state.task_progress.completion_status == "processing"
+    assert decision.mode == "execute"
+    assert decision.tool_name == "email_ask"
+    assert decision.request_complete is False
+    assert fake_model.called_schemas == [ThinkingTurnOutput]
+
+
+def test_awaiting_user_without_finalized_reply_is_corrected_before_action() -> None:
+    agent, fake_model = _make_agent(
+        [
+            _turn(
+                mode="execute",
+                completion_status="awaiting_user",
+                remaining=["obtain a message id"],
+                tool_name="email_ask",
+                instruction="Find a usable message id",
+            )
+        ]
+    )
+
+    decision = agent.handle(
         _make_perception(
-            user_message="tool=reply_to_user; finalize=true",
             source="execution_feedback",
+            user_message="More information is required",
         )
     )
 
-    assert turn.mode == "silent"
-    assert turn.request_complete is True
-    assert turn.answer is None
-    assert fake_model.structured_calls(ThinkingDecision) == []
+    state = agent.snapshot_conversation("t1::0")
+    assert state is not None
+    assert state.task_progress.completion_status == "processing"
+    assert state.task_progress.goal == "handle the request"
+    assert state.task_progress.completed == []
+    assert state.task_progress.remaining == ["obtain a message id"]
+    assert decision.mode == "execute"
+    assert decision.tool_name == "email_ask"
+    assert decision.request_complete is False
+    assert fake_model.called_schemas == [ThinkingTurnOutput]
 
 
-def test_awaiting_user_task_state_skips_action_plan() -> None:
-    """Macro awaiting_user skips action planning; pause is runtime's job."""
+def test_finalized_awaiting_user_state_forces_silent_decision() -> None:
     agent, fake_model = _make_agent(
-        decisions=[],
-        task_updates=[
-            TaskProgressUpdate(
-                goal="schedule a reminder",
+        [
+            _turn(
+                mode="answer_directly",
                 completion_status="awaiting_user",
-                completed=["ask for the reminder time"],
-                remaining=["receive the reminder time"],
+                completed=["ask for the missing time"],
+                remaining=["wait for the user's time"],
+                answer="This candidate answer must be suppressed",
             )
-        ],
+        ]
     )
     state = agent.state_registry.get_or_create("t1::0", thread_id="t1")
     state.reply_finalized_in_activation = True  # type: ignore[attr-defined]
 
-    turn = agent.handle(
+    decision = agent.handle(
         _make_perception(
-            user_message="tool=reply_to_user; finalize=true",
             source="execution_feedback",
+            user_message="clarification reply delivered",
         )
     )
 
-    assert turn.mode == "silent"
-    assert turn.request_complete is False
-    assert fake_model.structured_calls(ThinkingDecision) == []
-    assert (
-        agent.state_registry.get_or_create(
-            "t1::0", thread_id="t1"
-        ).task_progress.completion_status
-        == "awaiting_user"
-    )
+    assert state.task_progress.completion_status == "awaiting_user"
+    assert decision.mode == "silent"
+    assert decision.answer is None
+    assert decision.request_complete is False
+    assert fake_model.called_schemas == [ThinkingTurnOutput]
 
 
-def test_awaiting_user_without_reply_is_coerced_to_processing() -> None:
+def test_completed_state_derives_completion_and_suppresses_candidate_action() -> None:
     agent, fake_model = _make_agent(
-        decisions=[
-            ThinkingDecision(
-                mode="execute",
-                tool_name="email_ask",
-                instruction="List recent mail",
+        [
+            _turn(
+                mode="answer_directly",
+                completion_status="completed",
+                completed=["deliver the final answer"],
+                remaining=[],
+                answer="This duplicate reply must not be sent",
             )
-        ],
-        task_updates=[
-            TaskProgressUpdate(
-                goal="read email",
-                completion_status="awaiting_user",
-                remaining=["need message id"],
-            )
-        ],
+        ]
     )
 
-    turn = agent.handle(
+    decision = agent.handle(
         _make_perception(
-            user_message="tool=email_read; param gap",
             source="execution_feedback",
+            user_message="final reply delivery succeeded",
         )
     )
 
-    assert turn.mode == "execute"
-    assert (
-        agent.state_registry.get_or_create(
-            "t1::0", thread_id="t1"
-        ).task_progress.completion_status
-        == "processing"
+    assert decision.mode == "silent"
+    assert decision.answer is None
+    assert decision.request_complete is True
+    assert fake_model.called_schemas == [ThinkingTurnOutput]
+
+
+def test_paused_transaction_forces_silent_after_one_joint_call() -> None:
+    agent, fake_model = _make_agent([_turn(mode="execute")])
+    record = TransactionRecord(
+        transaction_id="txn-paused",
+        thread_id="t1",
+        conversation_id="t1::0",
+        state=TransactionState.PAUSE,
     )
-    assert fake_model.structured_calls(ThinkingDecision)
+
+    decision = agent.handle(
+        _make_perception(transaction_id=record.transaction_id),
+        transaction_state=record,
+    )
+
+    assert decision.mode == "silent"
+    assert decision.request_complete is False
+    assert fake_model.called_schemas == [ThinkingTurnOutput]
 
 
-def test_new_user_stimulus_reopens_completed_task_before_preprocessing() -> None:
+def test_reason_is_not_copied_into_episode_memory_or_user_fields() -> None:
+    reason = "TRANSIENT-REASON-MUST-NOT-BECOME-MEMORY"
     agent, _ = _make_agent(
-        decisions=[ThinkingDecision(mode="silent", request_complete=True)],
-        task_updates=[TaskProgressUpdate()],
+        [
+            _turn(
+                mode="answer_directly",
+                reason=reason,
+                answer="Visible answer",
+                episode_note="Durable note",
+            )
+        ]
     )
-    state = agent.state_registry.get_or_create("t1::0", thread_id="t1")
-    state.task_progress.completion_status = "completed"
 
-    turn = agent.handle(_make_perception(user_message="One more thing"))
+    decision = agent.handle(_make_perception())
+    state = agent.snapshot_conversation("t1::0")
 
-    assert state.task_progress.completion_status == "processing"
-    assert turn.mode == "silent"
-    assert turn.request_complete is False
+    assert decision.answer == "Visible answer"
+    assert decision.episode_note == "Durable note"
+    assert decision.reasoning is None
+    assert reason not in str(decision.answer)
+    assert reason not in str(decision.episode_note)
+    assert state is not None
+    assert reason not in repr(state.episode_buffer)
+    assert any(item["note"] == "Durable note" for item in state.episode_buffer)
+
+    drained = agent.on_flush("t1::0", thread_id="t1")
+    assert [item["note"] for item in drained] == ["Durable note"]
+    assert reason not in repr(drained)
 
 
-def test_current_stimulus_is_rendered_in_both_thinking_prompts() -> None:
+def test_single_call_preserves_compatible_sse_event_sequence_and_payloads() -> None:
     agent, fake_model = _make_agent(
-        decisions=[ThinkingDecision(mode="answer_directly", answer="OK")],
-        task_updates=[TaskProgressUpdate(goal="handle schedule")],
+        [
+            _turn(
+                mode="execute",
+                reason="A retrieval step is needed.",
+                goal="answer the travel question",
+                completed=["identify the trip"],
+                remaining=["find the departure time"],
+                tool_name="deep_recall",
+                instruction="Find the departure time",
+            )
+        ]
+    )
+    events: List[tuple[str, Dict[str, Any]]] = []
+
+    agent.handle(
+        _make_perception(),
+        event_emitter=lambda event_type, payload: events.append(
+            (event_type, payload)
+        ),
+    )
+
+    assert [event_type for event_type, _payload in events] == [
+        "thinking_started",
+        "thinking_task_state",
+        "thinking_plan",
+        "thinking_completed",
+    ]
+    task_payload = events[1][1]
+    assert task_payload["task_progress"] == {
+        "goal": "answer the travel question",
+        "completion_status": "processing",
+        "completed": ["identify the trip"],
+        "remaining": ["find the departure time"],
+    }
+    assert task_payload["task_progress_update"] == task_payload["task_progress"]
+    plan_payload = events[2][1]
+    assert plan_payload["mode"] == "execute"
+    assert plan_payload["tool_name"] == "deep_recall"
+    assert plan_payload["instruction"] == "Find the departure time"
+    assert plan_payload["request_complete"] is False
+    assert plan_payload["reasoning"] is None
+    assert "A retrieval step is needed." not in repr(events)
+    assert events[3][1]["executed"] is False
+    assert events[3][1]["phases"] == ["plan"]
+    assert fake_model.called_schemas == [ThinkingTurnOutput]
+
+
+def test_event_emitter_exception_does_not_break_single_call_handler() -> None:
+    agent, fake_model = _make_agent(
+        [_turn(mode="answer_directly", answer="Hi")]
+    )
+
+    def _bad_emitter(_event_type: str, _payload: Dict[str, Any]) -> None:
+        raise RuntimeError("client-side bug")
+
+    decision = agent.handle(_make_perception(), event_emitter=_bad_emitter)
+
+    assert decision.answer == "Hi"
+    assert fake_model.called_schemas == [ThinkingTurnOutput]
+
+
+def test_runtime_activation_is_rendered_once_for_the_joint_schema() -> None:
+    agent, fake_model = _make_agent(
+        [
+            _turn(
+                mode="answer_directly",
+                goal="handle schedule",
+                answer="Reminder ready",
+            )
+        ]
     )
 
     agent.handle(
@@ -354,39 +552,64 @@ def test_current_stimulus_is_rendered_in_both_thinking_prompts() -> None:
         )
     )
 
-    task_messages = fake_model.structured_calls(TaskProgressUpdate)[0]
-    decision_messages = fake_model.structured_calls(ThinkingDecision)[0]
-    task_prompt = task_messages[0]["content"]
-    decision_prompt = decision_messages[0]["content"]
-    for prompt in (task_prompt, decision_prompt):
-        assert "[Current Stimulus]" in prompt
-        assert "kind: scheduled_plan" in prompt
-        assert "semantic_role: runtime_activation" in prompt
-        assert "[Activation Event]" in prompt
-        assert "type: schedule_due" in prompt
-        assert "[Current Objective]" in prompt
-        assert "Remind the user to cook" in prompt
-        assert "[Observed Evidence]" in prompt
-        assert "(none)" in prompt
-        assert "thread_id:" not in prompt
-        assert "conversation_id:" not in prompt
-        assert "transaction_id:" not in prompt
-        assert "t1::0" not in prompt
-        assert "txn-1" not in prompt
-        assert '"schedule_id": "sch_1"' not in prompt
-    for messages in (task_messages, decision_messages):
-        assert messages[1]["content"].startswith(
-            "[Runtime semantic input — not a user utterance]"
-        )
-        assert messages[1]["content"] != "Remind the user to cook"
+    assert fake_model.called_schemas == [ThinkingTurnOutput]
+    messages = fake_model.structured_calls(ThinkingTurnOutput)[0]
+    system_prompt = messages[0]["content"]
+    assert "[Output Example: structure and state semantics only]" in system_prompt
+    assert '"mode":"answer_directly"' in system_prompt
+    assert '"request_complete":' not in system_prompt
+    assert "[Current Stimulus]" in system_prompt
+    assert "kind: scheduled_plan" in system_prompt
+    assert "semantic_role: runtime_activation" in system_prompt
+    assert "[Activation Event]" in system_prompt
+    assert "type: schedule_due" in system_prompt
+    assert "[Current Objective]" in system_prompt
+    assert "Remind the user to cook" in system_prompt
+    assert "[Observed Evidence]" in system_prompt
+    assert "[Previous Task State]" in system_prompt
+    assert "[Thinking Turn Requirements]" in system_prompt
+    assert "thread_id:" not in system_prompt
+    assert "conversation_id:" not in system_prompt
+    assert "transaction_id:" not in system_prompt
+    assert "t1::0" not in system_prompt
+    assert "txn-1" not in system_prompt
+    assert '"schedule_id": "sch_1"' not in system_prompt
+    assert messages[1]["content"].startswith(
+        "[Runtime semantic input — not a user utterance]"
+    )
 
 
-def test_transaction_resolver_uses_turn_local_labels_instead_of_runtime_ids() -> None:
+def test_legacy_two_call_mode_retains_rollback_sequence() -> None:
     agent, fake_model = _make_agent(
-        decisions=[],
-        transaction_resolutions=[
-            TransactionResolution(action="continue", transaction_id="candidate_2")
+        [
+            TaskProgressUpdate(
+                goal="answer the travel question",
+                completion_status="processing",
+                completed=["identify the trip"],
+                remaining=["find the departure time"],
+            ),
+            ThinkingDecision(
+                mode="execute",
+                tool_name="deep_recall",
+                instruction="Find the departure time",
+                request_complete=True,
+            ),
         ],
+        thinking_mode="legacy_two_call",
+    )
+
+    decision = agent.handle(_make_perception())
+
+    assert decision.mode == "execute"
+    assert decision.tool_name == "deep_recall"
+    assert decision.request_complete is False
+    assert fake_model.called_schemas == [TaskProgressUpdate, ThinkingDecision]
+    assert fake_model.structured_calls(ThinkingTurnOutput) == []
+
+
+def test_transaction_resolver_remains_a_separate_structured_call() -> None:
+    agent, fake_model = _make_agent(
+        [TransactionResolution(action="continue", transaction_id="candidate_2")]
     )
     candidates = [
         TransactionRecord(
@@ -402,106 +625,19 @@ def test_transaction_resolver_uses_turn_local_labels_instead_of_runtime_ids() ->
             state=TransactionState.PAUSE,
         ),
     ]
-    candidates[0].task_state.goal = "first task"
-    candidates[1].task_state.goal = "second task"
 
     selected = agent.resolve_transaction(
-        Stimulus(kind=StimulusKind.USER_MESSAGE, text="continue the second task"),
+        Stimulus(
+            kind=StimulusKind.USER_MESSAGE,
+            text="continue the second task",
+        ),
         candidates,
     )
 
     assert selected == "txn-private-beta"
+    assert fake_model.called_schemas == [TransactionResolution]
     prompt = fake_model.structured_calls(TransactionResolution)[0][0]["content"]
     assert "candidate_1" in prompt
     assert "candidate_2" in prompt
     assert "txn-private-alpha" not in prompt
     assert "txn-private-beta" not in prompt
-    assert "account::canonical-thread" not in prompt
-
-
-def test_on_flush_drops_standalone_state_and_returns_episode_notes() -> None:
-    agent, _ = _make_agent(
-        decisions=[
-            ThinkingDecision(
-                mode="answer_directly",
-                answer="OK",
-                episode_note="note-A",
-            )
-        ]
-    )
-    agent.handle(_make_perception())
-
-    drained = agent.on_flush("t1::0", thread_id="t1")
-
-    assert drained[0]["note"] == "note-A"
-    assert agent.snapshot_conversation("t1::0") is None
-
-
-def test_event_emitter_reports_plan_only_phases_for_execute_decision() -> None:
-    agent, _ = _make_agent(
-        decisions=[
-            ThinkingDecision(
-                mode="execute",
-                tool_name="deep_recall",
-                instruction="Find yesterday's plan",
-            )
-        ]
-    )
-    events: List[tuple[str, Dict[str, Any]]] = []
-
-    agent.handle(
-        _make_perception(),
-        event_emitter=lambda event_type, payload: events.append(
-            (event_type, payload)
-        ),
-    )
-
-    assert [event_type for event_type, _ in events] == [
-        "thinking_started",
-        "thinking_task_state",
-        "thinking_plan",
-        "thinking_completed",
-    ]
-    plan_payload = next(
-        payload for event_type, payload in events if event_type == "thinking_plan"
-    )
-    assert plan_payload["mode"] == "execute"
-    assert plan_payload["tool_name"] == "deep_recall"
-    completed_payload = events[-1][1]
-    assert completed_payload["executed"] is False
-    assert completed_payload["phases"] == ["plan"]
-
-
-def test_event_emitter_exception_does_not_break_handler() -> None:
-    agent, _ = _make_agent(
-        decisions=[ThinkingDecision(mode="answer_directly", answer="Hi")]
-    )
-
-    def _bad_emitter(_event_type: str, _payload: Dict[str, Any]) -> None:
-        raise RuntimeError("client-side bug")
-
-    turn = agent.handle(_make_perception(), event_emitter=_bad_emitter)
-
-    assert turn.answer == "Hi"
-
-
-def test_direct_answer_without_text_uses_configured_fallback() -> None:
-    fake_model = _FakeChatModel(
-        {
-            TaskProgressUpdate: [TaskProgressUpdate()],
-            ThinkingDecision: [ThinkingDecision(mode="answer_directly")],
-        }
-    )
-    agent = ThinkingAgent(
-        execution_agent=_CapabilityCatalog(),  # type: ignore[arg-type]
-        model_provider=ModelProvider(model=fake_model, network_retry_attempts=1),
-        system_prompt="System",
-        episode_recorder=DefaultEpisodeRecorder(),
-        state_registry=ConversationStateRegistry(),
-        prompt_language="en",
-        fallback_answer_prompt="Configured fallback",
-    )
-
-    turn = agent.handle(_make_perception())
-
-    assert turn.answer == "Configured fallback"

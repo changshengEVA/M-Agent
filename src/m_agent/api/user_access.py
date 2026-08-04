@@ -444,16 +444,19 @@ class UserAccountStore:
                 changed = True
 
         base_langgraph = base_runtime.get("langgraph")
-        if isinstance(base_langgraph, dict) and "turn_loop" in base_langgraph:
+        if isinstance(base_langgraph, dict) and any(
+            key in base_langgraph for key in ("turn_loop", "thinking_mode")
+        ):
             user_langgraph = user_runtime.get("langgraph")
             if not isinstance(user_langgraph, dict):
                 user_langgraph = {}
                 user_runtime["langgraph"] = user_langgraph
-            if user_langgraph.get("turn_loop") != base_langgraph.get("turn_loop"):
-                user_langgraph["turn_loop"] = deepcopy(
-                    base_langgraph.get("turn_loop")
-                )
-                changed = True
+            for key in ("turn_loop", "thinking_mode"):
+                if key not in base_langgraph:
+                    continue
+                if user_langgraph.get(key) != base_langgraph.get(key):
+                    user_langgraph[key] = deepcopy(base_langgraph.get(key))
+                    changed = True
         return changed
 
     def _sync_chat_tool_settings(

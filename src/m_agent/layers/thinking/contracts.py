@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, cast
 
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
 
 SILENT_MODES = frozenset({"silent", "wait", "defer"})
 
@@ -126,6 +128,71 @@ class TaskStateUpdate:
 # Compatibility names retained for callers that adopted the first schema.
 TaskProgress = TaskState
 TaskProgressUpdate = TaskStateUpdate
+
+
+class TaskStateOutput(BaseModel):
+    """Complete task-state snapshot returned by one thinking turn."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    goal: str = Field(max_length=1000)
+    completion_status: TaskCompletionStatus
+    completed: List[str] = Field(max_length=32)
+    remaining: List[str] = Field(max_length=32)
+
+
+class DecisionOutput(BaseModel):
+    """Strict action portion of a joint thinking-turn response."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal["execute", "answer_directly", "silent"]
+    tool_name: Optional[str]
+    instruction: Optional[str]
+    answer: Optional[str]
+    episode_note: Optional[str]
+
+    @model_validator(mode="after")
+    def validate_mode_fields(self) -> "DecisionOutput":
+        tool_name = str(self.tool_name or "").strip()
+        instruction = str(self.instruction or "").strip()
+        answer = str(self.answer or "").strip()
+
+        if self.mode == "execute":
+            if not tool_name or not instruction:
+                raise ValueError("execute requires non-empty tool_name and instruction")
+            if answer:
+                raise ValueError("execute requires answer to be empty")
+        elif self.mode == "answer_directly":
+            if not answer:
+                raise ValueError("answer_directly requires a non-empty answer")
+            if tool_name or instruction:
+                raise ValueError(
+                    "answer_directly requires tool_name and instruction to be empty"
+                )
+        elif tool_name or instruction or answer:
+            raise ValueError(
+                "silent requires tool_name, instruction, and answer to be empty"
+            )
+        return self
+
+
+class ThinkingTurnOutput(BaseModel):
+    """Joint task-state and action output produced by one LLM invocation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(min_length=1, max_length=1000)
+    task_state: TaskStateOutput
+    decision: DecisionOutput
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        reason = str(value or "").strip()
+        if not reason:
+            raise ValueError("reason must not be blank")
+        return reason
 
 
 @dataclass

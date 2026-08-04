@@ -1,55 +1,30 @@
 # PDF 文档
 
-这里仅保存需要直接分发的 PDF；可编辑源文件位于 [`../architecture/`](../architecture/README.md)。
+这里仅保存需要直接分发的当前 PDF。历史 PDF 已移至 [`../archive/pdf/`](../archive/pdf/)，不得再作为项目现状引用。
 
-- [总体设计架构（重点标注版）](overall-design-architecture.annotated.zh-CN.pdf)
-- [当前项目进度与设计计划（重点标注版）](current-project-progress-and-design-plan.annotated.zh-CN.pdf)
-- [生产 Runtime 层实施计划（重点标注版）](production-runtime-layer-plan.annotated.zh-CN.pdf)
+## 当前文档
 
-PDF 内容更新后，应与对应 Markdown 源文件一起重新生成，避免分发过期版本。
+- [M-Agent v0.2.0—v1.0.0 版本规划](M-Agent-Roadmap-v0.2.0-v1.0.0.zh-CN.pdf)
+
+可编辑源文件为 [`../roadmap-v0.2.0-v1.0.0.zh-CN.md`](../roadmap-v0.2.0-v1.0.0.zh-CN.md)。Markdown 是权威源，PDF 是便于评审和分发的生成产物；二者内容变更时必须同步更新。
 
 ## 可复现生成
 
-在仓库根目录使用项目 Python：
+在仓库根目录执行：
 
 ```powershell
-python scripts/export_markdown_pdf.py `
-  docs/architecture/overall-design-architecture.md `
+& 'F:\ProgramData\miniconda3\python.exe' -B `
+  scripts/export_markdown_pdf.py `
+  docs/roadmap-v0.2.0-v1.0.0.zh-CN.md `
   --annotated `
-  --title "M-Agent 总体设计架构" `
-  --pdf-out docs/pdf/overall-design-architecture.annotated.zh-CN.pdf `
-  --require-text "Overall Design Architecture"
-
-python scripts/export_markdown_pdf.py `
-  docs/architecture/current-project-progress-and-design-plan.md `
-  --annotated `
-  --title "M-Agent 当前项目进度与设计计划" `
-  --pdf-out docs/pdf/current-project-progress-and-design-plan.annotated.zh-CN.pdf `
-  --require-text "P8 灰度与 LangGraph 完整矩阵已完成" `
-  --require-text "38/38" `
-  --require-text "旧 Supporting 目录的 Known Gap（剩余 2 个）" `
-  --forbid-text "下一步进入 P8 灰度与 LangGraph 完整矩阵" `
-  --forbid-text "LangGraph 完整矩阵仍待 P8" `
-  --forbid-text "旧 Supporting 目录的 6 个 Known Gap"
-
-python scripts/export_markdown_pdf.py `
-  docs/architecture/production-runtime-layer-plan.zh-CN.md `
-  --annotated `
-  --title "M-Agent 生产 Runtime 层实施计划" `
-  --pdf-out docs/pdf/production-runtime-layer-plan.annotated.zh-CN.pdf `
-  --require-text "P8 后 · 生产 Runtime 接线期" `
-  --require-text "RuntimeHost" `
-  --require-text "R2 graph 内完整循环" `
-  --require-text "smoke_langgraph_turn_loop" `
-  --forbid-text "LangGraph 完整矩阵仍待 P8" `
-  --forbid-text "MVP 仅 record_progress 占位"
+  --title "M-Agent v0.2.0—v1.0.0 版本规划" `
+  --pdf-out docs/pdf/M-Agent-Roadmap-v0.2.0-v1.0.0.zh-CN.pdf `
+  --require-text "Stimulus-Native Cognitive Runtime" `
+  --require-text "System Memory & Temporal Runtime" `
+  --require-text "Stable Stimulus-Native Cognitive Runtime" `
+  --forbid-text "memory-centric"
 ```
 
-导出器使用系统 Edge/Chrome 的无头打印，默认不保留中间 HTML，并会检查：
+导出器使用系统 Edge/Chrome 的无头打印，并检查 PDF 可打开、正文可提取、关键文字存在、过时文字不存在，以及页眉页脚没有泄露本地绝对路径。
 
-- PDF 可打开且含可提取正文；
-- 重点状态文字存在；
-- 页眉页脚没有 `file:///` 或仓库绝对路径；
-- 调用方指定的过时文字不再出现。
-
-人工交付前还应抽查首页、重点结论页、阶段表和末页，确认中文字体、表格分页及色彩正常。
+正式分发前还应抽查首页、版本总览、系统记忆与 Strategy 表格以及末页，确认中文字体、表格分页和页面裁切正常。

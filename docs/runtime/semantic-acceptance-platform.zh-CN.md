@@ -46,4 +46,4 @@ python -m pytest tests/acceptance -q
 python scripts/run_runtime_migration_gate.py --rounds 3
 ```
 
-完成条件是 38/38 场景可执行且没有 mandatory xfail。早期平台说明和 gap 证据位于 [`../architecture/archive/`](../architecture/archive/README.md)，不属于当前 catalog。
+完成条件是 38/38 场景可执行且没有 mandatory xfail。早期平台说明和 gap 证据位于 [`../archive/architecture/`](../archive/architecture/README.md)，不属于当前 catalog。
