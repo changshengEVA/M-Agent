@@ -12,6 +12,7 @@ YAML 清单，使注册、prompt 描述、参数路由、结果投影、限流�
 ```text
 config/systems/tools/
 ├── default.yaml
+├── external_writes_enabled.yaml
 └── capabilities/
     ├── web_search.yaml
     ├── schedule_create.yaml
@@ -30,27 +31,32 @@ system: tools
 capabilities_dir: ./capabilities
 enabled:
   - shallow_recall
-  - deep_recall
   - reply_to_user
   - get_current_time
   - web_search
-  - schedule_create
   - schedule_query
-  - schedule_delete
   - email_ask
   - email_read
-  - email_send
 defaults:
   __controller__:
     max_calls_per_turn: 12
 ```
 
-省略 `enabled` 时，启用 `capabilities_dir` 内全部有效清单。
+省略 `enabled` 时，加载器使用与 `default.yaml` 相同的安全 read/emit allow-list；
+仅仅发现 capability 清单不会把全部工具自动启用。
 
-> **当前安全边界：**仓库默认工具集包含创建/删除日程和发送邮件等外部副作用能力。
-> v0.2 中的 `policy.side_effect` 只是供审查的描述性元数据，不是确定性的授权或审批
-> Gate。接入不可信输入或真实外部账户前，必须检查并收紧 `enabled`。Runtime 强制审批
-> 策略属于后续路线图能力。
+> **当前安全边界：**`default.yaml` 只启用读取类工具和 `reply_to_user`。创建/删除
+> 日程及发送邮件必须显式切换到 `external_writes_enabled.yaml`。缺失、`unspecified`
+> 或未知的 `policy.side_effect` 会在加载或构建阶段 fail closed；合法分类只有
+> `read`、`emit`、`write`、`send`。该分类和显式 profile 用于防止误启用，交互式
+> 审批策略仍属于后续路线图能力。兼容用 `deep_recall` API 也不默认启用，因为本地
+> backend 尚未实现真正的 deep 语义。
+
+确实需要外部写入的部署，应让 Chat 使用
+`config/agents/chat/chat_controller_external_writes.yaml`。该 profile 会同时选择
+`config/systems/tools/external_writes_enabled.yaml` 与
+`config/agents/email/gmail_email_agent_external_writes.yaml`。只切换 tools suite 不足以
+发送 Gmail：默认 Gmail 配置只有只读 OAuth scope，写入 profile 使用独立的发送 token。
 
 ## Capability 清单
 
@@ -96,7 +102,7 @@ defaults:
 | `input.schema` | Schema 引用；`inferred_from_tool` 读取 LangChain args schema |
 | `output.*` | 结果 schema 与经过校验的 feedback/WM projector 路径 |
 | `policy.max_calls_per_turn` | 单 capability 调用上限 |
-| `policy.side_effect` | `read`、`write`、`send`、`emit` 等描述性审查元数据；v0.2 不依据该字段执行授权 |
+| `policy.side_effect` | 必填的可执行副作用分类，只接受 `read`、`emit`、`write`、`send`；缺失/未知值 fail closed，write/send 仍须显式 profile opt-in |
 | `dependencies` | 由 capability context 提供的所需服务 |
 | `defaults` | 单 capability runtime 默认参数 |
 

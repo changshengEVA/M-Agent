@@ -1,15 +1,29 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 from pathlib import Path
-from typing import Dict, List
+from typing import Callable, Dict, List, TypeVar
 
 from .models import ScheduleItem
 
 
 ANONYMOUS_OWNER_ID = "__anonymous__"
+_MutationResult = TypeVar("_MutationResult")
+_STORE_LOCKS_GUARD = threading.Lock()
+_STORE_LOCKS: Dict[str, threading.RLock] = {}
+
+
+def _shared_store_lock(storage_root: Path) -> threading.RLock:
+    key = os.path.normcase(str(Path(storage_root).resolve()))
+    with _STORE_LOCKS_GUARD:
+        lock = _STORE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _STORE_LOCKS[key] = lock
+        return lock
 
 
 def _safe_slug(value: str, fallback: str = "thread") -> str:
@@ -22,7 +36,10 @@ class ScheduleStore:
     def __init__(self, storage_root: Path) -> None:
         self.storage_root = Path(storage_root).resolve()
         self.storage_root.mkdir(parents=True, exist_ok=True)
-        self._lock = threading.Lock()
+        # A lease claim is a read/compare/write operation.  RLock lets the
+        # mutation helper reuse the existing load/save paths (including legacy
+        # migration) while keeping that operation atomic within this process.
+        self._lock = _shared_store_lock(self.storage_root)
 
     def _owner_dir(self, owner_id: str) -> Path:
         return self.storage_root / "by_user" / _safe_slug(owner_id, fallback=ANONYMOUS_OWNER_ID)
@@ -109,6 +126,26 @@ class ScheduleStore:
                 json.dump(payload, f, ensure_ascii=False, indent=2)
             temp_path.replace(path)
         return path
+
+    def mutate_thread_items(
+        self,
+        owner_id: str,
+        thread_id: str,
+        mutator: Callable[[List[ScheduleItem]], _MutationResult],
+    ) -> _MutationResult:
+        """Atomically mutate one thread's schedules within this store process.
+
+        The callback receives freshly loaded items.  Its changes are persisted
+        before the result is returned, which prevents two heartbeat workers
+        sharing a store instance from claiming the same lease.
+        """
+
+        normalized_owner_id = self._normalize_owner_id(owner_id)
+        with self._lock:
+            items = self.load_thread_items(normalized_owner_id, thread_id)
+            result = mutator(items)
+            self.save_thread_items(normalized_owner_id, thread_id, items)
+            return result
 
     def iter_all_items(self) -> List[ScheduleItem]:
         items: List[ScheduleItem] = []

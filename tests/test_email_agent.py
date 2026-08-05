@@ -17,6 +17,30 @@ _CN_SEND_BODY = "\u4f60\u597d\uff0c\u6211\u4e0b\u5468\u53ef\u4ee5\u9762\u8bd5\u3
 _CN_SEND_SUBJECT = "\u9762\u8bd5\u65f6\u95f4\u786e\u8ba4"
 
 
+def test_default_secret_alias_uses_writable_secrets_override(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config_path = (
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "agents"
+        / "email"
+        / "gmail_email_agent.yaml"
+    )
+    secrets_root = tmp_path / "runtime-secrets"
+    monkeypatch.setenv("M_AGENT_SECRETS_DIR", str(secrets_root))
+
+    agent = EmailAgent(config_path=config_path)
+
+    assert agent.gmail_client.config.credentials_path == (
+        secrets_root / "gmail" / "client_secret.json"
+    ).resolve()
+    assert agent.gmail_client.config.token_path == (
+        secrets_root / "gmail" / "token-readonly.json"
+    ).resolve()
+
+
 class _FakeGmailClient:
     def __init__(self) -> None:
         self.sent_raw_messages: list[str] = []

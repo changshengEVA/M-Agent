@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import logging
 import json
+from copy import deepcopy
+from threading import RLock
 from typing import Any, Callable, Dict, List, Optional
 
 from m_agent.layers.execution.core import ExecutionAgent
@@ -84,6 +86,7 @@ class ThinkingAgent:
         self.episode_recorder: EpisodeRecorder = episode_recorder or DefaultEpisodeRecorder()
         self.state_registry = state_registry or ConversationStateRegistry()
         self._scratches: Dict[str, ThinkingScratch] = {}
+        self._scratch_lock = RLock()
         self.prompt_language = str(prompt_language or "zh").strip().lower() or "zh"
 
         # YAML-overridable prompt fragments. Empty/None means "use built-in default".
@@ -326,11 +329,17 @@ class ThinkingAgent:
                 str(decision.answer or "").strip() or self._fallback_answer(perception)
             )
 
-        self.episode_recorder.append(
-            state.episode_buffer,
-            note=decision.episode_note,
-            turn_meta={**turn_meta, "phase": "plan"},
-        )
+        if transaction_state is None:
+            # Runtime-owned notes become durable only when ``commit_thought``
+            # writes their stable Scene marker after the UoW succeeds. Keeping
+            # a second pre-commit scratch copy here would let a failed commit
+            # leak speculative memory into a later flush. Standalone/direct
+            # calls still use the compatibility buffer below.
+            self.episode_recorder.append(
+                state.episode_buffer,
+                note=decision.episode_note,
+                turn_meta={**turn_meta, "phase": "plan"},
+            )
         emit(
             "thinking_completed",
             {
@@ -468,11 +477,12 @@ class ThinkingAgent:
 
     def _scratch_for(self, conversation_id: str) -> ThinkingScratch:
         key = str(conversation_id or "").strip()
-        scratch = self._scratches.get(key)
-        if scratch is None:
-            scratch = ThinkingScratch()
-            self._scratches[key] = scratch
-        return scratch
+        with self._scratch_lock:
+            scratch = self._scratches.get(key)
+            if scratch is None:
+                scratch = ThinkingScratch()
+                self._scratches[key] = scratch
+            return scratch
 
     @staticmethod
     def _make_safe_emitter(
@@ -526,35 +536,92 @@ class ThinkingAgent:
             "task_progress": state.task_progress.to_dict(),
         }
 
-    def on_flush(self, conversation_id: str, *, thread_id: str) -> List[Dict[str, Any]]:
-        """Drop the conversation state and return drained episode buffer + WM entries.
+    @staticmethod
+    def _unique_episode_notes(
+        notes: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        unique: List[Dict[str, Any]] = []
+        seen = set()
+        for item in notes:
+            if not isinstance(item, dict):
+                continue
+            try:
+                identity = json.dumps(
+                    item,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
+            except Exception:
+                identity = repr(item)
+            if identity in seen:
+                continue
+            seen.add(identity)
+            unique.append(deepcopy(item))
+        return unique
 
-        Returns a flat list of episode-note records the caller can inline into
-        the persistence pipeline. The state is removed from the registry so
-        the next perception turn starts a fresh conversation.
-        """
-        state = self.state_registry.drop(conversation_id)
-        if state is None:
-            return []
-        try:
-            self.episode_recorder.flush(
-                state.episode_buffer,
-                thread_id=thread_id,
-                conversation_id=conversation_id,
-            )
-        except Exception:
-            logger.exception(
-                "EpisodeRecorder.flush failed for conversation_id=%s thread_id=%s",
-                conversation_id,
-                thread_id,
-            )
-        if isinstance(self.episode_recorder, DefaultEpisodeRecorder):
-            drained = DefaultEpisodeRecorder.drain(state.episode_buffer)
-        else:
-            drained = list(state.episode_buffer)
-            state.episode_buffer.clear()
-        state.wm_entries.clear()
-        return drained
+    def snapshot_episode_notes(self, conversation_id: str) -> List[Dict[str, Any]]:
+        """Return a non-destructive snapshot across Runtime and direct modes."""
+
+        key = str(conversation_id or "").strip()
+        notes: List[Dict[str, Any]] = []
+        with self._scratch_lock:
+            scratch = self._scratches.get(key)
+            if scratch is not None:
+                notes.extend(deepcopy(scratch.episode_buffer))
+        state = self.state_registry.snapshot(key)
+        if state is not None:
+            notes.extend(deepcopy(state.episode_buffer))
+        return self._unique_episode_notes(notes)
+
+    def acknowledge_flush(
+        self,
+        conversation_id: str,
+        *,
+        thread_id: str,
+    ) -> List[Dict[str, Any]]:
+        """Drain flushed notes and release both state ownership paths."""
+
+        key = str(conversation_id or "").strip()
+        buffers: List[List[Dict[str, Any]]] = []
+        with self._scratch_lock:
+            scratch = self._scratches.pop(key, None)
+            if scratch is not None:
+                buffers.append(scratch.episode_buffer)
+        state = self.state_registry.drop(key)
+        if state is not None:
+            buffers.append(state.episode_buffer)
+
+        drained: List[Dict[str, Any]] = []
+        for buffer in buffers:
+            try:
+                self.episode_recorder.flush(
+                    buffer,
+                    thread_id=thread_id,
+                    conversation_id=key,
+                )
+            except Exception:
+                logger.exception(
+                    "EpisodeRecorder.flush failed for conversation_id=%s thread_id=%s",
+                    key,
+                    thread_id,
+                )
+            if isinstance(self.episode_recorder, DefaultEpisodeRecorder):
+                drained.extend(DefaultEpisodeRecorder.drain(buffer))
+            else:
+                drained.extend(deepcopy(buffer))
+                buffer.clear()
+        if state is not None:
+            state.wm_entries.clear()
+        return self._unique_episode_notes(drained)
+
+    def on_flush(self, conversation_id: str, *, thread_id: str) -> List[Dict[str, Any]]:
+        """Compatibility alias for acknowledging a committed flush."""
+
+        return self.acknowledge_flush(
+            conversation_id,
+            thread_id=thread_id,
+        )
 
     def snapshot_conversation(self, conversation_id: str) -> Optional[ConversationState]:
         """Read-only snapshot for the ``thread_state`` API."""
@@ -1025,12 +1092,22 @@ class ThinkingAgent:
                         ]
                     )
             return "\n".join(lines).strip()
+        if perception.stimulus.kind == StimulusKind.USER_MESSAGE:
+            # The utterance itself is supplied exactly once as the current
+            # user-role message. Repeating it in the system prompt biases the
+            # model and makes context-budget accounting incorrect.
+            return "\n".join(
+                [
+                    "[Current Stimulus]",
+                    f"kind: {perception.stimulus.kind.value}",
+                    "semantic_role: user_utterance",
+                    "content_source: current_user_message",
+                ]
+            )
         lines = [
             "[Current Stimulus]",
             f"kind: {perception.stimulus.kind.value}",
-            "semantic_role: user_utterance"
-            if perception.stimulus.kind == StimulusKind.USER_MESSAGE
-            else "semantic_role: runtime_event",
+            "semantic_role: runtime_event",
             "text:",
             self._truncate_prompt_value(perception.stimulus.text, 2000) or "(empty)",
         ]

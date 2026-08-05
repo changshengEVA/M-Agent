@@ -1,5 +1,7 @@
 # Chat-stack LLM settings (execution + thinking layers).
-model_name: "deepseek-chat"
+# Explicit provider avoids LangChain auto-routing this model to the dedicated
+# DeepSeek client; the default deployment contract is OpenAI-compatible.
+model_name: "openai:deepseek-chat"
 agent_temperature: 0.0
 recursion_limit: 60
 retry_recursion_limit: 120

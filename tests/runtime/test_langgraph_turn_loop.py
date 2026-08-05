@@ -342,7 +342,13 @@ def test_silent_turn_with_request_complete_closes_user_task(
 
     runtime = _runtime(
         tmp_path,
-        [ThinkingDecision(mode="silent", request_complete=True)],
+        [
+            ThinkingDecision(
+                mode="silent",
+                request_complete=True,
+                episode_note="Committed runtime memory",
+            )
+        ],
         name="silent",
     )
     try:
@@ -354,6 +360,192 @@ def test_silent_turn_with_request_complete_closes_user_task(
         assert record is not None
         assert record.state == TransactionState.COMPLETE
         assert record.delegate_count == 0
+        notes = [
+            entry
+            for entry in runtime.scene_system.reader.tail("t5::0", limit=100)
+            if entry.payload_ref == "episode_note:v1"
+        ]
+        assert len(notes) == 1
+        assert notes[0].text == "Committed runtime memory"
+        assert notes[0].append_id
+        assert notes[0].append_id.endswith(":episode_note")
+    finally:
+        runtime.shutdown()
+
+
+def test_planner_failure_cannot_leak_speculative_task_state(tmp_path: Path) -> None:
+    class _MutatingFailureThinkingAgent:
+        @staticmethod
+        def resolve_transaction(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        @staticmethod
+        def handle(
+            _perception: Any,
+            *,
+            transaction_state: Any = None,
+            event_emitter: Any = None,
+        ) -> ThinkingDecision:
+            del event_emitter
+            transaction_state.task_state.goal = "speculative goal"
+            transaction_state.task_state.completed.append("uncommitted step")
+            raise RuntimeError("model response failed validation")
+
+    agent = _agent([])
+    agent.thinking_agent = _MutatingFailureThinkingAgent()
+    runtime = LangGraphRuntime(
+        agent,  # type: ignore[arg-type]
+        owner_id="turn-user-task-rollback",
+        persist_root=tmp_path / "task-rollback",
+    )
+    try:
+        stimulus_id = runtime.submit_user_message(
+            thread_id="task-rollback",
+            conversation_id="task-rollback::0",
+            text="do work",
+            schedule_drainer=False,
+        )
+        results = list(runtime.run_thread("task-rollback")["results"])
+
+        assert results[0]["success"] is False
+        stimulus = runtime.runtime_store.load_stimulus(stimulus_id)
+        assert stimulus is not None
+        assert stimulus.transaction_id
+        record = runtime.registry.get(stimulus.transaction_id)
+        assert record is not None
+        assert record.task_state.goal == ""
+        assert record.task_state.completed == []
+    finally:
+        runtime.shutdown()
+
+
+def test_planner_failure_does_not_poison_next_stimulus(
+    tmp_path: Path,
+) -> None:
+    class _FailsOnceThinkingAgent:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        @staticmethod
+        def resolve_transaction(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        def handle(
+            self,
+            _perception: Any,
+            *,
+            transaction_state: Any = None,
+            event_emitter: Any = None,
+        ) -> ThinkingDecision:
+            del event_emitter
+            self.calls += 1
+            if self.calls == 1:
+                transaction_state.task_state.goal = "speculative goal"
+                transaction_state.task_state.completed.append(
+                    "speculative step"
+                )
+                raise RuntimeError("transient model response failure")
+
+            transaction_state.task_state.goal = "committed goal"
+            transaction_state.task_state.completed.append("committed step")
+            return ThinkingDecision(
+                mode="silent",
+                request_complete=True,
+                reasoning="committed reasoning",
+                episode_note="committed episode note",
+            )
+
+    agent = _agent([])
+    agent.thinking_agent = _FailsOnceThinkingAgent()
+    runtime = LangGraphRuntime(
+        agent,  # type: ignore[arg-type]
+        owner_id="turn-user-model-recovery",
+        persist_root=tmp_path / "model-recovery",
+    )
+    try:
+        first_stimulus_id = runtime.submit_user_message(
+            thread_id="model-recovery",
+            conversation_id="model-recovery::0",
+            text="first request",
+            schedule_drainer=False,
+        )
+        first_results = list(runtime.run_thread("model-recovery")["results"])
+
+        assert len(first_results) == 1
+        assert first_results[0]["success"] is False
+        first_stimulus = runtime.runtime_store.load_stimulus(
+            first_stimulus_id
+        )
+        assert first_stimulus is not None
+        assert first_stimulus.transaction_id
+        first_transaction_id = first_stimulus.transaction_id
+        first_record = runtime.registry.get(first_transaction_id)
+        assert first_record is not None
+        assert first_record.task_state.goal == ""
+        assert first_record.task_state.completed == []
+
+        first_scene = [
+            entry
+            for entry in runtime.scene_system.reader.tail(
+                "model-recovery::0",
+                limit=100,
+            )
+            if entry.transaction_id == first_transaction_id
+        ]
+        assert [
+            (entry.actor, entry.entry_type, entry.text)
+            for entry in first_scene
+        ] == [
+            (SceneActor.USER, SceneEntryType.UTTERANCE, "first request")
+        ]
+
+        second_stimulus_id = runtime.submit_user_message(
+            thread_id="model-recovery",
+            conversation_id="model-recovery::0",
+            text="second request",
+            schedule_drainer=False,
+        )
+        second_results = list(
+            runtime.run_thread("model-recovery")["results"]
+        )
+
+        assert len(second_results) == 1
+        assert second_results[0]["success"] is True
+        assert second_results[0]["graph_phase"] == PHASE_COMPLETED
+        second_stimulus = runtime.runtime_store.load_stimulus(
+            second_stimulus_id
+        )
+        assert second_stimulus is not None
+        assert second_stimulus.transaction_id
+        assert second_stimulus.transaction_id != first_transaction_id
+        second_record = runtime.registry.get(second_stimulus.transaction_id)
+        assert second_record is not None
+        assert second_record.state == TransactionState.COMPLETE
+        assert second_record.task_state.goal == "committed goal"
+        assert second_record.task_state.completed == ["committed step"]
+
+        second_scene = [
+            entry
+            for entry in runtime.scene_system.reader.tail(
+                "model-recovery::0",
+                limit=100,
+            )
+            if entry.transaction_id == second_stimulus.transaction_id
+        ]
+        assert [entry.text for entry in second_scene] == [
+            "second request",
+            "committed reasoning",
+            "committed episode note",
+        ]
+        assert [entry.payload_ref for entry in second_scene] == [
+            None,
+            None,
+            "episode_note:v1",
+        ]
+        assert all(
+            "speculative" not in entry.text
+            for entry in first_scene + second_scene
+        )
     finally:
         runtime.shutdown()
 

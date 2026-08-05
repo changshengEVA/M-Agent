@@ -14,6 +14,7 @@ dependency metadata have one source of truth.
 ```text
 config/systems/tools/
 ├── default.yaml
+├── external_writes_enabled.yaml
 └── capabilities/
     ├── web_search.yaml
     ├── schedule_create.yaml
@@ -32,28 +33,35 @@ system: tools
 capabilities_dir: ./capabilities
 enabled:
   - shallow_recall
-  - deep_recall
   - reply_to_user
   - get_current_time
   - web_search
-  - schedule_create
   - schedule_query
-  - schedule_delete
   - email_ask
   - email_read
-  - email_send
 defaults:
   __controller__:
     max_calls_per_turn: 12
 ```
 
-If `enabled` is omitted, every valid manifest in `capabilities_dir` is enabled.
+If `enabled` is omitted, the loader uses the same safe read/emit allow-list as
+`default.yaml`; merely discovering a manifest never enables every capability.
 
-> **Current safety boundary:** the checked-in default suite includes capabilities
-> that can create or delete schedules and send email. `policy.side_effect` is
-> descriptive review metadata in v0.2; it is not a deterministic authorization
-> or approval gate. Review and reduce `enabled` before using untrusted input or
-> real external accounts. Runtime-enforced approval policy is a later roadmap item.
+> **Current safety boundary:** `default.yaml` enables only read-oriented tools
+> and `reply_to_user`. Schedule creation/deletion and email sending require an
+> explicit switch to `external_writes_enabled.yaml`. A missing, `unspecified`, or
+> unknown `policy.side_effect` fails closed during loading/building. The accepted
+> classes are `read`, `emit`, `write`, and `send`. This classification and the
+> explicit profile prevent accidental enablement; interactive approval policy is
+> still a later roadmap item. The compatibility `deep_recall` API is also not
+> enabled by default because the local backend does not implement deep semantics.
+
+For a deployment that intentionally permits external writes, point Chat at
+`config/agents/chat/chat_controller_external_writes.yaml`. That profile selects
+both `config/systems/tools/external_writes_enabled.yaml` and
+`config/agents/email/gmail_email_agent_external_writes.yaml`. Switching only
+the tool suite is insufficient for Gmail send: the default Gmail config has a
+read-only OAuth scope, and the write profile uses a separate send-capable token.
 
 ## Capability manifest
 
@@ -99,7 +107,7 @@ defaults:
 | `input.schema` | Schema reference; `inferred_from_tool` reads the LangChain args schema |
 | `output.*` | Result schema and validated feedback/WM projector paths |
 | `policy.max_calls_per_turn` | Per-capability invocation limit |
-| `policy.side_effect` | Descriptive review metadata such as `read`, `write`, `send`, or `emit`; v0.2 does not enforce authorization from this field |
+| `policy.side_effect` | Required executable effect class: `read`, `emit`, `write`, or `send`; missing/unknown values fail closed, while write/send still require explicit suite opt-in |
 | `dependencies` | Required services supplied through capability context |
 | `defaults` | Per-capability runtime defaults |
 

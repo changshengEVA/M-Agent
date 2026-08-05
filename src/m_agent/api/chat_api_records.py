@@ -13,7 +13,6 @@ from m_agent.utils.logging_trace import FunctionTraceHandler, TraceEvent
 from .chat_api_protocol import _log_protocol_event
 from .chat_api_runtime import ChatServiceRuntime, ThinkingForceStoppedError
 from .chat_api_shared import (
-    _get_thread_lock,
     _now_iso,
     _with_public_result_thread_id,
 )
@@ -316,19 +315,21 @@ def _detach_trace_handler(
 
 def _run_chat_worker(record: ChatRunRecord, service_runtime: ChatServiceRuntime) -> None:
     # Do not filter trace logs by thread id here. The underlying agent/tool stack may hop
-    # across worker threads, and chat execution is already serialized by _operation_lock.
+    # across worker threads, and ChatServiceRuntime serializes each thread admission.
     handler = FunctionTraceHandler(callback=record.append_trace_event, include_non_api=True)
     trace_loggers = _attach_trace_handler(handler)
 
-    thread_lock = _get_thread_lock(record.internal_thread_id)
     try:
         record.start()
-        with thread_lock:
-            result = service_runtime.run_chat(
-                message=record.message,
-                thread_id=record.internal_thread_id or service_runtime.default_thread_id,
-                user_turn=deepcopy(record.user_turn) if isinstance(record.user_turn, dict) else None,
-            )
+        result = service_runtime.run_chat(
+            message=record.message,
+            thread_id=record.internal_thread_id or service_runtime.default_thread_id,
+            user_turn=(
+                deepcopy(record.user_turn)
+                if isinstance(record.user_turn, dict)
+                else None
+            ),
+        )
 
         public_result = _with_public_result_thread_id(
             result,

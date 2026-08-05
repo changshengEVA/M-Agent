@@ -39,6 +39,27 @@ def _fixed_now_context() -> dict:
     }
 
 
+def test_empty_default_storage_uses_writable_data_override(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "schedule_agent.yaml"
+    _write_yaml(
+        config_path,
+        {
+            "provider": "local_schedule",
+            "default_timezone_name": "UTC",
+            "storage_dir": "",
+        },
+    )
+    data_root = tmp_path / "runtime-data"
+    monkeypatch.setenv("M_AGENT_DATA_DIR", str(data_root))
+
+    agent = ScheduleAgent(config_path=config_path)
+
+    assert agent.store.storage_root == (data_root / "schedules").resolve()
+
+
 def test_schedule_create_query_delete_flow(tmp_path: Path) -> None:
     agent = _build_agent(tmp_path)
     thread_id = "demo-thread"
@@ -161,10 +182,20 @@ def test_schedule_persists_v2_deferred_objective_as_authority(tmp_path: Path) ->
         "status",
         "created_at",
         "origin",
+        "lease_token",
+        "lease_owner",
+        "lease_until",
+        "attempt",
+        "last_error",
         "schema_version",
     }
     assert "text" not in payload["items"][0]
     assert payload["items"][0]["schema_version"] == 2
+    assert payload["items"][0]["lease_token"] == ""
+    assert payload["items"][0]["lease_owner"] == ""
+    assert payload["items"][0]["lease_until"] == ""
+    assert payload["items"][0]["attempt"] == 0
+    assert payload["items"][0]["last_error"] == ""
     assert payload["items"][0]["deferred_objective"] == {
         "description": "提醒用户准备参加会议",
         "encoding": "native",
@@ -208,6 +239,12 @@ def test_legacy_schedule_text_migrates_to_deferred_objective(
     assert "text" not in persisted
     assert "owner_id" not in persisted
     assert "updated_at" not in persisted
+    assert persisted["schema_version"] == 2
+    assert persisted["lease_token"] == ""
+    assert persisted["lease_owner"] == ""
+    assert persisted["lease_until"] == ""
+    assert persisted["attempt"] == 0
+    assert persisted["last_error"] == ""
 
 
 def test_v2_objective_wins_over_stale_legacy_text() -> None:

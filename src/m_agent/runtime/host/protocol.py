@@ -108,6 +108,9 @@ class RuntimeHost(Protocol):
     def complete_flush_segment(self, flush_id: str) -> Dict[str, Any]:
         """Close a fully committed and materialized flush."""
 
+    def has_pending_flush(self, thread_id: str) -> bool:
+        """Return whether an unfinished flush currently fences the thread."""
+
     def load_conversation_seq(self, thread_id: str) -> int:
         """Load the persisted conversation segment sequence."""
 

@@ -1,0 +1,19 @@
+# Direct dependency lower bounds used by the minimum-dependency CI job.
+# Transitive dependencies remain solver-selected so their own compatibility
+# constraints are respected.
+fastapi==0.104.0
+langchain==1.2.0
+langchain-deepseek==1.0.0
+langchain-openai==1.1.0
+langgraph==1.0.10
+langgraph-checkpoint==4.1.1
+langgraph-checkpoint-sqlite==3.1.1
+langgraph-prebuilt==1.0.8
+numpy==1.24.0
+pydantic==2.7.4
+python-dotenv==1.0.0
+python-multipart==0.0.6
+PyYAML==6.0
+uvicorn==0.24.0
+httpx==0.27.0
+pytest==8.0.0

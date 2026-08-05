@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Mapping, Optional
 
 from .base import ControllerCapabilityContext, ControllerCapabilitySpec
+from .policy import require_supported_side_effect
 
 
 class ControllerCapabilityRegistry:
@@ -95,6 +96,10 @@ def build_controller_tools(
         if spec is None:
             supported = ", ".join(sorted(active.names()))
             raise ValueError(f"Unknown chat controller tool: {tool_name}. Supported tools: {supported}")
+        # This is the last common point before a capability builder can return
+        # an invokable tool.  Unknown or omitted effect metadata must never
+        # reach the builder, even for programmatic/third-party registries.
+        require_supported_side_effect(spec.side_effect, tool_name=tool_name)
         description = str(tool_descriptions.get(tool_name, "") or "").strip() or f"Top-level tool: {tool_name}"
         tools.append(spec.build_tool(context, description))
     return tools

@@ -90,7 +90,9 @@ def test_tools_default_yaml_loads_and_descriptions_resolved() -> None:
     assert isinstance(system, ToolSuiteSystem)
     # Built-in tools are enabled by the suite whitelist.
     assert "shallow_recall" in system.enabled
-    assert "email_send" in system.enabled
+    assert "deep_recall" not in system.enabled
+    assert "reply_to_user" in system.enabled
+    assert "email_send" not in system.enabled
     # Per-tool descriptions are pulled from individual manifests.
     assert "shallow_recall" in system.runtime_descriptions
     assert "deep_recall" in system.runtime_descriptions

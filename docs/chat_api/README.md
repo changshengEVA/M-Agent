@@ -474,21 +474,47 @@ Each `turns[]` item contains:
 
 ### 5.10 `ScheduleItem`
 
+API 响应中的 `ScheduleItem` 以持久化 schema v2 为基础，并附加三个仅用于响应的兼容或展示字段。
+
+An API `ScheduleItem` is based on the durable schema v2 record and adds three response-only compatibility or display fields.
+
+Durable schema v2 fields / 持久化 schema v2 字段：
+
 | Field | Type | 中文说明 | English description |
 | --- | --- | --- | --- |
+| `schema_version` | `integer` | 固定为 `2` | Always `2` |
 | `schedule_id` | `string` | 日程 ID，形如 `sch_xxx` | Schedule id, usually `sch_xxx` |
-| `thread_id` | `string` | 该日程真正绑定的公开线程 ID | Actual public thread id bound to this schedule |
+| `thread_id` | `string` | 该日程真正绑定的线程 ID；鉴权 API 响应会移除 owner 命名空间 | Actual bound thread id; authenticated API responses remove the owner namespace |
 | `due_at_utc` | `string` | UTC 到期时间 | UTC due time |
 | `timezone_name` | `string` | IANA 时区名 | IANA timezone name |
-| `text` | `string` | 到期时发送给智能体的自包含系统式刺激文本 | Self-contained, system-like stimulus delivered to the agent when due |
+| `deferred_objective` | `object` | 触发后待解释和执行的权威目标，结构见下文 | Authoritative objective to interpret and execute after the trigger; see below |
 | `status` | `string` | `pending` / `leased` / `running` / `done` / `failed` / `canceled` | Schedule status |
 | `created_at` | `string` | 创建时间 | Creation time |
+| `origin` | `object[string,string]` | 可选的来源元数据 | Optional provenance metadata |
+| `lease_token` | `string` | 当前租约令牌；无有效租约时为空字符串 | Current lease token; empty when no lease is active |
+| `lease_owner` | `string` | 当前租约工作器；无有效租约时为空字符串 | Current lease worker; empty when no lease is active |
+| `lease_until` | `string` | 当前租约的 UTC 失效时间；无有效租约时为空字符串 | UTC lease expiry; empty when no lease is active |
+| `attempt` | `integer` | 已授予租约的次数，从 `0` 开始 | Number of leases granted, starting at `0` |
+| `last_error` | `string` | 最近一次调度或执行错误；没有错误时为空字符串 | Latest scheduling or execution error; empty when none |
+
+`deferred_objective` fields / `deferred_objective` 字段：
+
+| Field | Type | 中文说明 | English description |
+| --- | --- | --- | --- |
+| `description` | `string` | 触发后仍需完成的自包含工作描述；不是事件报告或执行结果 | Self-contained work still to perform after the trigger; not an event report or execution result |
+| `encoding` | `string` | `native` 表示原生 v2 目标；`legacy_text` 表示从旧文本字段迁移 | `native` for a native v2 objective; `legacy_text` when migrated from an old text field |
+
+Response-only fields / 仅响应字段：
+
+| Field | Type | 中文说明 | English description |
+| --- | --- | --- | --- |
+| `text` | `string` | 已弃用的兼容别名，等于 `deferred_objective.description`，不持久化 | Deprecated compatibility alias for `deferred_objective.description`; not persisted |
 | `due_at_local` | `string` | 响应中派生的本地时区时间 | Response-only derived local due time |
 | `due_display` | `string` | 适合 UI 显示的派生本地时间 | UI-friendly derived local time |
 
-持久化记录只包含前七个字段；`due_at_local` 与 `due_display` 仅在序列化响应时派生。owner 隔离由存储路径和 API 作用域承担，不重复写入每条日程。
+持久化记录包含上表列出的全部 14 个 schema v2 字段。owner 隔离由存储路径和 API 作用域承担，因此 `owner_id` 不写入每条日程。读取旧记录时，服务会把 `text`、`action_payload.prompt`、`title` 或 `source_text` 迁移到 `deferred_objective`，并可用旧 `updated_at` 补齐缺失的 `created_at`；下次保存时统一写回 schema v2。
 
-The durable record contains only the first seven fields. `due_at_local` and `due_display` are derived for responses. Owner isolation lives in the storage namespace and API scope, not in each schedule item.
+The durable record contains all 14 schema v2 fields listed above. Owner isolation lives in the storage namespace and API scope, so `owner_id` is not repeated in each item. When an old record is loaded, `text`, `action_payload.prompt`, `title`, or `source_text` is migrated into `deferred_objective`, and a legacy `updated_at` can supply a missing `created_at`; the next save writes schema v2.
 
 ### 5.11 `ScheduleHeartbeat`
 
@@ -1554,9 +1580,14 @@ Success response:
 {
   "thread_id": "demo-thread",
   "item": {
+    "schema_version": 2,
     "schedule_id": "sch_abc123",
     "thread_id": "work-thread",
-    "text": "The scheduled weekly report time has arrived; submit the report now.",
+    "deferred_objective": {
+      "description": "Submit the scheduled weekly report.",
+      "encoding": "native"
+    },
+    "text": "Submit the scheduled weekly report.",
     "status": "pending"
   }
 }
@@ -1577,16 +1608,19 @@ Request body:
 
 | Field | Type | Required | 中文说明 | English description |
 | --- | --- | --- | --- | --- |
-| `text` | `string` | yes | 到点时发送给智能体的自包含系统式信息 | Self-contained, system-like information delivered to the agent when due |
+| `deferred_objective` | `string` | yes* | 触发后仍需解释和执行的自包含目标 | Self-contained objective to interpret and execute after the trigger |
+| `text` | `string` | no | 已弃用的兼容别名；仅在未提供 `deferred_objective` 时使用 | Deprecated compatibility alias; used only when `deferred_objective` is absent |
 | `due_at` | `string` | yes | ISO datetime 字符串 | ISO datetime string |
 | `timezone_name` | `string` | no | 时区名；无 offset 时间会按该时区解释 | Timezone name used when `due_at` has no offset |
 
 Rules / 规则:
 
-- `text` describes the state at activation time: say that the scheduled time has arrived and what context now matters
-- `text` must not copy the user's original order or depend on relative wording such as “tomorrow”
-- `due_at` must be a valid ISO datetime string
-- if `due_at` has no timezone offset, the server applies `timezone_name`
+- 新客户端必须提供 `deferred_objective`；旧客户端仍可改用 `text` / New clients must send `deferred_objective`; legacy clients may send `text` instead
+- 若同时提供两个字段，其值必须相同，否则服务返回 `400` / If both fields are present, their values must be identical or the server returns `400`
+- `deferred_objective` 描述触发后仍需完成的工作，不是事件报告、证据或执行结果 / `deferred_objective` describes work that remains to be done after the trigger; it is not an event report, evidence, or execution result
+- 目标必须自包含，不能依赖“明天”等相对时间措辞 / The objective must be self-contained and must not depend on relative wording such as “tomorrow”
+- `due_at` 必须是有效的 ISO datetime 字符串 / `due_at` must be a valid ISO datetime string
+- 若 `due_at` 不含时区 offset，服务会应用 `timezone_name` / If `due_at` has no timezone offset, the server applies `timezone_name`
 
 Success response:
 
@@ -1595,9 +1629,14 @@ Success response:
   "success": true,
   "thread_id": "demo-thread",
   "item": {
+    "schema_version": 2,
     "schedule_id": "sch_abc123",
     "thread_id": "demo-thread",
-    "text": "预定的周报提交时间已到，请检查并提交本周周报。",
+    "deferred_objective": {
+      "description": "检查并提交本周周报。",
+      "encoding": "native"
+    },
+    "text": "检查并提交本周周报。",
     "status": "pending",
     "due_at_utc": "2026-04-06T01:30:00Z",
     "due_at_local": "2026-04-06T09:30:00+08:00",

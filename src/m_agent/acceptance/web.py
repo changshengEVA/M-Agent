@@ -8,6 +8,8 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException, Request, status
 from fastapi.responses import FileResponse, JSONResponse
 
+from m_agent import __version__
+
 from .catalog import catalog_payload
 from .manager import RunManager
 from .runner import AcceptanceRunner, RunBusyError
@@ -54,7 +56,7 @@ def create_app(
     )
     app = FastAPI(
         title="M-Agent Semantic Acceptance",
-        version="1.0",
+        version=__version__,
         docs_url=None,
         redoc_url=None,
         openapi_url=None,

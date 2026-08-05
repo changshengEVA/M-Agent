@@ -2,7 +2,8 @@
 # Purpose: local schedule manager backed by JSON files.
 provider: "local_schedule"
 default_timezone_name: "Asia/Shanghai"
-storage_dir: "../../../data/schedules"
+# Empty means <M_AGENT_DATA_DIR>/schedules (or <M_AGENT_HOME-or-cwd>/data/schedules).
+storage_dir: ""
 
 execution:
   query_limit_default: 10

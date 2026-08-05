@@ -1,0 +1,99 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / Python ${{ matrix.python }} / ${{ matrix.dependencies }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            python: "3.10"
+            dependencies: minimum
+          - os: windows-latest
+            python: "3.10"
+            dependencies: minimum
+          - os: ubuntu-latest
+            python: "3.13"
+            dependencies: latest
+          - os: windows-latest
+            python: "3.13"
+            dependencies: latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+          cache: pip
+
+      - name: Upgrade packaging tools
+        run: python -m pip install --upgrade pip setuptools wheel
+
+      - name: Install minimum dependency set
+        if: matrix.dependencies == 'minimum'
+        run: python -m pip install -c requirements/constraints-min.txt -e ".[acceptance]"
+
+      - name: Install latest allowed dependency set
+        if: matrix.dependencies == 'latest'
+        run: python -m pip install --upgrade -e ".[acceptance]"
+
+      - name: Run tests
+        run: python -m pytest
+
+  semantic-gates:
+    name: Runtime semantic gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e ".[acceptance]"
+      - run: python -m m_agent.acceptance contract run --runtime langgraph_v1 --all-layers
+      - run: python scripts/run_runtime_migration_gate.py --rounds 3
+
+  distribution:
+    name: Build and smoke-test distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - run: python -m pip install --upgrade pip build twine
+      - run: python -m build
+      - run: python -m twine check dist/*
+
+      - name: Install wheel without repository fallback
+        run: |
+          python -m venv .wheel-smoke
+          .wheel-smoke/bin/python -m pip install dist/*.whl
+          mkdir .wheel-smoke/run
+
+      - name: Smoke installed metadata, default agent, CLI, and packaged config
+        working-directory: .wheel-smoke/run
+        env:
+          API_SECRET_KEY: offline-smoke-key
+          BASE_URL: http://127.0.0.1:9/v1
+        run: |
+          ../bin/python -c "import m_agent; from importlib.metadata import entry_points; from pathlib import Path; from m_agent.api.chat_api_runtime import ChatServiceRuntime; from m_agent.config_paths import DEFAULT_CHAT_AGENT_CONFIG_PATH as p; from m_agent.agents.email_agent import EmailAgent; from m_agent.agents.schedule_agent import ScheduleAgent; assert m_agent.__version__; assert p.is_file(), p; names={e.name for e in entry_points(group='console_scripts')}; assert {'m-agent-chat','m-agent-acceptance'} <= names; runtime=ChatServiceRuntime(config_path=p, idle_flush_seconds=0); agent=runtime.agent; schedule=ScheduleAgent(); email=EmailAgent(); assert runtime.health_payload()['runtime_engine_id'] == 'langgraph_v1'; assert agent.default_thread_id; assert schedule.store.storage_root == (Path.cwd() / 'data' / 'schedules').resolve(); assert email.gmail_client.config.token_path == (Path.cwd() / '.secrets' / 'gmail' / 'token-readonly.json').resolve(); assert all('gmail.send' not in scope for scope in email.gmail_client.config.scopes); runtime.shutdown(); print(m_agent.__version__, p, type(agent).__name__)"
+          ../bin/m-agent-chat --help

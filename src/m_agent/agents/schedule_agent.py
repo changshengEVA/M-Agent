@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from m_agent.config_paths import DEFAULT_SCHEDULE_AGENT_CONFIG_PATH, resolve_config_path, resolve_related_config_path
+from m_agent.paths import data_root_dir
 from m_agent.schedule.parsing import parse_iso_due_at
 from m_agent.schedule.service import ScheduleService
 from m_agent.schedule.store import ANONYMOUS_OWNER_ID, ScheduleStore
@@ -61,7 +62,7 @@ class ScheduleAgent:
 
     def _resolve_storage_root(self, raw_path: Any) -> Path:
         if raw_path is None or not str(raw_path).strip():
-            return resolve_config_path("data/schedules")
+            return data_root_dir() / "schedules"
         return resolve_related_config_path(self.config_path, raw_path)
 
     @staticmethod

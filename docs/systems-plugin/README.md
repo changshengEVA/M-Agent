@@ -23,15 +23,16 @@ that the complete cognitive-runtime roadmap is already implemented.
 | Episodic subsystem | `SimpleRagEpisodicBackend` is **tool memory**: the model explicitly invokes recall capabilities to search materialized dialogue. It is not runtime-owned System Memory. | System Memory SPI and shadow evaluation in v0.5; automatic selection into the Context Compiler main path in v0.6, subject to release gates. |
 | Strategy | No production `StrategySystem` is mounted by this subsystem bundle. Design documents are roadmap material, not current capability. | Shadow-only matching in v0.6; opt-in guidance in v0.7; a default candidate in v0.8 only if published evaluations pass. |
 
-See the episodic guide for important v0.2 limitations, including identical
-default implementations of `shallow_recall` and `deep_recall`, and the current
-best-effort `episode_note` / flush path.
+See the episodic guide for important v0.2 boundaries. The local backend returns
+an explicit unsupported response for `deep_recall`; committed runtime
+`episode_note` values are carried through the journaled Scene-to-Dialogue flush
+path, but they are not yet typed System Memory or automatic context.
 
-> **Safety:** the current default tools bundle includes capabilities with
-> external side effects. YAML exposure means that a capability is available;
-> it is not a user-authorization or approval guarantee. Review and restrict
-> enabled capabilities before deployment. Deterministic bounded-autonomy
-> policy is roadmap work, not a current runtime guarantee.
+> **Safety:** the default tools bundle is read-oriented and includes only
+> `read` / `emit` effects. Schedule writes and Gmail sending require the
+> explicit `chat_controller_external_writes.yaml` profile. This is an
+> enablement boundary, not interactive user approval; bounded-autonomy policy
+> remains roadmap work.
 
 ---
 

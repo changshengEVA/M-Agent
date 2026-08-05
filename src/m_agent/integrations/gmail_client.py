@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_GMAIL_SCOPES: Tuple[str, ...] = (
     "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/gmail.send",
 )
 
 

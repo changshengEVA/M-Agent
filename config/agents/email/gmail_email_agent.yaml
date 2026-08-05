@@ -1,15 +1,14 @@
 # Used by: `m_agent.agents.email_agent.EmailAgent`
-# Purpose: standalone EmailAgent config using Gmail API only.
+# Purpose: safe-by-default, read-only Gmail configuration.
 provider: "gmail"
 thread_id: "email-agent-1"
 
 gmail:
   user_id: "me"
-  credentials_path: "../../../.secrets/gmail/client_secret.json"
-  token_path: "../../../.secrets/gmail/token.json"
+  credentials_path: ".secrets/gmail/client_secret.json"
+  token_path: ".secrets/gmail/token-readonly.json"
   scopes:
     - "https://www.googleapis.com/auth/gmail.readonly"
-    - "https://www.googleapis.com/auth/gmail.send"
   oauth:
     allow_local_webserver_flow: true
     allow_console_flow: true

@@ -22,13 +22,16 @@ round 列表、建立可检索索引并提供 recall；它不解析 Scene 存储
 
 ## 当前 v0.2 限制
 
-- 默认 backend 的 `shallow_recall` 和 `deep_recall` 都调用同一个 `_recall` 方法。
-  因而两者当前检索行为相同，尚不代表两种具有语义差异的召回深度。
-- `episode_note` 当前是可选的进程内注释缓冲。Transaction-bound Runtime 路径把 note
-  放在 conversation scratch 中，而 `ThinkingAgent.on_flush()` 排空的是 registry 管理的
-  conversation state；两条路径尚未统一。因此不能把 `episode_note` 当成可靠持久记忆。
-- 即使 note 到达默认 backend，`on_flush()` 也只把它合并到最后一个已索引 chunk 的
-  metadata 中；它不会生成类型化、不可变的 Episode，也不是 Runtime 管理的认知记忆。
+- 本地 backend 只实现 `shallow_recall`。它为协议兼容保留 `deep_recall` 方法，但会返回
+  `supported: false` / `reason: deep_recall_not_supported`，不再把浅层检索包装成具有
+  深层语义的召回。
+- 在 transaction-bound Runtime 路径中，成功的 Thinking step 会把 `episode_note` 作为
+  稳定 Scene entry 提交。不可变 Flush snapshot 会把它写入 Dialogue 的
+  `meta.trace_summary.episode_notes`，默认 backend 再按精确 thread/dialogue 建索引；
+  失败的推测步骤不会发布 note。standalone/direct 兼容路径仍使用进程内 recorder，
+  不具备同等持久性保证。
+- 已提交 note 是持久注释 metadata，但还不是类型化、不可变的 Episode，也不是 Runtime
+  管理的认知记忆对象。
 - 当前 Dialogue RAG 索引不维护 Goal、Belief、Expectation、带来源的状态迁移，也不会
   自动注入 Context。这些能力属于未来的系统记忆与 Cognitive State 路线图。
 
@@ -60,7 +63,7 @@ Runtime host 只把 user/assistant entry 导出到 Dialogue 归档，按 Scene �
 |------|------|--------|
 | `RuntimeHost` / `RuntimeFlushOrchestrator` | Scene event、不可变 flush snapshot、runtime commit、materialization journal、completion | RAG chunk、embedding、recall 排序 |
 | Chat memory persistence | Dialogue 校验、归档写入、`turns_to_rounds` 转换 | Runtime transaction state、recall 排序 |
-| `EpisodicMemoryBackend` | `persist_round`、`persist_dialogue`、浅/深 recall API（默认 backend 当前行为相同），以及 note 已送达时的可选合并 | Scene 解析、时间戳修复、flush 调度 |
+| `EpisodicMemoryBackend` | `persist_round`、`persist_dialogue`、按 thread 隔离的浅层 recall、显式返回“不支持”的深层 recall 兼容接口，以及 note 已送达时的可选合并 | Scene 解析、时间戳修复、flush 调度 |
 
 Scene 是正常 Dialogue materialization 的权威来源。Dialogue 归档属于系统产物，
 episodic index 属于子系统产物。
@@ -84,8 +87,8 @@ systems:
 | `query.enabled` | Boolean | `true` | 控制是否暴露 recall capability |
 | `query.capability_names` | List | `shallow_recall`, `deep_recall` | Recall capability 名称 |
 
-产品配置使用 `DefaultEpisodeRecorder`，在内存中缓冲思考层 `episode_note`。这是
-best-effort 注释链路，而不是持久化边界；具体限制见上文。
+`DefaultEpisodeRecorder` 保留给 standalone/direct 兼容调用。transaction-bound 产品
+Runtime 以已提交 Scene entry 和不可变 Flush snapshot 作为持久化边界。
 
 ### 默认 backend 参数
 
@@ -94,7 +97,14 @@ best-effort 注释链路，而不是持久化边界；具体限制见上文。
 | `storage_dir` | RAG 父目录 |
 | `workflow_id` | 索引子目录 |
 | `top_k` | 检索结果数量 |
+| `min_score` | 命中的最低余弦分数（默认 `0.2`）；低于阈值时显式返回 no-hit |
 | `embed_model` | `hash`、`alibaba` 或 `bge` |
+
+离线 `hash` embedder 使用跨进程稳定且有版本号的 BLAKE2b feature hash。索引通过
+原子文件替换发布带校验和的 `chunks.jsonl`、`embeddings.npy` 和
+`index.meta.json`；启动时会从 chunk 日志重建缺失、损坏或不兼容的 metadata / embedding。
+召回在排序前按精确 `thread_id` 过滤，因此一个 thread 的内容不会进入另一个 thread
+的 evidence。
 
 ## Backend Protocol
 
@@ -109,16 +119,18 @@ def on_flush(self, *, thread_id: str, conversation_id: str,
              episode_notes: list[dict]) -> None: ...
 ```
 
-Recall 结果至少包含 `answer`。`persist_*` 是框架调用，不是 LLM 工具。Backend 把
-`rounds` 作为索引写入输入，不依赖 Scene 路径。
+Recall 结果至少包含 `answer`。浅层 no-hit 返回空 answer / evidence、`hit: false` 和
+具体 reason；默认 deep 方法返回上文所述的显式“不支持”结果。`persist_*` 是框架调用，
+不是 LLM 工具。Backend 把 `rounds` 作为索引写入输入，不依赖 Scene 路径。
 
 ## 暴露给 LLM 的表面
 
 | 表面 | 层级 | 说明 |
 |------|------|------|
-| `shallow_recall`, `deep_recall` | 执行层 capability | 通过 `ControllerCapabilityContext` 调用 backend |
+| `shallow_recall` | 默认执行层 capability | 通过 `ControllerCapabilityContext` 调用 backend |
+| `deep_recall` | 默认 tools suite 不启用的兼容 capability | 本地 backend 显式返回“不支持” |
 | Capability 描述 | 思考层 prompt | `config/systems/tools/capabilities/<tool>.yaml` |
-| `episode_note` | 思考层输出 | best-effort 进程内缓冲；当前 transaction-bound 路径尚未统一排空到 `on_flush` |
+| `episode_note` | 思考层输出 | transaction-bound 成功步骤提交到 Scene，再进入冻结的 Dialogue metadata；direct 兼容调用仍为进程内缓冲 |
 | Recall 策略 | Runtime prompt | `config/agents/chat/runtime/chat_controller_runtime.yaml` |
 
 Scene 文件、归档路径、chunk、embedding 与 `persist_*` 不暴露给 LLM。
@@ -144,10 +156,10 @@ Scene 文件、归档路径、chunk、embedding 与 `persist_*` 不暴露给 LLM
 4. Chat memory persistence 写 Dialogue 归档并调用 `backend.persist_dialogue()`。
 5. Host 记录 materialization 已投递，并完成该 segment。
 
-Journal 的设计目标是保持标识和 payload digest 稳定，使进程重启后可以继续未完成的
-Dialogue materialization，并避免重复已确认的归档或索引写入。该契约不代表
-`episode_note` 已经具备统一的持久性：transaction-bound note 可能无法进入基于 registry
-的 drain；已送达的 note 也只会附加到默认 RAG 的最后一个 chunk。
+Journal 保持标识和 payload digest 稳定，使进程重启后可以继续未完成的 Dialogue
+materialization，并避免重复已确认的归档或索引写入。transaction-bound note 属于同一份
+冻结 payload，并且只会按匹配的 thread/dialogue 建索引。旧 `on_flush()` 合并仅作为
+受 thread/dialogue 约束的兼容路径，不会把 note 附加到无关对话。
 
 ## 交付与验证
 

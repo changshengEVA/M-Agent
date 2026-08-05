@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 from collections import defaultdict
@@ -144,6 +145,8 @@ class LangGraphRuntime:
 
         self._thread_event_emitter: Optional[ThreadEventEmitter] = None
         self._drain_locks: Dict[str, threading.Lock] = defaultdict(threading.Lock)
+        self._flush_fence_locks_guard = threading.Lock()
+        self._flush_fence_locks: Dict[str, threading.RLock] = {}
         self._emitting_writer = EmittingSceneWriter(
             self.scene_system.writer,
             self._on_scene_appended,
@@ -209,6 +212,7 @@ class LangGraphRuntime:
             get_history=lambda _tid: None,
             on_runtime_updated=self._emit_runtime_updated,
         )
+        self.recover_pending_flushes()
         self.recover_pending_effect_feedback(schedule_drainers=True)
 
     def _build_turn_engine(
@@ -479,7 +483,9 @@ class LangGraphRuntime:
             activation_id=str(effect.get("activation_id", "") or "") or None,
             delegate_id=str(effect.get("delegate_id", "") or "") or None,
         )
-        stored_id = self.gateway.submit(stimulus, schedule_drainer=False)
+        with self._flush_fence_lock(record.thread_id):
+            self._assert_no_pending_flush(record.thread_id)
+            stored_id = self.gateway.submit(stimulus, schedule_drainer=False)
         stored = self.runtime_store.load_stimulus(stored_id)
         return {
             "stimulus_id": stored_id,
@@ -509,6 +515,52 @@ class LangGraphRuntime:
                     self.drainer.ensure_running(thread_id)
         return recovery
 
+    def recover_pending_flushes(self) -> Dict[str, Any]:
+        """Retry durable Flush sagas oldest-first during startup or repair."""
+
+        return self.flush_orchestrator.recover_pending()
+
+    def has_pending_flush(self, thread_id: str) -> bool:
+        """Expose the durable per-thread admission fence to product hosts."""
+
+        tid = str(thread_id or "").strip()
+        return bool(tid and self.flush_orchestrator.has_pending(thread_id=tid))
+
+    def _flush_fence_lock(self, thread_id: str) -> threading.RLock:
+        """Return the shared lock that orders mutation against Flush prepare."""
+
+        tid = str(thread_id or "").strip()
+        with self._flush_fence_locks_guard:
+            lock = self._flush_fence_locks.get(tid)
+            if lock is None:
+                lock = threading.RLock()
+                self._flush_fence_locks[tid] = lock
+            return lock
+
+    def _assert_no_pending_flush(self, thread_id: str) -> None:
+        tid = str(thread_id or "").strip()
+        if tid and self.has_pending_flush(tid):
+            raise RuntimeError(
+                f"thread {tid!r} is fenced by an unfinished durable flush; "
+                "retry or recover that flush before admitting new work"
+            )
+
+    def _assert_flush_quiescent(self, thread_id: str) -> None:
+        """Reject a new boundary while accepted work can still mutate it."""
+
+        tid = str(thread_id or "").strip()
+        if self.inbox.pending_count(tid) > 0:
+            reason = "stimuli_queued"
+        elif THREAD_CPU_STATE.get_in_flight(tid) is not None:
+            reason = "stimulus_in_flight"
+        elif THREAD_RUNTIME_STATUS.snapshot(tid).drainer_active:
+            reason = "drainer_active"
+        else:
+            return
+        raise RuntimeError(
+            f"thread {tid!r} is not quiescent for durable flush: {reason}"
+        )
+
     def submit_user_message(
         self,
         *,
@@ -518,14 +570,16 @@ class LangGraphRuntime:
         payload: Optional[dict] = None,
         schedule_drainer: bool = True,
     ) -> str:
-        return self.gateway.submit_user_message(
-            thread_id=thread_id,
-            conversation_id=str(conversation_id or "").strip()
-            or f"{thread_id}::0",
-            text=text,
-            payload=payload,
-            schedule_drainer=schedule_drainer,
-        )
+        with self._flush_fence_lock(thread_id):
+            self._assert_no_pending_flush(thread_id)
+            return self.gateway.submit_user_message(
+                thread_id=thread_id,
+                conversation_id=str(conversation_id or "").strip()
+                or f"{thread_id}::0",
+                text=text,
+                payload=payload,
+                schedule_drainer=schedule_drainer,
+            )
 
     def run_thread(
         self,
@@ -536,6 +590,24 @@ class LangGraphRuntime:
         **kwargs: Any,
     ) -> Dict[str, Any]:
         del kwargs
+        tid = str(thread_id or "").strip()
+        with self._flush_fence_lock(tid):
+            self._assert_no_pending_flush(tid)
+            return self._run_thread_unfenced(
+                tid,
+                history_messages=history_messages,
+                event_emitter=event_emitter,
+            )
+
+    def _run_thread_unfenced(
+        self,
+        thread_id: str,
+        *,
+        history_messages: Optional[List[Dict[str, Any]]] = None,
+        event_emitter: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ) -> Dict[str, Any]:
+        """Drain one thread while its Flush fence is already held."""
+
         tid = str(thread_id or "").strip()
         resolved_history = history_messages
         if resolved_history is None and self._history_provider is not None:
@@ -585,6 +657,26 @@ class LangGraphRuntime:
         Bypasses the R2 turn loop on purpose: this is the scripted single-step
         entry used by dev tooling, not the thinking/delegate path.
         """
+
+        record = self.registry.get(transaction_id)
+        if record is None:
+            raise ValueError(f"unknown transaction: {transaction_id}")
+        with self._flush_fence_lock(record.thread_id):
+            self._assert_no_pending_flush(record.thread_id)
+            return self._advance_transaction_unfenced(
+                transaction_id,
+                user_text=user_text,
+                transition_id=transition_id,
+            )
+
+    def _advance_transaction_unfenced(
+        self,
+        transaction_id: str,
+        *,
+        user_text: str,
+        transition_id: str,
+    ) -> Dict[str, Any]:
+        """Advance a transaction while its Flush fence is already held."""
 
         record = self.registry.get(transaction_id)
         if record is None:
@@ -650,6 +742,19 @@ class LangGraphRuntime:
         }
 
     def force_stop_thread(
+        self,
+        thread_id: str,
+        *,
+        reason: str = "user_requested",
+    ) -> Dict[str, Any]:
+        tid = str(thread_id or "").strip()
+        if not tid:
+            raise ValueError("thread_id is required")
+        with self._flush_fence_lock(tid):
+            self._assert_no_pending_flush(tid)
+            return self._force_stop_thread_unfenced(tid, reason=reason)
+
+    def _force_stop_thread_unfenced(
         self,
         thread_id: str,
         *,
@@ -725,30 +830,33 @@ class LangGraphRuntime:
         run_id: str = "",
         owner_id: str = "",
     ) -> Dict[str, Any]:
-        body = dict(payload or {})
-        if run_id:
-            body["run_id"] = run_id
-        if owner_id:
-            body["owner_id"] = owner_id
-        stimulus_id = self.gateway.submit_heartbeat(
-            thread_id=thread_id,
-            conversation_id=str(conversation_id or "").strip() or f"{thread_id}::0",
-            schedule_id=schedule_id,
-            text=text,
-            payload=body,
-        )
-        pending = self.inbox.pending_count(thread_id)
-        snap = THREAD_RUNTIME_STATUS.snapshot(thread_id)
-        return {
-            "stimulus_id": stimulus_id,
-            "thread_id": thread_id,
-            "schedule_id": schedule_id,
-            "run_id": run_id,
-            "pending_count": pending,
-            "effective_depth": snap.effective_depth,
-            "runtime_phase": snap.runtime_phase,
-            "accepted": True,
-        }
+        with self._flush_fence_lock(thread_id):
+            self._assert_no_pending_flush(thread_id)
+            body = dict(payload or {})
+            if run_id:
+                body["run_id"] = run_id
+            if owner_id:
+                body["owner_id"] = owner_id
+            stimulus_id = self.gateway.submit_heartbeat(
+                thread_id=thread_id,
+                conversation_id=str(conversation_id or "").strip()
+                or f"{thread_id}::0",
+                schedule_id=schedule_id,
+                text=text,
+                payload=body,
+            )
+            pending = self.inbox.pending_count(thread_id)
+            snap = THREAD_RUNTIME_STATUS.snapshot(thread_id)
+            return {
+                "stimulus_id": stimulus_id,
+                "thread_id": thread_id,
+                "schedule_id": schedule_id,
+                "run_id": run_id,
+                "pending_count": pending,
+                "effective_depth": snap.effective_depth,
+                "runtime_phase": snap.runtime_phase,
+                "accepted": True,
+            }
 
     def list_transactions(
         self,
@@ -773,14 +881,16 @@ class LangGraphRuntime:
         expected_revision: int,
         idempotency_key: str,
     ) -> Dict[str, Any]:
-        return delete_runtime_transaction(
-            self,
-            thread_id=thread_id,
-            conversation_id=conversation_id,
-            transaction_id=transaction_id,
-            expected_revision=expected_revision,
-            idempotency_key=idempotency_key,
-        )
+        with self._flush_fence_lock(thread_id):
+            self._assert_no_pending_flush(thread_id)
+            return delete_runtime_transaction(
+                self,
+                thread_id=thread_id,
+                conversation_id=conversation_id,
+                transaction_id=transaction_id,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
+            )
 
     def list_scene(
         self,
@@ -821,6 +931,45 @@ class LangGraphRuntime:
             emit_runtime_updated=self._emit_runtime_updated,
         )
 
+    def load_committed_flush_segment(
+        self,
+        thread_id: str,
+        *,
+        conversation_id: str,
+        flush_id: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Load a stable runtime Flush result committed before journal ack."""
+
+        stable_flush_id = str(flush_id or "").strip()
+        cid = str(conversation_id or "").strip()
+        if not stable_flush_id or not cid:
+            return None
+        with self.runtime_store.unit_of_work() as uow:
+            row = uow.connection.execute(
+                """
+                SELECT conversation_id, result_json
+                FROM flush_operations
+                WHERE flush_id = ? AND status = 'committed'
+                """,
+                (stable_flush_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if str(row["conversation_id"] or "").strip() != cid:
+            raise RuntimeError(
+                "committed runtime flush conversation does not match journal"
+            )
+        stored = json.loads(str(row["result_json"] or "{}"))
+        return {
+            "thread_id": str(thread_id or "").strip(),
+            "flush_id": stable_flush_id,
+            "completed_transaction_id": None,
+            "archived_transaction_ids": list(
+                stored.get("archived_transaction_ids", []) or []
+            ),
+            "episode_notes_drained": 0,
+        }
+
     def prepare_flush_segment(
         self,
         thread_id: str,
@@ -828,11 +977,13 @@ class LangGraphRuntime:
         conversation_id: str,
         source: str = "chat_api_thread_flush",
     ) -> Dict[str, Any]:
-        return self.flush_orchestrator.prepare(
-            thread_id,
-            conversation_id=conversation_id,
-            source=source,
-        )
+        with self._flush_fence_lock(thread_id):
+            self._assert_flush_quiescent(thread_id)
+            return self.flush_orchestrator.prepare(
+                thread_id,
+                conversation_id=conversation_id,
+                source=source,
+            )
 
     def stage_flush_materialization(
         self,

@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional, Sequence
 
 from fastapi.testclient import TestClient
 
+from m_agent import __version__
 from m_agent.acceptance.manager import RunManager
 from m_agent.acceptance.web import create_app
 
@@ -150,6 +151,7 @@ def _client(
 
 def test_local_dashboard_and_catalog_are_served_with_security_headers() -> None:
     client, _manager, _scenario_manager = _client()
+    assert client.app.version == __version__
     page = client.get("/")
     catalog = client.get("/api/catalog")
     contract_catalog = client.get("/api/contract/catalog")

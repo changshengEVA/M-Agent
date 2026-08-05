@@ -13,6 +13,7 @@ from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
+from m_agent import __version__
 from m_agent.api.user_access import AuthenticatedUser, UserAccessError, UserAccessService
 from m_agent.paths import PROJECT_ROOT
 from m_agent.runtime.transaction_control import (
@@ -51,7 +52,7 @@ from .chat_api_records import (
     _THREAD_EVENTS,
     wire_runtime_event_sink,
 )
-from .chat_api_runtime import ChatServiceRuntime
+from .chat_api_runtime import ChatServiceRuntime, PendingFlushAdmissionError
 from .schedule_heartbeat import ScheduleHeartbeatCoordinator
 from .chat_api_shared import (
     ensure_dialogue_archive,
@@ -346,7 +347,7 @@ def create_app(
             if user_access is not None:
                 user_access.shutdown()
 
-    app = FastAPI(title="M-Agent Chat API", version="0.2.0", lifespan=lifespan)
+    app = FastAPI(title="M-Agent Chat API", version=__version__, lifespan=lifespan)
     app.state.service_runtime = service_runtime
     app.state.user_access = user_access
     app.state.schedule_heartbeat = schedule_heartbeat
@@ -517,6 +518,7 @@ def create_app(
         return {
             "ok": True,
             "service": "m-agent-chat-api",
+            "version": __version__,
             "root": str(PROJECT_ROOT),
             "runtime": service_runtime.health_payload(),
             "schedule_heartbeat": schedule_heartbeat.health_payload(),
@@ -1132,11 +1134,18 @@ def create_app(
         if not message and not _has_effective_attachment(attachments):
             return JSONResponse(status_code=400, content={"error": "text and attachments are both empty"})
         user_turn = _build_user_turn_payload(message=message, attachments=attachments)
-        result = active_runtime.submit_stimulus(
-            thread_id=runtime_thread_id,
-            message=message,
-            user_turn=user_turn,
-        )
+        try:
+            result = active_runtime.submit_stimulus(
+                thread_id=runtime_thread_id,
+                message=message,
+                user_turn=user_turn,
+            )
+        except PendingFlushAdmissionError as exc:
+            return _error_response(
+                status_code=409,
+                message=str(exc),
+                extra={"code": "pending_flush"},
+            )
         result["thread_id"] = public_thread_id
         return JSONResponse(status_code=202, content=result)
 

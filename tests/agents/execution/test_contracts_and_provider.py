@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from m_agent.layers.execution import (
@@ -8,6 +10,7 @@ from m_agent.layers.execution import (
     ModelProvider,
 )
 from m_agent.systems.episodic import EpisodeQueryModule
+from m_agent.layers.execution import model_provider as model_provider_module
 
 
 def test_execution_result_tool_call_count_and_names() -> None:
@@ -77,3 +80,38 @@ def test_model_provider_invoke_with_network_retry_returns_first_success() -> Non
     provider = ModelProvider(model=None, network_retry_attempts=3)
     assert provider.invoke_with_network_retry(fake_invoke) == "ok-1"
     assert calls == [1]
+
+
+def test_model_provider_honors_openai_compatible_environment(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "chat_model.yaml"
+    config_path.write_text(
+        "model_name: openai:deepseek-chat\nagent_temperature: 0.0\n",
+        encoding="utf-8",
+    )
+    captured = {}
+
+    def fake_init_chat_model(model: str, **kwargs):
+        captured["model"] = model
+        captured["kwargs"] = kwargs
+        return object()
+
+    monkeypatch.setenv("API_SECRET_KEY", "compatible-test-key")
+    monkeypatch.setenv("BASE_URL", "https://compatible.example/v1")
+    monkeypatch.setenv("OPENAI_MODEL", "gpt-4o-mini")
+    monkeypatch.setattr(
+        model_provider_module,
+        "init_chat_model",
+        fake_init_chat_model,
+    )
+
+    provider = model_provider_module.build_model_provider_from_config(
+        config_path,
+    )
+
+    assert provider.model_name == "gpt-4o-mini"
+    assert captured["model"] == "openai:gpt-4o-mini"
+    assert os.environ["OPENAI_API_KEY"] == "compatible-test-key"
+    assert os.environ["OPENAI_BASE_URL"] == "https://compatible.example/v1"

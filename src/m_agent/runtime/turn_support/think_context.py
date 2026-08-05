@@ -82,10 +82,8 @@ def format_scene_tail(
             context_refs[entry_tx] = f"context_{len(context_refs) + 1}"
         return context_refs[entry_tx]
 
-    lines: List[str] = [
-        "[Scene Context — contextual history, not Observed Evidence]"
-    ]
-    used = 0
+    header = "[Scene Context — contextual history, not Observed Evidence]"
+    rendered: List[str] = []
     for entry in entries:
         scope = tx_ref(entry)
         if (
@@ -101,11 +99,53 @@ def format_scene_tail(
             f"[tx={scope} {entry.actor.value}/{entry.entry_type.value}] "
             f"{entry.text}"
         )
-        if used + len(line) > max_chars:
+        rendered.append(line)
+
+    # Context is a chronological suffix. Select it newest-first so a long
+    # segment can never retain stale entries by dropping the latest evidence.
+    # Reverse the selected suffix again before rendering to preserve Scene
+    # order for the model.
+    budget = max(0, int(max_chars or 0) - len(header) - 1)
+    selected_reversed: List[str] = []
+    used = 0
+    for line in reversed(rendered):
+        separator = 1 if selected_reversed else 0
+        required = len(line) + separator
+        if required > budget - used:
+            if not selected_reversed and budget > 3:
+                # A single oversized newest entry is still more useful than
+                # an empty or stale context.
+                selected_reversed.append(line[: budget - 3].rstrip() + "...")
             break
-        lines.append(line)
-        used += len(line)
-    return "\n".join(lines)
+        selected_reversed.append(line)
+        used += required
+    if not selected_reversed:
+        return header
+    return "\n".join([header, *reversed(selected_reversed)])
+
+
+def _is_current_user_scene_entry(
+    entry: SceneEntry,
+    *,
+    stimulus: StimulusEnvelope,
+    transaction: TransactionRecord,
+) -> bool:
+    """Return whether ``entry`` is the Scene copy of this user stimulus."""
+
+    if stimulus.kind != StimulusKind.USER_MESSAGE:
+        return False
+    if entry.actor != SceneActor.USER or entry.entry_type != SceneEntryType.UTTERANCE:
+        return False
+    stimulus_id = str(stimulus.stimulus_id or "").strip()
+    append_id = str(entry.append_id or "").strip()
+    if stimulus_id and append_id:
+        return append_id == stimulus_id
+    # Compatibility fallback for Scene writers that predate append identity.
+    return bool(
+        str(entry.transaction_id or "").strip() == transaction.transaction_id
+        and str(entry.occurred_at or "").strip() == str(stimulus.occurred_at or "").strip()
+        and str(entry.text or "").strip() == str(stimulus.text or "").strip()
+    )
 
 
 def latest_user_utterance_from_scene(entries: List[SceneEntry]) -> str:
@@ -158,6 +198,15 @@ def build_perception_for_stimulus(
         stimulus=stimulus,
         payload=payload,
     )
+    context_tail = [
+        entry
+        for entry in scene_tail
+        if not _is_current_user_scene_entry(
+            entry,
+            stimulus=stimulus,
+            transaction=transaction,
+        )
+    ]
     return build_perception_input(
         thread_id=transaction.thread_id,
         conversation_id=transaction.conversation_id,
@@ -165,7 +214,7 @@ def build_perception_for_stimulus(
         stimulus=replace(stimulus.stimulus, text=user_message, payload=payload),
         history_messages=history_messages,
         scene_context=format_scene_tail(
-            scene_tail,
+            context_tail,
             current_transaction_id=transaction.transaction_id,
         ),
         activation=activation,

@@ -21,12 +21,13 @@
 | Episodic 子系统 | `SimpleRagEpisodicBackend` 属于**工具记忆**：模型显式调用 recall capability，检索已物化的对话。它不是由 Runtime 管理的系统记忆。 | v0.5 接入 System Memory SPI 并进行 Shadow 评估；v0.6 在满足放行条件后，由 Context Compiler 自动选择并进入认知主链。 |
 | Strategy | 当前子系统 bundle 没有挂载生产可用的 `StrategySystem`。现有设计文档属于路线图材料，不代表当前能力。 | v0.6 仅 Shadow 匹配；v0.7 可选注入；v0.8 只有在公开评测达标后才成为默认候选。 |
 
-v0.2 的重要限制见 Episodic 专题，包括默认 `shallow_recall` 与 `deep_recall`
-实现相同，以及当前 `episode_note` / flush 链路只具备 best-effort 语义。
+v0.2 的重要边界见 Episodic 专题：本地 backend 对 `deep_recall` 显式返回“不支持”；
+Runtime 已提交的 `episode_note` 会经过带 Journal 的 Scene→Dialogue Flush 链路持久化，
+但它还不是类型化的系统记忆，也不会自动注入 Context。
 
-> **安全提示：**当前默认 tools bundle 包含具有外部副作用的 capability。YAML 中暴露
-> capability 只表示它可被使用，不等于已经获得用户授权或审批。部署前必须检查并收紧
-> 启用项。确定性的受控自主策略属于后续路线图，不是当前 Runtime 的保证。
+> **安全提示：**默认 tools bundle 只启用 `read` / `emit` 类能力。日程写入和 Gmail
+> 发送必须显式选择 `chat_controller_external_writes.yaml`。这只是能力启用边界，
+> 不等于交互式用户审批；受控自主策略仍属于后续路线图。
 
 ---
 

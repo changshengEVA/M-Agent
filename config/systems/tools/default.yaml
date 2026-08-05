@@ -5,18 +5,17 @@ system: tools
 
 capabilities_dir: ./capabilities
 
+# Safe-by-default surface: read operations plus reply emission only.
+# Deployments that intentionally permit writes/sends can select
+# external_writes_enabled.yaml instead.
 enabled:
   - shallow_recall
-  - deep_recall
   - reply_to_user
   - get_current_time
   - web_search
-  - schedule_create
   - schedule_query
-  - schedule_delete
   - email_ask
   - email_read
-  - email_send
 
 defaults:
   __controller__:

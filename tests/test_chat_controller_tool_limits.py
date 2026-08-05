@@ -60,6 +60,8 @@ def test_memory_recall_tools_share_group_limit() -> None:
     assert blocked["max_calls_per_turn"] == 8
     assert len(backend.shallow_calls) == 4
     assert len(backend.deep_calls) == 4
+    assert {item["thread_id"] for item in backend.shallow_calls} == {"thread-1"}
+    assert {item["thread_id"] for item in backend.deep_calls} == {"thread-1"}
     assert len(context.controller_state["history"]) == 8
 
 

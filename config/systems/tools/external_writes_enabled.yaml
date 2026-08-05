@@ -1,0 +1,26 @@
+# Explicit opt-in Tool-Suite profile for externally mutating capabilities.
+# Point `systems.tools` at this file only when schedule writes and email send
+# are intended for the deployment. Email sending also requires the explicit
+# gmail_email_agent_external_writes.yaml OAuth configuration. The ordinary
+# default profiles remain read-only.
+system: tools
+
+capabilities_dir: ./capabilities
+
+enabled:
+  - shallow_recall
+  - reply_to_user
+  - get_current_time
+  - web_search
+  - schedule_create
+  - schedule_query
+  - schedule_delete
+  - email_ask
+  - email_read
+  - email_send
+
+defaults:
+  __controller__:
+    max_calls_per_turn: 12
+  memory_recall:
+    max_calls_per_turn: 8

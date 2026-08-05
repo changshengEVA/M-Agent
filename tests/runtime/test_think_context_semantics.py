@@ -12,6 +12,7 @@ from m_agent.runtime.domain.contracts import (
 )
 from m_agent.runtime.turn_support.think_context import (
     build_perception_for_stimulus,
+    format_scene_tail,
 )
 from m_agent.runtime.transaction.registry import TransactionRegistry
 from m_agent.systems.scene.default import SceneReaderAdapter, SceneWriterAdapter
@@ -238,3 +239,92 @@ def test_execution_feedback_becomes_typed_evidence() -> None:
     assert evidence.evidence_type == "assistant_reply_committed"
     assert evidence.source == "reply_to_user"
     assert evidence.summary == "Time to cook"
+
+
+def test_current_user_stimulus_is_not_duplicated_in_scene_context() -> None:
+    reader, writer = _scene()
+    transaction = TransactionRegistry().create(
+        thread_id="thread-1",
+        conversation_id="conversation-1",
+        kind=TransactionKind.USER_TASK,
+    )
+    writer.append(
+        "conversation-1",
+        SceneEntry(
+            seq=0,
+            occurred_at="2026-08-01T09:25:30Z",
+            entry_type=SceneEntryType.UTTERANCE,
+            actor=SceneActor.USER,
+            text="older context",
+            append_id="stim-old",
+            transaction_id=transaction.transaction_id,
+        ),
+    )
+    writer.append(
+        "conversation-1",
+        SceneEntry(
+            seq=0,
+            occurred_at="2026-08-01T09:25:31Z",
+            entry_type=SceneEntryType.UTTERANCE,
+            actor=SceneActor.USER,
+            text="CURRENT-ONLY-ONCE",
+            append_id="stim-current",
+            transaction_id=transaction.transaction_id,
+        ),
+    )
+    stimulus = StimulusEnvelope(
+        stimulus_id="stim-current",
+        thread_id="thread-1",
+        conversation_id="conversation-1",
+        stimulus=Stimulus(
+            kind=StimulusKind.USER_MESSAGE,
+            text="CURRENT-ONLY-ONCE",
+            payload={},
+        ),
+        occurred_at="2026-08-01T09:25:31Z",
+        transaction_id=transaction.transaction_id,
+    )
+
+    perception = build_perception_for_stimulus(
+        transaction=transaction,
+        stimulus=stimulus,
+        scene_reader=reader,
+        scene_context_max_entries=20,
+    )
+
+    assert perception.stimulus.text == "CURRENT-ONLY-ONCE"
+    assert "older context" in perception.scene_context
+    assert "CURRENT-ONLY-ONCE" not in perception.scene_context
+
+
+def test_scene_character_budget_keeps_latest_chronological_suffix() -> None:
+    entries = [
+        SceneEntry(
+            seq=index,
+            occurred_at=f"2026-08-01T09:25:{index:02d}Z",
+            entry_type=SceneEntryType.REPLY,
+            actor=SceneActor.ASSISTANT,
+            text=("old-entry-" + str(index)) * 8,
+            transaction_id="txn-1",
+        )
+        for index in range(1, 4)
+    ]
+    entries.append(
+        SceneEntry(
+            seq=4,
+            occurred_at="2026-08-01T09:25:04Z",
+            entry_type=SceneEntryType.REPLY,
+            actor=SceneActor.ASSISTANT,
+            text="LATEST-MUST-SURVIVE",
+            transaction_id="txn-1",
+        )
+    )
+
+    rendered = format_scene_tail(
+        entries,
+        current_transaction_id="txn-1",
+        max_chars=180,
+    )
+
+    assert "LATEST-MUST-SURVIVE" in rendered
+    assert "old-entry-1" not in rendered

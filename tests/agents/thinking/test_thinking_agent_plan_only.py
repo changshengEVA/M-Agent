@@ -224,6 +224,19 @@ def test_single_call_accepts_a_raw_dict_and_validates_it_as_joint_output() -> No
     assert fake_model.called_schemas == [ThinkingTurnOutput]
 
 
+def test_current_user_text_appears_once_across_joint_prompt_messages() -> None:
+    marker = "UNIQUE-CURRENT-UTTERANCE-7F2A"
+    agent, fake_model = _make_agent(
+        [_turn(mode="answer_directly", answer="Acknowledged")]
+    )
+
+    agent.handle(_make_perception(user_message=marker))
+
+    messages = fake_model.structured_calls(ThinkingTurnOutput)[0]
+    assert sum(message["content"].count(marker) for message in messages) == 1
+    assert messages[-1] == {"role": "user", "content": marker}
+
+
 def test_full_task_state_preserves_goal_and_completed_history_across_turns() -> None:
     agent, fake_model = _make_agent(
         [
@@ -455,6 +468,39 @@ def test_reason_is_not_copied_into_episode_memory_or_user_fields() -> None:
     drained = agent.on_flush("t1::0", thread_id="t1")
     assert [item["note"] for item in drained] == ["Durable note"]
     assert reason not in repr(drained)
+
+
+def test_transaction_bound_episode_notes_wait_for_runtime_commit() -> None:
+    agent, _ = _make_agent(
+        [
+            _turn(
+                mode="answer_directly",
+                answer="Visible answer",
+                episode_note="Runtime-owned durable note",
+            )
+        ]
+    )
+    record = TransactionRecord(
+        transaction_id="txn-runtime-note",
+        thread_id="t1",
+        conversation_id="t1::runtime",
+        state=TransactionState.CONTINUE,
+    )
+
+    decision = agent.handle(
+        _make_perception(
+            conversation_id=record.conversation_id,
+            transaction_id=record.transaction_id,
+        ),
+        transaction_state=record,
+    )
+
+    assert decision.episode_note == "Runtime-owned durable note"
+    # The graph's commit node will persist the note as an idempotent Scene
+    # marker. Until then, neither snapshot nor flush may expose it.
+    assert agent.snapshot_episode_notes(record.conversation_id) == []
+    assert agent.on_flush(record.conversation_id, thread_id=record.thread_id) == []
+    assert agent.snapshot_episode_notes(record.conversation_id) == []
 
 
 def test_single_call_preserves_compatible_sse_event_sequence_and_payloads() -> None:

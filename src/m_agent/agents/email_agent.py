@@ -16,6 +16,7 @@ from langchain.tools import tool
 
 from m_agent.config_paths import DEFAULT_EMAIL_AGENT_CONFIG_PATH, resolve_config_path, resolve_related_config_path
 from m_agent.integrations.gmail_client import GmailApiClient, GmailClientConfig
+from m_agent.paths import secrets_root_dir
 
 
 logger = logging.getLogger(__name__)
@@ -103,6 +104,9 @@ class EmailAgent:
     def _resolve_optional_related_path(self, raw_path: Any) -> Optional[Path]:
         if raw_path is None or not str(raw_path).strip():
             return None
+        candidate = Path(str(raw_path).strip())
+        if not candidate.is_absolute() and candidate.parts and candidate.parts[0] == ".secrets":
+            return (secrets_root_dir() / Path(*candidate.parts[1:])).resolve()
         return resolve_related_config_path(self.config_path, raw_path)
 
     def _build_gmail_client(self) -> GmailApiClient:

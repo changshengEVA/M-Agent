@@ -78,6 +78,11 @@ class ScheduleItem:
     status: str = SCHEDULE_STATUS_PENDING
     created_at: str = ""
     origin: Dict[str, str] = field(default_factory=dict)
+    lease_token: str = ""
+    lease_owner: str = ""
+    lease_until: str = ""
+    attempt: int = 0
+    last_error: str = ""
     schema_version: int = SCHEDULE_SCHEMA_VERSION
 
     @property
@@ -101,6 +106,11 @@ class ScheduleItem:
                 for key, value in dict(self.origin or {}).items()
                 if str(key).strip() and str(value or "").strip()
             },
+            "lease_token": str(self.lease_token or "").strip(),
+            "lease_owner": str(self.lease_owner or "").strip(),
+            "lease_until": str(self.lease_until or "").strip(),
+            "attempt": max(0, int(self.attempt or 0)),
+            "last_error": str(self.last_error or "").strip(),
         }
 
     @classmethod
@@ -140,6 +150,10 @@ class ScheduleItem:
             )
             if str(key).strip() and str(value or "").strip()
         }
+        try:
+            attempt = max(0, int(data.get("attempt", 0) or 0))
+        except (TypeError, ValueError):
+            attempt = 0
 
         return cls(
             schedule_id=str(data.get("schedule_id", "") or "").strip(),
@@ -150,5 +164,10 @@ class ScheduleItem:
             status=str(data.get("status", "") or "").strip() or SCHEDULE_STATUS_PENDING,
             created_at=created_at,
             origin=origin,
+            lease_token=str(data.get("lease_token", "") or "").strip(),
+            lease_owner=str(data.get("lease_owner", "") or "").strip(),
+            lease_until=str(data.get("lease_until", "") or "").strip(),
+            attempt=attempt,
+            last_error=str(data.get("last_error", "") or "").strip(),
             schema_version=SCHEDULE_SCHEMA_VERSION,
         )

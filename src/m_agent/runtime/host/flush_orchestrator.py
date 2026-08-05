@@ -16,7 +16,9 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+import logging
 from pathlib import Path
+import threading
 from typing import Any, Dict, Mapping, Optional
 
 from m_agent.runtime.domain.contracts import (
@@ -26,6 +28,9 @@ from m_agent.runtime.domain.contracts import (
 )
 
 from .flush_journal import FlushJournal, FlushRecord
+
+
+logger = logging.getLogger(__name__)
 
 
 class RuntimeFlushOrchestrator:
@@ -39,6 +44,20 @@ class RuntimeFlushOrchestrator:
     ) -> None:
         self._runtime = runtime
         self._journal = FlushJournal(journal_path)
+        self._recovery_lock = threading.RLock()
+        self._last_recovery: Dict[str, Any] = {
+            "attempted": False,
+            "attempted_at": None,
+            "pending_before": 0,
+            "recovered": [],
+            "recovered_count": 0,
+            "failed": [],
+            "failure_count": 0,
+            "blocked": [],
+            "blocked_count": 0,
+            "blocked_threads": [],
+            "pending_after": len(self._journal.list_pending()),
+        }
 
     @property
     def journal(self) -> FlushJournal:
@@ -67,6 +86,21 @@ class RuntimeFlushOrchestrator:
             if not isinstance(raw_entry, Mapping):
                 raise TypeError("flush snapshot Scene entry must be a mapping")
             entries.append(SceneEntry.from_dict(dict(raw_entry)))
+        episode_notes = [
+            {
+                "note_id": str(entry.append_id or f"scene:{entry.seq}"),
+                "note": str(entry.text or "").strip(),
+                "turn_meta": {
+                    "source": "committed_scene",
+                    "scene_seq": int(entry.seq),
+                    "occurred_at": str(entry.occurred_at or ""),
+                    "transaction_id": str(entry.transaction_id or ""),
+                },
+            }
+            for entry in entries
+            if str(entry.payload_ref or "").strip() == "episode_note:v1"
+            and str(entry.text or "").strip()
+        ]
         dialogue_entries = [
             entry
             for entry in entries
@@ -92,7 +126,7 @@ class RuntimeFlushOrchestrator:
         if created_at.tzinfo is None:
             created_at = created_at.replace(tzinfo=timezone.utc)
         agent = getattr(self._runtime, "agent", None)
-        return build_dialogue_payload_from_scene_entries(
+        payload = build_dialogue_payload_from_scene_entries(
             dialogue_id=build_dialogue_id(
                 thread_id=thread_id,
                 created_at=created_at,
@@ -106,6 +140,11 @@ class RuntimeFlushOrchestrator:
                 or "Memory Assistant"
             ),
         )
+        if episode_notes:
+            meta = payload.setdefault("meta", {})
+            trace = meta.setdefault("trace_summary", {})
+            trace["episode_notes"] = episode_notes
+        return payload
 
     def _capture_snapshot(
         self,
@@ -345,12 +384,389 @@ class RuntimeFlushOrchestrator:
     def complete(self, flush_id: str) -> Dict[str, Any]:
         return self._journal.mark_completed(flush_id).to_dict()
 
-    def health(self) -> Dict[str, Any]:
+    def _dialogue_payload_for_recovery(
+        self,
+        record: FlushRecord,
+    ) -> Optional[Dict[str, Any]]:
+        snapshot = record.snapshot
+        frozen = snapshot.get("dialogue_payload")
+        if isinstance(frozen, Mapping):
+            return deepcopy(dict(frozen))
+        if frozen is not None:
+            raise TypeError("FlushSnapshot dialogue_payload must be a mapping")
+
+        runtimes = snapshot.get("runtimes")
+        if not isinstance(runtimes, Mapping):
+            raise TypeError("FlushSnapshot runtimes must be a mapping")
+        boundary = runtimes.get(self.runtime_id)
+        if not isinstance(boundary, Mapping):
+            raise RuntimeError(
+                f"FlushSnapshot is missing runtime boundary {self.runtime_id!r}"
+            )
+        return self._dialogue_payload_from_snapshot(
+            thread_id=record.thread_id,
+            source=str(
+                snapshot.get("source", "chat_api_thread_flush")
+                or "chat_api_thread_flush"
+            ),
+            runtime_snapshot=boundary,
+        )
+
+    @staticmethod
+    def _dialogue_materialization_payload(
+        dialogue_payload: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        frozen = deepcopy(dict(dialogue_payload))
+        dialogue_id = str(frozen.get("dialogue_id", "") or "").strip()
+        if not dialogue_id:
+            raise ValueError("recovery dialogue_payload dialogue_id is required")
+        turns = frozen.get("turns")
+        turns = turns if isinstance(turns, list) else []
+        meta = frozen.get("meta")
+        meta = meta if isinstance(meta, Mapping) else {}
         return {
-            "persistent": self._journal.path is not None,
-            "path": str(self._journal.path) if self._journal.path else None,
-            "pending_flushes": len(self._journal.list_pending()),
+            "dialogue_payload": frozen,
+            "flush_mode": "scene",
+            "rounds_flushed": max(0, int(meta.get("round_count", 0) or 0)),
+            "turns_flushed": len(turns),
         }
+
+    @staticmethod
+    def _summarize_dialogue_result(result: Mapping[str, Any]) -> Dict[str, Any]:
+        payload = dict(result)
+        import_result = payload.get("import_result")
+        import_result = import_result if isinstance(import_result, Mapping) else {}
+        scene_build_result = import_result.get("scene_build_result")
+        scene_build_result = (
+            scene_build_result
+            if isinstance(scene_build_result, Mapping)
+            else {}
+        )
+        fact_import_stats = scene_build_result.get("fact_import_stats")
+        fact_import_stats = (
+            fact_import_stats
+            if isinstance(fact_import_stats, Mapping)
+            else {}
+        )
+        align_result = fact_import_stats.get("entity_profile_align_result")
+        align_result = align_result if isinstance(align_result, Mapping) else {}
+        return {
+            "success": bool(payload.get("success", False)),
+            "dialogue_id": (
+                str(payload.get("dialogue_id", "") or "").strip() or None
+            ),
+            "episode_id": (
+                str(payload.get("episode_id", "") or "").strip() or None
+            ),
+            "round_count": int(payload.get("round_count", 0) or 0),
+            "turn_count": int(payload.get("turn_count", 0) or 0),
+            "import_success": (
+                bool(import_result.get("success")) if import_result else None
+            ),
+            "scene_build_success": (
+                bool(scene_build_result.get("success"))
+                if scene_build_result
+                else None
+            ),
+            "entity_profile_align_success": (
+                bool(align_result.get("success")) if align_result else None
+            ),
+        }
+
+    @staticmethod
+    def _required_next_conversation_seq(record: FlushRecord) -> int:
+        prefix, separator, raw_sequence = record.conversation_id.rpartition("::")
+        if separator != "::" or prefix != record.thread_id:
+            raise ValueError(
+                "pending flush conversation_id must be thread_id::N"
+            )
+        try:
+            sequence = int(raw_sequence)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "pending flush conversation_id sequence must be an integer"
+            ) from exc
+        if sequence < 0:
+            raise ValueError(
+                "pending flush conversation_id sequence must be non-negative"
+            )
+        return sequence + 1
+
+    def _advance_conversation_sequence(
+        self,
+        record: FlushRecord,
+    ) -> Dict[str, int]:
+        load = getattr(self._runtime, "load_conversation_seq", None)
+        persist = getattr(self._runtime, "persist_conversation_seq", None)
+        if not callable(load) or not callable(persist):
+            raise RuntimeError(
+                "runtime host cannot persist a conversation sequence"
+            )
+        required = self._required_next_conversation_seq(record)
+        before = max(0, int(load(record.thread_id) or 0))
+        if before < required:
+            persist(record.thread_id, required)
+        after = max(0, int(load(record.thread_id) or 0))
+        if after < required:
+            raise RuntimeError(
+                "conversation sequence persistence did not reach the flush boundary"
+            )
+        return {
+            "before": before,
+            "required": required,
+            "after": after,
+        }
+
+    def _recover_record(self, record: FlushRecord) -> Dict[str, Any]:
+        # Validate the final durable boundary before performing any replayable
+        # or irreversible work for this record.
+        self._required_next_conversation_seq(record)
+        if not callable(getattr(self._runtime, "load_conversation_seq", None)):
+            raise RuntimeError(
+                "runtime host cannot load a conversation sequence"
+            )
+        if not callable(
+            getattr(self._runtime, "persist_conversation_seq", None)
+        ):
+            raise RuntimeError(
+                "runtime host cannot persist a conversation sequence"
+            )
+        unsupported = sorted(
+            set(record.materializations).difference({"dialogue"})
+        )
+        if unsupported:
+            raise RuntimeError(
+                "unsupported flush materialization destination(s): "
+                + ", ".join(unsupported)
+            )
+
+        if "dialogue" not in record.materializations:
+            dialogue_payload = self._dialogue_payload_for_recovery(record)
+            if dialogue_payload is not None:
+                record = self._journal.stage_materialization(
+                    record.flush_id,
+                    "dialogue",
+                    self._dialogue_materialization_payload(dialogue_payload),
+                )
+
+        runtime_state = record.runtimes.get(self.runtime_id)
+        committed_before_journal_ack = False
+        committed_result: Optional[Dict[str, Any]] = None
+        if runtime_state is not None and runtime_state.status != "committed":
+            load_committed = getattr(
+                self._runtime,
+                "load_committed_flush_segment",
+                None,
+            )
+            if callable(load_committed):
+                loaded = load_committed(
+                    record.thread_id,
+                    conversation_id=record.conversation_id,
+                    flush_id=f"{record.flush_id}:{self.runtime_id}",
+                )
+                if isinstance(loaded, Mapping):
+                    committed_result = dict(loaded)
+                    self._journal.mark_runtime_committed(
+                        record.flush_id,
+                        self.runtime_id,
+                        committed_result,
+                    )
+                    committed_before_journal_ack = True
+
+        if committed_result is None:
+            runtime_result = self.commit_runtime(
+                record.thread_id,
+                conversation_id=record.conversation_id,
+                flush_snapshot=record.snapshot,
+                defer_completion=True,
+                payload={
+                    "recovery": "startup",
+                    "external_dialogue_written": bool(
+                        record.materializations.get("dialogue") is not None
+                        and record.materializations["dialogue"].status
+                        == "delivered"
+                    ),
+                },
+            )
+            committed_result = dict(runtime_result.get("runtime") or {})
+        else:
+            runtime_result = {
+                "runtime": committed_result,
+            }
+        refreshed = self._journal.get(record.flush_id)
+        if refreshed is None:
+            raise RuntimeError(
+                f"missing flush journal record after commit: {record.flush_id}"
+            )
+
+        materialization_replayed = False
+        dialogue_state = refreshed.materializations.get("dialogue")
+        if dialogue_state is not None and dialogue_state.status == "delivered":
+            delivered_result = dialogue_state.result
+            if not isinstance(delivered_result, Mapping) or not bool(
+                delivered_result.get("success", False)
+            ):
+                raise RuntimeError(
+                    "delivered dialogue materialization has no successful result"
+                )
+        elif dialogue_state is not None:
+            staged = dialogue_state.payload
+            if not isinstance(staged, Mapping):
+                raise TypeError(
+                    "dialogue materialization payload must be a mapping"
+                )
+            dialogue_payload = staged.get("dialogue_payload")
+            if not isinstance(dialogue_payload, Mapping):
+                raise TypeError(
+                    "dialogue materialization requires dialogue_payload"
+                )
+            frozen_dialogue = deepcopy(dict(dialogue_payload))
+            dialogue_id = str(
+                frozen_dialogue.get("dialogue_id", "") or ""
+            ).strip()
+            if not dialogue_id:
+                raise ValueError(
+                    "dialogue materialization dialogue_id is required"
+                )
+            persist = getattr(
+                getattr(self._runtime, "agent", None),
+                "persist_dialogue_payload",
+                None,
+            )
+            if not callable(persist):
+                raise RuntimeError(
+                    "runtime agent does not support persist_dialogue_payload"
+                )
+            raw_result = persist(
+                dialogue_payload=frozen_dialogue,
+                thread_id=record.thread_id,
+                reason="startup_flush_recovery",
+                source="runtime_flush_startup_recovery",
+            )
+            if not isinstance(raw_result, Mapping):
+                raise TypeError(
+                    "persist_dialogue_payload must return a mapping"
+                )
+            write_result = dict(raw_result)
+            if not bool(write_result.get("success", False)):
+                raise RuntimeError(
+                    str(
+                        write_result.get(
+                            "error",
+                            "dialogue materialization recovery failed",
+                        )
+                        or "dialogue materialization recovery failed"
+                    )
+                )
+            returned_dialogue_id = str(
+                write_result.get("dialogue_id", "") or ""
+            ).strip()
+            if returned_dialogue_id and returned_dialogue_id != dialogue_id:
+                raise RuntimeError(
+                    "dialogue materialization returned a different dialogue_id"
+                )
+            self._journal.mark_materialization_delivered(
+                record.flush_id,
+                "dialogue",
+                self._summarize_dialogue_result(write_result),
+            )
+            materialization_replayed = True
+
+        sequence = self._advance_conversation_sequence(record)
+        completed = self._journal.mark_completed(record.flush_id)
+        return {
+            "flush_id": record.flush_id,
+            "thread_id": record.thread_id,
+            "conversation_id": record.conversation_id,
+            "status": completed.status,
+            "runtime": dict(runtime_result.get("runtime") or {}),
+            "runtime_commit_reconciled": committed_before_journal_ack,
+            "materialization_replayed": materialization_replayed,
+            "conversation_sequence": sequence,
+        }
+
+    def recover_pending(self) -> Dict[str, Any]:
+        """Recover pending flush sagas oldest-first without crossing failures.
+
+        A failed record remains pending.  Any newer record for the same thread
+        is reported as blocked, while independent threads continue recovery.
+        """
+
+        with self._recovery_lock:
+            pending = self._journal.list_pending()
+            recovered = []
+            failed = []
+            blocked = []
+            failed_by_thread: Dict[str, str] = {}
+            for record in pending:
+                blocking_flush_id = failed_by_thread.get(record.thread_id)
+                if blocking_flush_id:
+                    blocked.append(
+                        {
+                            "flush_id": record.flush_id,
+                            "thread_id": record.thread_id,
+                            "conversation_id": record.conversation_id,
+                            "status": "blocked",
+                            "blocked_by_flush_id": blocking_flush_id,
+                        }
+                    )
+                    continue
+                try:
+                    recovered.append(self._recover_record(record))
+                except Exception as exc:
+                    logger.exception(
+                        "Pending runtime flush recovery failed flush_id=%s thread_id=%s",
+                        record.flush_id,
+                        record.thread_id,
+                    )
+                    failed_by_thread[record.thread_id] = record.flush_id
+                    failed.append(
+                        {
+                            "flush_id": record.flush_id,
+                            "thread_id": record.thread_id,
+                            "conversation_id": record.conversation_id,
+                            "status": "failed",
+                            "error_type": type(exc).__name__,
+                            "error": str(exc),
+                        }
+                    )
+            report = {
+                "attempted": True,
+                "attempted_at": datetime.now(timezone.utc).isoformat().replace(
+                    "+00:00",
+                    "Z",
+                ),
+                "pending_before": len(pending),
+                "recovered": recovered,
+                "recovered_count": len(recovered),
+                "failed": failed,
+                "failure_count": len(failed),
+                "blocked": blocked,
+                "blocked_count": len(blocked),
+                "blocked_threads": sorted(failed_by_thread),
+                "pending_after": len(self._journal.list_pending()),
+            }
+            self._last_recovery = deepcopy(report)
+            return deepcopy(report)
+
+    def has_pending(self, *, thread_id: Optional[str] = None) -> bool:
+        """Return whether an unfinished durable flush fences this scope."""
+
+        tid = str(thread_id or "").strip()
+        return bool(
+            self._journal.list_pending(
+                thread_id=tid if tid else None,
+            )
+        )
+
+    def health(self) -> Dict[str, Any]:
+        with self._recovery_lock:
+            return {
+                "persistent": self._journal.path is not None,
+                "path": str(self._journal.path) if self._journal.path else None,
+                "pending_flushes": len(self._journal.list_pending()),
+                "startup_recovery": deepcopy(self._last_recovery),
+            }
 
     def close(self) -> None:
         self._journal.close()

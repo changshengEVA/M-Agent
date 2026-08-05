@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -511,6 +512,7 @@ class ThreeLayerChatAgent:
             storage_dir=str(user_root),
             workflow_id=workflow_id,
             top_k=backend.top_k,
+            min_score=backend.min_score,
             embed_model=backend.embed_model,
             user_name=backend.user_name,
             assistant_name=backend.assistant_name,
@@ -856,6 +858,11 @@ class ThreeLayerChatAgent:
 
         meta = dialogue_payload.get("meta") if isinstance(dialogue_payload.get("meta"), dict) else {}
         tid = str(thread_id or meta.get("thread_id") or "").strip()
+        dialogue_id = str(
+            dialogue_payload.get("dialogue_id")
+            or archive_result.get("dialogue_id")
+            or ""
+        ).strip()
         turns = dialogue_payload.get("turns") if isinstance(dialogue_payload.get("turns"), list) else []
         user_name = str(dialogue_payload.get("user_id") or getattr(self, "user_name", "User") or "User")
         participants = dialogue_payload.get("participants") if isinstance(dialogue_payload.get("participants"), list) else []
@@ -870,6 +877,10 @@ class ThreeLayerChatAgent:
             for item in rounds
             if isinstance(item, dict)
         ]
+        trace = meta.get("trace_summary") if isinstance(meta.get("trace_summary"), dict) else {}
+        episode_notes = trace.get("episode_notes") if isinstance(trace.get("episode_notes"), list) else []
+        if rounds and episode_notes:
+            rounds[-1]["episode_notes"] = deepcopy(episode_notes)
 
         backend = self.systems.episodic.backend
         if rounds and getattr(backend, "persistence", None) is not archive:
@@ -901,12 +912,12 @@ class ThreeLayerChatAgent:
         return archive_result
 
     def on_flush(self, *, conversation_id: str, thread_id: str) -> List[Dict[str, Any]]:
-        """Drain the conversation state and merge notes into the persisted dialogue.
+        """Run the scoped compatibility-note flush for direct-mode callers.
 
-        Returns the drained episode notes so the runtime can log /
-        forward them. The backend has already written the merged notes
-        into the dialogue's ``meta.trace_summary.episode_notes`` by the
-        time this method returns.
+        Transaction-bound notes are already frozen from committed Scene into
+        the Dialogue payload. This hook drains only the legacy/direct recorder
+        and asks the backend to merge those notes within the exact
+        thread/conversation scope.
         """
         drained = list(self.thinking_agent.on_flush(conversation_id, thread_id=thread_id) or [])
         try:

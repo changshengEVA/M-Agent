@@ -296,25 +296,34 @@ def build_turn_graph(ports: TurnGraphPorts) -> StateGraph:
         text: str,
         delegate_id: Optional[str] = None,
         tool_name: Optional[str] = None,
+        append_id: Optional[str] = None,
+        payload_ref: Optional[str] = None,
     ) -> None:
         if _is_deleted(record.transaction_id):
             return
         body = str(text or "").strip()
         if not body:
             return
-        ports.scene_writer.append(
-            record.conversation_id,
-            SceneEntry(
-                seq=0,
-                occurred_at="",
-                entry_type=entry_type,
-                actor=actor,
-                text=body,
-                transaction_id=record.transaction_id,
-                delegate_id=delegate_id,
-                tool_name=tool_name,
-            ),
+        entry = SceneEntry(
+            seq=0,
+            occurred_at="",
+            entry_type=entry_type,
+            actor=actor,
+            text=body,
+            append_id=append_id,
+            transaction_id=record.transaction_id,
+            delegate_id=delegate_id,
+            tool_name=tool_name,
+            payload_ref=payload_ref,
         )
+        if append_id is None:
+            ports.scene_writer.append(record.conversation_id, entry)
+        else:
+            ports.scene_writer.append(
+                record.conversation_id,
+                entry,
+                append_id=append_id,
+            )
 
     def _append_tool_scene(
         record: TransactionRecord,
@@ -453,8 +462,13 @@ def build_turn_graph(ports: TurnGraphPorts) -> StateGraph:
             record.conversation_id,
             max_entries=config.scene_context_max_entries,
         )
+        # Thinking operates on a speculative candidate. The authoritative
+        # registry object changes only in ``commit_thought`` under the UoW
+        # revision fence, so a model/validation/UoW failure cannot leak a
+        # partial TaskState into the live runtime cache.
+        candidate_record = deepcopy(record)
         decision = ports.planner.plan(
-            record=record,
+            record=candidate_record,
             stimulus=stimulus,
             perception=perception,
             scene_tail=scene_tail,
@@ -467,7 +481,7 @@ def build_turn_graph(ports: TurnGraphPorts) -> StateGraph:
             "graph_phase": PHASE_PLANNED,
             "decision": decision_to_dict(decision),
             "pending_user_request": latest_user_utterance_from_scene(scene_tail),
-            "task_state_snapshot": record.task_state.to_dict(),
+            "task_state_snapshot": candidate_record.task_state.to_dict(),
         }
 
     def commit_thought(state: TransactionGraphState) -> TransactionGraphState:
@@ -548,11 +562,14 @@ def build_turn_graph(ports: TurnGraphPorts) -> StateGraph:
                 text=str(decision.reasoning),
             )
         if decision.episode_note:
+            episode_note_id = f"{transition_id}:episode_note"
             _append_scene(
                 updated,
                 entry_type=SceneEntryType.THOUGHT,
                 actor=SceneActor.THINK,
                 text=str(decision.episode_note),
+                append_id=episode_note_id,
+                payload_ref="episode_note:v1",
             )
         committed = _record_snapshot(state, updated)
         committed.update(

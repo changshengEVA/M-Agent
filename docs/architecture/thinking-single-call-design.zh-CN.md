@@ -1,14 +1,14 @@
 # Thinking 单次 LLM 调用设计
 
-> 状态：在途设计，目标进入 v0.2.1；当前尚未作为已发布能力验收  
+> 状态：已在 v0.2.1 实现，并纳入可执行回归与语义验收
 > 日期：2026-08-03  
 > 目标：把任务状态生成与当前动作决策合并为一次 LLM 调用。
 
-本文用于指导 v0.2.1 实现与验收；若代码、测试与本文不一致，以当前可执行测试和 [`../runtime/README.md`](../runtime/README.md) 记录的事实为准。
+本文记录 v0.2.1 的实现契约；若代码、测试与本文不一致，以当前可执行测试和 [`../runtime/README.md`](../runtime/README.md) 记录的事实为准。
 
 ## 1. 设计结论
 
-当前 Thinking 在一个 `think` node 内顺序执行两次模型调用：
+v0.2.0 基线中的 Thinking 在一个 `think` node 内顺序执行两次模型调用：
 
 1. `thinking.pre_gen_task_state` 生成任务状态更新；
 2. `thinking.plan` 读取更新后的任务状态，再生成当前动作。

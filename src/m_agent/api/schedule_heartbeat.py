@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import logging
 import threading
+import uuid
 from typing import Any, Dict, Iterable, Optional, Tuple
 
 from m_agent.api.user_access import UserAccessService
@@ -11,6 +12,10 @@ from m_agent.runtime.transaction import (
     stable_schedule_run_id,
 )
 from m_agent.schedule.store import ANONYMOUS_OWNER_ID
+from m_agent.schedule.service import (
+    DEFAULT_SCHEDULE_LEASE_SECONDS,
+    ScheduleLeaseConflictError,
+)
 
 from .chat_api_runtime import ChatServiceRuntime, ThreadEventSink
 from .chat_api_shared import _now_iso, _scoped_thread_id
@@ -28,6 +33,8 @@ class ScheduleHeartbeatCoordinator:
         user_access: Optional[UserAccessService] = None,
         beat_interval_seconds: int = 10,
         batch_limit: int = 20,
+        lease_duration_seconds: float = DEFAULT_SCHEDULE_LEASE_SECONDS,
+        lease_owner: str = "",
         thread_event_sink: ThreadEventSink = None,
         autostart: bool = True,
     ) -> None:
@@ -35,6 +42,14 @@ class ScheduleHeartbeatCoordinator:
         self.user_access = user_access
         self.beat_interval_seconds = max(1, int(beat_interval_seconds or 10))
         self.batch_limit = max(1, min(200, int(batch_limit or 20)))
+        self.lease_duration_seconds = max(
+            1.0,
+            float(lease_duration_seconds or DEFAULT_SCHEDULE_LEASE_SECONDS),
+        )
+        self.lease_owner = (
+            str(lease_owner or "").strip()
+            or f"schedule-heartbeat:{uuid.uuid4().hex}"
+        )
         self.thread_event_sink = thread_event_sink
         self.created_at = _now_iso()
         self._stop_event = threading.Event()
@@ -184,6 +199,8 @@ class ScheduleHeartbeatCoordinator:
             leased_items = schedule_service.lease_due_schedules(
                 owner_id=owner_id,
                 limit=self.batch_limit,
+                lease_owner=self.lease_owner,
+                lease_seconds=self.lease_duration_seconds,
             )
             total_leased += len(leased_items)
 
@@ -235,6 +252,13 @@ class ScheduleHeartbeatCoordinator:
                 system_context = runtime._schedule_system_context(schedule_item)
                 system_context["schedule_run_id"] = run_id
                 system_context["schedule_delivery_id"] = delivery_id
+                system_context["schedule_lease_token"] = str(
+                    getattr(schedule_item, "lease_token", "") or ""
+                ).strip()
+                system_context["schedule_attempt"] = max(
+                    0,
+                    int(getattr(schedule_item, "attempt", 0) or 0),
+                )
                 if origin_transaction_id:
                     system_context["transaction_id"] = origin_transaction_id
                 if origin_conversation_id:
@@ -277,18 +301,31 @@ class ScheduleHeartbeatCoordinator:
                         schedule_id,
                     )
                     error_text = str(exc or "schedule enqueue failed").strip() or "schedule enqueue failed"
-                    schedule_service.mark_failed(
-                        owner_id=item_owner_id,
-                        thread_id=stored_thread_id,
-                        schedule_id=schedule_id,
-                        error=error_text,
-                    )
+                    failed_item = schedule_item
+                    try:
+                        failed_item = schedule_service.release_lease(
+                            owner_id=item_owner_id,
+                            thread_id=stored_thread_id,
+                            schedule_id=schedule_id,
+                            lease_token=str(
+                                getattr(schedule_item, "lease_token", "") or ""
+                            ).strip(),
+                            error=error_text,
+                        )
+                    except ScheduleLeaseConflictError:
+                        # A newer heartbeat already reclaimed the schedule.  A
+                        # stale enqueue failure must not reset that newer lease.
+                        logger.warning(
+                            "Ignored stale schedule lease release owner_id=%s schedule_id=%s",
+                            item_owner_id,
+                            schedule_id,
+                        )
                     total_failed += 1
                     self._emit_thread_event(
                         target_thread_id,
                         "schedule_failed",
                         self._schedule_event_payload(
-                            schedule_item,
+                            failed_item,
                             public_thread_id=public_thread_id,
                             run_id=run_id,
                             error=error_text,
@@ -334,6 +371,7 @@ class ScheduleHeartbeatCoordinator:
                     "beat_interval_seconds": self.beat_interval_seconds,
                     "interval_seconds": self.beat_interval_seconds,
                     "batch_limit": self.batch_limit,
+                    "lease_duration_seconds": self.lease_duration_seconds,
                     "next_beat_due_at": self._next_beat_due_at(),
                 },
                 "counters": {

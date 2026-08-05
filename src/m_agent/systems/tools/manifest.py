@@ -10,6 +10,7 @@ import yaml
 from m_agent.systems.loader import SystemsConfigError, resolve_dotted_path
 
 from .base import ControllerCapabilitySpec
+from .policy import ToolPolicyError, require_supported_side_effect
 
 
 SUPPORTED_INPUT_MODES = frozenset({"param_llm", "instruction_arg", "no_args", "reply"})
@@ -173,6 +174,14 @@ def load_tool_capability_manifest(path: Path | str) -> ToolCapabilityManifest:
             )
         defaults["max_calls_per_turn"] = max_calls
 
+    try:
+        side_effect = require_supported_side_effect(
+            policy_raw.get("side_effect"),
+            tool_name=name,
+        )
+    except ToolPolicyError as exc:
+        raise SystemsConfigError(f"tool manifest {source}: {exc}") from exc
+
     manifest = ToolCapabilityManifest(
         name=name,
         version=version,
@@ -185,7 +194,7 @@ def load_tool_capability_manifest(path: Path | str) -> ToolCapabilityManifest:
         output_schema=_optional_string(output_raw.get("schema")),
         feedback_projector=_optional_string(output_raw.get("feedback_projector")),
         memory_projector=_optional_string(output_raw.get("memory_projector")),
-        side_effect=str(policy_raw.get("side_effect", "unspecified") or "unspecified").strip(),
+        side_effect=side_effect,
         dependencies=dependencies,
         defaults=defaults,
         source_path=source,

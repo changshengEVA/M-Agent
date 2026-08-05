@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from m_agent import __version__
 from m_agent.runtime.routing import LANGGRAPH_RUNTIME_ENGINE
 from tests.fixtures.app_factory import build_test_app, build_test_runtime
 
@@ -12,6 +13,7 @@ def test_healthz_includes_langgraph_runtime_metrics() -> None:
     response = client.get("/healthz")
     assert response.status_code == 200
     body = response.json()
+    assert body["version"] == __version__
     assert body["runtime"]["runtime_profile"] == LANGGRAPH_RUNTIME_ENGINE
     assert body["runtime"]["runtime_engine_id"] == LANGGRAPH_RUNTIME_ENGINE
     assert body["runtime"]["runtime"]["runtime_engine_id"] == (

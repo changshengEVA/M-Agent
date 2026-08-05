@@ -27,6 +27,11 @@ from .registry import (
     resolve_enabled_controller_capability_names,
 )
 from .manifest import ToolCapabilityManifest, load_tool_capability_manifest
+from .policy import (
+    SUPPORTED_TOOL_SIDE_EFFECTS,
+    ToolPolicyError,
+    require_supported_side_effect,
+)
 from .system import (
     ToolSuiteSystem,
     build_default_tool_suite_system,
@@ -48,13 +53,16 @@ __all__ = [
     "SCHEDULE_DELETE_CAPABILITY",
     "SCHEDULE_QUERY_CAPABILITY",
     "SHALLOW_RECALL_CAPABILITY",
+    "SUPPORTED_TOOL_SIDE_EFFECTS",
     "ToolSuiteSystem",
     "ToolCapabilityManifest",
+    "ToolPolicyError",
     "build_controller_tools",
     "build_default_tool_suite_system",
     "get_default_capability_registry",
     "load_tool_suite_system",
     "load_tool_capability_manifest",
     "register_capability",
+    "require_supported_side_effect",
     "resolve_enabled_controller_capability_names",
 ]

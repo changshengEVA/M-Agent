@@ -12,3 +12,4 @@ def test_load_rag_default_yaml() -> None:
     yaml_path = root / "config" / "systems" / "episodic" / "rag_default.yaml"
     system = load_episodic_system(yaml_path)
     assert isinstance(system.backend, SimpleRagEpisodicBackend)
+    assert system.backend.min_score == 0.2

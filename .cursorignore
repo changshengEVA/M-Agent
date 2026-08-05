@@ -1,2 +1,4 @@
-﻿# Dataset submodule: avoid indexing large / generated files in Cursor
+﻿# Optional external datasets: avoid indexing large / generated files in Cursor
+data/locomo/
 data/LongMemEval/
+data/REALTALK/

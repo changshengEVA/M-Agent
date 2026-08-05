@@ -10,6 +10,7 @@ backend:
     storage_dir: data/rag/chat
     workflow_id: default
     top_k: 5
+    min_score: 0.2
     embed_model: hash
 
 query:

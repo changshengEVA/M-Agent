@@ -11,6 +11,10 @@ venv/
 tmp-artifacts/
 /tmp_evermemos_pdf.txt
 *.egg-info/
+/build/
+/dist/
+/.wheel-smoke/
+/.local-datasets/
 .coverage*
 coverage.xml
 htmlcov/
@@ -31,6 +35,10 @@ config/users/*/
 .secrets/
 /tools/
 
+# Optional external benchmark datasets are not vendored as submodules.
+data/locomo/
+data/LongMemEval/
+data/REALTALK/
+
 # LongMemEval 官方打分本地密钥（复制自 official_eval.example.yaml）
 config/eval/memory_agent/longmemeval/official_eval.yaml
-data/REALTALK/

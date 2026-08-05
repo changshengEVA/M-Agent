@@ -219,18 +219,21 @@ def _build_schedule_delete_tool(context: ControllerCapabilityContext, descriptio
 SCHEDULE_CREATE_CAPABILITY = ControllerCapabilitySpec(
     name="schedule_create",
     build_tool=_build_schedule_create_tool,
+    side_effect="write",
     delivery_guarantee="at_most_once",
 )
 
 SCHEDULE_QUERY_CAPABILITY = ControllerCapabilitySpec(
     name="schedule_query",
     build_tool=_build_schedule_query_tool,
+    side_effect="read",
     delivery_guarantee="idempotent",
 )
 
 SCHEDULE_DELETE_CAPABILITY = ControllerCapabilitySpec(
     name="schedule_delete",
     build_tool=_build_schedule_delete_tool,
+    side_effect="write",
     delivery_guarantee="idempotent",
 )
 

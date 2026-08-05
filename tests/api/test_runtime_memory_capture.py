@@ -8,7 +8,12 @@ from unittest.mock import ANY, MagicMock
 
 import pytest
 
-from m_agent.api.chat_api_runtime import BufferedRound, ChatServiceRuntime, ThreadSessionState
+from m_agent.api.chat_api_runtime import (
+    BufferedRound,
+    ChatServiceRuntime,
+    PendingFlushAdmissionError,
+    ThreadSessionState,
+)
 from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS
 from m_agent.runtime.domain.contracts import SceneActor, SceneEntry, SceneEntryType
 
@@ -32,6 +37,7 @@ def _minimal_runtime() -> ChatServiceRuntime:
     host.build_dialogue_flush_payload.return_value = None
     host.load_conversation_seq.return_value = 0
     host.scene_flush_through_seq.return_value = 0
+    host.has_pending_flush.return_value = False
     host.prepare_flush_segment.return_value = {
         "flush_id": "runtime-flush-test",
         "through_seq": 0,
@@ -295,7 +301,27 @@ def test_successful_empty_flush_starts_a_new_conversation_boundary(
         "transaction_id": "tx-old",
         "conversation_id": old_conversation_id,
     }
-    rt._engine.on_flush_segment.return_value = segment_result
+    call_order: list[str] = []
+
+    def _commit_segment(*_args: object, **_kwargs: object) -> dict | None:
+        call_order.append("runtime")
+        return segment_result
+
+    def _persist_boundary(_thread_id: str, _sequence: int) -> None:
+        call_order.append("boundary")
+
+    def _drain_notes(**_kwargs: object) -> list[dict]:
+        call_order.append("drain")
+        return []
+
+    def _complete_segment(_flush_id: str) -> dict:
+        call_order.append("complete")
+        return {"status": "completed"}
+
+    rt._engine.on_flush_segment.side_effect = _commit_segment
+    rt._runtime_host.persist_conversation_seq.side_effect = _persist_boundary
+    rt._agent.on_flush.side_effect = _drain_notes
+    rt._runtime_host.complete_flush_segment.side_effect = _complete_segment
 
     def _list_transactions(
         thread_id: str,
@@ -323,6 +349,7 @@ def test_successful_empty_flush_starts_a_new_conversation_boundary(
     assert result["status"] == expected_status
     assert result["thread_state"]["conversation_id"] == f"{tid}::1"
     assert result["thread_state"]["conversation_id"] != old_conversation_id
+    assert call_order == ["runtime", "boundary", "drain", "complete"]
     rt._engine.on_flush_segment.assert_called_once_with(
         tid,
         conversation_id=old_conversation_id,
@@ -348,6 +375,31 @@ def test_successful_empty_flush_starts_a_new_conversation_boundary(
     assert current["conversation_id"] == f"{tid}::1"
     assert current["transactions"] == []
     assert audit["transactions"] == [old_transaction]
+
+
+def test_empty_flush_completion_failure_keeps_boundary_retryable() -> None:
+    rt = _minimal_runtime()
+    tid = "runtime_test::empty-completion-retry"
+    session = rt._get_or_create_thread(tid)
+    rt._runtime_host.complete_flush_segment.side_effect = RuntimeError(
+        "completion journal unavailable"
+    )
+
+    failed = rt.flush_thread(tid)
+
+    assert failed["success"] is False
+    assert failed["retryable"] is True
+    assert "completion journal unavailable" in failed["error"]
+    assert session.conversation_seq == 0
+    assert session.flush_count == 0
+    rt._runtime_host.persist_conversation_seq.assert_called_once_with(tid, 1)
+
+    rt._runtime_host.complete_flush_segment.side_effect = None
+    recovered = rt.flush_thread(tid)
+
+    assert recovered["success"] is True
+    assert session.conversation_seq == 1
+    assert session.flush_count == 1
 
 
 def test_no_dialogue_flush_advances_internal_scene_snapshot() -> None:
@@ -562,6 +614,160 @@ def test_completion_failure_after_delivery_is_retryable_without_losing_rounds() 
     )
     assert len(rt._pending_rounds(rt._threads[tid])) == 1
     assert rt._threads[tid].conversation_seq == 0
+
+
+def test_pending_flush_fences_new_stimulus_until_retry_completes() -> None:
+    rt, host = _minimal_flush_runtime()
+    tid = "runtime_test::pending-flush-fence"
+    rt._enqueue_runtime_user_turn(
+        tid,
+        user_message="before flush",
+        user_turn={"speaker": "runtime_test", "text": "before flush"},
+    )
+    rt._capture_runtime_round(tid, assistant_message="captured")
+    state = {"pending": False, "completion_attempt": 0}
+    host.has_pending_flush.side_effect = lambda _thread_id: state["pending"]
+
+    def complete_flush(_flush_id: str) -> dict:
+        state["completion_attempt"] += 1
+        if state["completion_attempt"] == 1:
+            state["pending"] = True
+            raise RuntimeError("completion journal unavailable")
+        state["pending"] = False
+        return {"status": "completed"}
+
+    host.complete_flush_segment.side_effect = complete_flush
+
+    failed = rt.flush_thread(tid)
+    assert failed["success"] is False
+    assert failed["retryable"] is True
+    pending_users_before = list(rt._runtime_pending_users.get(tid, []))
+
+    with pytest.raises(PendingFlushAdmissionError, match="unfinished durable flush"):
+        rt.submit_stimulus(thread_id=tid, message="must wait")
+
+    assert list(rt._runtime_pending_users.get(tid, [])) == pending_users_before
+    host.submit_stimulus_async.assert_not_called()
+
+    recovered = rt.flush_thread(tid)
+    assert recovered["success"] is True
+    assert state["pending"] is False
+
+    host.submit_stimulus_async.return_value = {
+        "accepted": True,
+        "stimulus_id": "stim-after-recovery",
+    }
+    accepted = rt.submit_stimulus(thread_id=tid, message="now continue")
+    assert accepted["accepted"] is True
+    host.submit_stimulus_async.assert_called_once()
+
+
+def test_pending_flush_does_not_fence_transaction_projection() -> None:
+    rt = _minimal_runtime()
+    tid = "runtime_test::pending-flush-read"
+    session = rt._get_or_create_thread(tid)
+    rt._runtime_host.has_pending_flush.return_value = True
+    rt._runtime_host.list_transactions.return_value = {
+        "thread_id": tid,
+        "conversation_id": session.conversation_id,
+        "transactions": [{"transaction_id": "tx-visible"}],
+    }
+
+    projection = rt.get_transactions(tid, include_history=True)
+
+    assert projection["transactions"] == [{"transaction_id": "tx-visible"}]
+    rt._runtime_host.list_transactions.assert_called_once_with(
+        tid,
+        conversation_id=session.conversation_id,
+        include_history=True,
+    )
+    rt._runtime_host.has_pending_flush.assert_not_called()
+
+
+def test_run_chat_waits_for_flush_and_rejects_without_buffer_pollution() -> None:
+    rt, host = _minimal_flush_runtime()
+    tid = "runtime_test::run-chat-flush-fence"
+    prepare_entered = threading.Event()
+    release_prepare = threading.Event()
+    chat_started = threading.Event()
+    chat_done = threading.Event()
+    state = {"pending": False}
+    flush_result: dict = {}
+    flush_errors: list[BaseException] = []
+    chat_errors: list[BaseException] = []
+    original_plan = dict(host.prepare_flush_segment.return_value)
+
+    host.has_pending_flush.side_effect = lambda _thread_id: state["pending"]
+
+    def prepare_flush(*_args, **_kwargs) -> dict:
+        prepare_entered.set()
+        if not release_prepare.wait(timeout=2):
+            raise TimeoutError("test did not release flush preparation")
+        return original_plan
+
+    def fail_completion(_flush_id: str) -> dict:
+        state["pending"] = True
+        raise RuntimeError("completion journal unavailable")
+
+    def run_flush() -> None:
+        try:
+            flush_result.update(rt.flush_thread(tid))
+        except BaseException as exc:  # pragma: no cover - assertion captures it
+            flush_errors.append(exc)
+
+    def run_chat() -> None:
+        chat_started.set()
+        try:
+            rt.run_chat(message="must wait", thread_id=tid)
+        except BaseException as exc:
+            chat_errors.append(exc)
+        finally:
+            chat_done.set()
+
+    host.prepare_flush_segment.side_effect = prepare_flush
+    host.complete_flush_segment.side_effect = fail_completion
+    flush_thread = threading.Thread(target=run_flush, name="chat-flush")
+    chat_thread = threading.Thread(target=run_chat, name="chat-admission")
+    try:
+        flush_thread.start()
+        assert prepare_entered.wait(timeout=2)
+        chat_thread.start()
+        assert chat_started.wait(timeout=2)
+        assert chat_done.wait(timeout=0.1) is False
+        assert list(rt._runtime_pending_users.get(tid, [])) == []
+    finally:
+        release_prepare.set()
+        flush_thread.join(timeout=2)
+        chat_thread.join(timeout=2)
+
+    assert not flush_thread.is_alive()
+    assert not chat_thread.is_alive()
+    assert flush_errors == []
+    assert flush_result["success"] is False
+    assert len(chat_errors) == 1
+    assert isinstance(chat_errors[0], PendingFlushAdmissionError)
+    assert list(rt._runtime_pending_users.get(tid, [])) == []
+    host.submit_user_message.assert_not_called()
+
+
+def test_runtime_admission_rejection_does_not_pollute_chat_buffer() -> None:
+    rt = _minimal_runtime()
+    tid = "runtime_test::host-rejected-chat-admission"
+    rt._force_stop_lock = threading.Lock()
+    rt._force_stop_events = {}
+    rt._runs_started = 0
+    rt._last_run_started_at = None
+    rt._runtime_host.pending_count.return_value = 0
+    rt._runtime_host.submit_user_message.side_effect = RuntimeError(
+        "unfinished durable flush"
+    )
+
+    with pytest.raises(RuntimeError, match="unfinished durable flush"):
+        rt.run_chat(message="must not be buffered", thread_id=tid)
+
+    assert list(rt._runtime_pending_users.get(tid, [])) == []
+    assert rt._pending_rounds(rt._get_or_create_thread(tid)) == []
+    rt._runtime_host.run_thread.assert_not_called()
 
 
 def test_conversation_boundary_persistence_failure_is_not_reported_success() -> None:

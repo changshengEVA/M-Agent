@@ -3,7 +3,9 @@ pyyaml
 llama-index
 neo4j
 langchain
-pydantic>=2.7,<3.0
+langchain-deepseek>=1.0,<2.0
+langchain-openai>=1.1,<2.0
+pydantic>=2.7.4,<3.0
 langgraph>=1.0.10
 langgraph-checkpoint>=4.1.1,<5.0.0
 langgraph-checkpoint-sqlite>=3.1.1,<4.0.0

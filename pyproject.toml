@@ -1,40 +1,90 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "m-agent"
-version = "0.2.0"
+dynamic = ["version"]
 description = "M-Agent: a stimulus-native cognitive runtime for persistent agents."
 readme = "README.md"
 requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    {name = "M-Agent contributors"},
+]
+keywords = ["agent", "cognitive-runtime", "langgraph", "memory"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
 dependencies = [
     "fastapi>=0.104,<1.0",
     "langchain>=1.2,<2.0",
-    "langgraph>=1.0.10",
+    "langchain-deepseek>=1.0,<2.0",
+    "langchain-openai>=1.1,<2.0",
+    "langgraph>=1.0.10,<2.0",
     "langgraph-checkpoint>=4.1.1,<5.0.0",
     "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
-    "langgraph-prebuilt>=1.0.8",
+    "langgraph-prebuilt>=1.0.8,<2.0",
     "numpy>=1.24",
-    "pydantic>=2.7,<3.0",
+    "pydantic>=2.7.4,<3.0",
+    "python-dotenv>=1.0,<2.0",
+    "python-multipart>=0.0.6,<1.0",
+    "PyYAML>=6.0,<7.0",
+    "uvicorn>=0.24,<1.0",
 ]
 
 [project.optional-dependencies]
 acceptance = [
-    "pytest>=8.0",
-    "uvicorn>=0.29",
+    "httpx>=0.27,<0.28",
+    "pytest>=8.0,<9.0",
 ]
+dev = [
+    "build>=1.2,<2.0",
+    "httpx>=0.27,<0.28",
+    "pytest>=8.0,<9.0",
+    "twine>=5.1,<7.0",
+]
+
 [project.scripts]
 m-agent-acceptance = "m_agent.acceptance.cli:main"
+m-agent-chat = "m_agent.api.chat_api_cli:main"
+
+[project.urls]
+Homepage = "https://github.com/changshengEVA/M-Agent"
+Documentation = "https://github.com/changshengEVA/M-Agent/tree/main/docs"
+Issues = "https://github.com/changshengEVA/M-Agent/issues"
+Source = "https://github.com/changshengEVA/M-Agent"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.setuptools.dynamic]
+version = {attr = "m_agent._version.__version__"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
 "m_agent.acceptance" = ["ui/*.html", "ui/*.css", "ui/*.js"]
+
+[tool.setuptools.data-files]
+"share/m-agent/config/agents/chat" = ["config/agents/chat/*.yaml"]
+"share/m-agent/config/agents/chat/runtime" = ["config/agents/chat/runtime/*.yaml"]
+"share/m-agent/config/agents/email" = ["config/agents/email/*.yaml"]
+"share/m-agent/config/agents/schedule" = ["config/agents/schedule/*.yaml"]
+"share/m-agent/config/integrations" = ["config/integrations/*.yaml"]
+"share/m-agent/config/systems/episodic" = ["config/systems/episodic/*.yaml"]
+"share/m-agent/config/systems/scene" = ["config/systems/scene/*.yaml"]
+"share/m-agent/config/systems/tools" = ["config/systems/tools/*.yaml"]
+"share/m-agent/config/systems/tools/capabilities" = ["config/systems/tools/capabilities/*.yaml"]
+"share/m-agent/config/systems/wm" = ["config/systems/wm/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

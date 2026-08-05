@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from m_agent import __version__
 from tests.fixtures.app_factory import build_test_app
 
 
@@ -17,6 +18,7 @@ def test_openapi_contains_core_chat_api_paths() -> None:
 
     assert response.status_code == 200
     payload = response.json()
+    assert payload["info"]["version"] == __version__
     paths = payload["paths"]
 
     expected_paths = {

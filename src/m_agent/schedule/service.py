@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence
 
 from m_agent.utils.time_utils import resolve_timezone
@@ -23,12 +23,24 @@ from .models import (
 from .store import ScheduleStore
 
 
+DEFAULT_SCHEDULE_LEASE_SECONDS = 60
+DEFAULT_SCHEDULE_LEASE_OWNER = "schedule-service"
+
+
+class ScheduleLeaseConflictError(RuntimeError):
+    """A stale worker attempted to mutate a lease it no longer owns."""
+
+
 def _now_utc_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _parse_utc_iso(value: str) -> datetime:
     return datetime.fromisoformat(str(value or "").replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _to_utc_iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _clean_text(value: str) -> str:
@@ -91,9 +103,14 @@ class ScheduleService:
                 if str(key).strip() and str(value or "").strip()
             },
         )
-        items = self.store.load_thread_items(normalized_owner_id, safe_thread_id)
-        items.append(item)
-        self.store.save_thread_items(normalized_owner_id, safe_thread_id, items)
+        def append_item(items: List[ScheduleItem]) -> None:
+            items.append(item)
+
+        self.store.mutate_thread_items(
+            normalized_owner_id,
+            safe_thread_id,
+            append_item,
+        )
         return item
 
     def list_schedules(
@@ -164,31 +181,128 @@ class ScheduleService:
         owner_id: str,
         now_utc: Optional[str] = None,
         limit: int = 20,
+        lease_owner: str = "",
+        lease_seconds: float = DEFAULT_SCHEDULE_LEASE_SECONDS,
     ) -> List[ScheduleItem]:
         normalized_owner_id = self.store._normalize_owner_id(owner_id)
         cutoff = _parse_utc_iso(now_utc) if now_utc else datetime.now(timezone.utc)
         safe_limit = max(1, min(200, int(limit or 20)))
+        safe_lease_owner = (
+            _clean_text(lease_owner) or DEFAULT_SCHEDULE_LEASE_OWNER
+        )
+        safe_lease_seconds = max(1.0, float(lease_seconds or DEFAULT_SCHEDULE_LEASE_SECONDS))
+        lease_until = _to_utc_iso(
+            cutoff + timedelta(seconds=safe_lease_seconds)
+        )
         all_items = self.store.iter_owner_items(normalized_owner_id)
         grouped: Dict[str, List[ScheduleItem]] = {}
         for item in all_items:
             grouped.setdefault(item.thread_id, []).append(item)
 
         leased: List[ScheduleItem] = []
-        for thread_id, items in grouped.items():
-            changed = False
-            for item in sorted(items, key=lambda entry: (_parse_utc_iso(entry.due_at_utc), entry.schedule_id)):
-                if len(leased) >= safe_limit:
-                    break
-                if item.status != SCHEDULE_STATUS_PENDING or _parse_utc_iso(item.due_at_utc) > cutoff:
-                    continue
-                item.status = SCHEDULE_STATUS_LEASED
-                leased.append(item)
-                changed = True
-            if changed:
-                self.store.save_thread_items(normalized_owner_id, thread_id, items)
+        candidate_threads = {
+            thread_id
+            for thread_id, items in grouped.items()
+            if any(
+                _parse_utc_iso(item.due_at_utc) <= cutoff
+                and (
+                    item.status == SCHEDULE_STATUS_PENDING
+                    or (
+                        item.status == SCHEDULE_STATUS_LEASED
+                        and self._lease_expired(item, cutoff=cutoff)
+                    )
+                )
+                for item in items
+            )
+        }
+        ordered_threads = sorted(
+            candidate_threads,
+            key=lambda thread_id: min(
+                (
+                    _parse_utc_iso(item.due_at_utc),
+                    item.schedule_id,
+                )
+                for item in grouped[thread_id]
+            ),
+        )
+        for thread_id in ordered_threads:
+            remaining = safe_limit - len(leased)
+            if remaining <= 0:
+                break
+
+            def claim_thread(items: List[ScheduleItem]) -> List[ScheduleItem]:
+                claimed: List[ScheduleItem] = []
+                for item in sorted(
+                    items,
+                    key=lambda entry: (
+                        _parse_utc_iso(entry.due_at_utc),
+                        entry.schedule_id,
+                    ),
+                ):
+                    if len(claimed) >= remaining:
+                        break
+                    if _parse_utc_iso(item.due_at_utc) > cutoff:
+                        continue
+                    reclaimable = bool(
+                        item.status == SCHEDULE_STATUS_LEASED
+                        and self._lease_expired(item, cutoff=cutoff)
+                    )
+                    if item.status != SCHEDULE_STATUS_PENDING and not reclaimable:
+                        continue
+                    item.status = SCHEDULE_STATUS_LEASED
+                    item.lease_token = f"lease_{uuid.uuid4().hex}"
+                    item.lease_owner = safe_lease_owner
+                    item.lease_until = lease_until
+                    item.attempt = max(0, int(item.attempt or 0)) + 1
+                    claimed.append(item)
+                return claimed
+
+            leased.extend(
+                self.store.mutate_thread_items(
+                    normalized_owner_id,
+                    thread_id,
+                    claim_thread,
+                )
+            )
             if len(leased) >= safe_limit:
                 break
         return leased
+
+    @staticmethod
+    def _lease_expired(item: ScheduleItem, *, cutoff: datetime) -> bool:
+        lease_until = str(item.lease_until or "").strip()
+        if not lease_until:
+            # v2 records had a permanent ``leased`` status with no lease
+            # metadata.  Treat them as immediately reclaimable on upgrade.
+            return True
+        try:
+            return _parse_utc_iso(lease_until) <= cutoff
+        except (TypeError, ValueError):
+            # Corrupt expiry data must not permanently strand due work.
+            return True
+
+    def release_lease(
+        self,
+        *,
+        owner_id: str,
+        schedule_id: str,
+        lease_token: str,
+        thread_id: Optional[str] = None,
+        error: str = "",
+    ) -> ScheduleItem:
+        """Return a failed admission claim to pending without clobbering a retry."""
+
+        safe_token = str(lease_token or "").strip()
+        if not safe_token:
+            raise ValueError("lease_token is required")
+        return self._set_status(
+            owner_id=owner_id,
+            thread_id=thread_id,
+            schedule_id=schedule_id,
+            status=SCHEDULE_STATUS_PENDING,
+            lease_token=safe_token,
+            last_error=_clean_text(error),
+        )
 
     def mark_running(
         self,
@@ -196,12 +310,14 @@ class ScheduleService:
         owner_id: str,
         schedule_id: str,
         thread_id: Optional[str] = None,
+        lease_token: str = "",
     ) -> ScheduleItem:
         return self._set_status(
             owner_id=owner_id,
             thread_id=thread_id,
             schedule_id=schedule_id,
             status=SCHEDULE_STATUS_RUNNING,
+            lease_token=lease_token,
         )
 
     def mark_done(
@@ -219,6 +335,7 @@ class ScheduleService:
             thread_id=thread_id,
             schedule_id=schedule_id,
             status=SCHEDULE_STATUS_DONE,
+            last_error="",
         )
 
     def mark_failed(
@@ -229,12 +346,12 @@ class ScheduleService:
         schedule_id: str,
         error: str = "",
     ) -> ScheduleItem:
-        del error
         return self._set_status(
             owner_id=owner_id,
             thread_id=thread_id,
             schedule_id=schedule_id,
             status=SCHEDULE_STATUS_FAILED,
+            last_error=_clean_text(error),
         )
 
     def _set_status(
@@ -244,6 +361,8 @@ class ScheduleService:
         thread_id: Optional[str],
         schedule_id: str,
         status: str,
+        lease_token: str = "",
+        last_error: Optional[str] = None,
     ) -> ScheduleItem:
         normalized_owner_id = self.store._normalize_owner_id(owner_id)
         target = self.store.find_by_id(schedule_id, owner_id=normalized_owner_id)
@@ -253,14 +372,31 @@ class ScheduleService:
         if not target_thread_id or target_thread_id != target.thread_id:
             raise FileNotFoundError(f"schedule not found: {schedule_id}")
 
-        items = self.store.load_thread_items(normalized_owner_id, target_thread_id)
-        for item in items:
-            if item.schedule_id != schedule_id:
-                continue
-            item.status = status
-            self.store.save_thread_items(normalized_owner_id, target_thread_id, items)
-            return item
-        raise FileNotFoundError(f"schedule not found: {schedule_id}")
+        safe_lease_token = str(lease_token or "").strip()
+
+        def update_item(items: List[ScheduleItem]) -> ScheduleItem:
+            for item in items:
+                if item.schedule_id != schedule_id:
+                    continue
+                if safe_lease_token and item.lease_token != safe_lease_token:
+                    raise ScheduleLeaseConflictError(
+                        f"stale lease for schedule: {schedule_id}"
+                    )
+                item.status = status
+                if status != SCHEDULE_STATUS_LEASED:
+                    item.lease_token = ""
+                    item.lease_owner = ""
+                    item.lease_until = ""
+                if last_error is not None:
+                    item.last_error = str(last_error or "").strip()
+                return item
+            raise FileNotFoundError(f"schedule not found: {schedule_id}")
+
+        return self.store.mutate_thread_items(
+            normalized_owner_id,
+            target_thread_id,
+            update_item,
+        )
 
     def serialize_item(self, item: ScheduleItem) -> Dict[str, Any]:
         tz, _, _ = resolve_timezone(item.timezone_name)

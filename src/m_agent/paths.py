@@ -2,12 +2,38 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 from pathlib import Path
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_PACKAGE_PARENT = Path(__file__).resolve().parents[2]
+_PROJECT_ROOT_OVERRIDE = str(os.getenv("M_AGENT_HOME", "")).strip()
+_IS_SOURCE_TREE = (
+    (_PACKAGE_PARENT / "pyproject.toml").is_file()
+    and (_PACKAGE_PARENT / "src" / "m_agent").is_dir()
+)
+PROJECT_ROOT = (
+    Path(_PROJECT_ROOT_OVERRIDE).expanduser().resolve()
+    if _PROJECT_ROOT_OVERRIDE
+    else _PACKAGE_PARENT
+    if _IS_SOURCE_TREE
+    else Path.cwd().resolve()
+)
 SRC_ROOT = PROJECT_ROOT / "src"
-CONFIG_DIR = PROJECT_ROOT / "config"
+
+# Editable/source-tree installs use the repository config. A wheel installs the
+# same public defaults under ``sys.prefix/share/m-agent/config``; user-specific
+# config is intentionally never packaged.
+_SOURCE_CONFIG_DIR = PROJECT_ROOT / "config"
+_INSTALLED_CONFIG_DIR = Path(sys.prefix) / "share" / "m-agent" / "config"
+_CONFIG_DIR_OVERRIDE = str(os.getenv("M_AGENT_CONFIG_DIR", "")).strip()
+CONFIG_DIR = (
+    Path(_CONFIG_DIR_OVERRIDE).expanduser().resolve()
+    if _CONFIG_DIR_OVERRIDE
+    else _SOURCE_CONFIG_DIR
+    if (_SOURCE_CONFIG_DIR / "agents" / "chat" / "chat_controller.yaml").is_file()
+    else _INSTALLED_CONFIG_DIR
+)
 DATA_DIR = PROJECT_ROOT / "data"
 DOCS_DIR = PROJECT_ROOT / "docs"
 EXAMPLES_DIR = PROJECT_ROOT / "examples"
@@ -26,6 +52,29 @@ def resolve_project_path(path: str | Path) -> Path:
     return PROJECT_ROOT / candidate
 
 
+def data_root_dir() -> Path:
+    """Return the writable runtime data root.
+
+    Installed configuration lives below ``sys.prefix`` and must remain
+    read-only.  Mutable state therefore follows ``M_AGENT_DATA_DIR`` when set
+    and otherwise uses ``<M_AGENT_HOME-or-cwd>/data``.
+    """
+
+    raw = str(os.getenv("M_AGENT_DATA_DIR", "")).strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return DATA_DIR
+
+
+def secrets_root_dir() -> Path:
+    """Return the local, non-packaged root for runtime credentials/tokens."""
+
+    raw = str(os.getenv("M_AGENT_SECRETS_DIR", "")).strip()
+    if raw:
+        return Path(raw).expanduser().resolve()
+    return PROJECT_ROOT / ".secrets"
+
+
 def memory_root_dir() -> Path:
     """
     Resolve the base directory for MemoryCore workflow storage.
@@ -40,10 +89,7 @@ def memory_root_dir() -> Path:
     raw = str(os.getenv("M_AGENT_MEMORY_ROOT", "")).strip()
     if raw:
         return Path(raw).expanduser().resolve()
-    raw_data = str(os.getenv("M_AGENT_DATA_DIR", "")).strip()
-    if raw_data:
-        return (Path(raw_data).expanduser().resolve() / "memory")
-    return DATA_DIR / "memory"
+    return data_root_dir() / "memory"
 
 
 def memory_workflow_dir(workflow_id: str) -> Path:

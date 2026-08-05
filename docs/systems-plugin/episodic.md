@@ -26,16 +26,17 @@ index, and serves recall. It does not parse Scene storage or schedule flushes.
 
 ## Current v0.2 limitations
 
-- The default backend implements `shallow_recall` and `deep_recall` by calling
-  the same `_recall` method. The two capability names therefore have identical
-  retrieval behavior today; they are not yet two semantic recall depths.
-- `episode_note` is an optional, process-local annotation buffer. On the current
-  transaction-bound runtime path, notes are kept in a conversation scratch
-  while `ThinkingAgent.on_flush()` drains registry-owned conversation state.
-  The path is not uniformly drained, so callers must not rely on
-  `episode_note` as durable memory.
-- When notes do reach the default backend, `on_flush()` only merges them into
-  metadata on the last indexed chunk. It does not create a typed, immutable
+- The local backend implements only `shallow_recall`. It retains the
+  `deep_recall` protocol method for compatibility, but returns
+  `supported: false` / `reason: deep_recall_not_supported` instead of
+  presenting shallow retrieval as a semantic deep recall.
+- On the transaction-bound runtime path, a successful thinking step commits
+  `episode_note` as a stable Scene entry. The immutable flush snapshot carries
+  it into Dialogue `meta.trace_summary.episode_notes`, and the default backend
+  indexes it with that exact thread/dialogue. Failed speculative steps do not
+  publish notes. The standalone/direct compatibility path still uses an
+  in-process recorder and does not have the same durability guarantee.
+- A committed note is durable annotation metadata, not a typed immutable
   Episode or a Runtime-managed cognitive memory item.
 - The dialogue RAG index does not maintain Goals, Beliefs, Expectations,
   provenance-aware state transitions, or automatic Context injection. Those
@@ -69,7 +70,7 @@ in Scene chronological order, using `speaker`, `text`, `turn_id`, and
 |-------|------|--------------|
 | `RuntimeHost` / `RuntimeFlushOrchestrator` | Scene events, immutable flush snapshot, runtime commit, materialization journal, completion | RAG chunks, embeddings, recall ranking |
 | Chat memory persistence | Dialogue validation, archive write, `turns_to_rounds` conversion | Runtime transaction state, recall ranking |
-| `EpisodicMemoryBackend` | `persist_round`, `persist_dialogue`, the shallow/deep recall API (identical in the default backend today), and optional episode-note merge when notes are delivered | Scene parsing, timestamp repair, flush scheduling |
+| `EpisodicMemoryBackend` | `persist_round`, `persist_dialogue`, thread-scoped shallow recall, an explicitly unsupported compatibility response for deep recall, and optional episode-note merge when notes are delivered | Scene parsing, timestamp repair, flush scheduling |
 
 Scene is the authoritative source for a normal Dialogue materialization. A
 Dialogue archive is the system artifact; the episodic index is the subsystem
@@ -94,9 +95,9 @@ systems:
 | `query.enabled` | Boolean | `true` | Controls whether recall capabilities are exposed |
 | `query.capability_names` | List | `shallow_recall`, `deep_recall` | Recall capability names |
 
-The product configuration uses `DefaultEpisodeRecorder` to buffer
-thinking-layer `episode_note` values in memory. This is a best-effort
-annotation path, not a durability boundary; see the limitations above.
+`DefaultEpisodeRecorder` remains for standalone/direct compatibility calls.
+The transaction-bound product runtime instead uses committed Scene entries and
+the immutable flush snapshot as the durability boundary.
 
 ### Default backend arguments
 
@@ -105,7 +106,15 @@ annotation path, not a durability boundary; see the limitations above.
 | `storage_dir` | RAG parent directory |
 | `workflow_id` | Index subdirectory |
 | `top_k` | Retrieval result count |
+| `min_score` | Minimum cosine score for a hit (`0.2` by default); lower scores produce an explicit no-hit |
 | `embed_model` | `hash`, `alibaba`, or `bge` |
+
+The offline `hash` embedder uses a cross-process-stable, versioned BLAKE2b
+feature hash. The index publishes `chunks.jsonl`, `embeddings.npy`, and
+`index.meta.json` with checksums via atomic file replacement. Missing,
+corrupt, or incompatible metadata/embeddings are rebuilt from the chunk log
+at startup. Recall candidates are filtered to the exact `thread_id` before
+ranking, so one thread cannot contribute evidence to another.
 
 ## Backend protocol
 
@@ -120,17 +129,20 @@ def on_flush(self, *, thread_id: str, conversation_id: str,
              episode_notes: list[dict]) -> None: ...
 ```
 
-Recall results contain at least `answer`. `persist_*` methods are framework
-calls, not LLM tools. A backend treats `rounds` as its index-write input and
-does not depend on Scene paths.
+Recall results contain at least `answer`. A shallow no-hit returns an empty
+answer/evidence list with `hit: false` and a reason. The default deep method
+returns the explicit unsupported payload described above. `persist_*` methods
+are framework calls, not LLM tools. A backend treats `rounds` as its
+index-write input and does not depend on Scene paths.
 
 ## LLM-facing surface
 
 | Surface | Layer | Notes |
 |---------|-------|-------|
-| `shallow_recall`, `deep_recall` | Execution capabilities | Call the backend through `ControllerCapabilityContext` |
+| `shallow_recall` | Default execution capability | Calls the backend through `ControllerCapabilityContext` |
+| `deep_recall` | Compatibility capability, disabled by the default tool suite | The local backend returns an explicit unsupported result |
 | Capability descriptions | Thinking prompt | `config/systems/tools/capabilities/<tool>.yaml` |
-| `episode_note` | Thinking output | Best-effort in-memory buffer; the current transaction-bound path is not uniformly drained into `on_flush` |
+| `episode_note` | Thinking output | Committed to Scene on successful transaction-bound steps, then copied into frozen Dialogue metadata; direct compatibility calls remain in-memory |
 | Recall policy | Runtime prompt | `config/agents/chat/runtime/chat_controller_runtime.yaml` |
 
 Scene files, archive paths, chunks, embeddings, and `persist_*` are not exposed
@@ -158,12 +170,12 @@ The root is `M_AGENT_MEMORY_ROOT`, `M_AGENT_DATA_DIR/memory`, or the project
    `backend.persist_dialogue()`.
 5. The host records the delivered materialization and completes the segment.
 
-The journal is designed to keep identifiers and payload digests stable so a
-process restart can resume an incomplete Dialogue materialization without
-duplicating an acknowledged archive or index write. This contract does not
-make `episode_note` uniformly durable: transaction-bound notes may not reach
-the registry-based drain, and delivered notes are only attached to the last
-default RAG chunk.
+The journal keeps identifiers and payload digests stable so a process restart
+can resume an incomplete Dialogue materialization without duplicating an
+acknowledged archive or index write. Transaction-bound notes are part of the
+same frozen payload and are indexed only for the matching thread/dialogue.
+The legacy `on_flush()` merge remains a scoped compatibility path; it cannot
+attach notes to an unrelated thread or dialogue.
 
 ## Delivery and verification
 

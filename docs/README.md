@@ -5,6 +5,7 @@
 ## 快速入口
 
 - 使用项目：[仓库中文 README](../README-zh.md) · [English README](../README.md)
+- 查看版本变更：[CHANGELOG](../CHANGELOG.md)
 - 理解愿景：[愿景与项目目标](vision-and-goals.zh-CN.md)
 - 查看路线：[v0.2.0—v1.0.0 版本规划](roadmap-v0.2.0-v1.0.0.zh-CN.md) · [PDF](pdf/M-Agent-Roadmap-v0.2.0-v1.0.0.zh-CN.pdf)
 - 理解目标架构：[认知运行时目标架构](architecture/cognitive-runtime-architecture.zh-CN.md)

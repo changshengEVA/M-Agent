@@ -42,6 +42,10 @@ class ThinkingForceStoppedError(RuntimeError):
     """Raised when a thread is force-stopped through the chat API."""
 
 
+class PendingFlushAdmissionError(RuntimeError):
+    """Raised when new work would cross an unfinished flush boundary."""
+
+
 class _RuntimeScheduleLifecycle:
     """Bridges Runtime HEARTBEAT processing to the schedule store."""
 
@@ -957,7 +961,29 @@ class ChatServiceRuntime:
         thread_id: str,
         user_turn: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        active_thread_id = (
+            str(thread_id or self.default_thread_id).strip()
+            or self.default_thread_id
+        )
+        lock = _get_thread_lock(active_thread_id)
+        with lock:
+            return self._run_chat_locked(
+                message=message,
+                thread_id=active_thread_id,
+                user_turn=user_turn,
+            )
+
+    def _run_chat_locked(
+        self,
+        *,
+        message: str,
+        thread_id: str,
+        user_turn: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Run chat while the shared Chat admission/Flush lock is held."""
+
         active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
+        self._assert_admission_allowed(active_thread_id)
         cancel_event = self._clear_force_stop(active_thread_id)
         session = self._get_or_create_thread(active_thread_id)
         with self._threads_lock:
@@ -977,16 +1003,17 @@ class ChatServiceRuntime:
 
         THREAD_RUNTIME_STATUS.mark_busy(active_thread_id, reason="chat_run")
         try:
-            self._enqueue_runtime_user_turn(
-                active_thread_id,
-                user_message=_normalize_text(normalized_user_turn.get("text")) or rendered_message,
-                user_turn=normalized_user_turn,
-            )
             self._runtime_host.submit_user_message(
                 thread_id=active_thread_id,
                 conversation_id=conversation_id,
                 text=rendered_message,
                 schedule_drainer=False,
+            )
+            self._enqueue_runtime_user_turn(
+                active_thread_id,
+                user_message=_normalize_text(normalized_user_turn.get("text"))
+                or rendered_message,
+                user_turn=normalized_user_turn,
             )
             result = self._runtime_host.run_thread(
                 active_thread_id,
@@ -1282,6 +1309,17 @@ class ChatServiceRuntime:
                 return "reply_pending"
         return None
 
+    def _assert_admission_allowed(self, thread_id: str) -> None:
+        """Fence new work while a frozen durable flush is unfinished."""
+
+        tid = str(thread_id or "").strip()
+        checker = getattr(self._runtime_host, "has_pending_flush", None)
+        if callable(checker) and bool(checker(tid)):
+            raise PendingFlushAdmissionError(
+                f"thread {tid!r} has an unfinished durable flush; retry the "
+                "flush before submitting new work"
+            )
+
     def _busy_flush_result(
         self,
         session: ThreadSessionState,
@@ -1441,10 +1479,6 @@ class ChatServiceRuntime:
                         session.thread_id,
                         **flush_kwargs,
                     )
-                    if runtime_flush_plan is not None:
-                        self._runtime_host.complete_flush_segment(
-                            runtime_flush_id
-                        )
                 except Exception as exc:
                     logger.exception(
                         "Runtime on_flush_segment failed thread_id=%s (noop flush)",
@@ -1508,6 +1542,40 @@ class ChatServiceRuntime:
                         old_conversation_id,
                         session.thread_id,
                     )
+                if runtime_flush_plan is not None:
+                    try:
+                        completion = self._runtime_host.complete_flush_segment(
+                            runtime_flush_id
+                        )
+                        if runtime_segment is not None:
+                            runtime_segment["journal_status"] = completion.get(
+                                "status",
+                                "completed",
+                            )
+                    except Exception as exc:
+                        logger.exception(
+                            "Runtime noop flush completion failed after durable "
+                            "boundary thread_id=%s",
+                            session.thread_id,
+                        )
+                        session.last_flush_result = {
+                            "success": False,
+                            "status": "failed",
+                            "error": str(exc),
+                            "conversation_id": old_conversation_id,
+                        }
+                        snapshot = self._thread_state_snapshot(session)
+                        return {
+                            "success": False,
+                            "retryable": True,
+                            "thread_id": session.thread_id,
+                            "flush_reason": reason,
+                            "status": "failed",
+                            "message": "runtime flush completion failed",
+                            "error": str(exc),
+                            "thread_state": snapshot,
+                            "runtime_flush": runtime_segment,
+                        }
                 message = "no pending rounds to flush"
                 status = "noop"
                 if runtime_segment and runtime_segment.get("completed_transaction_id"):
@@ -1744,22 +1812,20 @@ class ChatServiceRuntime:
         flush_success = bool(flush_result.get("success", False))
         if flush_success and runtime_flush_plan is not None:
             try:
-                self._runtime_host.mark_flush_materialization_delivered(
+                delivered_plan = self._runtime_host.mark_flush_materialization_delivered(
                     runtime_flush_id,
                     destination="dialogue",
                     result=_summarize_memory_write_result(flush_result),
                 )
-                completion = self._runtime_host.complete_flush_segment(
-                    runtime_flush_id
-                )
                 if runtime_segment is not None:
-                    runtime_segment["journal_status"] = completion.get(
-                        "status",
-                        "completed",
+                    runtime_segment["journal_status"] = delivered_plan.get(
+                        "journal_status",
+                        "materialized",
                     )
             except Exception as exc:
                 logger.exception(
-                    "Runtime flush finalization failed after dialogue write thread_id=%s",
+                    "Runtime flush materialization acknowledgement failed "
+                    "after dialogue write thread_id=%s",
                     session.thread_id,
                 )
                 failed_result = deepcopy(flush_result)
@@ -1767,7 +1833,7 @@ class ChatServiceRuntime:
                 failed_result["external_write_success"] = True
                 failed_result["runtime_flush_id"] = runtime_flush_id
                 failed_result["error"] = (
-                    f"runtime flush finalization failed: {exc}"
+                    f"runtime flush materialization acknowledgement failed: {exc}"
                 )
                 flush_result = failed_result
                 flush_success = False
@@ -1828,6 +1894,46 @@ class ChatServiceRuntime:
                 )
                 flush_result = failed_result
                 flush_success = False
+        if flush_success:
+            try:
+                drained_episode_notes = list(
+                    self._agent.on_flush(
+                        conversation_id=old_conversation_id,
+                        thread_id=session.thread_id,
+                    )
+                    or []
+                )
+            except Exception:
+                # Episode notes are already frozen in the durable FlushSnapshot
+                # and materialized with the dialogue. Failure to release the
+                # in-process compatibility buffer must not duplicate the write.
+                logger.exception(
+                    "ThreeLayerChatAgent.on_flush failed for conversation_id=%s thread_id=%s",
+                    old_conversation_id,
+                    session.thread_id,
+                )
+        if flush_success and runtime_flush_plan is not None:
+            try:
+                completion = self._runtime_host.complete_flush_segment(
+                    runtime_flush_id
+                )
+                if runtime_segment is not None:
+                    runtime_segment["journal_status"] = completion.get(
+                        "status",
+                        "completed",
+                    )
+            except Exception as exc:
+                logger.exception(
+                    "Runtime flush completion failed after durable boundary thread_id=%s",
+                    session.thread_id,
+                )
+                failed_result = deepcopy(flush_result)
+                failed_result["success"] = False
+                failed_result["external_write_success"] = True
+                failed_result["runtime_flush_id"] = runtime_flush_id
+                failed_result["error"] = f"runtime flush completion failed: {exc}"
+                flush_result = failed_result
+                flush_success = False
         with self._threads_lock:
             session.last_flush_attempt_at = _now_utc()
             session.last_flush_reason = reason
@@ -1842,20 +1948,6 @@ class ChatServiceRuntime:
                 session.flush_count += 1
                 session.idle_timer_started_at = None
 
-                try:
-                    drained_episode_notes = list(
-                        self._agent.on_flush(
-                            conversation_id=old_conversation_id,
-                            thread_id=session.thread_id,
-                        )
-                        or []
-                    )
-                except Exception:
-                    logger.exception(
-                        "ThreeLayerChatAgent.on_flush failed for conversation_id=%s thread_id=%s",
-                        old_conversation_id,
-                        session.thread_id,
-                    )
                 assert next_conversation_seq is not None
                 session.conversation_seq = next_conversation_seq
 
@@ -1981,6 +2073,7 @@ class ChatServiceRuntime:
         active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
         lock = _get_thread_lock(active_thread_id)
         with lock:
+            self._assert_admission_allowed(active_thread_id)
             session = self._get_or_create_thread(active_thread_id)
             normalized_user_turn = _normalize_turn_payload(
                 user_turn,
@@ -2025,14 +2118,12 @@ class ChatServiceRuntime:
         include_history: bool = False,
     ) -> Dict[str, Any]:
         active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
-        lock = _get_thread_lock(active_thread_id)
-        with lock:
-            session = self._get_or_create_thread(active_thread_id)
-            return self._runtime_host.list_transactions(
-                active_thread_id,
-                conversation_id=session.conversation_id,
-                include_history=bool(include_history),
-            )
+        session = self._get_or_create_thread(active_thread_id)
+        return self._runtime_host.list_transactions(
+            active_thread_id,
+            conversation_id=session.conversation_id,
+            include_history=bool(include_history),
+        )
 
     def delete_transaction(
         self,

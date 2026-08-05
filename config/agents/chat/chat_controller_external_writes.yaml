@@ -1,0 +1,32 @@
+# Explicit opt-in Chat profile for schedule writes and Gmail sending.
+# Keep the ordinary chat_controller.yaml as the safe, read-oriented default.
+model_config_path: "./chat_model.yaml"
+email_agent_config_path: "../email/gmail_email_agent_external_writes.yaml"
+schedule_agent_config_path: "../schedule/schedule_agent.yaml"
+runtime_prompt_config_path: "./runtime/chat_controller_runtime.yaml"
+prompt_language: "zh"
+thread_id: "test-agent-1"
+
+chat_user_name: "User"
+chat_assistant_name: "Memory Assistant"
+persist_memory: true
+
+systems:
+  wm:       ../../systems/wm/default.yaml
+  episodic: ../../systems/episodic/rag_default.yaml
+  tools:    ../../systems/tools/external_writes_enabled.yaml
+
+runtime:
+  common:
+    scene_context_max_entries: 40
+    scene_persist_jsonl: true
+    scheduler:
+      preempt_enabled: false
+      max_preempt_per_stimulus: 3
+      default_user_priority: 10
+      default_feedback_priority: 20
+      default_heartbeat_priority: 40
+  langgraph:
+    turn_loop: true
+    thinking_mode: single_call
+    delegate_executor: execution_agent

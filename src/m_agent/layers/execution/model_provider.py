@@ -125,7 +125,10 @@ def build_model_provider_from_config(
     resolved = resolve_related_config_path(base, config_path)
     config = _load_model_config(resolved)
 
-    model_name = str(config.get("model_name", "deepseek-chat"))
+    model_name = str(
+        os.getenv("OPENAI_MODEL")
+        or config.get("model_name", "openai:deepseek-chat")
+    ).strip()
     agent_temperature = float(config.get("agent_temperature", 0.0))
     timeout_raw = config.get("model_timeout_seconds")
     model_timeout = float(timeout_raw) if timeout_raw is not None else None

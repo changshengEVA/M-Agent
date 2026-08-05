@@ -52,7 +52,7 @@ def _build_shallow_recall_tool(context: ControllerCapabilityContext, description
         try:
             result = backend.shallow_recall(
                 question=question,
-                thread_id=f"{context.active_thread_id}:shallow",
+                thread_id=context.active_thread_id,
             )
         except Exception as exc:
             context.finish_tool_call(call_id, "shallow_recall", error=str(exc))
@@ -106,7 +106,7 @@ def _build_deep_recall_tool(context: ControllerCapabilityContext, description: s
         try:
             result = backend.deep_recall(
                 question=question,
-                thread_id=f"{context.active_thread_id}:deep",
+                thread_id=context.active_thread_id,
             )
         except Exception as exc:
             context.finish_tool_call(call_id, "deep_recall", error=str(exc))
@@ -133,12 +133,14 @@ def _build_deep_recall_tool(context: ControllerCapabilityContext, description: s
 SHALLOW_RECALL_CAPABILITY = ControllerCapabilitySpec(
     name="shallow_recall",
     build_tool=_build_shallow_recall_tool,
+    side_effect="read",
     delivery_guarantee="idempotent",
 )
 
 DEEP_RECALL_CAPABILITY = ControllerCapabilitySpec(
     name="deep_recall",
     build_tool=_build_deep_recall_tool,
+    side_effect="read",
     delivery_guarantee="idempotent",
 )
 

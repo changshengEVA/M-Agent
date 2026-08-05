@@ -10,9 +10,12 @@
 4. [当前 Runtime 文档](../runtime/README.md)：说明 v0.2 当前 LangGraph 单宿主、配置和运行 Gate。
 5. [Runtime 语义验收平台](../runtime/semantic-acceptance-platform.zh-CN.md)：说明当前可执行语义场景。
 
-## 在途设计
+## 已实现的战术设计
 
-- [Thinking 单次 LLM 调用设计](thinking-single-call-design.zh-CN.md)：v0.2.1 在途实现设计，不代表已发布能力。
+- [Thinking 单次 LLM 调用设计](thinking-single-call-design.zh-CN.md)：已在 v0.2.1 实现并验收。
+
+## 未来设计
+
 - [Strategy 系统级接入方案](strategy-single-llm-integration.zh-CN.md)：未来设计；v0.6 Shadow、v0.7 Opt-in、v0.8 评测达标后才可成为默认候选。
 
 ## 历史材料

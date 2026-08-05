@@ -213,13 +213,14 @@ def load_tool_suite_system(source: Path | str | Mapping[str, Any]) -> ToolSuiteS
 
     # ---- enabled list
     enabled_raw = payload.get("enabled")
-    if enabled_raw is None and manifests:
-        enabled = list(manifests.keys())
-    else:
-        enabled = resolve_enabled_controller_capability_names(
-            enabled_raw if enabled_raw is not None else None,
-            registry=registry,
-        )
+    # Omitting ``enabled`` must never turn every discovered manifest into an
+    # executable capability. In particular, a capabilities directory may
+    # contain opt-in write/send tools next to the safe defaults. Resolve the
+    # ordinary read/emit allow-list for both manifest and registry suites.
+    enabled = resolve_enabled_controller_capability_names(
+        enabled_raw if enabled_raw is not None else None,
+        registry=registry,
+    )
 
     # ---- per-tool defaults
     defaults_raw = payload.get("defaults") or {}
