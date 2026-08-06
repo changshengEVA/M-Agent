@@ -199,14 +199,8 @@ class ThinkingAgent:
             user_context = "\n\n".join(user_sections)
         system_prompt = "\n\n".join(system_sections)
         try:
-            model = self.model_provider.model.with_structured_output(
-                TransactionResolution, include_raw=False
-            )
-        except Exception:
-            model = self.model_provider.model.with_structured_output(TransactionResolution)
-        try:
-            raw = self._invoke_structured(
-                model,
+            raw = self.model_provider.invoke_structured(
+                TransactionResolution,
                 messages=[
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_context},
@@ -287,11 +281,6 @@ class ThinkingAgent:
         if self.thinking_mode == THINKING_MODE_SINGLE_CALL:
             try:
                 thinking_turn = self._think_once(perception, state)
-                self._validate_turn_output_against_runtime(
-                    thinking_turn,
-                    perception,
-                    state,
-                )
             except Exception:
                 # A failed/invalid joint response must not leak the speculative
                 # user-message reopen into the live transaction record.
@@ -791,24 +780,26 @@ class ThinkingAgent:
         state: ConversationState,
     ) -> ThinkingTurnOutput:
         prompt_messages = self._build_thinking_turn_messages(perception, state)
-        try:
-            structured_model = self.model_provider.model.with_structured_output(
-                ThinkingTurnOutput,
-                include_raw=False,
-            )
-        except Exception:
-            structured_model = self.model_provider.model.with_structured_output(
-                ThinkingTurnOutput
-            )
 
-        result = self._invoke_structured(
-            structured_model,
+        def _validate(result: Any) -> ThinkingTurnOutput:
+            output = (
+                result
+                if isinstance(result, ThinkingTurnOutput)
+                else ThinkingTurnOutput.model_validate(result)
+            )
+            self._validate_turn_output_against_runtime(
+                output,
+                perception,
+                state,
+            )
+            return output
+
+        return self.model_provider.invoke_structured(
+            ThinkingTurnOutput,
             messages=prompt_messages,
             call_name="thinking.turn",
+            validator=_validate,
         )
-        if isinstance(result, ThinkingTurnOutput):
-            return result
-        return ThinkingTurnOutput.model_validate(result)
 
     def _build_thinking_turn_messages(
         self,
@@ -928,16 +919,8 @@ class ThinkingAgent:
         state: ConversationState,
     ) -> Optional[TaskProgressUpdate]:
         prompt_messages = self._build_task_state_messages(perception, state)
-        try:
-            structured_model = self.model_provider.model.with_structured_output(
-                TaskProgressUpdate,
-                include_raw=False,
-            )
-        except Exception:
-            structured_model = self.model_provider.model.with_structured_output(TaskProgressUpdate)
-
-        result = self._invoke_structured(
-            structured_model,
+        result = self.model_provider.invoke_structured(
+            TaskProgressUpdate,
             messages=prompt_messages,
             call_name="thinking.pre_gen_task_state",
         )
@@ -1158,17 +1141,8 @@ class ThinkingAgent:
 
     def _plan(self, perception: PerceptionInput, state: ConversationState) -> ThinkingDecision:
         prompt_messages = self._build_plan_messages(perception, state)
-        try:
-            structured_model = self.model_provider.model.with_structured_output(
-                ThinkingDecision,
-                include_raw=False,
-            )
-        except Exception:
-            # Fallback: try the OpenAI-style structured tools schema name
-            structured_model = self.model_provider.model.with_structured_output(ThinkingDecision)
-
-        result = self._invoke_structured(
-            structured_model,
+        result = self.model_provider.invoke_structured(
+            ThinkingDecision,
             messages=prompt_messages,
             call_name="thinking.plan",
         )
@@ -1267,22 +1241,6 @@ class ThinkingAgent:
             "- mode==silent: no delegate, no reply; record reasoning/episode_note and wait for further stimulus.\n"
             "- Don't echo the user; in the instruction state explicitly what you want the execution layer to do."
         )
-
-    # ------------------------------------------------------------------
-    # LLM invocation with retries
-    # ------------------------------------------------------------------
-
-    def _invoke_structured(
-        self,
-        structured_model: Any,
-        *,
-        messages: List[Dict[str, str]],
-        call_name: str,
-    ) -> Any:
-        def _attempt(_: int) -> Any:
-            return structured_model.invoke(messages)
-
-        return self.model_provider.invoke_with_network_retry(_attempt, call_name=call_name)
 
     # ------------------------------------------------------------------
     # Result coercion / fallbacks

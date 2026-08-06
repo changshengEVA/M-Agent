@@ -11,7 +11,11 @@ from .contracts import (
     ParamFillResult,
 )
 from .core import ExecutionAgent
-from .model_provider import ModelProvider, build_model_provider_from_config
+from .model_provider import (
+    ModelProvider,
+    StructuredOutputError,
+    build_model_provider_from_config,
+)
 
 __all__ = [
     "CapabilityDescriptor",
@@ -19,5 +23,6 @@ __all__ = [
     "ExecutionResult",
     "ModelProvider",
     "ParamFillResult",
+    "StructuredOutputError",
     "build_model_provider_from_config",
 ]

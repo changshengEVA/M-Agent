@@ -6,6 +6,21 @@ All notable changes to M-Agent are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- User chat configs now store only the optional `chat_persona_prompt` override
+  and reference the shared server runtime prompt. Existing copied runtime
+  prompts are migrated by preserving only a custom persona and are no longer
+  loaded, so protocol and thinking updates apply uniformly without refreshing
+  per-user prompt copies.
+
+### Fixed
+
+- Restored reliable single-call structured thinking on OpenAI-compatible
+  DeepSeek gateways by explicitly using `function_calling`, validating inside
+  a bounded semantic retry loop, and preserving transaction state when all
+  structured attempts fail.
+
 ## [0.2.1] - 2026-08-06
 
 ### Added

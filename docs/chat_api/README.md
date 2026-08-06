@@ -647,6 +647,9 @@ Request body:
 | `persona_prompt` | `string` | no | 用户自定义 persona prompt | Custom persona prompt |
 | `workflow_id` | `string` | no | 记忆工作流隔离 ID | Memory workflow namespace |
 
+`persona_prompt`（保存为 `chat.chat_persona_prompt`）是唯一由用户配置的提示文本。
+System、thinking、tool 与结构化输出提示始终来自服务器共享配置，不会复制到用户目录。
+
 Success response:
 
 ```json

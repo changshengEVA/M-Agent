@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from m_agent.api.user_access import UserAccountStore
@@ -60,6 +61,26 @@ def _build_base_configs(tmp_path: Path) -> Path:
         runtime_path,
         {
             "chat_controller": {
+                "thinking": {
+                    "persona_tone_prompt": {
+                        "zh": "SERVER DEFAULT PERSONA",
+                        "en": "SERVER DEFAULT PERSONA",
+                    },
+                    "persona_merge_template": {
+                        "zh": "<base_prompt>\n\n[SERVER PERSONA]\n<persona_prompt>",
+                        "en": "<base_prompt>\n\n[SERVER PERSONA]\n<persona_prompt>",
+                    },
+                    "thinking_turn": {
+                        "base_prompt": {
+                            "zh": "SERVER THINKING BASE",
+                            "en": "SERVER THINKING BASE",
+                        },
+                        "instructions": {
+                            "zh": "SERVER THINKING INSTRUCTIONS",
+                            "en": "SERVER THINKING INSTRUCTIONS",
+                        },
+                    },
+                },
                 "tools": {
                     "shallow_recall": {"description": {"zh": "A", "en": "A"}},
                     "deep_recall": {"description": {"zh": "B", "en": "B"}},
@@ -96,7 +117,7 @@ def _build_base_configs(tmp_path: Path) -> Path:
     return chat_path
 
 
-def test_verify_credentials_syncs_tool_related_user_configs(tmp_path: Path) -> None:
+def test_verify_credentials_syncs_user_configs_and_shared_runtime(tmp_path: Path) -> None:
     base_chat_config_path = _build_base_configs(tmp_path)
     users_root = tmp_path / "users"
     users_db = users_root / "users.json"
@@ -114,7 +135,6 @@ def test_verify_credentials_syncs_tool_related_user_configs(tmp_path: Path) -> N
     assert created_user.canonical_thread_id == "alice-thread"
     assert created_user.to_payload()["canonical_thread_id"] == "alice-thread"
     user_chat_path = created_user.config_path
-    user_runtime_path = user_chat_path.parent / "runtime" / "chat_runtime.yaml"
 
     stale_chat = yaml.safe_load(user_chat_path.read_text(encoding="utf-8"))
     stale_chat["enabled_tools"] = ["shallow_recall", "deep_recall", "get_current_time"]
@@ -122,14 +142,6 @@ def test_verify_credentials_syncs_tool_related_user_configs(tmp_path: Path) -> N
     stale_chat.pop("email_agent_config_path", None)
     stale_chat.pop("schedule_agent_config_path", None)
     _write_yaml(user_chat_path, stale_chat)
-
-    stale_runtime = yaml.safe_load(user_runtime_path.read_text(encoding="utf-8"))
-    stale_runtime["chat_controller"]["tools"] = {
-        "shallow_recall": {"description": {"zh": "A", "en": "A"}},
-        "deep_recall": {"description": {"zh": "B", "en": "B"}},
-        "get_current_time": {"description": {"zh": "C", "en": "C"}},
-    }
-    _write_yaml(user_runtime_path, stale_runtime)
 
     refreshed_user = store.verify_credentials(username="alice", password="password123")
 
@@ -152,6 +164,16 @@ def test_verify_credentials_syncs_tool_related_user_configs(tmp_path: Path) -> N
     )
     assert resolved_schedule_path.exists()
 
+    base_chat = yaml.safe_load(base_chat_config_path.read_text(encoding="utf-8"))
+    base_runtime_path = resolve_related_config_path(
+        base_chat_config_path,
+        base_chat.get("runtime_prompt_config_path"),
+    )
+    user_runtime_path = resolve_related_config_path(
+        user_chat_path,
+        refreshed_chat.get("runtime_prompt_config_path"),
+    )
+    assert user_runtime_path == base_runtime_path
     refreshed_runtime = yaml.safe_load(user_runtime_path.read_text(encoding="utf-8"))
     runtime_tools = refreshed_runtime["chat_controller"]["tools"]
     assert "schedule_create" in runtime_tools
@@ -162,6 +184,325 @@ def test_verify_credentials_syncs_tool_related_user_configs(tmp_path: Path) -> N
     assert "email_send" in runtime_tools
     assert refreshed_user.updated_at != created_user.updated_at
     assert refreshed_user.canonical_thread_id == "alice-thread"
+
+
+def test_register_user_stores_only_persona_and_reuses_server_runtime(tmp_path: Path) -> None:
+    base_chat_config_path = _build_base_configs(tmp_path)
+    users_root = tmp_path / "users"
+    store = UserAccountStore(
+        base_chat_config_path=base_chat_config_path,
+        users_root_dir=users_root,
+        users_db_path=users_root / "users.json",
+    )
+
+    user = store.register_user(
+        username="persona-user",
+        password="password123",
+        persona_prompt="A concise custom persona.",
+    )
+
+    user_chat = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    assert user_chat["chat_persona_prompt"] == "A concise custom persona."
+    base_chat = yaml.safe_load(base_chat_config_path.read_text(encoding="utf-8"))
+    assert resolve_related_config_path(
+        user.config_path,
+        user_chat.get("runtime_prompt_config_path"),
+    ) == resolve_related_config_path(
+        base_chat_config_path,
+        base_chat.get("runtime_prompt_config_path"),
+    )
+    assert not (user.config_path.parent / "runtime" / "chat_runtime.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    ("persona_fragment", "expected_persona", "seed_null_override"),
+    [
+        (
+            {
+                "thinking": {
+                    "persona_tone_prompt": {
+                        "zh": "NESTED LEGACY PERSONA",
+                        "en": "IGNORED ENGLISH PERSONA",
+                    }
+                }
+            },
+            "NESTED LEGACY PERSONA",
+            False,
+        ),
+        (
+            {
+                "persona_prompt": {
+                    "zh": "TOP-LEVEL LEGACY PERSONA",
+                    "en": "IGNORED ENGLISH PERSONA",
+                }
+            },
+            "TOP-LEVEL LEGACY PERSONA",
+            False,
+        ),
+        (
+            {
+                "persona_prompt": {
+                    "zh": "PERSONA RECOVERED AFTER NULL",
+                    "en": "IGNORED ENGLISH PERSONA",
+                }
+            },
+            "PERSONA RECOVERED AFTER NULL",
+            True,
+        ),
+    ],
+)
+def test_verify_credentials_migrates_legacy_runtime_persona_only(
+    tmp_path: Path,
+    persona_fragment: dict,
+    expected_persona: str,
+    seed_null_override: bool,
+) -> None:
+    base_chat_config_path = _build_base_configs(tmp_path)
+    users_root = tmp_path / "users"
+    store = UserAccountStore(
+        base_chat_config_path=base_chat_config_path,
+        users_root_dir=users_root,
+        users_db_path=users_root / "users.json",
+    )
+    user = store.register_user(
+        username="legacy-user",
+        password="password123",
+    )
+
+    legacy_runtime_path = user.config_path.parent / "runtime" / "chat_runtime.yaml"
+    legacy_controller = {
+        "system_prompt": {"zh": "UNTRUSTED SYSTEM", "en": "UNTRUSTED SYSTEM"},
+        "merge_system_with_persona": {
+            "zh": "UNTRUSTED MERGE <persona_prompt>",
+            "en": "UNTRUSTED MERGE <persona_prompt>",
+        },
+        "thinking": {
+            "thinking_turn": {
+                "base_prompt": {"zh": "UNTRUSTED THINKING", "en": "UNTRUSTED THINKING"},
+                "instructions": {"zh": "UNTRUSTED INSTRUCTIONS", "en": "UNTRUSTED INSTRUCTIONS"},
+            }
+        },
+    }
+    for key, value in persona_fragment.items():
+        if key == "thinking" and isinstance(value, dict):
+            legacy_controller["thinking"].update(value)
+        else:
+            legacy_controller[key] = value
+    _write_yaml(legacy_runtime_path, {"chat_controller": legacy_controller})
+
+    legacy_chat = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    if seed_null_override:
+        legacy_chat["chat_persona_prompt"] = None
+    else:
+        legacy_chat.pop("chat_persona_prompt", None)
+    legacy_chat["prompt_language"] = "zh"
+    legacy_chat["runtime_prompt_config_path"] = "./runtime/chat_runtime.yaml"
+    _write_yaml(user.config_path, legacy_chat)
+
+    store.verify_credentials(username="legacy-user", password="password123")
+
+    migrated_chat = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    assert migrated_chat["chat_persona_prompt"] == expected_persona
+    base_chat = yaml.safe_load(base_chat_config_path.read_text(encoding="utf-8"))
+    assert resolve_related_config_path(
+        user.config_path,
+        migrated_chat.get("runtime_prompt_config_path"),
+    ) == resolve_related_config_path(
+        base_chat_config_path,
+        base_chat.get("runtime_prompt_config_path"),
+    )
+
+
+def test_migration_does_not_freeze_copied_server_persona(tmp_path: Path) -> None:
+    base_chat_config_path = _build_base_configs(tmp_path)
+    users_root = tmp_path / "users"
+    store = UserAccountStore(
+        base_chat_config_path=base_chat_config_path,
+        users_root_dir=users_root,
+        users_db_path=users_root / "users.json",
+    )
+    user = store.register_user(
+        username="copied-default-user",
+        password="password123",
+    )
+
+    base_chat = yaml.safe_load(base_chat_config_path.read_text(encoding="utf-8"))
+    base_runtime_path = resolve_related_config_path(
+        base_chat_config_path,
+        base_chat.get("runtime_prompt_config_path"),
+    )
+    legacy_runtime_path = user.config_path.parent / "runtime" / "chat_runtime.yaml"
+    _write_yaml(
+        legacy_runtime_path,
+        yaml.safe_load(base_runtime_path.read_text(encoding="utf-8")),
+    )
+    legacy_chat = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    legacy_chat["runtime_prompt_config_path"] = "./runtime/chat_runtime.yaml"
+    _write_yaml(user.config_path, legacy_chat)
+
+    store.verify_credentials(
+        username="copied-default-user",
+        password="password123",
+    )
+
+    migrated_chat = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    assert "chat_persona_prompt" not in migrated_chat
+    assert resolve_related_config_path(
+        user.config_path,
+        migrated_chat.get("runtime_prompt_config_path"),
+    ) == base_runtime_path
+
+
+def test_migration_does_not_freeze_historical_server_persona(tmp_path: Path) -> None:
+    base_chat_config_path = _build_base_configs(tmp_path)
+    users_root = tmp_path / "users"
+    store = UserAccountStore(
+        base_chat_config_path=base_chat_config_path,
+        users_root_dir=users_root,
+        users_db_path=users_root / "users.json",
+    )
+    user = store.register_user(
+        username="historical-default-user",
+        password="password123",
+    )
+
+    historical_default = (
+        "你是一个长期陪伴型记忆助手，风格温和、可靠、克制。\n"
+        "你像一个真正帮助用户整理生活细节的聊天伙伴，而不是机械问答器。\n"
+        "默认简洁回答，先回应用户真正关心的问题，再补充必要细节。"
+    )
+    legacy_runtime_path = user.config_path.parent / "runtime" / "chat_runtime.yaml"
+    _write_yaml(
+        legacy_runtime_path,
+        {
+            "chat_controller": {
+                "persona_prompt": {
+                    "zh": historical_default,
+                    "en": "unused",
+                }
+            }
+        },
+    )
+    legacy_chat = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    legacy_chat["runtime_prompt_config_path"] = "./runtime/chat_runtime.yaml"
+    _write_yaml(user.config_path, legacy_chat)
+
+    store.verify_credentials(
+        username="historical-default-user",
+        password="password123",
+    )
+
+    migrated_chat = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    assert "chat_persona_prompt" not in migrated_chat
+
+
+def test_agent_uses_server_prompts_and_keeps_user_persona(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from m_agent.chat.three_layer_chat_agent import ThreeLayerChatAgent
+    from m_agent.layers.execution.model_provider import ModelProvider
+
+    base_chat_config_path = _build_base_configs(tmp_path)
+    users_root = tmp_path / "users"
+    store = UserAccountStore(
+        base_chat_config_path=base_chat_config_path,
+        users_root_dir=users_root,
+        users_db_path=users_root / "users.json",
+    )
+    user = store.register_user(
+        username="agent-user",
+        password="password123",
+        persona_prompt="TRUSTED USER PERSONA",
+    )
+
+    legacy_runtime_path = user.config_path.parent / "runtime" / "chat_runtime.yaml"
+    _write_yaml(
+        legacy_runtime_path,
+        {
+            "chat_controller": {
+                "system_prompt": {"zh": "UNTRUSTED SYSTEM"},
+                "persona_prompt": {"zh": "UNTRUSTED PERSONA"},
+                "merge_system_with_persona": {
+                    "zh": "UNTRUSTED MERGE <persona_prompt>"
+                },
+                "thinking": {
+                    "thinking_turn": {
+                        "base_prompt": {"zh": "UNTRUSTED THINKING"},
+                        "instructions": {"zh": "UNTRUSTED INSTRUCTIONS"},
+                    }
+                },
+            }
+        },
+    )
+    legacy_chat = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    legacy_chat["runtime_prompt_config_path"] = "./runtime/chat_runtime.yaml"
+    _write_yaml(user.config_path, legacy_chat)
+
+    refreshed_user = store.verify_credentials(
+        username="agent-user",
+        password="password123",
+    )
+    refreshed_chat = yaml.safe_load(refreshed_user.config_path.read_text(encoding="utf-8"))
+    assert refreshed_chat["chat_persona_prompt"] == "TRUSTED USER PERSONA"
+
+    fake_provider = ModelProvider(
+        model=object(),
+        model_name="fake-model",
+        network_retry_attempts=1,
+        network_retry_backoff_seconds=0,
+    )
+    monkeypatch.setattr(
+        "m_agent.chat.three_layer_chat_agent.build_model_provider_from_config",
+        lambda *_args, **_kwargs: fake_provider,
+    )
+
+    agent = ThreeLayerChatAgent(config_path=refreshed_user.config_path)
+
+    assert agent.runtime_prompts["thinking"]["thinking_turn"]["base_prompt"] == (
+        "SERVER THINKING BASE"
+    )
+    assert agent.thinking_agent._thinking_turn_instructions_block() == (
+        "SERVER THINKING INSTRUCTIONS"
+    )
+    assert "SERVER THINKING BASE" in agent.thinking_agent.system_prompt
+    assert "[SERVER PERSONA]" in agent.thinking_agent.system_prompt
+    assert "TRUSTED USER PERSONA" in agent.thinking_agent.system_prompt
+    assert "UNTRUSTED" not in agent.thinking_agent.system_prompt
+
+
+def test_explicit_empty_persona_disables_server_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from m_agent.chat.three_layer_chat_agent import ThreeLayerChatAgent
+    from m_agent.layers.execution.model_provider import ModelProvider
+
+    base_chat_config_path = _build_base_configs(tmp_path)
+    users_root = tmp_path / "users"
+    store = UserAccountStore(
+        base_chat_config_path=base_chat_config_path,
+        users_root_dir=users_root,
+        users_db_path=users_root / "users.json",
+    )
+    user = store.register_user(
+        username="no-persona-user",
+        password="password123",
+        persona_prompt="",
+    )
+
+    user_chat = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    assert user_chat["chat_persona_prompt"] == ""
+
+    monkeypatch.setattr(
+        "m_agent.chat.three_layer_chat_agent.build_model_provider_from_config",
+        lambda *_args, **_kwargs: ModelProvider(model=object(), model_name="fake-model"),
+    )
+    agent = ThreeLayerChatAgent(config_path=user.config_path)
+
+    assert agent.thinking_agent.system_prompt.startswith("SERVER THINKING BASE")
+    assert "SERVER DEFAULT PERSONA" not in agent.thinking_agent.system_prompt
+    assert "[SERVER PERSONA]" not in agent.thinking_agent.system_prompt
 
 
 def test_register_user_rewrites_email_agent_config_path_for_user_dir(tmp_path: Path) -> None:

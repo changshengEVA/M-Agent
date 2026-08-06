@@ -257,17 +257,23 @@ class ThreeLayerChatAgent:
             if legacy_decision_base:
                 base_prompt = legacy_decision_base
 
-        persona_tone_prompt = self._nested_runtime_text(
-            thinking_prompts,
-            "persona_tone_prompt",
-            legacy_keys=("persona_prompt",),
-        )
-        if not persona_tone_prompt:
+        if "chat_persona_prompt" in self.config:
+            persona_override = self.config.get("chat_persona_prompt")
+            if not isinstance(persona_override, str):
+                raise ValueError("`chat_persona_prompt` must be a string")
+            persona_tone_prompt = persona_override.strip()
+        else:
             persona_tone_prompt = self._nested_runtime_text(
-                legacy_persona,
+                thinking_prompts,
                 "persona_tone_prompt",
                 legacy_keys=("persona_prompt",),
             )
+            if not persona_tone_prompt:
+                persona_tone_prompt = self._nested_runtime_text(
+                    legacy_persona,
+                    "persona_tone_prompt",
+                    legacy_keys=("persona_prompt",),
+                )
 
         persona_merge_template = self._nested_runtime_text(
             thinking_prompts,

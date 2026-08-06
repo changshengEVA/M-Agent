@@ -6,15 +6,18 @@ and thinking layers do not depend on a memory subsystem for model settings.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import json
 import logging
 import os
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import yaml
 from langchain.chat_models import init_chat_model
+from langchain_core.exceptions import OutputParserException
+from pydantic import ValidationError
 
 from m_agent.config_paths import resolve_related_config_path
 from m_agent.paths import ENV_PATH
@@ -22,6 +25,33 @@ from m_agent.utils.api_error_utils import is_network_api_error
 
 
 logger = logging.getLogger(__name__)
+
+
+_STRUCTURED_OUTPUT_METHODS = {
+    "function_calling",
+    "json_mode",
+    "json_schema",
+}
+
+
+class StructuredOutputError(RuntimeError):
+    """Raised after a model repeatedly returns invalid structured output."""
+
+    def __init__(
+        self,
+        *,
+        call_name: str,
+        schema: Any,
+        attempts: int,
+    ) -> None:
+        schema_name = str(getattr(schema, "__name__", "structured output"))
+        super().__init__(
+            f"{call_name} returned invalid {schema_name} output after "
+            f"{attempts} attempts"
+        )
+        self.call_name = str(call_name)
+        self.schema_name = schema_name
+        self.attempts = int(attempts)
 
 
 @dataclass
@@ -43,7 +73,124 @@ class ModelProvider:
     network_retry_backoff_seconds: float = 2.0
     network_retry_backoff_multiplier: float = 2.0
     network_retry_max_backoff_seconds: float = 20.0
+    structured_output_method: str = "function_calling"
+    structured_retry_attempts: int = 2
     extras: dict = field(default_factory=dict)
+
+    def normalized_structured_output_method(self) -> str:
+        method = str(self.structured_output_method or "").strip().lower()
+        if method not in _STRUCTURED_OUTPUT_METHODS:
+            supported = ", ".join(sorted(_STRUCTURED_OUTPUT_METHODS))
+            raise ValueError(
+                f"unsupported structured_output_method {method!r}; "
+                f"expected one of: {supported}"
+            )
+        return method
+
+    @staticmethod
+    def _unexpected_keyword_error(exc: TypeError) -> bool:
+        message = str(exc or "").lower()
+        return "unexpected keyword" in message or "keyword argument" in message
+
+    def bind_structured_output(
+        self,
+        schema: Any,
+        *,
+        include_raw: bool = True,
+    ) -> Any:
+        """Bind a schema using an explicit, provider-stable output protocol."""
+
+        method = self.normalized_structured_output_method()
+        bind = self.model.with_structured_output
+        try:
+            return bind(schema, method=method, include_raw=include_raw)
+        except TypeError as exc:
+            if not self._unexpected_keyword_error(exc):
+                raise
+        try:
+            return bind(schema, method=method)
+        except TypeError as exc:
+            if not self._unexpected_keyword_error(exc):
+                raise
+        logger.warning(
+            "structured output provider does not accept an explicit method; "
+            "falling back to provider defaults"
+        )
+        try:
+            return bind(schema, include_raw=include_raw)
+        except TypeError as exc:
+            if not self._unexpected_keyword_error(exc):
+                raise
+        return bind(schema)
+
+    @staticmethod
+    def _unwrap_structured_result(result: Any) -> Any:
+        if not isinstance(result, dict):
+            return result
+        envelope_keys = {"raw", "parsed", "parsing_error"}
+        if not envelope_keys.issubset(result):
+            return result
+        parsing_error = result.get("parsing_error")
+        if parsing_error is not None:
+            if isinstance(parsing_error, BaseException):
+                raise parsing_error
+            raise OutputParserException(str(parsing_error))
+        return result.get("parsed")
+
+    def invoke_structured(
+        self,
+        schema: Any,
+        *,
+        messages: Any,
+        call_name: str,
+        validator: Optional[Callable[[Any], Any]] = None,
+    ) -> Any:
+        """Invoke with separate network and structured-semantic retry loops."""
+
+        structured_model = self.bind_structured_output(schema, include_raw=True)
+        total_attempts = max(int(self.structured_retry_attempts), 1)
+        last_exc: Optional[BaseException] = None
+        retryable = (
+            ValidationError,
+            OutputParserException,
+            json.JSONDecodeError,
+            ValueError,
+        )
+
+        for semantic_attempt in range(1, total_attempts + 1):
+            try:
+                def _network_attempt(_: int) -> Any:
+                    return structured_model.invoke(messages)
+
+                result = self.invoke_with_network_retry(
+                    _network_attempt,
+                    call_name=call_name,
+                )
+                result = self._unwrap_structured_result(result)
+                if validator is not None:
+                    result = validator(result)
+                return result
+            except retryable as exc:
+                last_exc = exc
+                if semantic_attempt >= total_attempts:
+                    break
+                logger.warning(
+                    "%s returned invalid structured output on attempt %d/%d "
+                    "(%s); retrying",
+                    call_name,
+                    semantic_attempt,
+                    total_attempts,
+                    type(exc).__name__,
+                )
+
+        error = StructuredOutputError(
+            call_name=call_name,
+            schema=schema,
+            attempts=total_attempts,
+        )
+        if last_exc is not None:
+            raise error from last_exc
+        raise error
 
     def compute_network_retry_delay(self, attempt: int) -> float:
         """Return the exponential-backoff delay (seconds) for a given attempt (1-indexed)."""
@@ -163,5 +310,12 @@ def build_model_provider_from_config(
         ),
         network_retry_max_backoff_seconds=float(
             config.get("network_retry_max_backoff_seconds", 20.0)
+        ),
+        structured_output_method=str(
+            config.get("structured_output_method", "function_calling")
+        ),
+        structured_retry_attempts=max(
+            1,
+            int(config.get("structured_retry_attempts", 2)),
         ),
     )

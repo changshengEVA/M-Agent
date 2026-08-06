@@ -8,7 +8,6 @@ import json
 import os
 import re
 import secrets
-import shutil
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -32,7 +31,6 @@ DEFAULT_USERS_DB_PATH = DEFAULT_USERS_ROOT_DIR / "users.json"
 
 _USER_CHAT_CONFIG_NAME = "chat.yaml"
 _USER_MODEL_CONFIG_NAME = "chat_model.params.yaml"
-_USER_CHAT_RUNTIME_NAME = "chat_runtime.yaml"
 
 _PASSWORD_PBKDF2_ITERATIONS = 150_000
 _USERNAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{2,31}$")
@@ -66,7 +64,7 @@ _CONFIG_FIELD_SCHEMAS: Dict[str, Dict[str, Dict[str, str]]] = {
         },
         "chat_persona_prompt": {
             "type": "string",
-            "description": "System persona prompt for the chat assistant.",
+            "description": "User-owned persona text for the chat assistant.",
         },
         "chat_user_name": {
             "type": "string",
@@ -125,6 +123,20 @@ _CONFIG_FIELD_SCHEMAS: Dict[str, Dict[str, Dict[str, str]]] = {
     },
 }
 
+# SHA-256 of normalized zh/en server-default personas shipped before user
+# prompts became persona-only. These fingerprints prevent copied defaults from
+# being mistaken for durable user overrides during the one-time migration.
+_HISTORICAL_SERVER_PERSONA_SHA256 = frozenset(
+    {
+        "16e3509d81884ab4e071fb7e684364bd64ec4cca48c685ebaf0e8994af999146",
+        "9c808653952167549afb532825b948947729fe7d0e62d906fdb63d51ea4fe158",
+        "8a9e020269bfd8a726b1878f19c8a9e7d5a434304e144677009e77799a617ec5",
+        "dea0cc237caf30e59ff8d7680a97d153ee607e36de614cec2d5fb99253eb38c2",
+        "266aa1e8a817cfa043526e479351b430f2591151b238f46b61ee3de8e9eee03e",
+        "d4f0f0c6ba6d833c53fe722725e842e437d4581fd30363975232c2ec381cf5c6",
+    }
+)
+
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
@@ -142,6 +154,14 @@ def _safe_slug(text: str, *, fallback: str = "user") -> str:
     slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(text or "").strip().lower())
     slug = re.sub(r"-{2,}", "-", slug).strip("-_.")
     return slug[:48] or fallback
+
+
+def _is_historical_server_persona(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return digest in _HISTORICAL_SERVER_PERSONA_SHA256
 
 
 def _normalize_username(value: Any) -> str:
@@ -209,13 +229,6 @@ def _write_yaml(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
-
-
-def _copy_file(src: Path, dst: Path) -> None:
-    if not src.exists():
-        raise UserAccessError(f"runtime prompt config not found: {src}", status_code=500)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(src, dst)
 
 
 def _empty_users_payload() -> Dict[str, Any]:
@@ -477,7 +490,12 @@ class UserAccountStore:
         ):
             changed = True
 
-        if self._merge_missing_mappings(user_chat_config, base_chat_config):
+        shared_chat_defaults = {
+            key: value
+            for key, value in base_chat_config.items()
+            if key != "chat_persona_prompt"
+        }
+        if self._merge_missing_mappings(user_chat_config, shared_chat_defaults):
             changed = True
 
         user_email_raw = str(user_chat_config.get("email_agent_config_path", "") or "").strip()
@@ -522,76 +540,163 @@ class UserAccountStore:
 
         return changed
 
-    def _sync_runtime_tool_settings(
-        self,
+    @staticmethod
+    def _prompt_variant_text(value: Any, *, language: str) -> str:
+        if isinstance(value, str):
+            return value.strip()
+        if not isinstance(value, dict):
+            return ""
+        language_key = (
+            "en"
+            if str(language or "zh").strip().lower().startswith("en")
+            else "zh"
+        )
+        selected = value.get(language_key)
+        return selected.strip() if isinstance(selected, str) else ""
+
+    @classmethod
+    def _legacy_runtime_persona(
+        cls,
         *,
         user_runtime_config: Dict[str, Any],
         base_runtime_config: Dict[str, Any],
-    ) -> bool:
-        changed = False
+        language: str,
+    ) -> str:
+        """Extract only a user persona from a copied legacy runtime prompt.
 
-        base_controller = base_runtime_config.get("chat_controller")
-        if not isinstance(base_controller, dict):
-            return changed
+        Old user bundles contain a complete server prompt snapshot. Top-level
+        ``persona_prompt`` was user-owned and is always migrated. Newer
+        snapshots contain ``thinking.persona_tone_prompt`` even without a user
+        customization, so that value is migrated only when it differs from the
+        shared server default.
+        """
 
         user_controller = user_runtime_config.get("chat_controller")
         if not isinstance(user_controller, dict):
-            user_controller = {}
-            user_runtime_config["chat_controller"] = user_controller
-            changed = True
+            return ""
+        base_controller = base_runtime_config.get("chat_controller")
+        base_controller = base_controller if isinstance(base_controller, dict) else {}
 
-        base_tools = base_controller.get("tools")
-        if not isinstance(base_tools, dict):
-            return changed
+        legacy_sections = [user_controller]
+        shared = user_controller.get("shared")
+        if isinstance(shared, dict):
+            legacy_sections.append(shared)
+        for section in legacy_sections:
+            for key in ("persona_prompt", "persona_tone_prompt"):
+                persona = cls._prompt_variant_text(section.get(key), language=language)
+                if persona and not _is_historical_server_persona(persona):
+                    return persona
 
-        user_tools = user_controller.get("tools")
-        if not isinstance(user_tools, dict):
-            user_tools = {}
-            user_controller["tools"] = user_tools
-            changed = True
+        user_thinking = user_controller.get("thinking")
+        if not isinstance(user_thinking, dict):
+            user_thinking = user_controller.get("thinking_layer")
+        if not isinstance(user_thinking, dict):
+            return ""
+        user_persona = cls._prompt_variant_text(
+            user_thinking.get(
+                "persona_tone_prompt",
+                user_thinking.get("persona_prompt"),
+            ),
+            language=language,
+        )
+        if not user_persona:
+            return ""
 
-        if self._merge_missing_mappings(user_tools, base_tools):
-            changed = True
-        return changed
+        base_thinking = base_controller.get("thinking")
+        if not isinstance(base_thinking, dict):
+            base_thinking = base_controller.get("thinking_layer")
+        base_thinking = base_thinking if isinstance(base_thinking, dict) else {}
+        base_persona = cls._prompt_variant_text(
+            base_thinking.get(
+                "persona_tone_prompt",
+                base_thinking.get("persona_prompt"),
+            ),
+            language=language,
+        )
+        if user_persona == base_persona or _is_historical_server_persona(user_persona):
+            return ""
+        return user_persona
 
-    def _sync_user_tool_related_configs(self, *, record: Dict[str, Any]) -> bool:
+    def _sync_user_configs(self, *, record: Dict[str, Any]) -> bool:
         chat_config_path = self._resolve_user_config_path(record)
         user_chat_config = _load_yaml(chat_config_path)
         base_chat_config = _load_yaml(self.base_chat_config_path)
-
-        changed = False
-        if self._sync_chat_tool_settings(
-            chat_config_path=chat_config_path,
-            user_chat_config=user_chat_config,
-            base_chat_config=base_chat_config,
-        ):
-            _write_yaml(chat_config_path, user_chat_config)
-            changed = True
 
         base_runtime_path = self._resolve_runtime_prompt_path(
             self.base_chat_config_path,
             base_chat_config,
             default_path=CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH,
         )
-        user_runtime_path = self._resolve_runtime_prompt_path(
+        if not base_runtime_path.exists():
+            raise UserAccessError(
+                f"runtime prompt config not found: {base_runtime_path}",
+                status_code=500,
+            )
+        previous_runtime_path = self._resolve_runtime_prompt_path(
             chat_config_path,
             user_chat_config,
-            default_path=CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH,
+            default_path=base_runtime_path,
         )
-        if not user_runtime_path.exists():
-            _copy_file(base_runtime_path, user_runtime_path)
-            changed = True
-        else:
-            base_runtime_config = _load_yaml(base_runtime_path)
-            user_runtime_config = _load_yaml(user_runtime_path)
-            if self._sync_runtime_tool_settings(
-                user_runtime_config=user_runtime_config,
-                base_runtime_config=base_runtime_config,
-            ):
-                _write_yaml(user_runtime_path, user_runtime_config)
+
+        changed = False
+        prompt_language = str(user_chat_config.get("prompt_language", "zh") or "zh")
+        if "chat_persona_prompt" in user_chat_config:
+            raw_persona = user_chat_config.get("chat_persona_prompt")
+            if raw_persona is None:
+                user_chat_config.pop("chat_persona_prompt", None)
+                changed = True
+            elif isinstance(raw_persona, dict):
+                normalized_persona = self._prompt_variant_text(
+                    raw_persona,
+                    language=prompt_language,
+                )
+                if normalized_persona and not _is_historical_server_persona(
+                    normalized_persona
+                ):
+                    user_chat_config["chat_persona_prompt"] = normalized_persona
+                else:
+                    user_chat_config.pop("chat_persona_prompt", None)
+                changed = True
+            elif not isinstance(raw_persona, str):
+                raise UserAccessError(
+                    f"chat_persona_prompt must be a string: {chat_config_path}",
+                    status_code=500,
+                )
+            elif _is_historical_server_persona(raw_persona):
+                user_chat_config.pop("chat_persona_prompt", None)
                 changed = True
 
+        if self._sync_chat_tool_settings(
+            chat_config_path=chat_config_path,
+            user_chat_config=user_chat_config,
+            base_chat_config=base_chat_config,
+        ):
+            changed = True
+
+        if (
+            "chat_persona_prompt" not in user_chat_config
+            and previous_runtime_path != base_runtime_path
+            and previous_runtime_path.exists()
+        ):
+            persona = self._legacy_runtime_persona(
+                user_runtime_config=_load_yaml(previous_runtime_path),
+                base_runtime_config=_load_yaml(base_runtime_path),
+                language=prompt_language,
+            )
+            if persona:
+                user_chat_config["chat_persona_prompt"] = persona
+                changed = True
+
+        shared_runtime_reference = self._relative_or_absolute_path(
+            base_runtime_path,
+            start_dir=chat_config_path.parent,
+        )
+        if user_chat_config.get("runtime_prompt_config_path") != shared_runtime_reference:
+            user_chat_config["runtime_prompt_config_path"] = shared_runtime_reference
+            changed = True
+
         if changed:
+            _write_yaml(chat_config_path, user_chat_config)
             record["updated_at"] = _now_iso()
         return changed
 
@@ -609,11 +714,17 @@ class UserAccountStore:
         )
         chat_config = _load_yaml(chat_template_path)
         model_config = _load_yaml(model_template_path)
-        chat_runtime_template_path = self._resolve_runtime_prompt_path(
+        chat_config.pop("chat_persona_prompt", None)
+        shared_runtime_path = self._resolve_runtime_prompt_path(
             chat_template_path,
             chat_config,
             default_path=CHAT_CONTROLLER_RUNTIME_PROMPT_CONFIG_PATH,
         )
+        if not shared_runtime_path.exists():
+            raise UserAccessError(
+                f"runtime prompt config not found: {shared_runtime_path}",
+                status_code=500,
+            )
 
         user_dir = self.users_root_dir / _safe_slug(username)
         if user_dir.exists():
@@ -636,7 +747,10 @@ class UserAccountStore:
         )
 
         chat_config["model_config_path"] = f"./{_USER_MODEL_CONFIG_NAME}"
-        chat_config["runtime_prompt_config_path"] = f"./runtime/{_USER_CHAT_RUNTIME_NAME}"
+        chat_config["runtime_prompt_config_path"] = self._relative_or_absolute_path(
+            shared_runtime_path,
+            start_dir=user_dir,
+        )
         chat_config["email_agent_config_path"] = self._relative_or_absolute_path(
             email_agent_template_path,
             start_dir=user_dir,
@@ -648,7 +762,7 @@ class UserAccountStore:
         chat_config["thread_id"] = f"{_safe_slug(username, fallback='user')}-thread"
         chat_config["chat_user_name"] = display_name
         chat_config["chat_assistant_name"] = assistant_name
-        if isinstance(persona_prompt, str) and persona_prompt.strip():
+        if persona_prompt is not None:
             chat_config["chat_persona_prompt"] = persona_prompt.strip()
 
         model_config["base_config_path"] = model_base_config_path
@@ -658,10 +772,6 @@ class UserAccountStore:
 
         _write_yaml(chat_user_config_path, chat_config)
         _write_yaml(model_user_config_path, model_config)
-        _copy_file(
-            chat_runtime_template_path,
-            user_dir / "runtime" / _USER_CHAT_RUNTIME_NAME,
-        )
         return chat_user_config_path
 
     def register_user(
@@ -734,7 +844,7 @@ class UserAccountStore:
                 digest_b64=str(record.get("password_hash", "")),
             ):
                 raise UserAccessError("invalid username or password", status_code=401)
-            if self._sync_user_tool_related_configs(record=record):
+            if self._sync_user_configs(record=record):
                 self._save_users_payload(users_payload)
             return self._to_authenticated_user(username=normalized_username, record=record)
 
@@ -745,7 +855,7 @@ class UserAccountStore:
             record = self._user_record(users_payload, normalized_username)
             if record is None:
                 return None
-            if self._sync_user_tool_related_configs(record=record):
+            if self._sync_user_configs(record=record):
                 self._save_users_payload(users_payload)
             return self._to_authenticated_user(username=normalized_username, record=record)
 
@@ -878,6 +988,15 @@ class UserAccountStore:
                         raise UserAccessError(
                             f"role '{user_role}' cannot edit '{section}.{key_text}'",
                             status_code=403,
+                        )
+                    if (
+                        section == "chat"
+                        and key_text == "chat_persona_prompt"
+                        and not isinstance(value, str)
+                    ):
+                        raise UserAccessError(
+                            "'chat.chat_persona_prompt' must be a string",
+                            status_code=400,
                         )
                     target[key_text] = value
                     changed_sections.add(section)

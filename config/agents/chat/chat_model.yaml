@@ -3,6 +3,10 @@
 # DeepSeek client; the default deployment contract is OpenAI-compatible.
 model_name: "openai:deepseek-chat"
 agent_temperature: 0.0
+# Keep OpenAI-compatible DeepSeek gateways on the broadly supported tool-call
+# protocol instead of inheriting ChatOpenAI's json_schema default.
+structured_output_method: "function_calling"
+structured_retry_attempts: 2
 recursion_limit: 60
 retry_recursion_limit: 120
 model_timeout_seconds: 180

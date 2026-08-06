@@ -149,20 +149,16 @@ class ExecutionAgent:
         ]
 
         try:
-            try:
-                structured_model = self.model_provider.model.with_structured_output(
-                    _ParamFillOutcome,
-                    include_raw=False,
-                )
-            except Exception:
-                structured_model = self.model_provider.model.with_structured_output(_ParamFillOutcome)
+            def _validate_outcome(result: Any) -> _ParamFillOutcome:
+                if isinstance(result, _ParamFillOutcome):
+                    return result
+                return _ParamFillOutcome.model_validate(result)
 
-            def _attempt(_: int) -> _ParamFillOutcome:
-                return structured_model.invoke(messages)
-
-            outcome = self.model_provider.invoke_with_network_retry(
-                _attempt,
+            outcome = self.model_provider.invoke_structured(
+                _ParamFillOutcome,
+                messages=messages,
                 call_name=f"execution.fill_tool_args.{name}",
+                validator=_validate_outcome,
             )
         except Exception:
             logger.exception(
@@ -175,9 +171,6 @@ class ExecutionAgent:
                 status="needs_clarification",
                 reason="param_llm_failed",
             )
-
-        if not isinstance(outcome, _ParamFillOutcome):
-            outcome = _ParamFillOutcome.model_validate(outcome)
 
         if outcome.outcome == "clarify":
             return ParamFillResult(

@@ -115,3 +115,54 @@ def test_model_provider_honors_openai_compatible_environment(
     assert captured["model"] == "openai:gpt-4o-mini"
     assert os.environ["OPENAI_API_KEY"] == "compatible-test-key"
     assert os.environ["OPENAI_BASE_URL"] == "https://compatible.example/v1"
+
+
+def test_model_provider_defaults_to_function_calling_structured_output(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "chat_model.yaml"
+    config_path.write_text(
+        "model_name: openai:deepseek-chat\nagent_temperature: 0.0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.setattr(
+        model_provider_module,
+        "init_chat_model",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    provider = model_provider_module.build_model_provider_from_config(config_path)
+
+    assert provider.structured_output_method == "function_calling"
+    assert provider.structured_retry_attempts == 2
+
+
+def test_model_provider_loads_explicit_structured_output_settings(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "chat_model.yaml"
+    config_path.write_text(
+        "\n".join(
+            (
+                "model_name: openai:deepseek-chat",
+                "structured_output_method: json_schema",
+                "structured_retry_attempts: 5",
+                "",
+            )
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("OPENAI_MODEL", raising=False)
+    monkeypatch.setattr(
+        model_provider_module,
+        "init_chat_model",
+        lambda *_args, **_kwargs: object(),
+    )
+
+    provider = model_provider_module.build_model_provider_from_config(config_path)
+
+    assert provider.structured_output_method == "json_schema"
+    assert provider.structured_retry_attempts == 5

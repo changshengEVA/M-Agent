@@ -10,8 +10,9 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 import pytest
+from pydantic import ValidationError
 
-from m_agent.layers.execution.model_provider import ModelProvider
+from m_agent.layers.execution.model_provider import ModelProvider, StructuredOutputError
 from m_agent.layers.perception.contracts import (
     ActivationFrame,
     EventFrame,
@@ -148,9 +149,14 @@ def _make_agent(
     *,
     thinking_mode: str = "single_call",
     prompt_language: str = "en",
+    structured_retry_attempts: int = 2,
 ) -> tuple[ThinkingAgent, _FakeChatModel]:
     fake_model = _FakeChatModel(responses)
-    provider = ModelProvider(model=fake_model, network_retry_attempts=1)
+    provider = ModelProvider(
+        model=fake_model,
+        network_retry_attempts=1,
+        structured_retry_attempts=structured_retry_attempts,
+    )
     invoke_with_retry = provider.invoke_with_network_retry
 
     def _record_call_name(fn: Any, *, call_name: str) -> Any:
@@ -222,6 +228,53 @@ def test_single_call_accepts_a_raw_dict_and_validates_it_as_joint_output() -> No
 
     assert decision.answer == "Validated"
     assert fake_model.called_schemas == [ThinkingTurnOutput]
+
+
+def test_single_call_retries_an_empty_mapping_then_accepts_valid_output() -> None:
+    agent, fake_model = _make_agent(
+        [{}, _turn(mode="answer_directly", answer="Recovered")],
+        structured_retry_attempts=2,
+    )
+
+    decision = agent.handle(_make_perception())
+
+    assert decision.answer == "Recovered"
+    assert fake_model.called_schemas == [ThinkingTurnOutput, ThinkingTurnOutput]
+    assert fake_model.responses == []
+    thinking_bindings = [
+        kwargs
+        for schema, kwargs in fake_model.bindings
+        if schema is ThinkingTurnOutput
+    ]
+    assert thinking_bindings
+    assert all(
+        kwargs.get("method") == "function_calling"
+        for kwargs in thinking_bindings
+    )
+
+
+def test_single_call_exhausts_empty_mappings_and_restores_completion_status() -> None:
+    agent, fake_model = _make_agent([{}, {}], structured_retry_attempts=2)
+    state = agent.state_registry.get_or_create("t1::0", thread_id="t1")
+    state.task_progress.goal = "the already completed request"
+    state.task_progress.completion_status = "completed"
+    state.task_progress.completed = ["deliver the requested result"]
+    state.task_progress.remaining = []
+
+    with pytest.raises(StructuredOutputError) as exc_info:
+        agent.handle(_make_perception(user_message="One more thing"))
+
+    assert isinstance(exc_info.value.__cause__, ValidationError)
+    assert {
+        tuple(error["loc"])
+        for error in exc_info.value.__cause__.errors()
+        if error["type"] == "missing"
+    } == {("reason",), ("task_state",), ("decision",)}
+    assert state.task_progress.completion_status == "completed"
+    assert state.task_progress.goal == "the already completed request"
+    assert state.task_progress.completed == ["deliver the requested result"]
+    assert state.task_progress.remaining == []
+    assert fake_model.called_schemas == [ThinkingTurnOutput, ThinkingTurnOutput]
 
 
 def test_current_user_text_appears_once_across_joint_prompt_messages() -> None:

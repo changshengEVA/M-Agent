@@ -223,16 +223,18 @@ def _think_once(
     state: ConversationState,
 ) -> ThinkingTurnOutput:
     messages = self._build_thinking_turn_messages(perception, state)
-    model = self.model_provider.model.with_structured_output(
+    return self.model_provider.invoke_structured(
         ThinkingTurnOutput,
-        include_raw=False,
-    )
-    return self._invoke_structured(
-        model,
         messages=messages,
         call_name="thinking.turn",
+        validator=self._validate_thinking_turn,
     )
 ```
+
+`ModelProvider` 必须显式配置结构化输出协议。默认的 OpenAI-compatible
+DeepSeek 路径使用 `function_calling`，不能继承不同 LangChain Provider 各自的
+默认值。解析或 Pydantic 校验失败采用独立的短重试；网络错误仍使用原有退避
+重试，两类失败不混用同一策略。
 
 `handle()` 的主要流程调整为：
 
