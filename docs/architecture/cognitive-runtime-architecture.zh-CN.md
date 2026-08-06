@@ -12,8 +12,8 @@ M-Agent 的目标不是持续调用 LLM，而是提供一个独立于单次模�
 认知运行时接收外界变化、行动结果、时间条件和内部预期，将它们转化为可解释的认知状态迁移：
 
 ```text
-Signal
-→ Observation
+Signal（Adapter 内部）
+→ Observation（公共入口）
 → Stimulus
 → Admission / Attention
 → Goal / Transaction Attribution
@@ -24,7 +24,7 @@ Signal
 → Effect Feedback
 ```
 
-Runtime 持续维护的是状态、目标、承诺、预期、记忆和权限；`Context Snapshot c` 是某次认知激活时编译出的工作快照。
+Runtime 持续维护的是状态、目标、承诺、预期、记忆和权限；`Context Snapshot c` 是某次认知激活时编译出的工作快照。v0.3 公共稳定契约从 Observation 开始；Signal 可由 Source Adapter 私下保留，但不进入稳定公共 SDK。
 
 ## 2. 系统边界
 
@@ -51,9 +51,10 @@ Runtime 持续维护的是状态、目标、承诺、预期、记忆和权限；
 
 | 对象 | 职责 | 当前状态 |
 | --- | --- | --- |
-| Signal | 未解释的原始变化 | v0.3 目标 |
-| Observation | 带来源、事件时间、接收时间和可信度的观察 | v0.3 目标 |
-| Stimulus | 可能改变 Agent 认知状态的输入 | v0.2 已有内部基础，v0.3 公开化 |
+| Signal | 未解释的原始变化；由 Source Adapter 内部持有 | Adapter 私有，不进 v0.3 稳定公共契约 |
+| Observation | 带来源、事件时间、接收时间和可信度的观察；`runtime.ingest()` 公共入口 | v0.3 已公开（Public Alpha） |
+| Stimulus | 可能改变 Agent 认知状态的输入 | v0.3 已公开（Public Alpha） |
+| Stimulus Pool State | 刺激在池中的调度生命周期（进程式） | v0.3 已与处置结果拆分并公开 |
 | Transaction | 跨激活持续存在的一项事务 | v0.2 已实现 |
 | Activation | Transaction 的一次有效认知执行批次 | v0.2 已实现 |
 | Scene | conversation 范围内按实际顺序记录的时间线 | v0.2 已实现 |
@@ -66,9 +67,9 @@ Runtime 持续维护的是状态、目标、承诺、预期、记忆和权限；
 
 ## 4. 运行链路
 
-### 4.1 Signal 与 Observation
+### 4.1 Observation 入口与 Adapter 内部 Signal
 
-Adapter 将邮件、日程、Webhook、网页变化、用户消息或系统结果规范化为 Observation。Observation 必须保留原始来源引用，不能在入口阶段把推断伪装成事实。
+Source Adapter 将邮件、日程、Webhook、网页变化、用户消息或系统结果规范化为 Observation，再调用 `runtime.ingest(observation)`。Adapter 可在内部保留原始 Signal 以便排查与重放，但 Runtime 公共契约只消费 Observation。Observation 必须保留原始来源引用，不能在入口阶段把推断伪装成事实。
 
 协议应兼容通用事件字段，并扩展认知运行所需信息：
 
@@ -77,13 +78,27 @@ Adapter 将邮件、日程、Webhook、网页变化、用户消息或系统结�
 - idempotency_key、causation_id；
 - confidence、privacy_class、payload_ref。
 
-### 4.2 Stimulus Admission
+### 4.2 Stimulus Admission、池状态与处置
 
-Observation 只有在通过来源、作用域和格式校验后才成为 Stimulus Candidate。Runtime 为已接纳刺激分配耐久身份，并保证它最终进入以下处置之一：
+Observation 只有在通过来源、作用域和格式校验后才成为 Stimulus Candidate。Runtime 为已接纳刺激分配耐久身份。
+
+刺激池状态与处置结果必须拆分：
+
+1. **池状态（调度与恢复）**借鉴进程模型，例如：
 
 ```text
-rejected | ignored | merged | deferred | activated | failed
+new | ready | running | waiting | terminated
 ```
+
+调度、claim、重入与崩溃恢复只依赖池状态，以及少量控制位（如 `terminal` / `retryable` / `reenterable`）。其中 `waiting` 覆盖延期等待；进入认知执行对应转入 `running`，而不是写成结案词。
+
+2. **处置结果（结案解释与审计）**是终止时的分类标记，不单独充当第二套状态机。v0.3 确定性内核处置为：
+
+```text
+rejected | merged | discarded | completed | aborted | failed
+```
+
+并附带 `reason_code` / `reason`。`ignored`（不值得认知）属于 v0.4 Attention，不进入 v0.3 公共处置枚举。
 
 “接纳”不等于“立即调用 LLM”。
 

@@ -968,8 +968,10 @@ class TransactionRegistry:
                     or str(stimulus.schedule_delivery_id or "").strip()
                     in target_delivery_ids
                 )
-                if not is_target or stimulus.disposition not in {
+                if not is_target or stimulus.pool_state not in {
                     "ready",
+                    "running",
+                    "waiting",
                     "claimed",
                 }:
                     continue
@@ -978,6 +980,7 @@ class TransactionRegistry:
                     disposition="aborted",
                     stage="transaction_delete",
                     reason="transaction_deleted",
+                    reason_code="transaction_deleted",
                 )
                 aborted_stimulus_ids.append(stimulus.stimulus_id)
 

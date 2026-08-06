@@ -102,7 +102,8 @@ def test_durable_preempt_requeues_the_claim_in_place(tmp_path: Path) -> None:
     reopened = SQLiteRuntimeStore(tmp_path / "preempt.sqlite3")
     ready = reopened.load_stimulus(original.stimulus_id)
     assert ready is not None
-    assert ready.disposition == "ready"
+    assert ready.pool_state == "ready"
+    assert ready.disposition is None
     assert ready.accepted_seq == claimed.accepted_seq
     assert ready.payload["_preempt_count"] == 1
     assert ready.payload["_checkpoint"]["phase"] == "think"

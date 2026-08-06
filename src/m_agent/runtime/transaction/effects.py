@@ -518,7 +518,13 @@ class EffectCoordinator:
             if isinstance(relay_result, Mapping)
             else ""
         )
-        if relay_disposition in {"expected_discard", "aborted", "failed"}:
+        if relay_disposition in {
+            "expected_discard",
+            "rejected",
+            "discarded",
+            "aborted",
+            "failed",
+        }:
             relay_reason = str(
                 relay_result.get("disposition_reason", "") or ""
             ).strip()

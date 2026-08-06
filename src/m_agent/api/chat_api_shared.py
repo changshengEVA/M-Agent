@@ -216,7 +216,12 @@ def resolve_dialogues_dir_for_agent(agent: Any) -> Path:
             if raw_dir is not None and str(raw_dir).strip():
                 return Path(raw_dir)
 
-    return chat_user_dialogues_dir(str(getattr(agent, "user_name", "") or "default"))
+    owner_id = str(
+        getattr(agent, "owner_id", "")
+        or getattr(agent, "user_name", "")
+        or "default"
+    ).strip() or "default"
+    return chat_user_dialogues_dir(owner_id)
 
 
 def ensure_dialogue_archive(agent: Any) -> Optional[Any]:
@@ -234,9 +239,10 @@ def ensure_dialogue_archive(agent: Any) -> Optional[Any]:
     from m_agent.chat.chat_memory_persistence import ChatDialogueArchive
 
     user_name = str(getattr(agent, "user_name", "") or "default")
-    workflow_id = chat_memory_workflow_id(user_name)
+    owner_id = str(getattr(agent, "owner_id", "") or user_name or "default").strip() or "default"
+    workflow_id = chat_memory_workflow_id(owner_id)
     archive = ChatDialogueArchive(
-        dialogues_dir=chat_user_dialogues_dir(user_name),
+        dialogues_dir=chat_user_dialogues_dir(owner_id),
         user_name=str(getattr(agent, "user_name", "User") or "User"),
         assistant_name=str(getattr(agent, "assistant_name", "Memory Assistant") or "Memory Assistant"),
         workflow_id=workflow_id,

@@ -46,6 +46,7 @@ def _stub_agent(*, decisions: List[Any] | None = None) -> SimpleNamespace:
             }
         },
         user_name="User",
+        owner_id="runtime-user",
         assistant_name="Assistant",
         default_thread_id="runtime-thread",
         persist_memory=False,

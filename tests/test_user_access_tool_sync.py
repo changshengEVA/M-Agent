@@ -198,10 +198,13 @@ def test_register_user_stores_only_persona_and_reuses_server_runtime(tmp_path: P
     user = store.register_user(
         username="persona-user",
         password="password123",
+        display_name="展示名",
         persona_prompt="A concise custom persona.",
     )
 
     user_chat = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    assert user_chat["chat_owner_id"] == "persona-user"
+    assert user_chat["chat_user_name"] == "展示名"
     assert user_chat["chat_persona_prompt"] == "A concise custom persona."
     base_chat = yaml.safe_load(base_chat_config_path.read_text(encoding="utf-8"))
     assert resolve_related_config_path(

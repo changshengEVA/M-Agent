@@ -184,12 +184,14 @@ def import_dialogue_files(
     index_rag: bool = True,
     rebuild_rag: bool = False,
     source_label: str = "dialogue_import",
+    owner_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Copy dialogue JSON files (optional) and append rounds into the user's RAG store."""
     from m_agent.systems.episodic.default.rag_backend import SimpleRagEpisodicBackend
 
-    dialogues_dir = chat_user_dialogues_dir(user_name)
-    user_root, workflow_id, index_root = chat_user_episodic_rag_paths(user_name)
+    storage_owner = str(owner_id or user_name or "default").strip() or "default"
+    dialogues_dir = chat_user_dialogues_dir(storage_owner)
+    user_root, workflow_id, index_root = chat_user_episodic_rag_paths(storage_owner)
 
     if rebuild_rag and index_root.exists():
         shutil.rmtree(index_root)
@@ -249,7 +251,8 @@ def import_dialogue_files(
     return {
         "success": len(errors) == 0,
         "user_name": user_name,
-        "user_persistence_root": str(chat_user_persistence_root(user_name)),
+        "owner_id": storage_owner,
+        "user_persistence_root": str(chat_user_persistence_root(storage_owner)),
         "dialogues_dir": str(dialogues_dir),
         "imported_count": len(imported),
         "error_count": len(errors),
@@ -267,12 +270,14 @@ def import_uploaded_dialogues_stream(
     index_rag: bool = True,
     rebuild_rag: bool = False,
     source_label: str = "chat_api_dialogue_upload",
+    owner_id: Optional[str] = None,
 ) -> Iterator[Dict[str, Any]]:
     """Validate uploads, persist each dialogue, yield progress events for SSE."""
     from m_agent.systems.episodic.default.rag_backend import SimpleRagEpisodicBackend
 
-    dialogues_dir = chat_user_dialogues_dir(user_name)
-    user_root, workflow_id, index_root = chat_user_episodic_rag_paths(user_name)
+    storage_owner = str(owner_id or user_name or "default").strip() or "default"
+    dialogues_dir = chat_user_dialogues_dir(storage_owner)
+    user_root, workflow_id, index_root = chat_user_episodic_rag_paths(storage_owner)
 
     if rebuild_rag and index_root.exists():
         shutil.rmtree(index_root)
@@ -384,6 +389,7 @@ def import_uploaded_dialogues_stream(
         "payload": {
             "success": len(errors) == 0,
             "user_name": user_name,
+            "owner_id": storage_owner,
             "imported_count": len(imported),
             "error_count": len(errors) + len(rejected),
             "rejected": rejected,
@@ -400,6 +406,7 @@ def migrate_legacy_user_dialogues(
     assistant_name: str = "Memory Assistant",
     index_rag: bool = True,
     rebuild_rag: bool = False,
+    owner_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Copy ``data/memory/user_<name>/dialogues/**/*.json`` → ``chat-api/<slug>/dialogues/``."""
     legacy_dir = legacy_user_dialogues_dir(user_name)
@@ -426,6 +433,7 @@ def migrate_legacy_user_dialogues(
         index_rag=index_rag,
         rebuild_rag=rebuild_rag,
         source_label="migrated_from_user_memory_dir",
+        owner_id=owner_id,
     )
 
 

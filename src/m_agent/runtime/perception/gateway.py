@@ -58,7 +58,7 @@ class PerceptionGateway:
             # Delete uses this same registry lock.  If admission wins, the
             # durable stimulus exists before delete's cleanup scan and is
             # aborted there.  If delete wins, validation observes the
-            # tombstone and records expected_discard instead of leaving new
+            # tombstone and records discarded/rejected instead of leaving new
             # ready work targeting a deleted transaction.
             with registry._lock:
                 if (
@@ -69,6 +69,7 @@ class PerceptionGateway:
                         stimulus,
                         priority=priority,
                         reason="invalid_feedback_source",
+                        reason_code="invalid_feedback_source",
                     )
                 if (
                     targeted_schedule
@@ -78,6 +79,7 @@ class PerceptionGateway:
                         stimulus,
                         priority=priority,
                         reason="invalid_schedule_source",
+                        reason_code="invalid_schedule_source",
                     )
                 stored = self.inbox.push(stimulus, priority=priority)
         else:
@@ -99,21 +101,27 @@ class PerceptionGateway:
         *,
         priority: int,
         reason: str,
+        reason_code: str = "invalid_observation",
     ) -> str:
         store = getattr(self.inbox, "store", None)
         if store is not None:
             stored = store.admit_stimulus(
                 stimulus,
                 effective_priority=int(priority),
-                disposition="expected_discard",
+                pool_state="terminated",
+                disposition="rejected",
                 disposition_stage="admission",
                 disposition_reason=reason,
+                reason_code=reason_code,
             )
             _copy_runtime_fields(stimulus, stored)
             return stored.stimulus_id
-        object.__setattr__(stimulus, "disposition", "expected_discard")
+        object.__setattr__(stimulus, "pool_state", "terminated")
+        object.__setattr__(stimulus, "disposition", "rejected")
         object.__setattr__(stimulus, "disposition_stage", "admission")
         object.__setattr__(stimulus, "disposition_reason", reason)
+        object.__setattr__(stimulus, "reason_code", reason_code)
+        object.__setattr__(stimulus, "terminal", True)
         return stimulus.stimulus_id
 
     def _feedback_source_is_admissible(

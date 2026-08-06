@@ -29,10 +29,10 @@
 
 <p align="center"><strong>Say it once. It keeps up—and only comes to you when needed.</strong></p>
 
-M-Agent is building a runtime that persists beyond a single LLM call. The current v0.2.x line unifies user messages, schedules, and execution feedback around durable transactions; later releases add general Observation admission, Context Compiler, system memory, and bounded autonomy.
+M-Agent is building a runtime that persists beyond a single LLM call. The current **v0.3.0 Public Alpha** publishes the Stimulus Kernel (`runtime.ingest(observation)`, Observation/Stimulus contracts, Source Adapter templates, and Stimulus Lab) on top of the durable transaction runtime.
 
 > [!IMPORTANT]
-> **Current source release: `0.2.1`.** This trusted baseline hardens the v0.2.0 runtime without presenting later cognitive-roadmap work as current behavior.
+> **Current source release: `0.3.0` (Public Alpha).** External developers can attach Source Adapters through `runtime.ingest()`. Attention/`ignored`, full cognitive plugins, and Chat-via-Adapter convergence remain later roadmap work (v0.3.x / v0.4+).
 
 | Foundation | What it provides |
 | --- | --- |
@@ -120,7 +120,7 @@ A user message is only one kind of stimulus. Time, action outcomes, and changes 
 | 💬 **User input** | Messages and replies use the current runtime path |
 | ⏰ **Time** | Due schedules and heartbeats use the current runtime path |
 | 🛠️ **Action outcomes** | Tool success, failure, and execution feedback return to the runtime |
-| 🌍 **World changes** | General Observation adapters are a v0.3 target |
+| 🌍 **World changes** | Public Alpha: Source Adapters → `runtime.ingest(observation)` |
 
 ```mermaid
 flowchart TB
@@ -128,27 +128,28 @@ flowchart TB
         user["User message"]
         schedule["Due schedule"]
         feedback["Execution feedback"]
+        observation["Source Adapter Observation"]
     end
 
-    inbox["Stimulus Inbox"]
+    ingest["runtime.ingest"]
+    inbox["Stimulus Pool"]
     attribution["Transaction attribution"]
     runtime["LangGraph RuntimeHost"]
     cognition["Thinking → Delegate → Effect"]
     outcome{"Reply or remain silent"}
-    persistence[("WM · Scene · Checkpoint · Journal")]
-    observation["General Observation SDK · v0.3 target"]
+    persistence[("WM · Scene · Checkpoint · Trace · Journal")]
 
-    user --> inbox
+    user --> ingest
     schedule --> inbox
     feedback --> inbox
-    observation -. planned .-> inbox
+    observation --> ingest --> inbox
     inbox --> attribution --> runtime --> cognition --> outcome
     cognition --> feedback
     runtime <--> persistence
 ```
 
 > [!NOTE]
-> Solid paths describe the current v0.2.x runtime. The dashed Observation SDK path is planned for v0.3.0 and is not presented as implemented behavior.
+> Public Alpha covers Observation/Stimulus admission and Source Adapters. Chat still uses a convenience `submit_user_message` wrapper that already calls `ingest`; full Chat Source Adapter migration is planned for v0.3.x.
 
 <a name="capabilities"></a>
 
@@ -160,8 +161,9 @@ flowchart TB
 | --- | --- |
 | Runtime | LangGraph-backed `RuntimeHost` (`langgraph_v1`) |
 | Continuity | Persistent Transaction, TaskState, Activation, and Scene timelines |
-| Stimuli | Prioritized Stimulus Inbox and transaction attribution |
-| Inputs | Shared paths for messages, schedules, and execution feedback |
+| Stimuli | Durable Stimulus Pool with pool state / disposition split and Trace |
+| Inputs | `runtime.ingest(observation)`, messages, schedules, and execution feedback |
+| Adapters | Source Adapter templates + offline Stimulus Lab |
 | Cognition | Thinking, Delegate, Effect, Feedback, and user-reply loops |
 | Recovery | SQLite checkpoints, effect ledger, journaled Flush restart recovery, and schedule lease recovery |
 | Memory | Transaction-scoped WM and model-invoked simple RAG |
@@ -170,8 +172,8 @@ flowchart TB
 
 | Target | Planned capability |
 | --- | --- |
-| v0.3 | Public `runtime.ingest(observation)` and a general source SDK |
-| v0.4 | Full Attention dispositions: `ignored / merged / deferred / activated` |
+| v0.3.x | Unify Chat / internal entries on `runtime.ingest()` and remove bypass paths |
+| v0.4 | Attention: decide whether to wake (including `ignored`) and which transaction to attribute |
 | v0.5+ | Goal, Expectation, Evidence, Belief, and replayable Context Snapshot contracts |
 | v0.5–0.6 | System memory maintained and injected automatically by the Runtime |
 | v0.7 | Endogenous stimuli and a production Strategy System |
@@ -205,8 +207,8 @@ See the [pluggable-subsystem guide](docs/systems-plugin/README.md) and [current 
 
 | Phase | Outcome |
 | --- | --- |
-| **Current · v0.2.1** | Trusted runtime baseline |
-| **v0.3–0.4** | Stimulus Kernel, Attention, and attribution |
+| **Current · v0.3.0** | Stimulus Kernel Public Alpha |
+| **v0.3.x–0.4** | Chat ingest convergence, Attention, and attribution |
 | **v0.5–0.7** | Context Compiler, system memory, time, and Strategy |
 | **v0.8–1.0** | Bounded autonomy, release hardening, and stable contracts |
 
@@ -217,7 +219,7 @@ See the [pluggable-subsystem guide](docs/systems-plugin/README.md) and [current 
 | --- | --- | --- |
 | v0.2.0 | Runtime baseline | Establish Transaction, Scene, Stimulus, Schedule, Effect/Feedback, and tool-memory foundations |
 | v0.2.1 | Trusted baseline | Fix recovery, context and memory correctness, safe defaults, and open-source delivery |
-| v0.3.0 | Stimulus Kernel | Publish Observation/Stimulus contracts, `runtime.ingest()`, disposition traces, and adapters |
+| v0.3.0 | Stimulus Kernel | Publish Observation/Stimulus contracts, `runtime.ingest()`, process-like pool state, deterministic dispositions, traces, Source Adapters, and Stimulus Lab |
 | v0.4.0 | Attention & Attribution | Filter noise and decide whether to wake and which transaction to wake |
 | v0.5.0 | Cognitive State & Context Compiler | Introduce cognitive state and traceable Context Snapshots; run system memory in Shadow mode |
 | v0.6.0 | System Memory & Temporal Runtime | Put system memory on the main path; make time and expectations computable; shadow Strategy |

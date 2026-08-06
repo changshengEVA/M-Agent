@@ -109,7 +109,7 @@ class LangGraphInboxLoop:
                 )
                 results.append(result)
                 if result.get("success"):
-                    self._finalize_claim(stimulus, disposition="consumed")
+                    self._finalize_claim(stimulus, disposition="completed")
                 else:
                     self._terminalize_failed_claim(
                         stimulus,
@@ -279,6 +279,16 @@ class LangGraphInboxLoop:
             THREAD_RUNTIME_STATUS.set_cpu_holder(tid, None)
             self._refresh_pending_stimuli(tid)
 
+    def _load_stimulus_pool_state(
+        self,
+        stimulus_id: str,
+    ) -> Optional[str]:
+        store = getattr(self.inbox, "store", None)
+        if store is None:
+            return None
+        current = store.load_stimulus(stimulus_id)
+        return current.pool_state if current is not None else None
+
     def _load_stimulus_disposition(
         self,
         stimulus_id: str,
@@ -287,7 +297,9 @@ class LangGraphInboxLoop:
         if store is None:
             return None
         current = store.load_stimulus(stimulus_id)
-        return current.disposition if current is not None else None
+        if current is None:
+            return None
+        return current.disposition or current.pool_state
 
     def _bind_attributed_stimulus(
         self,
@@ -328,8 +340,8 @@ class LangGraphInboxLoop:
         )
         if isinstance(refreshed, TransactionRecord):
             transaction = refreshed
-        current = self._load_stimulus_disposition(stimulus.stimulus_id)
-        if current in {"ready", "claimed"}:
+        current = self._load_stimulus_pool_state(stimulus.stimulus_id)
+        if current in {"ready", "running", "waiting", "claimed"}:
             self._mark_stimulus_disposition(
                 stimulus,
                 disposition="aborted",
@@ -635,13 +647,25 @@ class LangGraphInboxLoop:
         *,
         reason: str,
     ) -> None:
-        current = self._load_stimulus_disposition(stimulus.stimulus_id)
-        if current in {"aborted", "expected_discard", "consumed", "failed"}:
+        store = getattr(self.inbox, "store", None)
+        current = store.load_stimulus(stimulus.stimulus_id) if store else None
+        if current is None:
             return
-        if current == "claimed" and stimulus.claimed_by:
+        if current.is_terminated or current.disposition in {
+            "aborted",
+            "rejected",
+            "discarded",
+            "completed",
+            "failed",
+            "merged",
+            "expected_discard",
+            "consumed",
+        }:
+            return
+        if current.pool_state in {"running", "claimed"} and stimulus.claimed_by:
             self._finalize_claim(stimulus, disposition="failed")
             return
-        if current == "ready":
+        if current.pool_state == "ready":
             self._mark_stimulus_disposition(
                 stimulus,
                 disposition="failed",

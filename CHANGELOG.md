@@ -6,8 +6,33 @@ All notable changes to M-Agent are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-06
+
+### Added
+
+- Public Alpha **Stimulus Kernel**: `runtime.ingest(observation)`, Observation /
+  Stimulus contracts under `m_agent.sdk.stimulus`, process-like pool states
+  (`new/ready/running/waiting/terminated`), and deterministic dispositions
+  (`rejected/merged/discarded/completed/aborted/failed`).
+- Durable Stimulus Trace with query by `stimulus_id`, `thread_id`, or
+  `idempotency_key` / ingress key.
+- Source Adapter templates under `examples/source_adapters/` (Signal→Observation
+  template, signed webhook, Virtual Clock source).
+- Offline Stimulus Lab (`python -m m_agent.lab.stimulus`) covering duplicate,
+  out-of-order, expired, irrelevant, and valid Observation replay.
+- Injectable Virtual Clock on the runtime store for deterministic stimulus
+  timestamps and Lab replay.
+
 ### Changed
 
+- Stimulus pool scheduling state is split from terminal disposition; legacy
+  dual-write rows migrate on store open (`stimulus-kernel-v03`).
+- Chat `submit_user_message` now thin-wraps `runtime.ingest()` while remaining
+  a convenience API (full Chat Source Adapter migration stays on the v0.3.x
+  line).
+- Chat persistence and runtime ownership now key off immutable `chat_owner_id`
+  (auth username). `chat_user_name` remains a display name for prompts/UI only,
+  so Chinese or renamed display names no longer collapse test-user storage.
 - User chat configs now store only the optional `chat_persona_prompt` override
   and reference the shared server runtime prompt. Existing copied runtime
   prompts are migrated by preserving only a custom persona and are no longer

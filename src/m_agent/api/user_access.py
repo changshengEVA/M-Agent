@@ -68,7 +68,11 @@ _CONFIG_FIELD_SCHEMAS: Dict[str, Dict[str, Dict[str, str]]] = {
         },
         "chat_user_name": {
             "type": "string",
-            "description": "Display name of the current user in chat context.",
+            "description": "Display name of the current user in chat context (UI/prompt only).",
+        },
+        "chat_owner_id": {
+            "type": "string",
+            "description": "Immutable storage owner id (auth username). Not user-editable.",
         },
         "persist_memory": {
             "type": "boolean",
@@ -695,6 +699,11 @@ class UserAccountStore:
             user_chat_config["runtime_prompt_config_path"] = shared_runtime_reference
             changed = True
 
+        username = str(record.get("username", "") or "").strip()
+        if username and str(user_chat_config.get("chat_owner_id", "") or "").strip() != username:
+            user_chat_config["chat_owner_id"] = username
+            changed = True
+
         if changed:
             _write_yaml(chat_config_path, user_chat_config)
             record["updated_at"] = _now_iso()
@@ -760,6 +769,7 @@ class UserAccountStore:
             start_dir=user_dir,
         )
         chat_config["thread_id"] = f"{_safe_slug(username, fallback='user')}-thread"
+        chat_config["chat_owner_id"] = username
         chat_config["chat_user_name"] = display_name
         chat_config["chat_assistant_name"] = assistant_name
         if persona_prompt is not None:

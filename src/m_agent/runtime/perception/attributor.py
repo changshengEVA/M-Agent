@@ -840,9 +840,10 @@ class TransactionAttributor:
                 return
             store.set_stimulus_disposition(
                 sid,
-                disposition="consumed",
+                disposition="completed",
                 stage="final",
                 reason="feedback_consumed",
+                reason_code="turn_completed",
             )
         except Exception:
             pass
@@ -859,9 +860,10 @@ class TransactionAttributor:
         try:
             store.set_stimulus_disposition(
                 stimulus.stimulus_id,
-                disposition="expected_discard",
+                disposition="discarded",
                 stage="preconsume",
                 reason=reason,
+                reason_code="preconsume",
             )
         except Exception:
             pass

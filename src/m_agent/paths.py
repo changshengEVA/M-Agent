@@ -103,37 +103,42 @@ def memory_stage_dir(workflow_id: str, stage_name: str) -> Path:
     return memory_workflow_dir(workflow_id) / str(stage_name)
 
 
-def chat_user_slug(user_name: str, *, fallback: str = "user") -> str:
-    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(user_name or "").strip().lower())
+def chat_user_slug(owner_id: str, *, fallback: str = "user") -> str:
+    """Normalize a storage owner id into a filesystem-safe slug.
+
+    Callers should pass an immutable account id (auth username / ``chat_owner_id``),
+    not a UI display name. Non-ASCII display names collapse and can collide.
+    """
+    slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(owner_id or "").strip().lower())
     slug = re.sub(r"-{2,}", "-", slug).strip("-_.")
     return slug[:48] or fallback
 
 
-def chat_memory_workflow_id(user_name: str) -> str:
-    """Workflow id for per-user chat persistence (dialogues + episodic RAG)."""
-    return f"chat-api/{chat_user_slug(user_name)}"
+def chat_memory_workflow_id(owner_id: str) -> str:
+    """Workflow id for per-owner chat persistence (dialogues + episodic RAG)."""
+    return f"chat-api/{chat_user_slug(owner_id)}"
 
 
-def chat_user_persistence_root(user_name: str) -> Path:
-    """Per-user tree under ``data/memory/chat-api/<slug>/``."""
-    root = memory_workflow_dir(chat_memory_workflow_id(user_name))
+def chat_user_persistence_root(owner_id: str) -> Path:
+    """Per-owner tree under ``data/memory/chat-api/<slug>/``."""
+    root = memory_workflow_dir(chat_memory_workflow_id(owner_id))
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
-def chat_user_dialogues_dir(user_name: str) -> Path:
-    root = chat_user_persistence_root(user_name) / "dialogues"
+def chat_user_dialogues_dir(owner_id: str) -> Path:
+    root = chat_user_persistence_root(owner_id) / "dialogues"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
-def chat_user_episodic_rag_paths(user_name: str) -> tuple[Path, str, Path]:
+def chat_user_episodic_rag_paths(owner_id: str) -> tuple[Path, str, Path]:
     """Return ``(storage_dir, workflow_id, index_root)`` for :class:`RagStore`.
 
     Index files live at ``<user_root>/episodic/{chunks.jsonl, embeddings.npy}``,
     sibling to ``dialogues/``.
     """
-    user_root = chat_user_persistence_root(user_name)
+    user_root = chat_user_persistence_root(owner_id)
     workflow_id = "episodic"
     index_root = user_root / workflow_id
     index_root.mkdir(parents=True, exist_ok=True)

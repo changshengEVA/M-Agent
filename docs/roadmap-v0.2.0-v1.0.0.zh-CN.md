@@ -2,7 +2,7 @@
 
 > 文档状态：当前权威路线图  
 > 基线版本：v0.2.0  
-> 确认日期：2026-08-04  
+> 确认日期：2026-08-06  
 > 发布原则：按放行条件发布，不以日期替代质量门槛
 
 ## 1. 总体方向
@@ -34,7 +34,7 @@
 | --- | --- | --- | --- |
 | **v0.2.0** | 当前运行时基线 | 固化现有真实能力与限制 | Transaction、Scene、Stimulus Pool、基础归因、Schedule、Effect/Feedback、工具式 RAG、语义验收 |
 | **v0.2.1** | 可信基线 | 清除会污染后续认知系统的正确性和开源交付问题 | Single-call Thinking、恢复与 Context 修复、安全默认值、版本统一、CI 与最小安装路径 |
-| **v0.3.0** | Stimulus Kernel | 将刺激提升为公开、耐久的一等运行时对象 | `runtime.ingest()`、Observation/Stimulus 协议、确定性处置、Trace、Adapter、Stimulus Lab |
+| **v0.3.0** | Stimulus Kernel | 将刺激提升为公开、耐久的一等运行时对象 | `runtime.ingest()`、Observation/Stimulus 公共协议、进程式池状态、确定性处置、Trace、Source Adapter、Stimulus Lab |
 | **v0.4.0** | Attention & Attribution | 判断是否应该醒，以及应唤醒哪件事 | 去重、时序、噪声过滤、Attention Policy、事务归因、StimulusBench v1 |
 | **v0.5.0** | Cognitive State & Context Compiler | 从拼接 Prompt 升级为编译认知上下文 | Goal/Commitment/Expectation/Evidence/Belief、Context Snapshot、Compiler SPI、系统记忆 Shadow |
 | **v0.6.0** | System Memory & Temporal Runtime | 让过去和时间成为 Runtime 自动维护的认知条件 | 系统记忆主链、WorkspaceMem Adapter、Clock、Expectation 生命周期、Strategy Shadow |
@@ -103,31 +103,52 @@ v0.2.0 只作为开发基线，不宣传为已经完成的认知运行时或生�
 
 ### v0.3.0：Stimulus Kernel
 
+**状态：** 已于 2026-08-06 完成实现与放行验证（Public Alpha）。
+
 **主题**
 
 将刺激提升为公开、耐久的一等运行时对象。
 
 **目标**
 
-让开发者能够接入任意事件源，并知道每个被接纳的刺激最终发生了什么。
+让外部开发者能够按文档接入 Source Adapter，并知道每个被接纳的刺激最终发生了什么。
+
+**范围边界**
+
+- Public Alpha 面向**外部开发者接 Source Adapter**，不是完整认知插件 SDK；
+- 公共稳定契约只包含 `Observation` 与 `Stimulus`；`Signal` 留在 Adapter 内部，不进稳定公共契约；
+- **刺激池状态**与**处置结果**拆成两套词表：前者管调度与恢复，后者管结案解释与审计；
+- v0.3 只做确定性内核结案；“该不该理”的 `ignored` 语义留给 v0.4 Attention；
+- **v0.3.0** 不要求 Chat 经 Source Adapter 接入；Chat 可在 **v0.3.x** 迁入；
+- **离开 v0.3 线之前**，Chat 与内部入口必须统一走 `runtime.ingest(observation)`，不允许长期旁路。
 
 **核心交付**
 
 - 公开 `runtime.ingest(observation)`；
-- 定义 Signal、Observation、Stimulus 三层契约；
+- 定义 Observation、Stimulus 公共契约，并在文档中说明 Adapter 内部可保留原始 Signal；
 - 支持来源、事件时间、接收时间、身份、因果来源、去重键和可信度；
-- 定义 `rejected / ignored / merged / deferred / activated` 处置状态；
+- 定义进程式**刺激池状态**（如 `new / ready / running / waiting / terminated`），调度与恢复只依赖池状态及少量控制位（如 `terminal` / `retryable` / `reenterable`）；
+- 定义确定性**处置结果**：`rejected / merged / discarded / completed / aborted / failed`，并附带 `reason_code` / `reason`；
+  - `deferred` 归入池状态 `waiting`，不是处置词；
+  - `activated` 表示进入 `running` 的过程/事件，不是结案处置；
+  - `ignored` 不进入 v0.3 公共处置枚举；
 - 提供持久 Stimulus Trace 和 Source Adapter 模板；
-- 提供签名 Webhook 与可注入 Virtual Clock 的最小参考源；
-- 发布离线 Stimulus Lab，回放重复、乱序、过期、无关和有效事件。
+- 发布离线 Stimulus Lab，回放重复、乱序、过期、无关和有效事件（**放行必带**）；
+- 提供签名 Webhook 与可注入 Virtual Clock 的**最小参考源模板**（有即可，不单独阻塞放行）。
 
 **放行条件**
 
-- 每个已接纳刺激都有耐久处理中状态或最终处置，不允许无声消失；
+- 每个已接纳刺激都有耐久池状态，并在终止时具备明确处置结果，不允许无声消失；
 - 同一去重键不会重复激活同一事务；
-- 任意处理阶段崩溃后可以恢复；
-- 开发者无需修改 Runtime 内核即可接入新事件源；
+- ingest→admit→claim→activate/finalize 任一阶段崩溃后可以恢复；
+- 外部开发者无需修改 Runtime 内核即可接入新事件源；
+- Stimulus Lab 覆盖重复、乱序、过期、无关和有效事件的可回放验收；
 - 以 **Public Alpha** 发布。
+
+**v0.3.x 收敛**
+
+- 将 Chat / 用户消息等内部入口迁到 `runtime.ingest(observation)`；
+- 在退出 v0.3 线进入 v0.4 之前，消除旁路入口，统一刺激接纳路径。
 
 ### v0.4.0：Attention & Attribution
 
@@ -142,11 +163,11 @@ v0.2.0 只作为开发基线，不宣传为已经完成的认知运行时或生�
 **核心交付**
 
 - 来源校验、重复检测、过期判断、顺序和版本检查；
-- 可插拔 Attention Policy；
+- 可插拔 Attention Policy，正式引入“正确沉默 / `ignored`”语义（作为 Attention 决策，而非 v0.3 内核处置枚举的扩展）；
 - 相关性、新颖性、紧迫性、可信度和信息价值计算；
 - 自动事务归因、候选排序与歧义处理；
 - 冲突刺激和迟到刺激处理；
-- 每个处置结果的可解释理由；
+- 每次 Attention / Attribution 决策的可解释理由；
 - StimulusBench v1：多事务归因、噪声、重复、乱序、冲突和正确沉默。
 
 **放行条件**
@@ -368,7 +389,8 @@ Strategy 上线顺序固定为：
 
 ## 6. 开源发布节点
 
-- **v0.3.0 Public Alpha：**第一次向开发者兑现 Stimulus Kernel；
+- **v0.3.0 Public Alpha：**第一次向外部开发者兑现 Source Adapter 与 Stimulus Kernel；
+- **v0.3.x：**完成 Chat 等内部入口统一走 `runtime.ingest()`，作为离开 v0.3 线的前置条件；
 - **v0.8.0 Public Beta：**第一次兑现受控个人助手体验与认知插件 SDK；
 - **v0.9.0 Release Candidate：**冻结契约，只处理稳定性和发布问题；
 - **v1.0.0 Stable Release：**正式承担长期兼容承诺。

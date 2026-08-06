@@ -1465,7 +1465,7 @@ def _run_tx_07_core(
         result=disposition,
         gap_key=gap_key,
         data_predicate=lambda data: (
-            data.get("disposition") == "consumed"
+            data.get("disposition") in {"consumed", "completed"}
             and data.get("disposition_stage") in {
                 "final",
                 "preconsume",

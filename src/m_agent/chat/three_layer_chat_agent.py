@@ -62,6 +62,7 @@ from m_agent.paths import (
     chat_user_dialogues_dir,
     chat_user_episodic_rag_paths,
     chat_user_persistence_root,
+    chat_user_slug,
 )
 from m_agent.prompt_utils import (
     load_resolved_prompt_config,
@@ -136,7 +137,9 @@ class ThreeLayerChatAgent:
         self._schedule_agent_lock = threading.Lock()
 
         # ---- Names / persistence settings
+        # Display name for prompts/UI only. Durable storage keys use owner_id.
         self.user_name = str(self.config.get("chat_user_name", "User") or "User")
+        self.owner_id = self._resolve_chat_owner_id()
         self.assistant_name = str(
             self.config.get("chat_assistant_name", "Memory Assistant") or "Memory Assistant"
         )
@@ -493,9 +496,26 @@ class ThreeLayerChatAgent:
             config=wm_cfg,
         )
 
+    def _resolve_chat_owner_id(self) -> str:
+        """Immutable storage owner; prefer ``chat_owner_id`` over display name."""
+        explicit = str(self.config.get("chat_owner_id", "") or "").strip()
+        if explicit:
+            return chat_user_slug(explicit)
+        # Account bundles live at ``.../users/<username>/chat.yaml``.
+        parent = self.config_path.parent
+        parent_name = str(parent.name or "").strip()
+        parent_slug = chat_user_slug(parent_name)
+        if (
+            parent_name
+            and str(parent.parent.name or "").strip().lower() == "users"
+            and parent_slug == parent_name.lower()
+        ):
+            return parent_slug
+        return chat_user_slug(self.user_name)
+
     def _build_default_episodic_system_from_legacy_yaml(self) -> EpisodicMemorySystem:
         """Build the default EpisodicMemorySystem (simple RAG backend)."""
-        user_root, workflow_id, _index_root = chat_user_episodic_rag_paths(self.user_name)
+        user_root, workflow_id, _index_root = chat_user_episodic_rag_paths(self.owner_id)
         return build_default_episodic_system(
             query_enabled=bool(self.config.get("episode_query_enabled", True)),
             user_name=self.user_name,
@@ -505,7 +525,7 @@ class ThreeLayerChatAgent:
         )
 
     def _rebind_episodic_for_chat_user(self, bundle: SystemsBundle) -> SystemsBundle:
-        """Point episodic RAG storage at ``data/memory/chat-api/<user>/episodic/``."""
+        """Point episodic RAG storage at ``data/memory/chat-api/<owner>/episodic/``."""
         episodic = bundle.episodic
         if episodic is None:
             return bundle
@@ -513,15 +533,15 @@ class ThreeLayerChatAgent:
         if not isinstance(backend, SimpleRagEpisodicBackend):
             return bundle
 
-        user_root, workflow_id, _index_root = chat_user_episodic_rag_paths(self.user_name)
+        user_root, workflow_id, _index_root = chat_user_episodic_rag_paths(self.owner_id)
         new_backend = SimpleRagEpisodicBackend(
             storage_dir=str(user_root),
             workflow_id=workflow_id,
             top_k=backend.top_k,
             min_score=backend.min_score,
             embed_model=backend.embed_model,
-            user_name=backend.user_name,
-            assistant_name=backend.assistant_name,
+            user_name=self.user_name,
+            assistant_name=self.assistant_name,
         )
         return SystemsBundle(
             wm=bundle.wm,
@@ -540,10 +560,11 @@ class ThreeLayerChatAgent:
         if hasattr(backend, "describe_persistence"):
             episodic_info = dict(backend.describe_persistence())
 
-        user_root = chat_user_persistence_root(self.user_name)
-        dialogues_dir = chat_user_dialogues_dir(self.user_name)
+        user_root = chat_user_persistence_root(self.owner_id)
+        dialogues_dir = chat_user_dialogues_dir(self.owner_id)
         return {
-            "workflow_id": chat_memory_workflow_id(self.user_name),
+            "owner_id": self.owner_id,
+            "workflow_id": chat_memory_workflow_id(self.owner_id),
             "user_persistence_root": str(user_root),
             "dialogues_dir": str(dialogues_dir),
             "episodic": episodic_info,

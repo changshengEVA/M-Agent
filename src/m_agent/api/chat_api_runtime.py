@@ -467,10 +467,13 @@ class ChatServiceRuntime:
             config_path=self.config_path,
             systems=self._systems_override,
         )
-        owner_slug = chat_user_slug(str(getattr(self._agent, "user_name", "") or "anonymous"))
+        owner_id = str(
+            getattr(self._agent, "owner_id", "")
+            or chat_user_slug(str(getattr(self._agent, "user_name", "") or "anonymous"))
+        ).strip() or "anonymous"
         self._runtime_host = create_runtime_host(
             agent=self._agent,
-            owner_id=owner_slug,
+            owner_id=owner_id,
         )
         self._engine = self._runtime_host
         self._wire_runtime_host()
@@ -1125,6 +1128,9 @@ class ChatServiceRuntime:
         )
 
         user_name = str(getattr(self.agent, "user_name", "") or "default")
+        owner_id = str(
+            getattr(self.agent, "owner_id", "") or user_name or "default"
+        ).strip() or "default"
         assistant_name = str(getattr(self.agent, "assistant_name", "Memory Assistant") or "Memory Assistant")
 
         if migrate_legacy:
@@ -1133,6 +1139,7 @@ class ChatServiceRuntime:
                 assistant_name=assistant_name,
                 index_rag=index_rag,
                 rebuild_rag=rebuild_rag,
+                owner_id=owner_id,
             )
         else:
             dialogues_dir = resolve_dialogues_dir_for_agent(self.agent)
@@ -1149,6 +1156,7 @@ class ChatServiceRuntime:
                 index_rag=index_rag,
                 rebuild_rag=rebuild_rag,
                 source_label="chat_api_dialogue_import",
+                owner_id=owner_id,
             )
 
         if not migrate_legacy:
@@ -1169,6 +1177,9 @@ class ChatServiceRuntime:
         from m_agent.chat.dialogue_import import import_uploaded_dialogues_stream
 
         user_name = str(getattr(self.agent, "user_name", "") or "default")
+        owner_id = str(
+            getattr(self.agent, "owner_id", "") or user_name or "default"
+        ).strip() or "default"
         assistant_name = str(getattr(self.agent, "assistant_name", "Memory Assistant") or "Memory Assistant")
         seq = 0
         for event in import_uploaded_dialogues_stream(
@@ -1178,6 +1189,7 @@ class ChatServiceRuntime:
             index_rag=index_rag,
             rebuild_rag=rebuild_rag,
             source_label="chat_api_dialogue_upload",
+            owner_id=owner_id,
         ):
             if event.get("type") == "upload_completed" and isinstance(event.get("payload"), dict):
                 event["payload"]["episodic_persistence"] = self._episodic_persistence_payload()

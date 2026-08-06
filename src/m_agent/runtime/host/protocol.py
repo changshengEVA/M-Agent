@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, runtime_checkable
 
+from m_agent.sdk.stimulus.contracts import IngestResult, Observation
+
 ThreadEventEmitter = Callable[[str, str, Dict[str, Any]], None]
 
 
@@ -14,6 +16,24 @@ class RuntimeHost(Protocol):
     @property
     def runtime_engine_id(self) -> str:
         """Stable engine identifier persisted on transactions."""
+
+    def ingest(
+        self,
+        observation: Observation,
+        *,
+        schedule_drainer: bool = True,
+    ) -> IngestResult:
+        """Admit one Observation into the durable Stimulus Pool."""
+
+    def list_stimulus_trace(
+        self,
+        *,
+        stimulus_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        ingress_key: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Return append-only Stimulus Trace events for audit / Lab replay."""
 
     def submit_user_message(
         self,
@@ -130,4 +150,4 @@ class RuntimeHost(Protocol):
         """Optional hook for UI/runtime event streaming."""
 
 
-__all__ = ["RuntimeHost", "ThreadEventEmitter"]
+__all__ = ["IngestResult", "Observation", "RuntimeHost", "ThreadEventEmitter"]

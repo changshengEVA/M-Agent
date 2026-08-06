@@ -417,7 +417,11 @@ class SharedRuntimeHarness:
             )
         outcome = (
             "expected_discard"
-            if stimulus.disposition == "expected_discard"
+            if stimulus.disposition in {
+                "expected_discard",
+                "rejected",
+                "discarded",
+            }
             else "ok"
         )
         return HarnessResult(
@@ -435,10 +439,14 @@ class SharedRuntimeHarness:
                 "kind": stimulus.kind.value,
                 "effective_priority": priority,
                 "accepted_seq": stimulus.accepted_seq,
-                "status": stimulus.disposition,
+                "pool_state": stimulus.pool_state,
+                "status": self._legacy_stimulus_status(stimulus),
+                "disposition": stimulus.disposition
+                or self._legacy_stimulus_status(stimulus),
                 "stage": stimulus.disposition_stage,
                 "disposition_stage": stimulus.disposition_stage,
                 "disposition_reason": stimulus.disposition_reason,
+                "reason_code": stimulus.reason_code,
                 "source": {
                     "transaction_id": stimulus.transaction_id,
                     "activation_id": stimulus.activation_id,
@@ -787,9 +795,25 @@ class SharedRuntimeHarness:
         }
 
     @staticmethod
+    @staticmethod
+    def _legacy_stimulus_status(stimulus: StimulusEnvelope) -> str:
+        """Compatibility projection for pre-v0.3 acceptance checks."""
+
+        if stimulus.pool_state == "running":
+            return "claimed"
+        if stimulus.disposition == "completed":
+            return "consumed"
+        if stimulus.disposition in {"rejected", "discarded"}:
+            return "expected_discard"
+        if stimulus.disposition:
+            return str(stimulus.disposition)
+        return str(stimulus.pool_state or "")
+
     def stimulus_snapshot(
+        self,
         stimulus: StimulusEnvelope,
     ) -> Dict[str, Any]:
+        legacy = self._legacy_stimulus_status(stimulus)
         return {
             "stimulus_id": stimulus.stimulus_id,
             "thread_id": stimulus.thread_id,
@@ -809,10 +833,13 @@ class SharedRuntimeHarness:
             "effective_priority": stimulus.effective_priority,
             "accepted_seq": stimulus.accepted_seq,
             "accepted_at": stimulus.accepted_at,
-            "status": stimulus.disposition,
-            "disposition": stimulus.disposition,
+            "pool_state": stimulus.pool_state,
+            "status": legacy,
+            "disposition": stimulus.disposition or legacy,
             "disposition_stage": stimulus.disposition_stage,
             "disposition_reason": stimulus.disposition_reason,
+            "reason_code": stimulus.reason_code,
+            "terminal": bool(stimulus.terminal),
             "claimed_by": stimulus.claimed_by,
             "consumer_epoch": stimulus.consumer_epoch,
             "claim_epoch": stimulus.claim_epoch,
@@ -1184,7 +1211,14 @@ class SharedRuntimeHarness:
         stimulus = self.runtime_store.load_stimulus(sid)
         while (
             stimulus is not None
-            and stimulus.disposition in {"ready", "claimed", "new"}
+            and stimulus.pool_state in {
+                "ready",
+                "running",
+                "waiting",
+                "new",
+                "claimed",
+            }
+            and not stimulus.is_terminated
             and time.monotonic() < deadline
         ):
             time.sleep(0.01)
@@ -1202,7 +1236,7 @@ class SharedRuntimeHarness:
             )
         outcome = (
             "ok"
-            if stimulus.disposition not in {"ready", "claimed", "new"}
+            if stimulus.is_terminated or stimulus.disposition
             else "timeout"
         )
         return HarnessResult(

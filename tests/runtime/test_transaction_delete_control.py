@@ -215,7 +215,8 @@ def test_delete_with_cleanup_atomically_terminalizes_owned_work(
         assert stimulus.disposition_reason == "transaction_deleted"
     unrelated = registry.store.load_stimulus("stimulus-unrelated")
     assert unrelated is not None
-    assert unrelated.disposition == "ready"
+    assert unrelated.pool_state == "ready"
+    assert unrelated.disposition is None
 
     outbox = registry.store.list_feedback_outbox(
         transaction_id=transaction.transaction_id
@@ -276,14 +277,16 @@ def test_sourceless_claim_binding_survives_delete_and_restart(
     assert admitted.transaction_id is None
     claimed = registry.store.pop_next_stimulus(transaction.thread_id)
     assert claimed is not None
-    assert claimed.disposition == "claimed"
+    assert claimed.pool_state == "running"
+    assert claimed.disposition is None
     assert claimed.transaction_id is None
 
     bound = registry.store.bind_stimulus_target(
         claimed.stimulus_id,
         transaction_id=transaction.transaction_id,
     )
-    assert bound.disposition == "claimed"
+    assert bound.pool_state == "running"
+    assert bound.disposition is None
     assert bound.transaction_id == transaction.transaction_id
 
     deleted = registry.delete_with_cleanup(

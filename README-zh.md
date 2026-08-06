@@ -29,10 +29,10 @@
 
 <p align="center"><strong>说一次，持续接得上；需要你时才出现。</strong></p>
 
-M-Agent 正在构建一套独立于单次 LLM 调用而持续存在的运行环境。当前 v0.2.x 主线围绕持久事务统一用户消息、计划与执行反馈；通用 Observation 接纳、Context Compiler、系统记忆和受控自主性属于后续版本。
+M-Agent 正在构建一套独立于单次 LLM 调用而持续存在的运行环境。当前 **v0.3.0 Public Alpha** 在持久事务运行时之上发布 Stimulus Kernel（`runtime.ingest(observation)`、Observation/Stimulus 契约、Source Adapter 模板与 Stimulus Lab）。
 
 > [!IMPORTANT]
-> **当前源码版本：`0.2.1`。** 该“可信基线”在不冒充后续认知路线图能力的前提下，加固了 v0.2.0 Runtime。
+> **当前源码版本：`0.3.0`（Public Alpha）。** 外部开发者可通过 `runtime.ingest()` 接入 Source Adapter。Attention/`ignored`、完整认知插件 SDK，以及 Chat 经 Adapter 收敛仍属后续路线图（v0.3.x / v0.4+）。
 
 | 当前基础 | 提供的能力 |
 | --- | --- |
@@ -117,7 +117,7 @@ m-agent-chat --host 127.0.0.1 --port 8777 --disable-auth
 | 💬 **用户输入** | 消息与回复使用当前 Runtime 路径 |
 | ⏰ **时间** | 到期计划与 Heartbeat 使用当前 Runtime 路径 |
 | 🛠️ **行动结果** | 工具成功、失败与执行反馈会返回 Runtime |
-| 🌍 **世界变化** | 通用 Observation Adapter 属于 v0.3 目标 |
+| 🌍 **世界变化** | Public Alpha：Source Adapter → `runtime.ingest(observation)` |
 
 ```mermaid
 flowchart TB
@@ -125,27 +125,28 @@ flowchart TB
         user["用户消息"]
         schedule["到期计划"]
         feedback["执行反馈"]
+        observation["Source Adapter Observation"]
     end
 
-    inbox["Stimulus Inbox"]
+    ingest["runtime.ingest"]
+    inbox["Stimulus Pool"]
     attribution["事务归因"]
     runtime["LangGraph RuntimeHost"]
     cognition["Thinking → Delegate → Effect"]
     outcome{"回复或保持沉默"}
-    persistence[("WM · Scene · Checkpoint · Journal")]
-    observation["通用 Observation SDK · v0.3 目标"]
+    persistence[("WM · Scene · Checkpoint · Trace · Journal")]
 
-    user --> inbox
+    user --> ingest
     schedule --> inbox
     feedback --> inbox
-    observation -. 规划中 .-> inbox
+    observation --> ingest --> inbox
     inbox --> attribution --> runtime --> cognition --> outcome
     cognition --> feedback
     runtime <--> persistence
 ```
 
 > [!NOTE]
-> 实线表示当前 v0.2.x Runtime 已有路径；虚线 Observation SDK 属于 v0.3.0 计划，不代表当前已经实现。
+> Public Alpha 覆盖 Observation/Stimulus 接纳与 Source Adapter。Chat 仍使用已薄封装到 `ingest` 的 `submit_user_message`；经显式 Source Adapter 的 Chat 收敛安排在 v0.3.x。
 
 <a name="capabilities"></a>
 
@@ -157,8 +158,9 @@ flowchart TB
 | --- | --- |
 | Runtime | LangGraph-backed `RuntimeHost`（`langgraph_v1`） |
 | 连续性 | 持续存在的 Transaction、TaskState、Activation 与 Scene 时间线 |
-| 刺激 | 带优先级、接纳顺序和事务归因的 Stimulus Inbox |
-| 输入 | 用户消息、计划与执行反馈共用运行路径 |
+| 刺激 | 耐久 Stimulus Pool（池状态 / 处置拆分）与 Trace |
+| 输入 | `runtime.ingest(observation)`、消息、计划与执行反馈 |
+| Adapter | Source Adapter 模板与离线 Stimulus Lab |
 | 认知 | Thinking、Delegate、Effect、Feedback 与用户回复闭环 |
 | 恢复 | SQLite checkpoint、effect ledger、带 Journal 的 Flush 重启恢复与 Schedule lease 恢复 |
 | 记忆 | Transaction 级 WM 与由模型调用的简单 RAG |
@@ -167,8 +169,8 @@ flowchart TB
 
 | 目标版本 | 规划能力 |
 | --- | --- |
-| v0.3 | 公开 `runtime.ingest(observation)` 与通用 Source SDK |
-| v0.4 | 完整 Attention 处置：`ignored / merged / deferred / activated` |
+| v0.3.x | Chat / 内部入口统一走 `runtime.ingest()`，消除旁路 |
+| v0.4 | Attention：判断是否应醒（含 `ignored`）与事务归因 |
 | v0.5+ | Goal、Expectation、Evidence、Belief 与可回放 Context Snapshot |
 | v0.5–0.6 | 由 Runtime 自动维护并注入的系统记忆 |
 | v0.7 | 内生刺激与生产可用的 Strategy System |
@@ -202,8 +204,8 @@ flowchart TB
 
 | 阶段 | 结果 |
 | --- | --- |
-| **当前版本 · v0.2.1** | 可信运行时基线 |
-| **v0.3–0.4** | Stimulus Kernel、Attention 与事务归因 |
+| **当前版本 · v0.3.0** | Stimulus Kernel Public Alpha |
+| **v0.3.x–0.4** | Chat ingest 收敛、Attention 与事务归因 |
 | **v0.5–0.7** | Context Compiler、系统记忆、时间与 Strategy |
 | **v0.8–1.0** | 受控自主性、发布加固与稳定契约 |
 
@@ -214,7 +216,7 @@ flowchart TB
 | --- | --- | --- |
 | v0.2.0 | 当前运行时基线 | 固化 Transaction、Scene、Stimulus、Schedule、Effect/Feedback 与工具记忆 |
 | v0.2.1 | 可信基线 | 修复恢复、上下文、记忆正确性、安全默认值和开源交付 |
-| v0.3.0 | Stimulus Kernel | 公开 Observation/Stimulus 协议、`runtime.ingest()`、处置 Trace 与 Adapter |
+| v0.3.0 | Stimulus Kernel | 公开 Observation/Stimulus 协议、`runtime.ingest()`、进程式池状态、确定性处置、Trace、Source Adapter 与 Stimulus Lab |
 | v0.4.0 | Attention & Attribution | 过滤噪声，判断是否应该醒以及应该唤醒哪项事务 |
 | v0.5.0 | Cognitive State & Context Compiler | 建立认知状态与可追溯 Context Snapshot，系统记忆进入 Shadow |
 | v0.6.0 | System Memory & Temporal Runtime | 系统记忆进入主链，时间与 Expectation 可计算，Strategy 进入 Shadow |

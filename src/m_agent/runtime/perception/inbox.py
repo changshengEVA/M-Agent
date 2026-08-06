@@ -22,9 +22,14 @@ _RUNTIME_FIELDS = (
     "accepted_seq",
     "accepted_at",
     "effective_priority",
+    "pool_state",
     "disposition",
     "disposition_stage",
     "disposition_reason",
+    "reason_code",
+    "terminal",
+    "retryable",
+    "reenterable",
     "claimed_by",
     "consumer_epoch",
     "claim_epoch",
@@ -74,7 +79,9 @@ class StimulusInbox:
         counter = next(self._counter)
         object.__setattr__(stimulus, "effective_priority", int(priority))
         object.__setattr__(stimulus, "accepted_seq", counter + 1)
-        object.__setattr__(stimulus, "disposition", "ready")
+        object.__setattr__(stimulus, "pool_state", "ready")
+        object.__setattr__(stimulus, "disposition", None)
+        object.__setattr__(stimulus, "terminal", False)
         item = _QueuedItem(
             priority=int(priority),
             counter=counter,

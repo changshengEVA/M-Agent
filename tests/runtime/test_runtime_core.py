@@ -1393,7 +1393,8 @@ def test_targeted_schedule_after_delete_is_expected_discard() -> None:
 
     stored = reg.store.load_stimulus(stimulus_id)
     assert stored is not None
-    assert stored.disposition == "expected_discard"
+    assert stored.disposition == "rejected"
+    assert stored.pool_state == "terminated"
     assert stored.disposition_stage == "admission"
     assert stored.disposition_reason == "invalid_schedule_source"
     assert inbox.pending_count(tx.thread_id) == 0

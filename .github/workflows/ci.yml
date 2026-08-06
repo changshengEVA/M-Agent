@@ -67,6 +67,8 @@ jobs:
       - run: python -m pip install -e ".[acceptance]"
       - run: python -m m_agent.acceptance contract run --runtime langgraph_v1 --all-layers
       - run: python scripts/run_runtime_migration_gate.py --rounds 3
+      - name: Stimulus Lab gate
+        run: python -m m_agent.lab.stimulus
 
   distribution:
     name: Build and smoke-test distributions

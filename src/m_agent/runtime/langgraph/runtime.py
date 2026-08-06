@@ -52,6 +52,18 @@ from m_agent.runtime.dispatch.drainer import ThreadDrainerService
 from m_agent.runtime.perception.attributor import TransactionAttributor
 from m_agent.runtime.perception.gateway import PerceptionGateway
 from m_agent.runtime.perception.inbox import StimulusInbox
+from m_agent.runtime.perception.observation import (
+    observation_to_envelope,
+    user_message_observation,
+)
+from m_agent.sdk.stimulus.contracts import (
+    Disposition,
+    IngestResult,
+    Observation,
+    ObservationValidationError,
+    PoolState,
+    validate_observation,
+)
 from m_agent.runtime.dispatch.cpu_state import THREAD_CPU_STATE
 from m_agent.runtime.transaction import RuntimeUnitOfWork
 from m_agent.runtime.transaction.effects import EffectCoordinator
@@ -561,6 +573,110 @@ class LangGraphRuntime:
             f"thread {tid!r} is not quiescent for durable flush: {reason}"
         )
 
+    def ingest(
+        self,
+        observation: Observation,
+        *,
+        schedule_drainer: bool = True,
+    ) -> IngestResult:
+        """Public Stimulus Kernel entry: Observation → durable pool admit."""
+
+        try:
+            observation = validate_observation(observation)
+        except ObservationValidationError as exc:
+            raise ValueError(str(exc)) from exc
+
+        expires_at = str(observation.expires_at or "").strip()
+        if expires_at and expires_at < observation.observed_at:
+            envelope = observation_to_envelope(observation)
+            stored = self.runtime_store.admit_stimulus(
+                envelope,
+                effective_priority=0,
+                pool_state=PoolState.TERMINATED.value,
+                disposition=Disposition.DISCARDED.value,
+                disposition_stage="admission",
+                disposition_reason="expired",
+                reason_code="expired",
+            )
+            return IngestResult(
+                stimulus_id=stored.stimulus_id,
+                pool_state=stored.pool_state,
+                created=True,
+                merged=False,
+                disposition=stored.disposition,
+                reason_code=stored.reason_code,
+                reason=stored.disposition_reason,
+            )
+
+        # Deterministic v0.3 kernel: irrelevant observations are discarded
+        # with an explicit disposition (Attention/ignored is v0.4).
+        if str(observation.type or "").strip().lower() == "irrelevant":
+            envelope = observation_to_envelope(observation)
+            stored = self.runtime_store.admit_stimulus(
+                envelope,
+                effective_priority=0,
+                pool_state=PoolState.TERMINATED.value,
+                disposition=Disposition.DISCARDED.value,
+                disposition_stage="admission",
+                disposition_reason="irrelevant",
+                reason_code="irrelevant",
+            )
+            return IngestResult(
+                stimulus_id=stored.stimulus_id,
+                pool_state=stored.pool_state,
+                created=True,
+                merged=False,
+                disposition=stored.disposition,
+                reason_code=stored.reason_code,
+                reason=stored.disposition_reason,
+            )
+
+        envelope = observation_to_envelope(observation)
+        prior = (
+            self.runtime_store.load_stimulus_by_ingress_key(
+                envelope.ingress_key
+            )
+            if envelope.ingress_key
+            else None
+        )
+        with self._flush_fence_lock(envelope.thread_id):
+            self._assert_no_pending_flush(envelope.thread_id)
+            stimulus_id = self.gateway.submit(
+                envelope,
+                schedule_drainer=schedule_drainer,
+            )
+        stored = self.runtime_store.load_stimulus(stimulus_id)
+        if stored is None:
+            raise RuntimeError(f"stimulus missing after ingest: {stimulus_id}")
+        merged = prior is not None
+        return IngestResult(
+            stimulus_id=stored.stimulus_id,
+            pool_state=stored.pool_state,
+            created=not merged,
+            merged=merged,
+            disposition=(
+                Disposition.MERGED.value if merged else stored.disposition
+            ),
+            reason_code=stored.reason_code
+            or ("merged_existing" if merged else None),
+            reason=stored.disposition_reason,
+        )
+
+    def list_stimulus_trace(
+        self,
+        *,
+        stimulus_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        ingress_key: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        return self.runtime_store.list_stimulus_trace(
+            stimulus_id=stimulus_id,
+            thread_id=thread_id,
+            ingress_key=ingress_key,
+            limit=limit,
+        )
+
     def submit_user_message(
         self,
         *,
@@ -570,16 +686,20 @@ class LangGraphRuntime:
         payload: Optional[dict] = None,
         schedule_drainer: bool = True,
     ) -> str:
-        with self._flush_fence_lock(thread_id):
-            self._assert_no_pending_flush(thread_id)
-            return self.gateway.submit_user_message(
+        cid = str(conversation_id or "").strip() or f"{thread_id}::0"
+        now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        result = self.ingest(
+            user_message_observation(
                 thread_id=thread_id,
-                conversation_id=str(conversation_id or "").strip()
-                or f"{thread_id}::0",
+                conversation_id=cid,
                 text=text,
+                occurred_at=now,
+                observed_at=now,
                 payload=payload,
-                schedule_drainer=schedule_drainer,
-            )
+            ),
+            schedule_drainer=schedule_drainer,
+        )
+        return result.stimulus_id
 
     def run_thread(
         self,

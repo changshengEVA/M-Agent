@@ -16,6 +16,14 @@ from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional
 import uuid
 
 from m_agent.layers.perception.contracts import Stimulus, StimulusKind
+from m_agent.runtime.clock import Clock, wall_clock_iso
+from m_agent.sdk.stimulus.contracts import Disposition, PoolState
+from m_agent.sdk.stimulus.vocab import (
+    is_terminal_disposition,
+    migrate_legacy_row,
+    normalize_disposition,
+    normalize_pool_state,
+)
 
 from ..domain.contracts import (
     ActivationRecord,
@@ -33,7 +41,7 @@ from .domain import archive_transaction
 
 
 def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    return wall_clock_iso()
 
 
 def _json_default(value: Any) -> Any:
@@ -96,9 +104,14 @@ def _stimulus_payload(envelope: StimulusEnvelope) -> Dict[str, Any]:
         "accepted_seq": envelope.accepted_seq,
         "accepted_at": envelope.accepted_at,
         "effective_priority": envelope.effective_priority,
+        "pool_state": envelope.pool_state,
         "disposition": envelope.disposition,
         "disposition_stage": envelope.disposition_stage,
         "disposition_reason": envelope.disposition_reason,
+        "reason_code": envelope.reason_code,
+        "terminal": bool(envelope.terminal),
+        "retryable": bool(envelope.retryable),
+        "reenterable": bool(envelope.reenterable),
         "claimed_by": envelope.claimed_by,
         "consumer_epoch": envelope.consumer_epoch,
         "claim_epoch": envelope.claim_epoch,
@@ -113,6 +126,15 @@ def _stimulus_from_payload(data: Mapping[str, Any]) -> StimulusEnvelope:
     stimulus_data = dict(body) if isinstance(body, Mapping) else {}
     payload = stimulus_data.get("payload")
     stimulus_payload = dict(payload) if isinstance(payload, Mapping) else {}
+    pool_state = normalize_pool_state(
+        data.get("pool_state", data.get("disposition", "new"))
+    )
+    disposition = normalize_disposition(
+        data.get("disposition"),
+        stage=_optional_text(data.get("disposition_stage")),
+    )
+    if disposition is not None:
+        pool_state = PoolState.TERMINATED.value
     return StimulusEnvelope(
         stimulus_id=str(data.get("stimulus_id", "") or ""),
         thread_id=str(data.get("thread_id", "") or ""),
@@ -148,11 +170,20 @@ def _stimulus_from_payload(data: Mapping[str, Any]) -> StimulusEnvelope:
             if data.get("effective_priority") is not None
             else None
         ),
-        disposition=str(data.get("disposition", "new") or "new"),
+        pool_state=pool_state,
+        disposition=disposition,
         disposition_stage=_optional_text(data.get("disposition_stage")),
         disposition_reason=_optional_text(
             data.get("disposition_reason")
         ),
+        reason_code=_optional_text(data.get("reason_code")),
+        terminal=bool(
+            data.get("terminal")
+            if data.get("terminal") is not None
+            else pool_state == PoolState.TERMINATED.value
+        ),
+        retryable=bool(data.get("retryable", False)),
+        reenterable=bool(data.get("reenterable", False)),
         claimed_by=_optional_text(data.get("claimed_by")),
         consumer_epoch=(
             int(data["consumer_epoch"])
@@ -252,6 +283,11 @@ class TransitionExecution:
 class FlushCommitResult:
     result: Dict[str, Any]
     replayed: bool = False
+
+
+# stimuli table column count after v0.3 control-bit / reason_code columns.
+_STIMULI_COLUMNS_V03 = 29
+_STIMULUS_KERNEL_MIGRATION = "stimulus-kernel-v03"
 
 
 _SCHEMA = """
@@ -400,6 +436,10 @@ CREATE TABLE IF NOT EXISTS stimuli (
     disposition TEXT NOT NULL,
     disposition_stage TEXT,
     disposition_reason TEXT,
+    reason_code TEXT,
+    terminal INTEGER NOT NULL DEFAULT 0,
+    retryable INTEGER NOT NULL DEFAULT 0,
+    reenterable INTEGER NOT NULL DEFAULT 0,
     accepted_seq INTEGER,
     accepted_at TEXT,
     effective_priority INTEGER,
@@ -429,6 +469,28 @@ CREATE INDEX IF NOT EXISTS idx_stimuli_ready_conversation
     ON stimuli(conversation_id, status, effective_priority, accepted_seq);
 CREATE INDEX IF NOT EXISTS idx_stimuli_ready_thread
     ON stimuli(thread_id, status, effective_priority, accepted_seq);
+
+CREATE TABLE IF NOT EXISTS stimulus_trace (
+    trace_id TEXT PRIMARY KEY,
+    stimulus_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    ingress_key TEXT,
+    stage TEXT NOT NULL,
+    pool_state TEXT,
+    previous_pool_state TEXT,
+    disposition TEXT,
+    reason_code TEXT,
+    reason TEXT,
+    details_json TEXT,
+    occurred_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_stimulus_trace_stimulus
+    ON stimulus_trace(stimulus_id, occurred_at, trace_id);
+CREATE INDEX IF NOT EXISTS idx_stimulus_trace_ingress
+    ON stimulus_trace(ingress_key, occurred_at, trace_id);
+CREATE INDEX IF NOT EXISTS idx_stimulus_trace_thread
+    ON stimulus_trace(thread_id, occurred_at, trace_id);
 
 CREATE TABLE IF NOT EXISTS effect_intents (
     effect_id TEXT PRIMARY KEY,
@@ -484,6 +546,12 @@ class RuntimeStoreUnitOfWork:
     ) -> None:
         self.store = store
         self.connection = connection
+
+    def _now(self) -> str:
+        clock = getattr(self.store, "clock", None)
+        if callable(clock):
+            return str(clock() or "").strip() or _now_iso()
+        return _now_iso()
 
     def create_transaction(
         self,
@@ -1462,9 +1530,35 @@ class RuntimeStoreUnitOfWork:
         row: sqlite3.Row,
     ) -> StimulusEnvelope:
         data = json.loads(row["payload_json"])
-        data["disposition"] = row["status"]
+        keys = set(row.keys())
+        pool_state = normalize_pool_state(row["status"])
+        disposition = normalize_disposition(
+            row["disposition"],
+            stage=row["disposition_stage"],
+        )
+        # Pre-migration dual-write rows still store pool tokens in disposition.
+        if disposition is None and str(row["disposition"] or "") in {
+            "ready",
+            "claimed",
+            "new",
+            "running",
+            "waiting",
+        }:
+            disposition = None
+        data["pool_state"] = pool_state
+        data["disposition"] = disposition
         data["disposition_stage"] = row["disposition_stage"]
         data["disposition_reason"] = row["disposition_reason"]
+        if "reason_code" in keys:
+            data["reason_code"] = row["reason_code"]
+        if "terminal" in keys and row["terminal"] is not None:
+            data["terminal"] = bool(int(row["terminal"]))
+        else:
+            data["terminal"] = pool_state == PoolState.TERMINATED.value
+        if "retryable" in keys and row["retryable"] is not None:
+            data["retryable"] = bool(int(row["retryable"]))
+        if "reenterable" in keys and row["reenterable"] is not None:
+            data["reenterable"] = bool(int(row["reenterable"]))
         data["accepted_seq"] = row["accepted_seq"]
         data["accepted_at"] = row["accepted_at"]
         data["effective_priority"] = row["effective_priority"]
@@ -1483,21 +1577,45 @@ class RuntimeStoreUnitOfWork:
     ) -> None:
         stimulus_data = dict(data.get("stimulus") or {})
         kind_value = str(stimulus_data.get("kind", "") or "")
-        status = str(data.get("disposition", "ready") or "ready")
+        pool_state = normalize_pool_state(
+            data.get("pool_state", PoolState.READY.value)
+        )
+        disposition = normalize_disposition(
+            data.get("disposition"),
+            stage=_optional_text(data.get("disposition_stage")),
+        )
+        if disposition is not None:
+            pool_state = PoolState.TERMINATED.value
+        terminal = bool(
+            data.get("terminal")
+            if data.get("terminal") is not None
+            else pool_state == PoolState.TERMINATED.value
+        )
+        payload = dict(data)
+        payload["pool_state"] = pool_state
+        payload["disposition"] = disposition
+        payload["terminal"] = terminal
+        payload["retryable"] = bool(data.get("retryable", False))
+        payload["reenterable"] = bool(data.get("reenterable", False))
+        payload["reason_code"] = _optional_text(data.get("reason_code"))
         values = (
             str(data.get("stimulus_id", "") or ""),
             _optional_text(data.get("ingress_key")),
             str(data.get("thread_id", "") or ""),
             str(data.get("conversation_id", "") or ""),
             kind_value,
-            status,
-            status,
+            pool_state,
+            disposition or "",
             _optional_text(data.get("disposition_stage")),
             _optional_text(data.get("disposition_reason")),
+            _optional_text(data.get("reason_code")),
+            1 if terminal else 0,
+            1 if bool(data.get("retryable", False)) else 0,
+            1 if bool(data.get("reenterable", False)) else 0,
             data.get("accepted_seq"),
             _optional_text(data.get("accepted_at")),
             data.get("effective_priority"),
-            _json_dumps(dict(data)),
+            _json_dumps(payload),
             _optional_text(data.get("transaction_id")),
             _optional_text(data.get("activation_id")),
             _optional_text(data.get("delegate_id")),
@@ -1509,28 +1627,75 @@ class RuntimeStoreUnitOfWork:
             data.get("claim_epoch"),
             _optional_text(data.get("claimed_at")),
             _optional_text(data.get("finalized_at")),
-            _now_iso(),
+            self._now(),
         )
+        columns = self.store._stimuli_columns
         if insert:
+            if columns >= _STIMULI_COLUMNS_V03:
+                self.connection.execute(
+                    """
+                    INSERT INTO stimuli(
+                        stimulus_id, ingress_key, thread_id,
+                        conversation_id, kind, status, disposition,
+                        disposition_stage, disposition_reason,
+                        reason_code, terminal, retryable, reenterable,
+                        accepted_seq, accepted_at, effective_priority,
+                        payload_json, transaction_id, activation_id,
+                        delegate_id, schedule_id, schedule_run_id,
+                        schedule_delivery_id, claimed_by, consumer_epoch,
+                        claim_epoch, claimed_at, finalized_at, updated_at
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                    """,
+                    values,
+                )
+            else:
+                legacy = (
+                    values[0:9]
+                    + values[13:]
+                )
+                self.connection.execute(
+                    """
+                    INSERT INTO stimuli(
+                        stimulus_id, ingress_key, thread_id,
+                        conversation_id, kind, status, disposition,
+                        disposition_stage, disposition_reason,
+                        accepted_seq, accepted_at, effective_priority,
+                        payload_json, transaction_id, activation_id,
+                        delegate_id, schedule_id, schedule_run_id,
+                        schedule_delivery_id, claimed_by, consumer_epoch,
+                        claim_epoch, claimed_at, finalized_at, updated_at
+                    ) VALUES (
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                        ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                    )
+                    """,
+                    legacy,
+                )
+            return
+        if columns >= _STIMULI_COLUMNS_V03:
             self.connection.execute(
                 """
-                INSERT INTO stimuli(
-                    stimulus_id, ingress_key, thread_id,
-                    conversation_id, kind, status, disposition,
-                    disposition_stage, disposition_reason,
-                    accepted_seq, accepted_at, effective_priority,
-                    payload_json, transaction_id, activation_id,
-                    delegate_id, schedule_id, schedule_run_id,
-                    schedule_delivery_id, claimed_by, consumer_epoch,
-                    claim_epoch, claimed_at, finalized_at, updated_at
-                ) VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                )
+                UPDATE stimuli
+                SET ingress_key = ?, thread_id = ?, conversation_id = ?,
+                    kind = ?, status = ?, disposition = ?,
+                    disposition_stage = ?, disposition_reason = ?,
+                    reason_code = ?, terminal = ?, retryable = ?,
+                    reenterable = ?, accepted_seq = ?, accepted_at = ?,
+                    effective_priority = ?, payload_json = ?,
+                    transaction_id = ?, activation_id = ?, delegate_id = ?,
+                    schedule_id = ?, schedule_run_id = ?,
+                    schedule_delivery_id = ?, claimed_by = ?,
+                    consumer_epoch = ?, claim_epoch = ?, claimed_at = ?,
+                    finalized_at = ?, updated_at = ?
+                WHERE stimulus_id = ?
                 """,
-                values,
+                values[1:] + (values[0],),
             )
             return
+        legacy_update = values[1:9] + values[13:] + (values[0],)
         self.connection.execute(
             """
             UPDATE stimuli
@@ -1546,7 +1711,7 @@ class RuntimeStoreUnitOfWork:
                 finalized_at = ?, updated_at = ?
             WHERE stimulus_id = ?
             """,
-            values[1:] + (values[0],),
+            legacy_update,
         )
 
     def admit_stimulus(
@@ -1554,9 +1719,11 @@ class RuntimeStoreUnitOfWork:
         stimulus: StimulusEnvelope,
         *,
         effective_priority: int,
-        disposition: str = "ready",
+        pool_state: str = "ready",
+        disposition: Optional[str] = None,
         disposition_stage: Optional[str] = None,
         disposition_reason: Optional[str] = None,
+        reason_code: Optional[str] = None,
     ) -> StimulusEnvelope:
         sid = str(stimulus.stimulus_id or "").strip()
         cid = str(stimulus.conversation_id or "").strip()
@@ -1577,7 +1744,18 @@ class RuntimeStoreUnitOfWork:
                 (ingress_key,),
             ).fetchone()
             if row is not None:
-                return self._stimulus_from_row(row)
+                existing = self._stimulus_from_row(row)
+                self.append_stimulus_trace(
+                    stimulus_id=existing.stimulus_id,
+                    stage="admit",
+                    pool_state=existing.pool_state,
+                    previous_pool_state=None,
+                    disposition=Disposition.MERGED.value,
+                    reason_code="duplicate_ingress",
+                    reason="idempotency_key matched existing stimulus",
+                    details={"merged": True, "ingress_key": ingress_key},
+                )
+                return existing
 
         existing = self.connection.execute(
             """
@@ -1589,19 +1767,52 @@ class RuntimeStoreUnitOfWork:
         if existing is not None:
             return self._stimulus_from_row(existing)
 
-        status = str(disposition or "ready").strip() or "ready"
+        # Backward-compatible callers may still pass a legacy disposition
+        # token (e.g. expected_discard) in place of pool_state.
+        requested_pool = str(pool_state or "").strip() or "ready"
+        requested_disposition = disposition
+        if requested_disposition is None and requested_pool in {
+            "consumed",
+            "expected_discard",
+            "aborted",
+            "failed",
+            "rejected",
+            "discarded",
+            "completed",
+            "merged",
+        }:
+            requested_disposition = requested_pool
+            requested_pool = PoolState.TERMINATED.value
+        elif requested_pool == "claimed":
+            requested_pool = PoolState.RUNNING.value
+
+        pool = normalize_pool_state(requested_pool)
+        terminal_disposition = normalize_disposition(
+            requested_disposition,
+            stage=disposition_stage,
+        )
+        if terminal_disposition is not None:
+            pool = PoolState.TERMINATED.value
+
         data = _stimulus_payload(stimulus)
         data["ingress_key"] = ingress_key
         data["effective_priority"] = int(effective_priority)
-        data["disposition"] = status
+        data["pool_state"] = pool
+        data["disposition"] = terminal_disposition
         data["disposition_stage"] = disposition_stage
         data["disposition_reason"] = disposition_reason
+        data["reason_code"] = reason_code
+        data["terminal"] = pool == PoolState.TERMINATED.value
+        data["retryable"] = bool(stimulus.retryable)
+        data["reenterable"] = bool(stimulus.reenterable)
         data["claimed_by"] = None
         data["consumer_epoch"] = None
         data["claim_epoch"] = None
         data["claimed_at"] = None
-        data["finalized_at"] = None
-        if status == "ready":
+        data["finalized_at"] = (
+            self._now() if terminal_disposition is not None else None
+        )
+        if pool == PoolState.READY.value:
             partition = self.ensure_stimulus_partition(
                 cid,
                 thread_id=tid,
@@ -1612,7 +1823,7 @@ class RuntimeStoreUnitOfWork:
                 else int(partition["next_accepted_seq"])
             )
             data["accepted_seq"] = accepted_seq
-            data["accepted_at"] = stimulus.accepted_at or _now_iso()
+            data["accepted_at"] = stimulus.accepted_at or self._now()
             next_seq = max(
                 int(partition["next_accepted_seq"]),
                 accepted_seq + 1,
@@ -1623,19 +1834,34 @@ class RuntimeStoreUnitOfWork:
                 SET next_accepted_seq = ?, updated_at = ?
                 WHERE conversation_id = ?
                 """,
-                (next_seq, _now_iso(), cid),
+                (next_seq, self._now(), cid),
             )
         else:
             self.ensure_stimulus_partition(cid, thread_id=tid)
-            data["accepted_seq"] = None
-            data["accepted_at"] = None
+            if pool != PoolState.READY.value:
+                data["accepted_seq"] = stimulus.accepted_seq
+                data["accepted_at"] = stimulus.accepted_at
+            if terminal_disposition is not None:
+                data["accepted_seq"] = None
+                data["accepted_at"] = None
         self._write_stimulus_row(data, insert=True)
         row = self.connection.execute(
             "SELECT * FROM stimuli WHERE stimulus_id = ?",
             (sid,),
         ).fetchone()
         assert row is not None
-        return self._stimulus_from_row(row)
+        stored = self._stimulus_from_row(row)
+        self.append_stimulus_trace(
+            stimulus_id=stored.stimulus_id,
+            stage="admit",
+            pool_state=stored.pool_state,
+            previous_pool_state=PoolState.NEW.value,
+            disposition=stored.disposition,
+            reason_code=stored.reason_code,
+            reason=stored.disposition_reason,
+            details={"created": True},
+        )
+        return stored
 
     def requeue_claimed_stimulus(
         self,
@@ -1663,7 +1889,7 @@ class RuntimeStoreUnitOfWork:
             "consumer_epoch": current.consumer_epoch,
             "claim_epoch": current.claim_epoch,
         }
-        if current.disposition != "claimed" or expected != actual:
+        if current.pool_state != PoolState.RUNNING.value or expected != actual:
             raise StaleClaimError(sid, expected=expected, actual=actual)
         if (
             stimulus.thread_id != current.thread_id
@@ -1680,9 +1906,12 @@ class RuntimeStoreUnitOfWork:
         data["accepted_seq"] = current.accepted_seq
         data["accepted_at"] = current.accepted_at
         data["effective_priority"] = int(effective_priority)
-        data["disposition"] = "ready"
+        data["pool_state"] = PoolState.READY.value
+        data["disposition"] = None
         data["disposition_stage"] = None
         data["disposition_reason"] = None
+        data["reason_code"] = None
+        data["terminal"] = False
         data["claimed_by"] = None
         data["consumer_epoch"] = None
         data["claim_epoch"] = None
@@ -1691,6 +1920,16 @@ class RuntimeStoreUnitOfWork:
         self._write_stimulus_row(data, insert=False)
         stored = self.load_stimulus(sid)
         assert stored is not None
+        self.append_stimulus_trace(
+            stimulus_id=stored.stimulus_id,
+            stage="requeue",
+            pool_state=stored.pool_state,
+            previous_pool_state=PoolState.RUNNING.value,
+            disposition=None,
+            reason_code=None,
+            reason="requeued_to_ready",
+            details={},
+        )
         return stored
 
     def load_stimulus(
@@ -1703,6 +1942,22 @@ class RuntimeStoreUnitOfWork:
             WHERE stimulus_id = ?
             """,
             (str(stimulus_id or "").strip(),),
+        ).fetchone()
+        return self._stimulus_from_row(row) if row is not None else None
+
+    def load_stimulus_by_ingress_key(
+        self,
+        ingress_key: str,
+    ) -> Optional[StimulusEnvelope]:
+        key = _optional_text(ingress_key)
+        if key is None:
+            return None
+        row = self.connection.execute(
+            """
+            SELECT * FROM stimuli
+            WHERE ingress_key = ?
+            """,
+            (key,),
         ).fetchone()
         return self._stimulus_from_row(row) if row is not None else None
 
@@ -1730,7 +1985,10 @@ class RuntimeStoreUnitOfWork:
         stimulus = self.load_stimulus(sid)
         if stimulus is None:
             raise RecordNotFoundError(sid)
-        if stimulus.disposition not in {"ready", "claimed"}:
+        if stimulus.pool_state not in {
+            PoolState.READY.value,
+            PoolState.RUNNING.value,
+        }:
             return stimulus
         existing = str(stimulus.transaction_id or "").strip()
         if existing and existing != tx_id:
@@ -1750,9 +2008,10 @@ class RuntimeStoreUnitOfWork:
         if record.deleted or record.deleted_at is not None:
             aborted = self.set_stimulus_disposition(
                 sid,
-                disposition="aborted",
+                disposition=Disposition.ABORTED.value,
                 stage="transaction_delete",
                 reason="transaction_deleted",
+                reason_code="transaction_deleted",
             )
             assert aborted is not None
             return aborted
@@ -1865,12 +2124,26 @@ class RuntimeStoreUnitOfWork:
             (tid,),
         ).fetchall()
         for row in rows:
-            data = _stimulus_payload(self._stimulus_from_row(row))
-            data["disposition"] = "aborted"
+            previous = self._stimulus_from_row(row)
+            data = _stimulus_payload(previous)
+            data["pool_state"] = PoolState.TERMINATED.value
+            data["disposition"] = Disposition.ABORTED.value
             data["disposition_stage"] = "control"
             data["disposition_reason"] = reason
-            data["finalized_at"] = _now_iso()
+            data["reason_code"] = "control_clear"
+            data["terminal"] = True
+            data["finalized_at"] = self._now()
             self._write_stimulus_row(data, insert=False)
+            self.append_stimulus_trace(
+                stimulus_id=previous.stimulus_id,
+                stage="finalize",
+                pool_state=PoolState.TERMINATED.value,
+                previous_pool_state=previous.pool_state,
+                disposition=Disposition.ABORTED.value,
+                reason_code="control_clear",
+                reason=reason,
+                details={},
+            )
         return len(rows)
 
     def _claim_row(
@@ -1882,16 +2155,33 @@ class RuntimeStoreUnitOfWork:
         claim_epoch: int,
     ) -> StimulusEnvelope:
         stimulus = self._stimulus_from_row(row)
+        previous_state = stimulus.pool_state
         data = _stimulus_payload(stimulus)
-        data["disposition"] = "claimed"
+        data["pool_state"] = PoolState.RUNNING.value
+        data["disposition"] = None
+        data["terminal"] = False
         data["claimed_by"] = consumer_id
         data["consumer_epoch"] = int(consumer_epoch)
         data["claim_epoch"] = int(claim_epoch)
-        data["claimed_at"] = _now_iso()
+        data["claimed_at"] = self._now()
         data["finalized_at"] = None
         self._write_stimulus_row(data, insert=False)
         stored = self.load_stimulus(stimulus.stimulus_id)
         assert stored is not None
+        self.append_stimulus_trace(
+            stimulus_id=stored.stimulus_id,
+            stage="claim",
+            pool_state=stored.pool_state,
+            previous_pool_state=previous_state,
+            disposition=None,
+            reason_code=None,
+            reason="claimed",
+            details={
+                "claimed_by": consumer_id,
+                "consumer_epoch": int(consumer_epoch),
+                "claim_epoch": int(claim_epoch),
+            },
+        )
         return stored
 
     def _next_claimable_row(
@@ -1907,7 +2197,7 @@ class RuntimeStoreUnitOfWork:
               AND (
                 status = 'ready'
                 OR (
-                    status = 'claimed'
+                    status IN ('running', 'claimed')
                     AND COALESCE(consumer_epoch, 0) < ?
                 )
               )
@@ -2069,31 +2359,163 @@ class RuntimeStoreUnitOfWork:
         disposition: str,
         stage: str,
         reason: str = "",
+        reason_code: Optional[str] = None,
+        pool_state: Optional[str] = None,
     ) -> Optional[StimulusEnvelope]:
         stimulus = self.load_stimulus(stimulus_id)
         if stimulus is None:
             return None
-        requested = str(disposition or "").strip()
-        terminal_dispositions = {
-            "aborted",
-            "consumed",
-            "expected_discard",
-            "failed",
-        }
+        requested = normalize_disposition(
+            disposition,
+            stage=stage,
+        ) or str(disposition or "").strip()
         if (
-            stimulus.disposition in terminal_dispositions
+            is_terminal_disposition(stimulus.disposition)
             and requested != stimulus.disposition
         ):
             return stimulus
+        previous_state = stimulus.pool_state
         data = _stimulus_payload(stimulus)
         data["disposition"] = requested
         data["disposition_stage"] = str(stage or "").strip() or None
         data["disposition_reason"] = (
             str(reason or "").strip() or None
         )
-        data["finalized_at"] = _now_iso()
+        data["reason_code"] = _optional_text(reason_code) or stimulus.reason_code
+        if is_terminal_disposition(requested):
+            data["pool_state"] = PoolState.TERMINATED.value
+            data["terminal"] = True
+            data["finalized_at"] = self._now()
+        elif pool_state is not None:
+            data["pool_state"] = normalize_pool_state(pool_state)
+            data["terminal"] = False
+            data["finalized_at"] = None
+        else:
+            data["finalized_at"] = self._now()
         self._write_stimulus_row(data, insert=False)
-        return self.load_stimulus(stimulus_id)
+        stored = self.load_stimulus(stimulus_id)
+        if stored is not None:
+            self.append_stimulus_trace(
+                stimulus_id=stored.stimulus_id,
+                stage=str(stage or "finalize").strip() or "finalize",
+                pool_state=stored.pool_state,
+                previous_pool_state=previous_state,
+                disposition=stored.disposition,
+                reason_code=stored.reason_code,
+                reason=stored.disposition_reason,
+                details={},
+            )
+        return stored
+
+    def append_stimulus_trace(
+        self,
+        *,
+        stimulus_id: str,
+        stage: str,
+        pool_state: Optional[str],
+        previous_pool_state: Optional[str],
+        disposition: Optional[str],
+        reason_code: Optional[str],
+        reason: Optional[str],
+        details: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        stimulus = self.load_stimulus(stimulus_id)
+        if stimulus is None:
+            raise RecordNotFoundError(stimulus_id)
+        event = {
+            "trace_id": f"strace_{uuid.uuid4().hex}",
+            "stimulus_id": stimulus.stimulus_id,
+            "thread_id": stimulus.thread_id,
+            "conversation_id": stimulus.conversation_id,
+            "ingress_key": stimulus.ingress_key,
+            "stage": str(stage or "").strip() or "event",
+            "pool_state": _optional_text(pool_state),
+            "previous_pool_state": _optional_text(previous_pool_state),
+            "disposition": _optional_text(disposition),
+            "reason_code": _optional_text(reason_code),
+            "reason": _optional_text(reason),
+            "details": dict(details or {}),
+            "occurred_at": self._now(),
+        }
+        self.connection.execute(
+            """
+            INSERT INTO stimulus_trace(
+                trace_id, stimulus_id, thread_id, conversation_id,
+                ingress_key, stage, pool_state, previous_pool_state,
+                disposition, reason_code, reason, details_json,
+                occurred_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                event["trace_id"],
+                event["stimulus_id"],
+                event["thread_id"],
+                event["conversation_id"],
+                event["ingress_key"],
+                event["stage"],
+                event["pool_state"],
+                event["previous_pool_state"],
+                event["disposition"],
+                event["reason_code"],
+                event["reason"],
+                _json_dumps(event["details"]),
+                event["occurred_at"],
+            ),
+        )
+        return event
+
+    def list_stimulus_trace(
+        self,
+        *,
+        stimulus_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        ingress_key: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        clauses: List[str] = []
+        values: List[Any] = []
+        if stimulus_id is not None:
+            clauses.append("stimulus_id = ?")
+            values.append(str(stimulus_id or "").strip())
+        if thread_id is not None:
+            clauses.append("thread_id = ?")
+            values.append(str(thread_id or "").strip())
+        if ingress_key is not None:
+            clauses.append("ingress_key = ?")
+            values.append(str(ingress_key or "").strip())
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = self.connection.execute(
+            "SELECT * FROM stimulus_trace"
+            + where
+            + " ORDER BY occurred_at, trace_id"
+            + " LIMIT ?",
+            tuple(values) + (max(1, int(limit)),),
+        ).fetchall()
+        events: List[Dict[str, Any]] = []
+        for row in rows:
+            details_raw = row["details_json"]
+            try:
+                details = json.loads(details_raw) if details_raw else {}
+            except json.JSONDecodeError:
+                details = {}
+            events.append(
+                {
+                    "trace_id": row["trace_id"],
+                    "stimulus_id": row["stimulus_id"],
+                    "thread_id": row["thread_id"],
+                    "conversation_id": row["conversation_id"],
+                    "ingress_key": row["ingress_key"],
+                    "stage": row["stage"],
+                    "pool_state": row["pool_state"],
+                    "previous_pool_state": row["previous_pool_state"],
+                    "disposition": row["disposition"],
+                    "reason_code": row["reason_code"],
+                    "reason": row["reason"],
+                    "details": details if isinstance(details, dict) else {},
+                    "occurred_at": row["occurred_at"],
+                }
+            )
+        return events
 
     def set_worker_latch(
         self,
@@ -2141,7 +2563,8 @@ class RuntimeStoreUnitOfWork:
             "claimed_by": str(stimulus.claimed_by or ""),
             "consumer_epoch": int(stimulus.consumer_epoch or 0),
             "claim_epoch": int(stimulus.claim_epoch or 0),
-            "status": stimulus.disposition,
+            "status": stimulus.pool_state,
+            "pool_state": stimulus.pool_state,
         }
         partition = self.ensure_stimulus_partition(
             stimulus.conversation_id,
@@ -2152,7 +2575,7 @@ class RuntimeStoreUnitOfWork:
         actual["current_owner"] = current_owner
         actual["current_consumer_epoch"] = current_epoch
         if (
-            stimulus.disposition != "claimed"
+            stimulus.pool_state != PoolState.RUNNING.value
             or expected["claimed_by"] != actual["claimed_by"]
             or expected["consumer_epoch"] != actual["consumer_epoch"]
             or expected["claim_epoch"] != actual["claim_epoch"]
@@ -2160,19 +2583,32 @@ class RuntimeStoreUnitOfWork:
             or expected["consumer_epoch"] != current_epoch
         ):
             raise StaleClaimError(sid, expected=expected, actual=actual)
+        requested = normalize_disposition(
+            disposition,
+            stage="final",
+        ) or Disposition.COMPLETED.value
         stored = self.set_stimulus_disposition(
             sid,
-            disposition=str(disposition or "").strip() or "consumed",
+            disposition=requested,
             stage="final",
             reason="",
+            reason_code=(
+                "turn_completed"
+                if requested == Disposition.COMPLETED.value
+                else "turn_failed"
+                if requested == Disposition.FAILED.value
+                else None
+            ),
         )
         assert stored is not None
         return {
             "stimulus_id": sid,
             "conversation_id": stored.conversation_id,
-            "status": stored.disposition,
+            "status": stored.pool_state,
+            "pool_state": stored.pool_state,
             "disposition": stored.disposition,
             "disposition_stage": stored.disposition_stage,
+            "reason_code": stored.reason_code,
             "transition_id": str(transition_id or "").strip(),
             "claim_token": dict(expected),
             "finalized_at": stored.finalized_at,
@@ -2352,10 +2788,13 @@ class SQLiteRuntimeStore:
     def __init__(
         self,
         path: Optional[Path | str] = None,
+        *,
+        clock: Optional[Clock] = None,
     ) -> None:
         self.path = Path(path).resolve() if path is not None else None
         if self.path is not None:
             self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.clock: Clock = clock or wall_clock_iso
         self._lock = RLock()
         self._connection = sqlite3.connect(
             str(self.path) if self.path is not None else ":memory:",
@@ -2379,6 +2818,12 @@ class SQLiteRuntimeStore:
                 "ALTER TABLE flush_operations "
                 "ADD COLUMN request_digest TEXT"
             )
+        self._ensure_stimulus_kernel_columns()
+        self._stimuli_columns = len(
+            self._connection.execute(
+                "PRAGMA table_info(stimuli)"
+            ).fetchall()
+        )
         self._closed = False
         self.legacy_status_migration_report = (
             self._migrate_legacy_status_authority()
@@ -2386,6 +2831,36 @@ class SQLiteRuntimeStore:
         self.transaction_contract_migration_report = (
             self._migrate_transaction_contract_v4()
         )
+        self.stimulus_kernel_migration_report = (
+            self._migrate_stimulus_kernel_v03()
+        )
+
+    def _ensure_stimulus_kernel_columns(self) -> None:
+        columns = {
+            str(row["name"])
+            for row in self._connection.execute(
+                "PRAGMA table_info(stimuli)"
+            ).fetchall()
+        }
+        alterations = []
+        if "reason_code" not in columns:
+            alterations.append(
+                "ALTER TABLE stimuli ADD COLUMN reason_code TEXT"
+            )
+        if "terminal" not in columns:
+            alterations.append(
+                "ALTER TABLE stimuli ADD COLUMN terminal INTEGER NOT NULL DEFAULT 0"
+            )
+        if "retryable" not in columns:
+            alterations.append(
+                "ALTER TABLE stimuli ADD COLUMN retryable INTEGER NOT NULL DEFAULT 0"
+            )
+        if "reenterable" not in columns:
+            alterations.append(
+                "ALTER TABLE stimuli ADD COLUMN reenterable INTEGER NOT NULL DEFAULT 0"
+            )
+        for statement in alterations:
+            self._connection.execute(statement)
 
     def _migrate_legacy_status_authority(self) -> Dict[str, Any]:
         """Upgrade v2 status-only facts before any runtime reader starts.
@@ -2779,6 +3254,95 @@ class SQLiteRuntimeStore:
             )
             return report
 
+    def _migrate_stimulus_kernel_v03(self) -> Dict[str, Any]:
+        """Split stimuli status/disposition vocabulary for Stimulus Kernel."""
+
+        migration_id = _STIMULUS_KERNEL_MIGRATION
+        with self.unit_of_work() as uow:
+            rows = uow.connection.execute(
+                "SELECT stimulus_id, status, disposition, "
+                "disposition_stage, payload_json FROM stimuli "
+                "ORDER BY stimulus_id"
+            ).fetchall()
+
+            def needs_upgrade(row: sqlite3.Row) -> bool:
+                status = str(row["status"] or "").strip()
+                disposition = str(row["disposition"] or "").strip()
+                if status in {"claimed", "consumed", "expected_discard"}:
+                    return True
+                if disposition in {
+                    "ready",
+                    "claimed",
+                    "new",
+                    "consumed",
+                    "expected_discard",
+                }:
+                    return True
+                payload = json.loads(row["payload_json"] or "{}")
+                return "pool_state" not in payload
+
+            has_legacy_rows = any(needs_upgrade(row) for row in rows)
+            replay = uow.connection.execute(
+                "SELECT result_json FROM runtime_migrations "
+                "WHERE migration_id = ?",
+                (migration_id,),
+            ).fetchone()
+            if replay is not None and not has_legacy_rows:
+                result = json.loads(replay["result_json"])
+                result["replayed"] = True
+                return result
+            if replay is not None:
+                uow.connection.execute(
+                    "DELETE FROM runtime_migrations WHERE migration_id = ?",
+                    (migration_id,),
+                )
+            report: Dict[str, Any] = {
+                "migration_id": migration_id,
+                "scanned": len(rows),
+                "upgraded": 0,
+                "replayed": replay is not None,
+            }
+            for row in rows:
+                if not needs_upgrade(row):
+                    continue
+                pool_state, disposition = migrate_legacy_row(
+                    status=row["status"],
+                    disposition=row["disposition"],
+                    disposition_stage=row["disposition_stage"],
+                )
+                payload = json.loads(row["payload_json"] or "{}")
+                payload["pool_state"] = pool_state
+                payload["disposition"] = disposition
+                payload["terminal"] = pool_state == PoolState.TERMINATED.value
+                if "reason_code" not in payload:
+                    payload["reason_code"] = None
+                uow.connection.execute(
+                    """
+                    UPDATE stimuli
+                    SET status = ?, disposition = ?, terminal = ?,
+                        payload_json = ?, updated_at = ?
+                    WHERE stimulus_id = ?
+                    """,
+                    (
+                        pool_state,
+                        disposition or "",
+                        1 if payload["terminal"] else 0,
+                        _json_dumps(payload),
+                        _now_iso(),
+                        str(row["stimulus_id"]),
+                    ),
+                )
+                report["upgraded"] += 1
+            uow.connection.execute(
+                """
+                INSERT INTO runtime_migrations(
+                    migration_id, result_json, applied_at
+                ) VALUES (?, ?, ?)
+                """,
+                (migration_id, _json_dumps(report), _now_iso()),
+            )
+            return report
+
     @contextmanager
     def unit_of_work(self) -> Iterator[RuntimeStoreUnitOfWork]:
         with self._lock:
@@ -2912,17 +3476,40 @@ class SQLiteRuntimeStore:
         stimulus: StimulusEnvelope,
         *,
         effective_priority: int,
-        disposition: str = "ready",
+        pool_state: str = "ready",
+        disposition: Optional[str] = None,
         disposition_stage: Optional[str] = None,
         disposition_reason: Optional[str] = None,
+        reason_code: Optional[str] = None,
     ) -> StimulusEnvelope:
         with self.unit_of_work() as uow:
             return uow.admit_stimulus(
                 stimulus,
                 effective_priority=effective_priority,
+                pool_state=pool_state,
                 disposition=disposition,
                 disposition_stage=disposition_stage,
                 disposition_reason=disposition_reason,
+                reason_code=reason_code,
+            )
+
+    def list_stimulus_trace(
+        self,
+        *,
+        stimulus_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+        ingress_key: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        with self._lock:
+            return RuntimeStoreUnitOfWork(
+                self,
+                self._connection,
+            ).list_stimulus_trace(
+                stimulus_id=stimulus_id,
+                thread_id=thread_id,
+                ingress_key=ingress_key,
+                limit=limit,
             )
 
     def load_stimulus(
@@ -2934,6 +3521,16 @@ class SQLiteRuntimeStore:
                 self,
                 self._connection,
             ).load_stimulus(stimulus_id)
+
+    def load_stimulus_by_ingress_key(
+        self,
+        ingress_key: str,
+    ) -> Optional[StimulusEnvelope]:
+        with self._lock:
+            return RuntimeStoreUnitOfWork(
+                self,
+                self._connection,
+            ).load_stimulus_by_ingress_key(ingress_key)
 
     def bind_stimulus_target(
         self,
@@ -3082,6 +3679,8 @@ class SQLiteRuntimeStore:
         disposition: str,
         stage: str,
         reason: str = "",
+        reason_code: Optional[str] = None,
+        pool_state: Optional[str] = None,
     ) -> Optional[StimulusEnvelope]:
         with self.unit_of_work() as uow:
             return uow.set_stimulus_disposition(
@@ -3089,6 +3688,8 @@ class SQLiteRuntimeStore:
                 disposition=disposition,
                 stage=stage,
                 reason=reason,
+                reason_code=reason_code,
+                pool_state=pool_state,
             )
 
     def set_worker_latch(

@@ -358,7 +358,11 @@ class TransactionRecord:
 
 @dataclass(frozen=True)
 class StimulusEnvelope:
-    """Queue/runtime metadata wrapped around readable stimulus content."""
+    """Queue/runtime metadata wrapped around readable stimulus content.
+
+    ``pool_state`` drives scheduling/recovery. ``disposition`` is only set
+    when the stimulus terminates (audit / Trace).
+    """
 
     stimulus_id: str
     thread_id: str
@@ -376,9 +380,14 @@ class StimulusEnvelope:
     accepted_seq: Optional[int] = None
     accepted_at: Optional[str] = None
     effective_priority: Optional[int] = None
-    disposition: str = "new"
+    pool_state: str = "new"
+    disposition: Optional[str] = None
     disposition_stage: Optional[str] = None
     disposition_reason: Optional[str] = None
+    reason_code: Optional[str] = None
+    terminal: bool = False
+    retryable: bool = False
+    reenterable: bool = False
     claimed_by: Optional[str] = None
     consumer_epoch: Optional[int] = None
     claim_epoch: Optional[int] = None
@@ -397,6 +406,18 @@ class StimulusEnvelope:
     @property
     def payload(self) -> Dict[str, Any]:
         return self.stimulus.payload
+
+    @property
+    def is_claimable(self) -> bool:
+        return self.pool_state == "ready"
+
+    @property
+    def is_running(self) -> bool:
+        return self.pool_state == "running"
+
+    @property
+    def is_terminated(self) -> bool:
+        return self.pool_state == "terminated" or bool(self.terminal)
 
 
 @dataclass
