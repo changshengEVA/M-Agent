@@ -29,10 +29,10 @@
 
 <p align="center"><strong>Say it once. It keeps up—and only comes to you when needed.</strong></p>
 
-M-Agent is building a runtime that persists beyond a single LLM call. The current **v0.3.0 Public Alpha** publishes the Stimulus Kernel (`runtime.ingest(observation)`, Observation/Stimulus contracts, Source Adapter templates, and Stimulus Lab) on top of the durable transaction runtime.
+M-Agent is building a runtime that persists beyond a single LLM call. The current **v0.3.1** release adds Chat Source Adapter convergence on top of the v0.3.0 Stimulus Kernel Public Alpha (`runtime.ingest(observation)`, Observation/Stimulus contracts, Source Adapters, and Stimulus Lab).
 
 > [!IMPORTANT]
-> **Current source release: `0.3.0` (Public Alpha).** External developers can attach Source Adapters through `runtime.ingest()`. Attention/`ignored`, full cognitive plugins, and Chat-via-Adapter convergence remain later roadmap work (v0.3.x / v0.4+).
+> **Current source release: `0.3.1`.** External developers can attach Source Adapters through `runtime.ingest()`; product Chat admits via `ChatSourceAdapter`. Remaining non-Chat ingress bypass cleanup stays on v0.3.x; next major line (v0.4+) is long-term memory (episodic + experience), not Attention/`ignored` (deferred to v1.x+ after open source).
 
 | Foundation | What it provides |
 | --- | --- |
@@ -149,7 +149,7 @@ flowchart TB
 ```
 
 > [!NOTE]
-> Public Alpha covers Observation/Stimulus admission and Source Adapters. Chat still uses a convenience `submit_user_message` wrapper that already calls `ingest`; full Chat Source Adapter migration is planned for v0.3.x.
+> v0.3.1 covers Observation/Stimulus admission, Source Adapters, and Chat via `ChatSourceAdapter`. `submit_user_message` remains a compatibility facade. Remaining non-Chat ingress bypass cleanup is still on the v0.3.x line.
 
 <a name="capabilities"></a>
 
@@ -163,7 +163,7 @@ flowchart TB
 | Continuity | Persistent Transaction, TaskState, Activation, and Scene timelines |
 | Stimuli | Durable Stimulus Pool with pool state / disposition split and Trace |
 | Inputs | `runtime.ingest(observation)`, messages, schedules, and execution feedback |
-| Adapters | Source Adapter templates + offline Stimulus Lab |
+| Adapters | Source Adapter templates, Chat Source Adapter, and offline Stimulus Lab |
 | Cognition | Thinking, Delegate, Effect, Feedback, and user-reply loops |
 | Recovery | SQLite checkpoints, effect ledger, journaled Flush restart recovery, and schedule lease recovery |
 | Memory | Transaction-scoped WM and model-invoked simple RAG |
@@ -172,22 +172,24 @@ flowchart TB
 
 | Target | Planned capability |
 | --- | --- |
-| v0.3.x | Unify Chat / internal entries on `runtime.ingest()` and remove bypass paths |
-| v0.4 | Attention: decide whether to wake (including `ignored`) and which transaction to attribute |
-| v0.5+ | Goal, Expectation, Evidence, Belief, and replayable Context Snapshot contracts |
-| v0.5–0.6 | System memory maintained and injected automatically by the Runtime |
-| v0.7 | Endogenous stimuli and a production Strategy System |
-| v0.8 | Bounded autonomy with permissions, budgets, approvals, and a kill switch |
+| v0.3.x | Remove remaining non-Chat ingress bypasses before leaving the v0.3 line |
+| v0.4 | Episodic memory subsystem: flush ingest, system shallow recall, tool deep recall |
+| v0.5 | Experience subsystem: flush ingest and system-only recall |
+| v0.6 | Splice both memory subsystems into the main path; stabilize the host runtime |
+| v0.7 | Cognitive State & Context Compiler (WM + shallow episodic + experience) |
+| v0.8–0.9 | Temporal/endogenous stimuli, opt-in Strategy, bounded autonomy, RC hardening |
+| v1.x+ | Attention/`ignored` and open-stream attribution after stimulus diversity grows |
 
-The executable semantic-acceptance suite covers Transaction, Stimulus Pool, Attribution, and recovery behavior. Target capabilities are scheduled across v0.3.0–v0.8.0.
+The executable semantic-acceptance suite covers Transaction, Stimulus Pool, Attribution, and recovery behavior. Target capabilities are scheduled across v0.3.0–v1.0.0.
 
 ## Memory model
 
 | Mechanism & status | Control model |
 | --- | --- |
-| 🔎 **Tool memory · available now** | The model notices that it needs to remember and explicitly calls RAG, search, or archive tools. `SimpleRagEpisodicBackend` belongs here. |
-| 🧠 **System memory · roadmap** | The Runtime projects, consolidates, retrieves, and evaluates committed Scene, TaskState, Evidence, and Effect data before a decision. Shadow in v0.5.0; main path in v0.6.0. |
-| 🧭 **Strategy · roadmap** | Procedural knowledge that can guide behavior only after ablation and safety gates. Shadow in v0.6.0; opt-in in v0.7.0. |
+| 🔎 **Tool memory · available now** | The model notices that it needs to remember and explicitly calls RAG, search, or archive tools. Current `SimpleRagEpisodicBackend` belongs here; v0.4 deep recall keeps this control model. |
+| 🧠 **Episodic subsystem · roadmap** | Self-contained episodic memory: flush ingest, **system** shallow recall (strict limits), **tool** deep recall. v0.4 builds the subsystem; v0.6 splices it into the main path. |
+| 📘 **Experience subsystem · roadmap** | Self-contained experience memory: flush ingest and **system-only** recall. v0.5 builds the subsystem; v0.6 splices it into the main path. |
+| 🧭 **Strategy · roadmap** | Procedural guidance grown from the experience subsystem after safety gates. Opt-in in v0.8.0. |
 
 ## Persistence at a glance
 
@@ -207,10 +209,10 @@ See the [pluggable-subsystem guide](docs/systems-plugin/README.md) and [current 
 
 | Phase | Outcome |
 | --- | --- |
-| **Current · v0.3.0** | Stimulus Kernel Public Alpha |
-| **v0.3.x–0.4** | Chat ingest convergence, Attention, and attribution |
-| **v0.5–0.7** | Context Compiler, system memory, time, and Strategy |
-| **v0.8–1.0** | Bounded autonomy, release hardening, and stable contracts |
+| **Current · v0.3.1** | Chat Source Adapter on Stimulus Kernel Public Alpha |
+| **v0.3.x → v0.6** | Ingress freeze, then episodic + experience subsystems spliced into a stable main path |
+| **v0.7–0.9** | Context Compiler, temporal/endogenous cognition, bounded autonomy, RC |
+| **v1.0 / v1.x+** | Open-source stable preliminary cognitive runtime; Attention after ecosystem growth |
 
 <details>
 <summary><strong>View the complete v0.2.0 → v1.0.0 plan</strong></summary>
@@ -220,13 +222,15 @@ See the [pluggable-subsystem guide](docs/systems-plugin/README.md) and [current 
 | v0.2.0 | Runtime baseline | Establish Transaction, Scene, Stimulus, Schedule, Effect/Feedback, and tool-memory foundations |
 | v0.2.1 | Trusted baseline | Fix recovery, context and memory correctness, safe defaults, and open-source delivery |
 | v0.3.0 | Stimulus Kernel | Publish Observation/Stimulus contracts, `runtime.ingest()`, process-like pool state, deterministic dispositions, traces, Source Adapters, and Stimulus Lab |
-| v0.4.0 | Attention & Attribution | Filter noise and decide whether to wake and which transaction to wake |
-| v0.5.0 | Cognitive State & Context Compiler | Introduce cognitive state and traceable Context Snapshots; run system memory in Shadow mode |
-| v0.6.0 | System Memory & Temporal Runtime | Put system memory on the main path; make time and expectations computable; shadow Strategy |
-| v0.7.0 | Endogenous Cognition & Strategy | Generate endogenous stimuli and apply constrained, measurable Strategy guidance |
-| v0.8.0 | Bounded Autonomy & Cognitive SDK | Add permissions, budgets, approvals, a kill switch, and the cognitive plug-in SDK |
-| v0.9.0 | Release Candidate | Freeze contracts and validate migrations, security, and long-running behavior |
-| v1.0.0 | Stable Cognitive Runtime | Deliver stable public contracts for a stimulus-native cognitive runtime |
+| v0.3.1 | Chat Source Adapter | Admit product Chat through `ChatSourceAdapter` → `ingest`; keep `submit_user_message` as a facade |
+| v0.4.0 | Episodic memory subsystem | Flush ingest, system shallow recall, tool deep recall as a self-contained subsystem |
+| v0.5.0 | Experience subsystem | Flush ingest and system-only recall, decoupled from episodic memory |
+| v0.6.0 | Long-term memory splice & host stability | Wire both subsystems into the main path; keep flush as trigger-only; stabilize long-running operation |
+| v0.7.0 | Cognitive State & Context Compiler | Compile WM, shallow episodic, and experience into traceable Context Snapshots |
+| v0.8.0 | Temporal, Endogenous & Strategy | Clock/Expectation, endogenous stimuli, opt-in Strategy guidance |
+| v0.9.0 | Bounded Autonomy & RC | Permissions, budgets, approvals, kill switch, migration, and long-running hardening |
+| v1.0.0 | Preliminary stable cognitive runtime | Open-source stable contracts (Attention deferred to v1.x+) |
+| v1.x+ | Attention & Attribution | Noise filtering and open-stream attribution after stimulus diversity grows |
 
 </details>
 
@@ -256,6 +260,7 @@ See the [Runtime semantic acceptance platform](docs/runtime/semantic-acceptance-
 
 | | Start here | Scope |
 | --- | --- | --- |
+| 🧭 | [Philosophical motivation](docs/philosophy-motivation.md) | Continuous subject, four layers of conscious agency, and `A=f(c)` modeling *(bilingual)* |
 | 🌟 | [Vision and goals](docs/vision-and-goals.zh-CN.md) | Positioning, user value, memory boundaries, and success criteria *(Chinese)* |
 | 🗺️ | [Version roadmap](docs/roadmap-v0.2.0-v1.0.0.zh-CN.md) | Goals, deliverables, and gates from v0.2.0 to v1.0.0 *(Chinese)* |
 | 📝 | [Release notes](CHANGELOG.md) | Shipped changes and compatibility notes by version |

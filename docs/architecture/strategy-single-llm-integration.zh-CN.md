@@ -4,9 +4,9 @@
 >
 > 日期：2026-08-04
 >
-> 路线图边界：v0.6.0 Shadow、v0.7.0 Opt-in、v0.8.0 达到公开评测门槛后才可成为默认候选
+> 路线图边界：v0.5.0 经验子系统自立 → v0.8.0 Opt-in Guidance → 公开评测达标后才可成为默认候选
 >
-> 前置依赖：v0.5.0 Context Compiler、v0.6.0 System Memory 与 Temporal Runtime
+> 前置依赖：v0.5.0 经验子系统、v0.6.0 长时记忆主链拼接、v0.7.0 Context Compiler；Temporal / 内生刺激与本版本同线（v0.8）
 >
 > 设计范围：仅考虑在 `thinking_mode=single_call` 的 Thinking 链路启用 Strategy 召回；不接入事务归属模型与 `legacy_two_call` 回退链路。实施时仍须依据当时的公开契约和代码基线复核本文细节。
 

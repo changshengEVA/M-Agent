@@ -1,4 +1,4 @@
-# Source Adapter templates (v0.3 Public Alpha)
+# Source Adapter templates (v0.3 / v0.3.1)
 
 External event sources should:
 
@@ -11,7 +11,12 @@ This package is **not** the full Cognitive Plugin SDK (that lands later). It onl
 | Example | Purpose |
 | --- | --- |
 | `template_adapter.py` | Minimal Signal → Observation → ingest loop |
+| `chat_adapter.py` | Chat user message Signal → Observation → ingest (v0.3.1) |
 | `signed_webhook.py` | HMAC-signed webhook → Observation → ingest |
 | `virtual_clock_source.py` | Deterministic Virtual Clock for offline replay |
+
+Product Chat uses the runtime-owned adapter at
+`m_agent.runtime.perception.chat_adapter`. This example mirrors that pattern for
+external authors.
 
 See also: `python -m m_agent.lab.stimulus --help` for offline Stimulus Lab.

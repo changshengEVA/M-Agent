@@ -191,4 +191,51 @@ def test_stimulus_lab_pack_passes() -> None:
         "expired",
         "irrelevant",
         "valid",
+        "chat_duplicate",
     }
+
+
+def test_chat_source_adapter_ingest_and_idempotency() -> None:
+    from m_agent.runtime.perception.chat_adapter import ChatSignal, ChatSourceAdapter
+
+    with StimulusLab() as lab:
+        adapter = ChatSourceAdapter(lab.runtime)
+        first = adapter.handle_message(
+            ChatSignal(
+                text="hi",
+                message_id="run_abc",
+                occurred_at="2026-01-01T10:00:00Z",
+                subject="owner1",
+                payload={"user_turn": {"speaker": "owner1", "text": "hi"}},
+            ),
+            thread_id=lab.thread_id,
+            conversation_id=lab.conversation_id,
+            observed_at="2026-01-01T10:00:01Z",
+            schedule_drainer=False,
+        )
+        assert first.created is True
+        expected_key = f"chat:{lab.thread_id}:run_abc"
+        stored_first = lab.runtime.store.load_stimulus(first.stimulus_id)
+        assert stored_first is not None
+        assert stored_first.ingress_key == expected_key
+        second = adapter.handle_message(
+            ChatSignal(
+                text="hi again",
+                message_id="run_abc",
+                occurred_at="2026-01-01T10:00:02Z",
+                subject="owner1",
+                payload={"user_turn": {"speaker": "owner1", "text": "hi again"}},
+            ),
+            thread_id=lab.thread_id,
+            conversation_id=lab.conversation_id,
+            observed_at="2026-01-01T10:00:03Z",
+            schedule_drainer=False,
+        )
+        assert second.merged is True
+        assert second.stimulus_id == first.stimulus_id
+        stored = lab.runtime.store.load_stimulus(first.stimulus_id)
+        assert stored is not None
+        payload = stored.stimulus.payload if stored.stimulus else {}
+        assert payload.get("user_turn", {}).get("text") == "hi"
+        assert payload.get("observation", {}).get("subject") == "owner1"
+        assert payload.get("observation", {}).get("idempotency_key") == expected_key

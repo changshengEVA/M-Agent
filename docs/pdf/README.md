@@ -20,11 +20,13 @@
   --title "M-Agent v0.2.0—v1.0.0 版本规划" `
   --pdf-out docs/pdf/M-Agent-Roadmap-v0.2.0-v1.0.0.zh-CN.pdf `
   --require-text "Stimulus-Native Cognitive Runtime" `
-  --require-text "System Memory & Temporal Runtime" `
-  --require-text "Stable Stimulus-Native Cognitive Runtime" `
-  --forbid-text "memory-centric"
+  --require-text "情景记忆子系统" `
+  --require-text "经验子系统" `
+  --require-text "初步完整的 Stable Cognitive Runtime" `
+  --forbid-text "memory-centric" `
+  --forbid-text "System Memory & Temporal Runtime"
 ```
 
 导出器使用系统 Edge/Chrome 的无头打印，并检查 PDF 可打开、正文可提取、关键文字存在、过时文字不存在，以及页眉页脚没有泄露本地绝对路径。
 
-正式分发前还应抽查首页、版本总览、系统记忆与 Strategy 表格以及末页，确认中文字体、表格分页和页面裁切正常。
+正式分发前还应抽查首页、版本总览、长时记忆与 Strategy 表格以及末页，确认中文字体、表格分页和页面裁切正常。

@@ -9,16 +9,18 @@ In v0.2, it persists dialogue across turns and answers â€œwhat was said beforeâ€
 through recall capabilities. The default implementation is the local
 `SimpleRagEpisodicBackend`.
 
-This is **tool memory**: the model must explicitly invoke a recall capability.
-It is not the planned **System Memory**, which will be owned by the Runtime and
-evaluated automatically while the Context Compiler builds a cognitive context.
-The roadmap introduces the System Memory SPI in v0.5 in shadow mode and moves
-eligible memory into the main context path in v0.6.
+The current implementation is still **tool memory**: the model must explicitly
+invoke a recall capability. The roadmap **episodic memory subsystem (v0.4)**
+evolves this slot into a self-contained capability: flush ingest, **system**
+shallow recall (strict limits), and **tool** deep recall (high accuracy);
+v0.6 splices it into the main path and v0.7 compiles it via the Context
+Compiler. The parallel **experience subsystem** stands alone in v0.5 and does
+not fold its algorithms into this slot.
 
 Strategy is a separate planned subsystem, not a current episodic feature or a
-production capability. Its roadmap status is v0.6 shadow-only matching, v0.7
-opt-in guidance, and v0.8 default-candidate consideration only after published
-evaluation gates pass.
+production capability. Its roadmap status is opt-in guidance in v0.8 after the
+experience subsystem stands alone, with default-candidate consideration only
+after published evaluation gates pass.
 
 The runtime owns Scene capture, flush ordering, and Dialogue archives. The
 episodic backend consumes the resulting round lists, builds a searchable
@@ -40,7 +42,8 @@ index, and serves recall. It does not parse Scene storage or schedule flushes.
   Episode or a Runtime-managed cognitive memory item.
 - The dialogue RAG index does not maintain Goals, Beliefs, Expectations,
   provenance-aware state transitions, or automatic Context injection. Those
-  belong to the future System Memory and Cognitive State roadmap.
+  belong to the v0.4+ episodic/experience subsystems and the v0.7 Cognitive
+  State roadmap.
 
 ## Single-host persistence boundary
 

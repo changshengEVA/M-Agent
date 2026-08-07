@@ -79,6 +79,7 @@ def user_message_observation(
     observed_at: Optional[str] = None,
     payload: Optional[Dict[str, Any]] = None,
     idempotency_key: Optional[str] = None,
+    subject: str = "user",
 ) -> Observation:
     return Observation(
         source="chat",
@@ -87,7 +88,7 @@ def user_message_observation(
         conversation_id=conversation_id,
         occurred_at=occurred_at,
         observed_at=observed_at or occurred_at,
-        subject="user",
+        subject=str(subject or "").strip() or "user",
         text=str(text or "").strip(),
         idempotency_key=idempotency_key,
         payload=dict(payload or {}),

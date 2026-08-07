@@ -9,8 +9,9 @@
 - 能力执行上下文：`runtime_hooks`
 - Flush 结果字段：`runtime_flush`
 - 事务查询：`get_transactions()`
-- Stimulus Kernel（v0.3 Public Alpha）：见 [stimulus-kernel.md](stimulus-kernel.md)
+- Stimulus Kernel（v0.3 / v0.3.1）：见 [stimulus-kernel.md](stimulus-kernel.md)
   - 公开入口：`runtime.ingest(observation)`
+  - Chat：`ChatSourceAdapter` → `ingest`；`submit_user_message` 为兼容薄封装
   - 池状态与处置拆分；Stimulus Trace 可按刺激 / 线程 / 去重键查询
 
 持久化启动要求可用的 SQLite checkpointer 和兼容 schema；不满足条件时启动失败。Scene、Transaction、effect ledger、flush journal、stimulus trace 与 checkpoint 共同支持重试和重启恢复。

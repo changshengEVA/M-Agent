@@ -6,6 +6,30 @@ All notable changes to M-Agent are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Bilingual philosophical motivation document
+  (`docs/philosophy-motivation.md`) stating the continuous-subject
+  origin, the four layers of conscious agency (self-regulation reserved),
+  and system modeling around `A = f(c)`.
+
+## [0.3.1] - 2026-08-06
+
+### Added
+
+- Product **Chat Source Adapter** (`m_agent.runtime.perception.chat_adapter`)
+  with private `ChatSignal` → Observation → `runtime.ingest()`.
+- Example Chat adapter under `examples/source_adapters/chat_adapter.py`.
+- Stimulus Lab scenario `chat_duplicate` for chat idempotency replay.
+
+### Changed
+
+- Chat sync (`run_chat`) and async (`submit_stimulus`) paths admit through
+  `ChatSourceAdapter`, with `idempotency_key` `chat:{thread_id}:{message_id}`
+  (HTTP runs use `run_id` as `message_id`) and aligned `user_turn` payload.
+- `RuntimeHost.submit_user_message` is now a compatibility facade over the
+  Chat Source Adapter (optional `message_id` / `subject` / `occurred_at`).
+
 ## [0.3.0] - 2026-08-06
 
 ### Added

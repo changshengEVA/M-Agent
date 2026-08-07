@@ -29,10 +29,10 @@
 
 <p align="center"><strong>说一次，持续接得上；需要你时才出现。</strong></p>
 
-M-Agent 正在构建一套独立于单次 LLM 调用而持续存在的运行环境。当前 **v0.3.0 Public Alpha** 在持久事务运行时之上发布 Stimulus Kernel（`runtime.ingest(observation)`、Observation/Stimulus 契约、Source Adapter 模板与 Stimulus Lab）。
+M-Agent 正在构建一套独立于单次 LLM 调用而持续存在的运行环境。当前 **v0.3.1** 在 v0.3.0 Stimulus Kernel Public Alpha 之上完成 Chat Source Adapter 收敛（`runtime.ingest(observation)`、Observation/Stimulus 契约、Source Adapter 与 Stimulus Lab）。
 
 > [!IMPORTANT]
-> **当前源码版本：`0.3.0`（Public Alpha）。** 外部开发者可通过 `runtime.ingest()` 接入 Source Adapter。Attention/`ignored`、完整认知插件 SDK，以及 Chat 经 Adapter 收敛仍属后续路线图（v0.3.x / v0.4+）。
+> **当前源码版本：`0.3.1`。** 外部开发者可通过 `runtime.ingest()` 接入 Source Adapter；产品 Chat 经 `ChatSourceAdapter` 接纳。剩余非 Chat 旁路清理仍在 v0.3.x；下一条主线（v0.4+）是长时记忆（情景 + 经验），Attention/`ignored` 推迟到正式开源后的 v1.x+。
 
 | 当前基础 | 提供的能力 |
 | --- | --- |
@@ -146,7 +146,7 @@ flowchart TB
 ```
 
 > [!NOTE]
-> Public Alpha 覆盖 Observation/Stimulus 接纳与 Source Adapter。Chat 仍使用已薄封装到 `ingest` 的 `submit_user_message`；经显式 Source Adapter 的 Chat 收敛安排在 v0.3.x。
+> v0.3.1 覆盖 Observation/Stimulus 接纳、Source Adapter，以及经 `ChatSourceAdapter` 的 Chat 路径。`submit_user_message` 仍为兼容薄封装。剩余非 Chat 旁路清理仍在 v0.3.x 线上。
 
 <a name="capabilities"></a>
 
@@ -160,7 +160,7 @@ flowchart TB
 | 连续性 | 持续存在的 Transaction、TaskState、Activation 与 Scene 时间线 |
 | 刺激 | 耐久 Stimulus Pool（池状态 / 处置拆分）与 Trace |
 | 输入 | `runtime.ingest(observation)`、消息、计划与执行反馈 |
-| Adapter | Source Adapter 模板与离线 Stimulus Lab |
+| Adapter | Source Adapter 模板、Chat Source Adapter 与离线 Stimulus Lab |
 | 认知 | Thinking、Delegate、Effect、Feedback 与用户回复闭环 |
 | 恢复 | SQLite checkpoint、effect ledger、带 Journal 的 Flush 重启恢复与 Schedule lease 恢复 |
 | 记忆 | Transaction 级 WM 与由模型调用的简单 RAG |
@@ -169,22 +169,24 @@ flowchart TB
 
 | 目标版本 | 规划能力 |
 | --- | --- |
-| v0.3.x | Chat / 内部入口统一走 `runtime.ingest()`，消除旁路 |
-| v0.4 | Attention：判断是否应醒（含 `ignored`）与事务归因 |
-| v0.5+ | Goal、Expectation、Evidence、Belief 与可回放 Context Snapshot |
-| v0.5–0.6 | 由 Runtime 自动维护并注入的系统记忆 |
-| v0.7 | 内生刺激与生产可用的 Strategy System |
-| v0.8 | 由权限、预算、审批和 Kill Switch 构成的受控自主性 |
+| v0.3.x | 消除剩余非 Chat 旁路后再离开 v0.3 线 |
+| v0.4 | 情景记忆子系统：Flush 录入、系统浅召回、工具深召回 |
+| v0.5 | 经验子系统：Flush 录入与仅系统召回 |
+| v0.6 | 两子系统拼入主链，并稳定宿主运行时 |
+| v0.7 | Cognitive State 与 Context Compiler（WM + 浅情景 + 经验） |
+| v0.8–0.9 | 时间/内生刺激、Opt-in Strategy、受控自主与 RC 硬化 |
+| v1.x+ | Attention/`ignored` 与开放事件流归因（刺激种类变多之后） |
 
-可执行语义验收覆盖 Transaction、Stimulus Pool、Attribution 和恢复行为。目标能力安排在 v0.3.0—v0.8.0，而不是包装成当前现状。
+可执行语义验收覆盖 Transaction、Stimulus Pool、Attribution 和恢复行为。目标能力安排在 v0.3.0—v1.0.0，而不是包装成当前现状。
 
 ## 记忆模型
 
 | 机制与状态 | 控制方式 |
 | --- | --- |
-| 🔎 **工具记忆 · 当前可用** | 模型意识到需要回忆后，主动调用 RAG、搜索或档案工具；`SimpleRagEpisodicBackend` 属于这一类。 |
-| 🧠 **系统记忆 · 路线图** | Runtime 在决策前自动投影、整合、检索和评估已提交的 Scene、TaskState、Evidence 与 Effect。v0.5 Shadow，v0.6 进入主链。 |
-| 🧭 **Strategy · 路线图** | 经过消融评测和安全门槛后才可指导行为的程序性知识。v0.6 Shadow，v0.7 Opt-in。 |
+| 🔎 **工具记忆 · 当前可用** | 模型意识到需要回忆后，主动调用 RAG、搜索或档案工具；当前 `SimpleRagEpisodicBackend` 属于这一类；v0.4 深召回保持这一控制权模型。 |
+| 🧠 **情景记忆子系统 · 路线图** | 自洽情景记忆：Flush 录入、**系统**浅召回（高限制）、**工具**深召回。v0.4 建成子系统，v0.6 拼入主链。 |
+| 📘 **经验子系统 · 路线图** | 自洽经验记忆：Flush 录入与**仅系统召回**。v0.5 建成子系统，v0.6 拼入主链。 |
+| 🧭 **Strategy · 路线图** | 从经验子系统生长出的程序性指导，通过安全门槛后 Opt-in。v0.8.0 Opt-in。 |
 
 ## 持久化一览
 
@@ -204,10 +206,10 @@ flowchart TB
 
 | 阶段 | 结果 |
 | --- | --- |
-| **当前版本 · v0.3.0** | Stimulus Kernel Public Alpha |
-| **v0.3.x–0.4** | Chat ingest 收敛、Attention 与事务归因 |
-| **v0.5–0.7** | Context Compiler、系统记忆、时间与 Strategy |
-| **v0.8–1.0** | 受控自主性、发布加固与稳定契约 |
+| **当前版本 · v0.3.1** | Stimulus Kernel 之上的 Chat Source Adapter |
+| **v0.3.x → v0.6** | Ingress Freeze，再建成情景/经验子系统并拼入稳定主链 |
+| **v0.7–0.9** | Context Compiler、时间/内生认知、受控自主与 RC |
+| **v1.0 / v1.x+** | 正式开源初步完整认知运行时；Attention 留待生态期 |
 
 <details>
 <summary><strong>展开完整 v0.2.0 → v1.0.0 规划</strong></summary>
@@ -217,13 +219,15 @@ flowchart TB
 | v0.2.0 | 当前运行时基线 | 固化 Transaction、Scene、Stimulus、Schedule、Effect/Feedback 与工具记忆 |
 | v0.2.1 | 可信基线 | 修复恢复、上下文、记忆正确性、安全默认值和开源交付 |
 | v0.3.0 | Stimulus Kernel | 公开 Observation/Stimulus 协议、`runtime.ingest()`、进程式池状态、确定性处置、Trace、Source Adapter 与 Stimulus Lab |
-| v0.4.0 | Attention & Attribution | 过滤噪声，判断是否应该醒以及应该唤醒哪项事务 |
-| v0.5.0 | Cognitive State & Context Compiler | 建立认知状态与可追溯 Context Snapshot，系统记忆进入 Shadow |
-| v0.6.0 | System Memory & Temporal Runtime | 系统记忆进入主链，时间与 Expectation 可计算，Strategy 进入 Shadow |
-| v0.7.0 | Endogenous Cognition & Strategy | 内生刺激与受限、可评测的 Strategy 指导 |
-| v0.8.0 | Bounded Autonomy & Cognitive SDK | 权限、预算、审批、Kill Switch 与认知插件 SDK |
-| v0.9.0 | Release Candidate | 冻结契约，完成迁移、安全和长期运行验证 |
-| v1.0.0 | Stable Cognitive Runtime | 稳定的刺激原生认知运行时公共契约 |
+| v0.3.1 | Chat Source Adapter | 产品 Chat 经 `ChatSourceAdapter` → `ingest`；`submit_user_message` 降为兼容薄封装 |
+| v0.4.0 | 情景记忆子系统 | Flush 录入、系统浅召回、工具深召回，子系统自洽 |
+| v0.5.0 | 经验子系统 | Flush 录入与仅系统召回，与情景记忆解耦 |
+| v0.6.0 | 长时记忆接入与主系统稳定 | 两子系统拼入主链；Flush 只触发；长时间运行稳定 |
+| v0.7.0 | Cognitive State & Context Compiler | 将 WM、浅情景与经验编译为可追溯 Context Snapshot |
+| v0.8.0 | Temporal, Endogenous & Strategy | Clock/Expectation、内生刺激、Opt-in Strategy |
+| v0.9.0 | Bounded Autonomy & RC | 权限、预算、审批、Kill Switch、迁移与长期运行硬化 |
+| v1.0.0 | 初步完整认知运行时 | 正式开源稳定契约（Attention 推迟到 v1.x+） |
+| v1.x+ | Attention & Attribution | 刺激种类变多后的噪声过滤与开放事件流归因 |
 
 </details>
 
@@ -253,6 +257,7 @@ python scripts/run_runtime_migration_gate.py --rounds 3
 
 | | 从这里开始 | 内容 |
 | --- | --- | --- |
+| 🧭 | [哲学动机（中英）](docs/philosophy-motivation.md) | 连续主体、意识能动四层与 `A=f(c)` 建模动机 |
 | 🌟 | [愿景与目标](docs/vision-and-goals.zh-CN.md) | 项目定位、用户价值、记忆边界和成功判据 |
 | 🗺️ | [版本规划](docs/roadmap-v0.2.0-v1.0.0.zh-CN.md) | v0.2.0—v1.0.0 的目标、交付与 Gate |
 | 📝 | [版本变更](CHANGELOG.md) | 各版本已交付变更与兼容性说明 |

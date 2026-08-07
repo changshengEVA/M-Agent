@@ -58,12 +58,14 @@ Runtime 持续维护的是状态、目标、承诺、预期、记忆和权限；
 | Transaction | 跨激活持续存在的一项事务 | v0.2 已实现 |
 | Activation | Transaction 的一次有效认知执行批次 | v0.2 已实现 |
 | Scene | conversation 范围内按实际顺序记录的时间线 | v0.2 已实现 |
-| Goal / Commitment | Agent 正在追求或承担的目标与承诺 | v0.5 目标 |
-| Expectation | 对未来观察或期限的可计算预期 | v0.5 定义，v0.6 运行 |
-| Evidence / Belief | 有来源的观察证据与由证据支持的当前判断 | v0.5 目标 |
-| Context Snapshot | 一次模型调用所使用的可追溯认知快照 | v0.5 目标 |
-| Effect | 对外行动意图、执行和交付结果 | v0.2 已有基础，v0.8 完成策略边界 |
-| Strategy | 可复用的程序性知识 | v0.6 Shadow，v0.7 Opt-in |
+| Goal / Commitment | Agent 正在追求或承担的目标与承诺 | v0.7 目标 |
+| Expectation | 对未来观察或期限的可计算预期 | v0.7 定义，v0.8 运行 |
+| Evidence / Belief | 有来源的观察证据与由证据支持的当前判断 | v0.7 目标 |
+| Context Snapshot | 一次模型调用所使用的可追溯认知快照 | v0.7 目标 |
+| 情景记忆 | Flush 录入、系统浅召回、工具深召回 | v0.4 子系统，v0.6 主链 |
+| 经验记忆 | Flush 录入、仅系统召回 | v0.5 子系统，v0.6 主链 |
+| Effect | 对外行动意图、执行和交付结果 | v0.2 已有基础，v0.9 完成策略边界 |
+| Strategy | 可复用的程序性知识 | v0.5 经验自立，v0.8 Opt-in |
 
 ## 4. 运行链路
 
@@ -98,7 +100,7 @@ new | ready | running | waiting | terminated
 rejected | merged | discarded | completed | aborted | failed
 ```
 
-并附带 `reason_code` / `reason`。`ignored`（不值得认知）属于 v0.4 Attention，不进入 v0.3 公共处置枚举。
+并附带 `reason_code` / `reason`。`ignored`（不值得认知）属于 **v1.x+ Attention**（开源后生态期），不进入 v0.3 公共处置枚举，也不阻塞 1.0 前主线。
 
 “接纳”不等于“立即调用 LLM”。
 
@@ -106,7 +108,10 @@ rejected | merged | discarded | completed | aborted | failed
 
 Attention 负责回答“是否值得现在认知”，Attribution 负责回答“它属于哪件事”。
 
-处理顺序应优先使用确定性规则：
+**1.0 前：**以 conv 内事务归因为准；现有刺激处理在不影响运行的前提下保持够用，不提前建设开放事件流噪声过滤。  
+**v1.x+：**在刺激种类随开源社区累积后，再补齐可插拔 Attention Policy 与开放归因。
+
+完整 Attention 处理顺序应优先使用确定性规则：
 
 1. 来源与权限校验；
 2. 去重、过期和时序修正；
@@ -147,9 +152,9 @@ Thinking 消费冻结的 Context Snapshot，并输出结构化 TaskState 更新�
 Strategy 的接入顺序为：
 
 ```text
-v0.6 Shadow
-→ v0.7 Opt-in
-→ v0.8 评测达标后成为默认候选
+v0.5 经验子系统自立
+→ v0.8 Opt-in Guidance
+→ 评测达标后成为默认候选
 → v1.0 稳定接口
 ```
 
@@ -167,23 +172,22 @@ Effect 执行结果以带有 transaction、activation 和 delegate 因果身份�
 
 Working Memory 隶属于 Transaction，保存当前任务继续执行所需的热状态。
 
-### 5.2 工具记忆
+### 5.2 情景记忆
 
-工具记忆由模型显式调用，用于搜索和扩展查询。当前 Simple RAG 属于工具记忆，不是目标 System Memory。
+情景记忆是自洽子系统：Flush 触发录入；**浅召回**由 Runtime 系统调用（高限制防污染）；**深召回**由模型以工具方式调用（高准确）。复杂索引与检索不塞进 Flush 编排。
 
-### 5.3 系统记忆
+### 5.3 经验记忆
 
-系统记忆由 Runtime 自动投影、整合、召回，并通过 Context Compiler 评估是否进入 `c`：
+经验记忆是自洽子系统：Flush 触发录入；召回**仅系统召回**，在决策前由 Runtime 评估是否进入后续 Context 编译。它与情景记忆解耦，并作为 Strategy Guidance 的上游能力。
 
-```text
-Committed Scene / TaskState / Evidence / Effect
-→ Memory Projector
-→ System Memory Backend
-→ SystemMemoryProvider
-→ Context Compiler
-```
+### 5.4 工具记忆与控制权
 
-完整记忆算法可以由 WorkspaceMem 等外部后端实现；M-Agent Core 只稳定协议、生命周期、证据与隔离语义。
+工具记忆由模型显式调用，用于搜索和扩展查询。当前 Simple RAG 属于工具记忆形态；v0.4 深召回保持这一控制权。控制权区分：
+
+- **深召回（工具）：**模型想起后主动查询。
+- **浅召回 / 经验召回（系统）：**Runtime 在决策前评估是否注入。
+
+后端可通过 Adapter 替换；M-Agent Core 只稳定协议、生命周期、证据与隔离语义。
 
 ## 6. 时间与内生刺激
 
@@ -204,26 +208,26 @@ Heartbeat 只是当前到期计划的调度机制，不等同于时间认知。�
 
 - Observation Source；
 - Stimulus Normalizer；
-- Attention Policy；
-- Attribution Policy；
 - Context Provider；
-- System Memory Backend；
+- 情景记忆 Backend；
+- 经验记忆 Backend；
 - Strategy System；
-- Capability 与 Approval Policy。
+- Capability 与 Approval Policy；
+- Attention / Attribution Policy（v1.x+）。
 
 插件不能绕过 Stimulus Admission、用户隔离、Context 证据规则和 Effect Policy。
 
-## 8. 当前 v0.2 与目标差距
+## 8. 当前实现与目标差距
 
-当前 Runtime 已实现 Transaction、Scene、Stimulus Inbox、基础归因、Schedule、Effect/Feedback、checkpoint、flush journal 和语义验收。尚未完成的关键目标包括：
+当前 Runtime 已实现 Transaction、Scene、Stimulus Kernel、conv 级基础归因、Schedule、Effect/Feedback、checkpoint、flush journal、WM 与工具式 RAG。1.0 前尚未完成的关键目标包括：
 
-- 通用公开 Observation/Stimulus SDK；
-- Attention 的忽略、合并、延迟与信息价值语义；
+- 自洽情景记忆子系统（录入 / 浅召回 / 深召回）及其主链拼接；
+- 自洽经验子系统（录入 / 系统召回）及其主链拼接；
 - 正式 Cognitive State 与 Context Compiler；
-- Runtime 自动控制的 System Memory；
-- Expectation 与内生刺激；
-- 实际可用的 StrategySystem；
+- Expectation、内生刺激与 Opt-in Strategy；
 - 统一审批和受控自主性。
 
-因此，对外应使用“正在构建 Stimulus-Native Cognitive Runtime”，不能把目标能力描述成 v0.2 已实现事实。
+Attention 的忽略、合并、延迟与开放事件流归因属于 **v1.x+**，不作为 1.0 阻断项。
+
+因此，对外应使用“正在构建 Stimulus-Native Cognitive Runtime”，不能把目标能力描述成当前已实现事实。
 

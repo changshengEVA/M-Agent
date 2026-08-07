@@ -8,13 +8,14 @@
 并通过 recall capability 回答“以前说过什么”。默认实现是本地
 `SimpleRagEpisodicBackend`。
 
-它属于**工具记忆**：模型必须显式调用 recall capability。它不是计划中的
-**系统记忆（System Memory）**；后者由 Runtime 管理，并在 Context Compiler 构造
-认知上下文时自动评估。路线图安排为 v0.5 以 Shadow 模式接入 System Memory SPI，
-v0.6 再把符合条件的记忆接入 Context 主链。
+当前实现仍属于**工具记忆**：模型必须显式调用 recall capability。路线图中的
+**情景记忆子系统（v0.4）**将在此槽位上演进为自洽能力：Flush 录入、
+**系统**浅召回（高限制防污染）与**工具**深召回（高准确）；v0.6 拼入主链，
+v0.7 由 Context Compiler 编译注入。并列的**经验子系统**在 v0.5 自立，
+不并入本槽位的算法细节。
 
 Strategy 是独立的规划中子系统，不是当前 Episodic 功能，也不是现有生产能力。
-路线图状态为：v0.6 仅 Shadow 匹配，v0.7 可选注入，v0.8 只有在公开评测达标后
+路线图状态为：经验子系统自立后，v0.8 Opt-in Guidance；公开评测达标后
 才考虑成为默认候选。
 
 Runtime 负责 Scene 采集、flush 顺序和 Dialogue 归档。Episodic backend 消费由此生成的
@@ -33,7 +34,7 @@ round 列表、建立可检索索引并提供 recall；它不解析 Scene 存储
 - 已提交 note 是持久注释 metadata，但还不是类型化、不可变的 Episode，也不是 Runtime
   管理的认知记忆对象。
 - 当前 Dialogue RAG 索引不维护 Goal、Belief、Expectation、带来源的状态迁移，也不会
-  自动注入 Context。这些能力属于未来的系统记忆与 Cognitive State 路线图。
+  自动注入 Context。这些能力属于 v0.4+ 情景/经验子系统与 v0.7 Cognitive State 路线图。
 
 ## 单宿主持久化边界
 

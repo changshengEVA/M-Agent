@@ -43,8 +43,11 @@ class RuntimeHost(Protocol):
         text: str,
         payload: Optional[dict] = None,
         schedule_drainer: bool = True,
+        message_id: Optional[str] = None,
+        subject: Optional[str] = None,
+        occurred_at: Optional[str] = None,
     ) -> str:
-        """Enqueue one user stimulus and optionally schedule background drain."""
+        """Compatibility facade: ChatSourceAdapter → ``ingest`` (prefer Adapter)."""
 
     def run_thread(
         self,

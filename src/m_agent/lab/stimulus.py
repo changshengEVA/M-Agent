@@ -75,6 +75,24 @@ SCENARIO_PACK: Dict[str, List[Dict[str, Any]]] = {
             "idempotency_key": "valid:1",
         },
     ],
+    "chat_duplicate": [
+        {
+            "source": "chat",
+            "type": "user_message",
+            "text": "hello",
+            "occurred_at": "2026-01-01T10:00:00Z",
+            "idempotency_key": "chat:lab-thread:run_1",
+            "payload": {"user_turn": {"speaker": "user", "text": "hello"}},
+        },
+        {
+            "source": "chat",
+            "type": "user_message",
+            "text": "hello again",
+            "occurred_at": "2026-01-01T10:00:05Z",
+            "idempotency_key": "chat:lab-thread:run_1",
+            "payload": {"user_turn": {"speaker": "user", "text": "hello again"}},
+        },
+    ],
 }
 
 
@@ -243,7 +261,7 @@ class StimulusLab:
         observed_at = str(event.get("observed_at", occurred_at) or occurred_at)
         self.clock.set(observed_at)
         return Observation(
-            source="stimulus_lab",
+            source=str(event.get("source", "stimulus_lab") or "stimulus_lab"),
             type=str(event.get("type", "external_event") or "external_event"),
             thread_id=self.thread_id,
             conversation_id=self.conversation_id,
@@ -315,7 +333,7 @@ class StimulusLab:
         stimuli: Sequence[Mapping[str, Any]],
         traces: Sequence[Mapping[str, Any]],
     ) -> bool:
-        if name == "duplicate":
+        if name in {"duplicate", "chat_duplicate"}:
             return (
                 len(results) == 2
                 and bool(results[0].get("created"))

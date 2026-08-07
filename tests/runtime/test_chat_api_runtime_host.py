@@ -116,6 +116,7 @@ def test_chat_service_runtime_exposes_neutral_runtime_contract(
         result = runtime.run_chat(
             message="hello",
             thread_id="runtime-thread",
+            message_id="run_chat_api_1",
         )
         assert result["success"] is True
         assert result["runtime_engine_id"] == LANGGRAPH_RUNTIME_ENGINE
@@ -123,6 +124,10 @@ def test_chat_service_runtime_exposes_neutral_runtime_contract(
         assert result["thread_state"]["runtime_engine_id"] == (
             LANGGRAPH_RUNTIME_ENGINE
         )
+        traces = runtime.runtime_host.list_stimulus_trace(
+            ingress_key="chat:runtime-thread:run_chat_api_1"
+        )
+        assert traces
         transactions = runtime.get_transactions("runtime-thread")
         assert transactions["transaction_count"] >= 1
         assert "runtime" in result["thread_state"]

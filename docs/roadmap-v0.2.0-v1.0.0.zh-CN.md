@@ -3,6 +3,7 @@
 > 文档状态：当前权威路线图  
 > 基线版本：v0.2.0  
 > 确认日期：2026-08-06  
+> 修订说明：自 v0.4.0 起重排；v0.2.0—v0.3.x 历史交付保持不变  
 > 发布原则：按放行条件发布，不以日期替代质量门槛
 
 ## 1. 总体方向
@@ -15,17 +16,21 @@
 
 > **说一次，持续接得上；需要你时才出现。**
 
+**1.0 前阶段目标：**先建成初步完整的认知运行时（短时 WM 已具备，补齐长时记忆并与主系统稳定拼接），再正式开源。开源后随社区累积刺激种类与内容，再引入去重、噪声过滤等 Attention 能力。
+
 开发主线固定为：
 
 ```text
 可信运行时基线
 → Stimulus Kernel
-→ Attention 与事务归因
+→ 情景记忆子系统（自洽）
+→ 经验子系统（自洽）
+→ 长时记忆接入主链与主系统稳定
 → Cognitive State 与 Context Compiler
-→ 系统记忆与时间
-→ 内生刺激与 Strategy
-→ 受控自主性与插件生态
-→ 稳定契约
+→ 时间、内生刺激与轻量 Strategy
+→ 受控自主性与发布硬化
+→ 稳定契约（v1.0 正式开源）
+→ [开源后] Attention 与开放事件流归因
 ```
 
 ## 2. 版本总览
@@ -35,13 +40,15 @@
 | **v0.2.0** | 当前运行时基线 | 固化现有真实能力与限制 | Transaction、Scene、Stimulus Pool、基础归因、Schedule、Effect/Feedback、工具式 RAG、语义验收 |
 | **v0.2.1** | 可信基线 | 清除会污染后续认知系统的正确性和开源交付问题 | Single-call Thinking、恢复与 Context 修复、安全默认值、版本统一、CI 与最小安装路径 |
 | **v0.3.0** | Stimulus Kernel | 将刺激提升为公开、耐久的一等运行时对象 | `runtime.ingest()`、Observation/Stimulus 公共协议、进程式池状态、确定性处置、Trace、Source Adapter、Stimulus Lab |
-| **v0.4.0** | Attention & Attribution | 判断是否应该醒，以及应唤醒哪件事 | 去重、时序、噪声过滤、Attention Policy、事务归因、StimulusBench v1 |
-| **v0.5.0** | Cognitive State & Context Compiler | 从拼接 Prompt 升级为编译认知上下文 | Goal/Commitment/Expectation/Evidence/Belief、Context Snapshot、Compiler SPI、系统记忆 Shadow |
-| **v0.6.0** | System Memory & Temporal Runtime | 让过去和时间成为 Runtime 自动维护的认知条件 | 系统记忆主链、WorkspaceMem Adapter、Clock、Expectation 生命周期、Strategy Shadow |
-| **v0.7.0** | Endogenous Cognition & Strategy | 让内部状态产生刺激，并让验证后的 Strategy 受限指导行为 | 内生刺激、Strategy 生命周期、受限 Guidance、TaskState Guard、消融评测 |
-| **v0.8.0** | Bounded Autonomy & Cognitive SDK | 将持续认知转化为有边界的个人助手和开发者生态 | Standing Goal、权限/预算/审批、Kill Switch、认知插件 SDK、参考适配器 |
-| **v0.9.0** | Release Candidate | 冻结契约并验证长期稳定性 | 迁移、备份恢复、故障注入、长时间运行、安全审计、正式发布产物 |
-| **v1.0.0** | Stable Cognitive Runtime | 稳定兑现刺激原生认知运行时的公共承诺 | 稳定协议、SemVer、可回放因果链、可替换后端、完整个人助手参考场景 |
+| **v0.3.1** | Chat Source Adapter | 产品 Chat 经显式 Adapter 统一走 `ingest` | `ChatSourceAdapter`、Chat Signal→Observation、幂等键、`submit_user_message` 兼容薄封装 |
+| **v0.4.0** | 情景记忆子系统 | 建成自洽的情景记忆能力闭环 | Flush 录入、系统浅召回（高限制防污染）、工具深召回（高准确） |
+| **v0.5.0** | 经验子系统 | 建成自洽的经验能力闭环 | Flush 录入、仅系统召回；与情景记忆解耦 |
+| **v0.6.0** | 长时记忆接入与主系统稳定 | 两子系统拼进主链，主系统可长期稳定运行 | Flush 只触发不内嵌算法、决策前评估注入、隔离/导出/删除、故障降级 |
+| **v0.7.0** | Cognitive State & Context Compiler | 从拼接 Prompt 升级为编译认知上下文 | Goal/Commitment/Expectation/Evidence/Belief、Context Snapshot、WM+浅情景+经验的编译与预算 |
+| **v0.8.0** | Temporal, Endogenous & Strategy | 让时间与内部状态驱动继续，并受限启用经验指导 | Clock/Expectation、内生刺激与冷却配额、经验→受限 Guidance（Opt-in）、TaskState Guard |
+| **v0.9.0** | Bounded Autonomy & Release Candidate | 有边界助手体验 + 契约冻结与长期稳定性 | 权限/预算/审批/Kill Switch、迁移备份、故障注入、长时间运行、安全审计 |
+| **v1.0.0** | 初步完整认知运行时 | 正式开源并稳定兑现公共承诺 | Stimulus Kernel、conv 级事务归因、WM、情景/经验记忆、Context 编译、基础自主边界 |
+| **v1.x+** | Attention & Attribution（生态期） | 刺激种类变多后的过滤与开放归因 | `ignored`、去重/噪声、开放事件流归因、StimulusBench |
 
 ## 3. 分版本规划
 
@@ -118,7 +125,7 @@ v0.2.0 只作为开发基线，不宣传为已经完成的认知运行时或生�
 - Public Alpha 面向**外部开发者接 Source Adapter**，不是完整认知插件 SDK；
 - 公共稳定契约只包含 `Observation` 与 `Stimulus`；`Signal` 留在 Adapter 内部，不进稳定公共契约；
 - **刺激池状态**与**处置结果**拆成两套词表：前者管调度与恢复，后者管结案解释与审计；
-- v0.3 只做确定性内核结案；“该不该理”的 `ignored` 语义留给 v0.4 Attention；
+- v0.3 只做确定性内核结案；“该不该理”的 `ignored` 语义不在 1.0 前主线，留给 **v1.x+ Attention**（刺激生态成熟后）；
 - **v0.3.0** 不要求 Chat 经 Source Adapter 接入；Chat 可在 **v0.3.x** 迁入；
 - **离开 v0.3 线之前**，Chat 与内部入口必须统一走 `runtime.ingest(observation)`，不允许长期旁路。
 
@@ -147,28 +154,249 @@ v0.2.0 只作为开发基线，不宣传为已经完成的认知运行时或生�
 
 **v0.3.x 收敛**
 
-- 将 Chat / 用户消息等内部入口迁到 `runtime.ingest(observation)`；
-- 在退出 v0.3 线进入 v0.4 之前，消除旁路入口，统一刺激接纳路径。
+- **v0.3.1 Chat Source Adapter：**将 Chat / 用户消息经显式 `ChatSourceAdapter`（私有 Signal → Observation → `runtime.ingest`）接纳；`submit_user_message` 降为兼容薄封装；补齐 `idempotency_key`（`chat:{thread_id}:{message_id}`）与同步路径 `user_turn` payload。
+- **后续 0.3.x（Ingress Freeze）：**在退出 v0.3 线进入 v0.4 之前，消除 schedule / feedback / gateway 等剩余旁路入口，统一刺激接纳路径。
 
-### v0.4.0：Attention & Attribution
+### v0.4.0：情景记忆子系统
 
 **主题**
 
-判断是否应该醒，以及应该唤醒哪件事。
+建成自洽的情景记忆（Episodic）子系统，补齐长时记忆的第一块。
 
 **目标**
 
-在缺少显式 `transaction_id` 的开放事件流中，过滤噪声并将刺激归因到正确 Goal 或 Transaction。
+在不影响主系统运行的前提下，提供可独立演进的情景记忆能力：Flush 触发录入，系统浅召回与工具深召回职责分离；复杂索引与检索逻辑不塞进 Flush 编排。
+
+**范围边界**
+
+- Working Memory（短时对话连续性）已在既有运行时具备，本版本不重做 WM；
+- 事务归因继续以 **conv 内归因** 为准，不扩展开放事件流 Attention；
+- 现有 `episodic` 工具 RAG 槽位应演进/收敛到本子系统，避免并行两套语义；
+- Runtime 拥有 Scene / Flush 边界与 Dialogue 权威产物；情景子系统拥有索引、浅/深召回策略与存储。
 
 **核心交付**
 
-- 来源校验、重复检测、过期判断、顺序和版本检查；
+- **录入：**Flush 过程中触发子系统 API，消费不可变 flush 材料写入情景索引（幂等、可重试）；
+- **浅召回（系统召回）：**决策前由 Runtime 调用；必须具备高召回限制（top-k、分数阈值、注入预算），防止污染当前认知；
+- **深召回（工具召回）：**模型显式调用，面向“回忆准确场景”，以高准确为放行标准；
+- 子系统可单独测试与替换，FlushOrchestrator 只负责边界与触发，不内嵌检索算法；
+- 用户/线程隔离与基础可观测性（来源、时间、命中理由）。
+
+**放行条件**
+
+- Flush 崩溃/重试不丢、不重复污染情景索引；
+- 浅召回有明确上限与隔离，可证明不会无界注入 Context；
+- 深召回准确路径可测，且与浅召回语义不再混用；
+- 子系统可在脱离完整产品路径时单独验收。
+
+### v0.5.0：经验子系统
+
+**主题**
+
+建成自洽的经验（Experience）子系统，与情景记忆解耦。
+
+**目标**
+
+让“做过什么、什么有效”可在 Flush 后沉淀，并在决策前由系统召回；经验链路自洽，避免把提炼与检索复杂度堆进 Flush。
+
+**范围边界**
+
+- 经验召回 **仅系统召回**，不以模型主动“经验工具搜索”为主路径；
+- 经验系统先于 Strategy 生命周期自立；Strategy 的候选/验证/晋级在后续版本从经验能力上生长；
+- 录入可异步，但不得破坏主 flush 成功语义（失败形成可重试 backlog，fail-open）。
+
+**核心交付**
+
+- **录入：**Flush 触发，从已提交结果/事务材料提炼经验条目并持久化；
+- **召回：**仅系统召回；提供候选、来源、适用条件与置信度；
+- 与情景记忆清晰分界：情景回答“当时发生了什么”，经验回答“这类情况通常怎么做/什么有效”；
+- 用户隔离、导出/删除钩子（可与 v0.6 拼接时一并硬化）。
+
+**放行条件**
+
+- 经验录入故障不阻断主 flush 成功；
+- 召回路径 fail-open：故障时不注入、不阻断 Thinking；
+- 经验与情景存储/索引可独立演进，无强制耦合；
+- 子系统可单独验收。
+
+### v0.6.0：长时记忆接入与主系统稳定
+
+**主题**
+
+把情景与经验两个自洽子系统拼进主系统，并保证主路径长期稳定运行。
+
+**目标**
+
+完成“缺的就是这两个子系统的搭建与和主系统的拼接，以及主系统的稳定运行”：Flush 只触发，决策前评估注入，主链可长时间跑。
+
+**核心交付**
+
+- Flush 编排：`snapshot → runtime commit → 触发情景录入 / 经验录入`（幂等、可重试、可降级）；
+- 决策热路径：WM + 情景浅召回 + 经验召回 → 进入后续 Context 编译所需的候选集（本版本至少完成主链可注入或等价 Shadow→主链切换开关）；
+- 记忆故障 fail-open：不阻断 Thinking / 刺激处置；
+- 用户隔离、导出、删除、重建与 Schema 迁移路径；
+- 主系统稳定：长时间运行、崩溃恢复、无刺激静默丢失、无可控范围外的资源增长；
+- 后端可通过 Adapter 替换，不与 Runtime 内核绑定。
+
+**放行条件**
+
+- 两子系统与主链拼接完成，主路径可重复、可恢复；
+- 无跨用户/跨线程污染；
+- 记忆可完整导出、删除并从权威事件重建；
+- 长时间运行验收通过（无静默丢刺激、无状态损坏）。
+
+### v0.7.0：Cognitive State & Context Compiler
+
+**主题**
+
+从“拼 Prompt”升级为编译认知上下文。
+
+**目标**
+
+建立可持久、可追踪的认知状态，并将刺激、WM、情景浅召回与经验召回编译成最小充分上下文 `c`。
+
+**核心交付**
+
+- 明确 Goal、Commitment、Expectation、Evidence、Belief 与 TaskState 边界（按需渐进，不阻塞记忆主链已具备的能力）；
+- 定义 `ContextItem`、`ContextSnapshot`、Context Provider 和 Context Compiler SPI；
+- 每个 Context Item 携带来源、时间、置信度、敏感级别和 token 成本；
+- Context 去重、预算分配和冲突标注；
+- 保证当前刺激、活动目标和最新有效证据不会被摘要或截断；
+- 浅召回与经验注入受预算与污染约束；
+- 保存、检查和回放 Context Snapshot。
+
+**放行条件**
+
+- 每次模型调用都有对应 Context Snapshot；
+- 所有进入 `c` 的内容都能追溯到来源；
+- Snapshot 可持久化并用于决策回放；
+- 无证据内容不能直接成为 Belief 或 Completed；
+- 浅召回/经验注入不会突破预算或无界污染。
+
+### v0.8.0：Temporal, Endogenous & Strategy
+
+**主题**
+
+让时间与内部状态也能驱动继续，并让经验以受限 Strategy Guidance 指导行为。
+
+**目标**
+
+在长时记忆与 Context 编译已可用的基础上，建立时间/预期语义与内生刺激，并将经验系统上的 Strategy 能力以 Opt-in 方式接入。
+
+**核心交付**
+
+- 支持事件时间、接收时间、截止时间、持续时间和可注入 Clock；
+- 建立 Expectation 生命周期与超时检测；
+- 支持预期未满足、任务停滞、Belief 冲突和 Commitment 到期等内生刺激；
+- 内生刺激去重、冷却时间和资源配额，避免自激循环；
+- 定义 Strategy 的 `candidate / validated / active / deprecated` 生命周期；
+- 允许经过验证的 Strategy 以受限 Guidance 进入 Context（默认 Opt-in）；
+- TaskState Guard：Strategy 不能创造事实、替代证据或自行完成任务；
+- Strategy 开关、消融评测和影响 Trace。
+
+**放行条件**
+
+- Fake Clock 下的时间与预期测试可确定性复现；
+- 内生刺激不会形成无限自唤醒循环；
+- Strategy 只对显式开启的 Agent 或事务生效；
+- Strategy 不提高错误完成率和未经授权行动率；
+- 每次使用均能说明来源、适用条件和决策影响。
+
+### v0.9.0：Bounded Autonomy & Release Candidate
+
+**主题**
+
+将持续认知转化为有边界的个人助手，并冻结契约、验证长期稳定性。
+
+**目标**
+
+允许 Agent 在用户授权范围内持续观察和行动；停止增加核心概念，完成稳定版所需的工程、安全、迁移和文档工作。
+
+**核心交付**
+
+- Standing Goal 与长期 Subscription；
+- 能力白名单、预算、有效期、安静时段和频率限制；
+- 确定性 Approval Policy、全局暂停、事务暂停和 Kill Switch；
+- 只读能力与外部写入能力分级；
+- Stimulus Source、Context Provider、情景/经验记忆、Strategy 和 Capability 插件 SDK（Attention 插件留待 v1.x+）；
+- 通用签名 Webhook 及至少一个只读个人信息源参考适配器；
+- 冻结公共 API、配置、数据 Schema 和插件接口；
+- 从 v0.2.x 起的迁移工具、Dry Run 和自动备份；
+- 崩溃、乱序、重复投递、磁盘异常和外部超时故障注入；
+- 长时间运行、资源上限、安全审计和威胁模型；
+- 发布 PyPI 包、容器镜像、示例项目和运维文档。
+
+**放行条件**
+
+- 所有副作用在执行前都通过确定性策略检查；
+- 模型输出不能绕过审批策略；
+- 用户能够查看、暂停和撤销长期观察与自主行为；
+- 声明支持的旧数据升级路径全部通过；
+- 长时间运行无刺激静默丢失、状态损坏和不可控资源增长；
+- 无已知 P0/P1 缺陷；
+- 两个 RC 周期内稳定契约不再发生破坏性变更。
+
+### v1.0.0：初步完整的 Stable Cognitive Runtime
+
+**主题**
+
+稳定、可扩展、可审计的**初步完整**认知运行时；正式开源。
+
+**目标**
+
+兑现“短时接得上（WM），长时靠情景/经验接得上；刺激可追踪处置；上下文可编译可回放”的稳定公开承诺。  
+**不**将完整 Attention / 开放事件流噪声治理作为 1.0 阻断项。
+
+**核心交付**
+
+稳定以下公共契约：
+
+- Observation 与 Stimulus（含确定性处置）；
+- Conversation 级 Transaction Attribution（既有能力的稳定承诺）；
+- Working Memory；
+- 情景记忆（录入 / 系统浅召回 / 工具深召回）；
+- 经验记忆（录入 / 系统召回）；
+- Cognitive State（已落地子集）；
+- Context Snapshot 与 Context Compiler；
+- Expectation 与 Endogenous Stimulus（已落地子集）；
+- Strategy（Opt-in 稳定接口，不承诺默认启用）；
+- Policy、Approval 与 Effect；
+- Cognitive Runtime Plugin SDK（不含强制 Attention 完备）。
+
+同时提供 SemVer、弃用策略、迁移、备份、恢复、导出、删除、离线 Fake Runtime、模型后端替换以及可回放认知因果链。
+
+**放行条件**
+
+- 新安装、旧版升级、崩溃恢复和数据删除全部通过；
+- 所有被接纳刺激都有可追踪的最终处置；
+- 招牌场景：短时连续 + 跨 Flush 后仍能靠情景/经验接上；
+- 每次行动都能追溯到刺激、事务、Context 与权限依据；
+- 外部效果的执行保证被明确记录，不宣传无法实现的通用 Exactly Once；
+- 文档、示例与实现一致；
+- 无已知 P0/P1 问题。
+
+### v1.x+：Attention & Attribution（开源后生态期）
+
+**主题**
+
+在刺激种类与内容随开源社区累积之后，再做去重、噪声过滤与开放事件流归因。
+
+**为何后置**
+
+- 1.0 前刺激种类少，去重/噪声过滤收益低、机会成本高；
+- Conv 内事务归因已够支撑当前产品闭环；
+- 现有刺激处理在不影响系统运行的前提下已够用；
+- Attention 属于刺激生态成熟后的治理层，不是初步完整认知运行时的主线。
+
+**核心交付**
+
+- 来源校验、重复检测、过期判断、顺序和版本检查的可插拔强化；
 - 可插拔 Attention Policy，正式引入“正确沉默 / `ignored`”语义（作为 Attention 决策，而非 v0.3 内核处置枚举的扩展）；
 - 相关性、新颖性、紧迫性、可信度和信息价值计算；
-- 自动事务归因、候选排序与歧义处理；
+- 开放事件流下的自动事务归因、候选排序与歧义处理；
 - 冲突刺激和迟到刺激处理；
 - 每次 Attention / Attribution 决策的可解释理由；
-- StimulusBench v1：多事务归因、噪声、重复、乱序、冲突和正确沉默。
+- StimulusBench：多事务归因、噪声、重复、乱序、冲突和正确沉默。
 
 **放行条件**
 
@@ -177,229 +405,55 @@ v0.2.0 只作为开发基线，不宣传为已经完成的认知运行时或生�
 - 公开无关刺激误激活率；
 - 每次归因都能展示候选、采用依据和拒绝依据。
 
-### v0.5.0：Cognitive State & Context Compiler
-
-**主题**
-
-从“拼 Prompt”升级为编译认知上下文。
-
-**目标**
-
-建立可持久、可追踪的认知状态，并将刺激、状态、目标和证据编译成最小充分上下文 `c`。
-
-**核心交付**
-
-- 明确 Goal、Commitment、Expectation、Evidence、Belief 与 TaskState 边界；
-- 定义 `ContextItem`、`ContextSnapshot`、Context Provider 和 Context Compiler SPI；
-- 每个 Context Item 携带来源、时间、置信度、敏感级别和 token 成本；
-- Context 去重、预算分配和冲突标注；
-- 保证当前刺激、活动目标和最新有效证据不会被摘要或截断；
-- 保存、检查和回放 Context Snapshot；
-- **以 Shadow 模式接入 System Memory SPI**：投影已提交状态并执行候选召回，但暂不影响决策。
-
-**放行条件**
-
-- 每次模型调用都有对应 Context Snapshot；
-- 所有进入 `c` 的内容都能追溯到来源；
-- Snapshot 可持久化并用于决策回放；
-- 无证据内容不能直接成为 Belief 或 Completed；
-- System Memory Shadow 开关不改变实际决策。
-
-### v0.6.0：System Memory & Temporal Runtime
-
-**主题**
-
-让过去和时间成为 Runtime 自动维护的认知条件。
-
-**目标**
-
-将系统记忆正式接入认知主链，并建立时间、预期和期限的统一运行语义。
-
-**核心交付**
-
-- 系统记忆自动写入、整合、召回和注入；
-- 支持情景记忆、事务状态、可靠事实和未完成事项；
-- 提供 Memory Projector、SystemMemoryProvider 和 MemoryEvidence；
-- WorkspaceMem 等后端通过 Adapter 接入，不与 Runtime 内核绑定；
-- 支持事件时间、接收时间、截止时间、持续时间和可注入 Clock；
-- 建立 Expectation 生命周期与超时检测；
-- 支持记忆的用户隔离、导出、删除、重建和 Schema 迁移；
-- 保留工具记忆，作为模型主动调用的扩展查询能力；
-- **StrategySystem 以 Shadow 模式接入**：构造 Current Situation、检索候选并记录影响，但不注入 Context。
-
-**放行条件**
-
-- 系统记忆无跨用户和跨事务污染；
-- 每条注入记忆都有来源、时间和置信度；
-- 记忆可完整导出、删除并从权威事件重建；
-- Fake Clock 下的时间与预期测试可确定性复现；
-- Strategy Shadow 不改变实际决策。
-
-### v0.7.0：Endogenous Cognition & Strategy
-
-**主题**
-
-从被动接收外部事件，迈向由内部状态产生认知刺激。
-
-**目标**
-
-让未满足预期、任务停滞和证据冲突形成内生刺激，并让经过验证的 Strategy 受限地指导行为。
-
-**核心交付**
-
-- 支持预期未满足、任务停滞、Belief 冲突和 Commitment 到期等内生刺激；
-- 提供内生刺激去重、冷却时间和资源配额，避免自激循环；
-- 定义 Strategy 的 `candidate / validated / active / deprecated` 生命周期；
-- 只从具有真实结果证据的事务中提取 Strategy Candidate；
-- 允许经过验证的 Strategy 以受限 Guidance 进入 Context；
-- 提供 TaskState Guard：Strategy 不能创造事实、替代证据或自行完成任务；
-- 提供 Strategy 开关、消融评测和影响 Trace。
-
-**放行条件**
-
-- 内生刺激不会形成无限自唤醒循环；
-- Strategy 只对显式开启的 Agent 或事务生效；
-- 在预注册评测集上相对无 Strategy 基线取得可复现净收益；
-- Strategy 不提高错误完成率和未经授权行动率；
-- 每次使用均能说明来源、适用条件和决策影响。
-
-### v0.8.0：Bounded Autonomy & Cognitive SDK
-
-**主题**
-
-将持续认知转化为有边界的个人助手与开发者生态。
-
-**目标**
-
-允许 Agent 在用户授权范围内持续观察和行动，同时开放稳定候选的认知扩展接口。
-
-**核心交付**
-
-- Standing Goal 与长期 Subscription；
-- 能力白名单、预算、有效期、安静时段和频率限制；
-- 确定性 Approval Policy、全局暂停、事务暂停和 Kill Switch；
-- 只读能力与外部写入能力分级；
-- Stimulus Source、Attention、Attribution、Context Provider、System Memory、Strategy 和 Capability 插件 SDK；
-- 通用签名 Webhook 及至少一个只读个人信息源参考适配器；
-- 插件兼容性测试和版本声明；
-- Strategy 达标时成为默认候选，未达标则保持 Opt-in。
-
-**放行条件**
-
-- 所有副作用在执行前都通过确定性策略检查；
-- 模型输出不能绕过审批策略；
-- 至少两个独立示例插件只依赖公开 SDK；
-- 用户能够查看、暂停和撤销长期观察与自主行为；
-- 招牌场景完成“说一次，后续变化自动接回原事务”；
-- 以 **Public Beta** 发布。
-
-### v0.9.0：Release Candidate
-
-**主题**
-
-冻结契约，验证长期稳定性。
-
-**目标**
-
-停止增加核心概念，完成稳定版所需的工程、安全、迁移和文档工作。
-
-**核心交付**
-
-- 冻结公共 API、配置、数据 Schema 和插件接口；
-- 提供从 v0.2.x 起的迁移工具、Dry Run 和自动备份；
-- 验证备份、恢复、重建和数据删除；
-- 支持声明范围内的单机多进程并发；
-- 执行崩溃、乱序、重复投递、磁盘异常和外部超时故障注入；
-- 完成长时间运行、资源上限、安全审计和威胁模型；
-- 发布 PyPI 包、容器镜像、示例项目和运维文档；
-- 明确每项 Capability 的幂等、至多一次或不确定执行语义。
-
-**放行条件**
-
-- 声明支持的旧数据升级路径全部通过；
-- 长时间运行无刺激静默丢失、状态损坏和不可控资源增长；
-- 无已知 P0/P1 缺陷；
-- 两个 RC 周期内稳定契约不再发生破坏性变更；
-- 所有公开示例可从干净环境复现。
-
-### v1.0.0：Stable Stimulus-Native Cognitive Runtime
-
-**主题**
-
-稳定、可扩展、可审计的认知运行时。
-
-**目标**
-
-兑现“世界变化能够在正确时刻、因正确原因，回到正确事务，并形成正确认知上下文”的稳定公开承诺。
-
-**核心交付**
-
-稳定以下公共契约：
-
-- Observation 与 Stimulus；
-- Attention 与 Disposition；
-- Goal / Transaction Attribution；
-- Cognitive State；
-- Context Snapshot 与 Context Compiler；
-- System Memory；
-- Expectation 与 Endogenous Stimulus；
-- Strategy；
-- Policy、Approval 与 Effect；
-- Cognitive Runtime Plugin SDK。
-
-同时提供 SemVer、弃用策略、迁移、备份、恢复、导出、删除、离线 Fake Runtime、模型后端替换以及可回放认知因果链。
-
-**放行条件**
-
-- 新安装、旧版升级、崩溃恢复和数据删除全部通过；
-- 所有被接纳刺激都有可追踪的最终处置；
-- 每次行动都能追溯到刺激、事务、Context、Strategy 和权限依据；
-- 外部效果的执行保证被明确记录，不宣传无法实现的通用 Exactly Once；
-- 插件兼容测试和公开基准稳定通过；
-- 文档、示例与实现一致；
-- 无已知 P0/P1 问题。
-
-## 4. 系统记忆与工具记忆接入计划
+## 4. 长时记忆接入计划
 
 | 能力 | 定义 | 接入版本 |
 | --- | --- | --- |
-| 工具记忆 | 模型主动调用的搜索、RAG 或档案查询 | v0.2.0 已存在，后续作为扩展查询保留 |
-| System Memory SPI | Runtime 自动投影并评估记忆候选 | v0.5.0 Shadow |
-| 系统记忆主链 | Context Compiler 自动选择并注入必要记忆 | v0.6.0 正式生效 |
-| 系统记忆 SDK 候选 | 后端可替换、可迁移、可导出删除 | v0.8.0 |
-| 系统记忆稳定契约 | 稳定公共协议与升级策略 | v1.0.0 |
+| Working Memory | 事务内短时连续 | v0.2 已具备 |
+| 情景记忆·录入 | Flush 触发子系统写入 | v0.4.0 |
+| 情景记忆·浅召回 | 系统召回，高限制防污染 | v0.4.0 实现，v0.6.0 主链拼接 |
+| 情景记忆·深召回 | 工具召回，高准确 | v0.4.0 |
+| 经验·录入 | Flush 触发子系统写入 | v0.5.0 |
+| 经验·召回 | 仅系统召回 | v0.5.0 实现，v0.6.0 主链拼接 |
+| Context 编译注入 | Runtime 编译最小充分上下文 | v0.7.0 |
+| Attention / 噪声治理 | 多源刺激过滤与开放归因 | v1.x+（开源后） |
 
-系统记忆与工具记忆以控制权区分：
+控制权原则：
 
-- **工具记忆：模型想起后主动查询。**
-- **系统记忆：Runtime 保证必要记忆在决策前得到评估和编译。**
+- **深召回（工具）：**模型想起后主动查询。
+- **浅召回 / 经验召回（系统）：**Runtime 在决策前评估是否注入。
+- **Flush：**只负责边界与触发，不拥有记忆算法细节。
+- 两个子系统保持自洽，避免把复杂记忆构建链路全塞进 flush。
 
 ## 5. StrategySystem 接入计划
 
 | 版本 | 状态 | 行为 |
 | --- | --- | --- |
-| **v0.6.0** | Shadow | 构造 Situation、检索和记录候选 Strategy，但不影响决策 |
-| **v0.7.0** | Opt-in | 验证后的 Strategy 可受限进入 Context，并受 TaskState Guard 约束 |
-| **v0.8.0** | Default Candidate | 通过公开消融评测后才可成为默认候选，未达标则继续 Opt-in |
+| **v0.5.0** | 经验子系统自立 | 经验录入与系统召回可用；尚未以 Strategy Guidance 注入 |
+| **v0.8.0** | Opt-in | 验证后的 Strategy 可受限进入 Context，并受 TaskState Guard 约束 |
+| **v0.9.0—v1.0.0** | Default Candidate（可选） | 通过公开消融评测后才可成为默认候选，未达标则继续 Opt-in |
 | **v1.0.0** | Stable Contract | 稳定接口、生命周期和安全边界，不承诺所有 Agent 默认启用 |
 
 Strategy 上线顺序固定为：
 
-> **Shadow → Opt-in → 消融评测达标 → 默认候选。**
+> **经验子系统自立 → Opt-in Guidance → 消融评测达标 → 默认候选。**
 
 ## 6. 开源发布节点
 
 - **v0.3.0 Public Alpha：**第一次向外部开发者兑现 Source Adapter 与 Stimulus Kernel；
-- **v0.3.x：**完成 Chat 等内部入口统一走 `runtime.ingest()`，作为离开 v0.3 线的前置条件；
-- **v0.8.0 Public Beta：**第一次兑现受控个人助手体验与认知插件 SDK；
-- **v0.9.0 Release Candidate：**冻结契约，只处理稳定性和发布问题；
-- **v1.0.0 Stable Release：**正式承担长期兼容承诺。
+- **v0.3.1：**Chat Source Adapter 收敛（产品 Chat 经 Adapter → `ingest`）；
+- **后续 v0.3.x：**消除剩余内部旁路后，才可离开 v0.3 线进入 v0.4（情景记忆）；
+- **v0.6—v0.7：**长时记忆拼通 + Context 编译可用，形成可演示的认知运行时雏形；
+- **v0.9.0 Release Candidate：**受控自主 + 契约冻结与稳定性验证；
+- **v1.0.0 Stable / 正式开源：**初步完整认知运行时，承担长期兼容承诺；
+- **v1.x+：**Attention、多源噪声治理与开放事件流归因（生态期）。
 
 ## 7. 路线图治理规则
 
-- 新认知能力必须经历 `Shadow → Opt-in → Default Candidate`；
+- 新认知能力必须经历明确的接入阶段（记忆子系统：自立 → 主链拼接 → Context 编译；Strategy：自立 → Opt-in → Default Candidate）；
 - 新 Schema 必须同时提供版本、迁移、Dry Run、备份和重建路径；
 - 文档中的能力声明必须有可执行测试或明确标注“目标设计”；
 - 核心 Runtime 不绑定特定模型、记忆算法或连接器供应商；
 - 版本接近预算或发布日期不是降低放行标准的理由；
-- 未达到评测门槛的 Strategy、系统记忆或自主能力可以保持实验状态，不阻塞稳定 Runtime 发布。
+- 未达到评测门槛的 Strategy、高级 Attention 或自主能力可以保持实验状态，不阻塞稳定 Runtime 发布；
+- **Attention / 噪声过滤不得挤占 1.0 前长时记忆与主系统稳定主线。**

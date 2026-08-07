@@ -150,6 +150,45 @@ def test_langgraph_runtime_submit_and_run_thread(tmp_path: Path) -> None:
         runtime.shutdown()
 
 
+def test_langgraph_runtime_submit_user_message_chat_adapter_facade(
+    tmp_path: Path,
+) -> None:
+    runtime = LangGraphRuntime(
+        _fake_agent(),  # type: ignore[arg-type]
+        owner_id="thread-user",
+        persist_root=tmp_path / "runtime",
+    )
+    try:
+        first = runtime.submit_user_message(
+            thread_id="thread-chat",
+            conversation_id="thread-chat::0",
+            text="hello",
+            payload={"user_turn": {"speaker": "thread-user", "text": "hello"}},
+            schedule_drainer=False,
+            message_id="run_facade_1",
+            subject="thread-user",
+        )
+        second = runtime.submit_user_message(
+            thread_id="thread-chat",
+            conversation_id="thread-chat::0",
+            text="hello again",
+            payload={"user_turn": {"speaker": "thread-user", "text": "hello again"}},
+            schedule_drainer=False,
+            message_id="run_facade_1",
+            subject="thread-user",
+        )
+        assert first == second
+        traces = runtime.list_stimulus_trace(ingress_key="chat:thread-chat:run_facade_1")
+        assert traces
+        assert any(
+            item.get("disposition") == "merged"
+            or item.get("reason_code") in {"duplicate_ingress", "merged_existing"}
+            for item in traces
+        )
+    finally:
+        runtime.shutdown()
+
+
 def test_langgraph_runtime_recovers_pending_flush_during_startup(
     tmp_path: Path,
 ) -> None:

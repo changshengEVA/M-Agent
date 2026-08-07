@@ -329,6 +329,7 @@ def _run_chat_worker(record: ChatRunRecord, service_runtime: ChatServiceRuntime)
                 if isinstance(record.user_turn, dict)
                 else None
             ),
+            message_id=record.run_id,
         )
 
         public_result = _with_public_result_thread_id(

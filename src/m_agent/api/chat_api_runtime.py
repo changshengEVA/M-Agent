@@ -957,12 +957,30 @@ class ChatServiceRuntime:
             "thread_state": snapshot,
         }
 
+    def _chat_subject(self) -> str:
+        return str(
+            getattr(self.agent, "owner_id", "")
+            or getattr(self.agent, "user_name", "")
+            or "user"
+        ).strip() or "user"
+
+    @staticmethod
+    def _client_occurred_at(user_turn: Optional[Dict[str, Any]]) -> Optional[str]:
+        if not isinstance(user_turn, dict):
+            return None
+        for key in ("occurred_at", "timestamp"):
+            value = str(user_turn.get(key, "") or "").strip()
+            if value:
+                return value
+        return None
+
     def run_chat(
         self,
         *,
         message: str,
         thread_id: str,
         user_turn: Optional[Dict[str, Any]] = None,
+        message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         active_thread_id = (
             str(thread_id or self.default_thread_id).strip()
@@ -974,6 +992,7 @@ class ChatServiceRuntime:
                 message=message,
                 thread_id=active_thread_id,
                 user_turn=user_turn,
+                message_id=message_id,
             )
 
     def _run_chat_locked(
@@ -982,6 +1001,7 @@ class ChatServiceRuntime:
         message: str,
         thread_id: str,
         user_turn: Optional[Dict[str, Any]] = None,
+        message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Run chat while the shared Chat admission/Flush lock is held."""
 
@@ -1003,6 +1023,7 @@ class ChatServiceRuntime:
             fallback_text=message,
         )
         rendered_message = _render_turn_for_llm(normalized_user_turn)
+        mid = str(message_id or "").strip() or f"msg_{uuid.uuid4().hex}"
 
         THREAD_RUNTIME_STATUS.mark_busy(active_thread_id, reason="chat_run")
         try:
@@ -1010,7 +1031,11 @@ class ChatServiceRuntime:
                 thread_id=active_thread_id,
                 conversation_id=conversation_id,
                 text=rendered_message,
+                payload={"user_turn": normalized_user_turn},
                 schedule_drainer=False,
+                message_id=mid,
+                subject=self._chat_subject(),
+                occurred_at=self._client_occurred_at(user_turn),
             )
             self._enqueue_runtime_user_turn(
                 active_thread_id,
@@ -2081,6 +2106,7 @@ class ChatServiceRuntime:
         thread_id: str,
         message: str,
         user_turn: Optional[Dict[str, Any]] = None,
+        message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         active_thread_id = str(thread_id or self.default_thread_id).strip() or self.default_thread_id
         lock = _get_thread_lock(active_thread_id)
@@ -2094,6 +2120,7 @@ class ChatServiceRuntime:
             )
             rendered_message = _render_turn_for_llm(normalized_user_turn)
             user_text = _normalize_text(normalized_user_turn.get("text")) or rendered_message
+            mid = str(message_id or "").strip() or f"msg_{uuid.uuid4().hex}"
             self._enqueue_runtime_user_turn(
                 active_thread_id,
                 user_message=user_text,
@@ -2104,6 +2131,9 @@ class ChatServiceRuntime:
                 conversation_id=session.conversation_id,
                 text=rendered_message,
                 payload={"user_turn": normalized_user_turn},
+                message_id=mid,
+                subject=self._chat_subject(),
+                occurred_at=self._client_occurred_at(user_turn),
             )
 
     def get_scene(

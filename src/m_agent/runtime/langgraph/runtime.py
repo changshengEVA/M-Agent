@@ -50,12 +50,10 @@ from m_agent.runtime.domain.contracts import (
 )
 from m_agent.runtime.dispatch.drainer import ThreadDrainerService
 from m_agent.runtime.perception.attributor import TransactionAttributor
+from m_agent.runtime.perception.chat_adapter import ChatSignal, ChatSourceAdapter
 from m_agent.runtime.perception.gateway import PerceptionGateway
 from m_agent.runtime.perception.inbox import StimulusInbox
-from m_agent.runtime.perception.observation import (
-    observation_to_envelope,
-    user_message_observation,
-)
+from m_agent.runtime.perception.observation import observation_to_envelope
 from m_agent.sdk.stimulus.contracts import (
     Disposition,
     IngestResult,
@@ -685,18 +683,26 @@ class LangGraphRuntime:
         text: str,
         payload: Optional[dict] = None,
         schedule_drainer: bool = True,
+        message_id: Optional[str] = None,
+        subject: Optional[str] = None,
+        occurred_at: Optional[str] = None,
     ) -> str:
+        """Compatibility facade over ChatSourceAdapter → runtime.ingest()."""
+
         cid = str(conversation_id or "").strip() or f"{thread_id}::0"
         now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        result = self.ingest(
-            user_message_observation(
-                thread_id=thread_id,
-                conversation_id=cid,
+        occurred = str(occurred_at or "").strip() or now
+        result = ChatSourceAdapter(self).handle_message(
+            ChatSignal(
                 text=text,
-                occurred_at=now,
-                observed_at=now,
-                payload=payload,
+                message_id=str(message_id or "").strip(),
+                occurred_at=occurred,
+                subject=str(subject or "").strip() or "user",
+                payload=dict(payload or {}),
             ),
+            thread_id=thread_id,
+            conversation_id=cid,
+            observed_at=now,
             schedule_drainer=schedule_drainer,
         )
         return result.stimulus_id
@@ -843,12 +849,18 @@ class LangGraphRuntime:
         conversation_id: Optional[str] = None,
         text: str,
         payload: Optional[dict] = None,
+        message_id: Optional[str] = None,
+        subject: Optional[str] = None,
+        occurred_at: Optional[str] = None,
     ) -> Dict[str, Any]:
         stimulus_id = self.submit_user_message(
             thread_id=thread_id,
             conversation_id=conversation_id,
             text=text,
             payload=payload,
+            message_id=message_id,
+            subject=subject,
+            occurred_at=occurred_at,
         )
         pending = self.inbox.pending_count(thread_id)
         snap = THREAD_RUNTIME_STATUS.snapshot(thread_id)

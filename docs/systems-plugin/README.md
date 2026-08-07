@@ -20,13 +20,14 @@ that the complete cognitive-runtime roadmap is already implemented.
 
 | Area | Current status | Planned integration |
 |------|----------------|---------------------|
-| Episodic subsystem | `SimpleRagEpisodicBackend` is **tool memory**: the model explicitly invokes recall capabilities to search materialized dialogue. It is not runtime-owned System Memory. | System Memory SPI and shadow evaluation in v0.5; automatic selection into the Context Compiler main path in v0.6, subject to release gates. |
-| Strategy | No production `StrategySystem` is mounted by this subsystem bundle. Design documents are roadmap material, not current capability. | Shadow-only matching in v0.6; opt-in guidance in v0.7; a default candidate in v0.8 only if published evaluations pass. |
+| Episodic subsystem | `SimpleRagEpisodicBackend` is still **tool memory**: the model explicitly invokes recall capabilities. The self-contained episodic subsystem is not built yet. | **v0.4** builds episodic memory (flush ingest, system shallow recall, tool deep recall); **v0.6** splices into the main path; **v0.7** Context Compiler injection. |
+| Experience subsystem | No production experience system is mounted by this subsystem bundle. | **v0.5** builds it (flush ingest, system-only recall); **v0.6** splices into the main path. |
+| Strategy | No production `StrategySystem` is mounted by this subsystem bundle. Design documents are roadmap material, not current capability. | After the experience subsystem stands alone, **v0.8** opt-in guidance; default candidate only after published evaluation gates pass. |
 
 See the episodic guide for important v0.2 boundaries. The local backend returns
 an explicit unsupported response for `deep_recall`; committed runtime
 `episode_note` values are carried through the journaled Scene-to-Dialogue flush
-path, but they are not yet typed System Memory or automatic context.
+path, but they are not yet typed episodic/experience memory objects or automatic context.
 
 > **Safety:** the default tools bundle is read-oriented and includes only
 > `read` / `emit` effects. Schedule writes and Gmail sending require the
