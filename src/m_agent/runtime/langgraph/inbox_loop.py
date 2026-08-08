@@ -693,20 +693,31 @@ class LangGraphInboxLoop:
 
 
 def relay_fake_feedback(
-    gateway: Any,
+    runtime: Any,
     intent: FakeEffectIntent,
 ) -> str:
+    from m_agent.runtime.perception.feedback_adapter import (
+        FeedbackSignal,
+        FeedbackSourceAdapter,
+    )
+
     thread_id = intent.conversation_id.split("::", 1)[0]
-    return gateway.submit_execution_feedback(
+    adapter = getattr(runtime, "feedback_adapter", None)
+    if adapter is None:
+        adapter = FeedbackSourceAdapter(runtime)
+    result = adapter.handle_feedback(
+        FeedbackSignal(
+            tool_history=[],
+            summary=str(intent.result_summary or "").strip(),
+            delegate_id=str(intent.delegate_id or "").strip(),
+            activation_id=str(intent.activation_id or "").strip(),
+        ),
         thread_id=thread_id,
         conversation_id=intent.conversation_id,
         transaction_id=intent.transaction_id,
-        delegate_id=intent.delegate_id,
-        activation_id=intent.activation_id,
-        tool_history=[],
-        summary=intent.result_summary,
         schedule_drainer=False,
     )
+    return result.stimulus_id
 
 
 __all__ = ["LangGraphInboxLoop", "relay_fake_feedback"]

@@ -67,7 +67,7 @@ def _submit_envelopes(
     stimuli: List[StimulusEnvelope],
 ) -> None:
     for stimulus in stimuli:
-        harness.gateway.submit(stimulus, schedule_drainer=False)
+        harness.admit_envelope(stimulus, schedule_drainer=False)
 
 
 def _run_sp_01_core(
@@ -313,7 +313,7 @@ def _run_sp_01_core(
         },
         stimulus_id="sp-01-invalid-feedback",
     )
-    harness.gateway.submit(invalid, schedule_drainer=False)
+    harness.admit_envelope(invalid, schedule_drainer=False)
     evidence.check(
         "sp01.invalid_feedback_discarded_at_admission",
         "Invalid Feedback is discarded before it acquires a queue position.",
@@ -365,7 +365,7 @@ def _run_sp_01_core(
         },
         stimulus_id="sp-01-preconsume-feedback",
     )
-    harness.gateway.submit(race_feedback, schedule_drainer=False)
+    harness.admit_envelope(race_feedback, schedule_drainer=False)
     harness.registry.pause(race_transaction.transaction_id)
     harness.registry.restore(
         race_transaction.transaction_id,
@@ -762,18 +762,25 @@ def _run_sp_04_core(
         harness.registry.get(feedback_transaction.transaction_id)
         or feedback_transaction
     )
-    feedback_id = harness.gateway.submit_execution_feedback(
+    from m_agent.runtime.perception.feedback_adapter import (
+        FeedbackSignal,
+        FeedbackSourceAdapter,
+    )
+
+    feedback_id = FeedbackSourceAdapter(harness).handle_feedback(
+        FeedbackSignal(
+            tool_history=[],
+            summary="fake tool completed",
+            delegate_id="sp-04-delegate",
+            activation_id=str(
+                feedback_transaction.current_activation_id or ""
+            ),
+        ),
         thread_id=thread_id,
         conversation_id=conversation_id,
         transaction_id=feedback_transaction.transaction_id,
-        delegate_id="sp-04-delegate",
-        activation_id=str(
-            feedback_transaction.current_activation_id or ""
-        ),
-        tool_history=[],
-        summary="fake tool completed",
         schedule_drainer=False,
-    )
+    ).stimulus_id
     feedback = harness.inbox.pop_next(thread_id)
     evidence.check(
         "sp04_feedback_uses_inbox",
@@ -901,7 +908,7 @@ def _run_sp_05_core(
     def producer(stimulus: StimulusEnvelope) -> None:
         try:
             barrier.wait(timeout=3)
-            stimulus_id = harness.gateway.submit(
+            stimulus_id = harness.admit_envelope(
                 stimulus,
                 schedule_drainer=False,
             )
@@ -1051,7 +1058,7 @@ def _run_sp_06_core(
         text="initial",
         stimulus_id="sp-06-initial",
     )
-    harness.gateway.submit(initial, schedule_drainer=False)
+    harness.admit_envelope(initial, schedule_drainer=False)
 
     calls = {"get_pending": 0, "drain": 0}
     calls_lock = threading.Lock()
@@ -1099,18 +1106,25 @@ def _run_sp_06_core(
         harness.registry.get(feedback_transaction.transaction_id)
         or feedback_transaction
     )
-    feedback_id = harness.gateway.submit_execution_feedback(
+    from m_agent.runtime.perception.feedback_adapter import (
+        FeedbackSignal,
+        FeedbackSourceAdapter,
+    )
+
+    feedback_id = FeedbackSourceAdapter(harness).handle_feedback(
+        FeedbackSignal(
+            tool_history=[],
+            summary="async completion",
+            delegate_id="sp-06-delegate",
+            activation_id=str(
+                feedback_transaction.current_activation_id or ""
+            ),
+        ),
         thread_id=thread_id,
         conversation_id=conversation_id,
         transaction_id=feedback_transaction.transaction_id,
-        delegate_id="sp-06-delegate",
-        activation_id=str(
-            feedback_transaction.current_activation_id or ""
-        ),
-        tool_history=[],
-        summary="async completion",
         schedule_drainer=False,
-    )
+    ).stimulus_id
     replacement_started = drainer.ensure_running(thread_id)
     release_exit.set()
     deadline = time.monotonic() + 3
@@ -1185,7 +1199,7 @@ def _run_sp_07_core(
         priority_override=50,
         stimulus_id="sp-07-current",
     )
-    harness.gateway.submit(current, schedule_drainer=False)
+    harness.admit_envelope(current, schedule_drainer=False)
     selected_current = harness.inbox.pop_next(thread_id)
     middle = harness.make_stimulus(
         conversation_id=conversation_id,
@@ -1259,7 +1273,7 @@ def _run_sp_07_core(
         priority_override=25,
         stimulus_id="sp-07-retry",
     )
-    harness.gateway.submit(retry, schedule_drainer=False)
+    harness.admit_envelope(retry, schedule_drainer=False)
     reselected = harness.inbox.pop_next(retry_thread)
     evidence.check(
         "sp07_requeue_preserves_envelope_identity",

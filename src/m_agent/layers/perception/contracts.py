@@ -195,3 +195,4 @@ class PerceptionInput:
     dialogue_history: List[Dict[str, str]] = field(default_factory=list)
     scene_context: str = ""
     activation: Optional[ActivationFrame] = None
+    stimulus_view: str = ""

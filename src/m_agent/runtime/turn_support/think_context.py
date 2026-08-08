@@ -198,6 +198,7 @@ def build_perception_for_stimulus(
         stimulus=stimulus,
         payload=payload,
     )
+    stimulus_view = str(payload.get("stimulus_view", "") or "").strip()
     context_tail = [
         entry
         for entry in scene_tail
@@ -218,6 +219,7 @@ def build_perception_for_stimulus(
             current_transaction_id=transaction.transaction_id,
         ),
         activation=activation,
+        stimulus_view=stimulus_view,
     )
 
 

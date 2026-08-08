@@ -31,6 +31,7 @@ from m_agent.runtime.langgraph.turn_graph import (
     turn_thread_id,
 )
 from m_agent.runtime.routing import LANGGRAPH_RUNTIME_ENGINE
+from m_agent.runtime.perception.ingress import envelope_to_observation
 from m_agent.runtime.domain.contracts import (
     ActivationStatus,
     DelegateStatus,
@@ -1142,7 +1143,10 @@ def test_schedule_completion_consumes_claimed_run_on_original_transaction(
             schedule_run_id=registered.run.schedule_run_id,
             schedule_delivery_id=claimed.delivery_id,
         )
-        runtime.gateway.submit(stimulus, schedule_drainer=False)
+        runtime.ingest(
+            envelope_to_observation(stimulus),
+            schedule_drainer=False,
+        )
         result = runtime.run_thread("schedule-thread")
         assert result["success"] is True
         persisted_run = coordinator.load(registered.run.schedule_run_id)
@@ -1217,7 +1221,10 @@ def test_early_scheduled_heartbeat_binds_pending_intent_before_claim(
             schedule_delivery_id=delivery_id,
         )
 
-        runtime.gateway.submit(stimulus, schedule_drainer=False)
+        runtime.ingest(
+            envelope_to_observation(stimulus),
+            schedule_drainer=False,
+        )
         result = runtime.run_thread(record.thread_id)
 
         assert result["success"] is True
@@ -1315,7 +1322,10 @@ def test_early_heartbeat_registers_all_pending_intents_before_claim(
             schedule_delivery_id=delivery_id,
         )
 
-        runtime.gateway.submit(stimulus, schedule_drainer=False)
+        runtime.ingest(
+            envelope_to_observation(stimulus),
+            schedule_drainer=False,
+        )
         result = runtime.run_thread(record.thread_id)
 
         assert result["success"] is True
@@ -1375,7 +1385,10 @@ def test_pending_schedule_intent_enters_scheduled_wait_while_task_is_processing(
             occurred_at="2026-08-02T08:00:00Z",
             transaction_id=record.transaction_id,
         )
-        runtime.gateway.submit(stimulus, schedule_drainer=False)
+        runtime.ingest(
+            envelope_to_observation(stimulus),
+            schedule_drainer=False,
+        )
 
         result = runtime.run_thread(record.thread_id)
 
@@ -1444,17 +1457,19 @@ def test_completed_non_user_task_closes_after_turn(tmp_path: Path) -> None:
             conversation_id="t11::0",
             kind=TransactionKind.SYSTEM,
         )
-        runtime.gateway.submit(
-            StimulusEnvelope(
-                stimulus_id="stim-system-close",
-                thread_id="t11",
-                conversation_id="t11::0",
-                stimulus=Stimulus(
-                    kind=StimulusKind.USER_MESSAGE,
-                    text="close me",
-                ),
-                occurred_at="2026-07-30T00:00:00Z",
-                transaction_id=record.transaction_id,
+        runtime.ingest(
+            envelope_to_observation(
+                StimulusEnvelope(
+                    stimulus_id="stim-system-close",
+                    thread_id="t11",
+                    conversation_id="t11::0",
+                    stimulus=Stimulus(
+                        kind=StimulusKind.USER_MESSAGE,
+                        text="close me",
+                    ),
+                    occurred_at="2026-07-30T00:00:00Z",
+                    transaction_id=record.transaction_id,
+                )
             ),
             schedule_drainer=False,
         )

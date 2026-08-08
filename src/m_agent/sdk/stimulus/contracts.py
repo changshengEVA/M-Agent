@@ -81,6 +81,7 @@ class Observation:
     transaction_id: Optional[str] = None
     payload: Dict[str, Any] = field(default_factory=dict)
     expires_at: Optional[str] = None
+    stimulus_view: str = ""
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -106,6 +107,7 @@ class Observation:
             transaction_id=_optional_text(raw.get("transaction_id")),
             payload=dict(payload) if isinstance(payload, Mapping) else {},
             expires_at=_optional_text(raw.get("expires_at")),
+            stimulus_view=str(raw.get("stimulus_view", "") or "").strip(),
         )
 
 

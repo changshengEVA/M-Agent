@@ -8,7 +8,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional
 
-from m_agent.runtime.perception.observation import user_message_observation
+from m_agent.runtime.perception.observation import (
+    CHAT_STIMULUS_VIEW,
+    user_message_observation,
+)
 from m_agent.sdk.stimulus.contracts import IngestResult
 
 
@@ -61,6 +64,7 @@ class ChatSourceAdapter:
                 message_id=signal.message_id,
             ),
             subject=str(signal.subject or "").strip() or "user",
+            stimulus_view=CHAT_STIMULUS_VIEW,
         )
 
     def handle_message(

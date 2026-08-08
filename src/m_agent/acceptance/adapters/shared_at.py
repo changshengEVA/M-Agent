@@ -1011,7 +1011,7 @@ def _at_08(
         "继续补充文档第二节",
         stimulus_id="at-08-stable",
     )
-    harness.gateway.submit(stimulus, schedule_drainer=False)
+    harness.admit_envelope(stimulus, schedule_drainer=False)
     popped = harness.inbox.pop_next(transaction.thread_id)
     if popped is None:
         raise RuntimeAdapterError("AT-08 stimulus disappeared from inbox")

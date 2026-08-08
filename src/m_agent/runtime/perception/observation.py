@@ -24,6 +24,12 @@ _TYPE_TO_KIND = {
     "external_event": StimulusKind.OBSERVATION_TRIGGER,
 }
 
+CHAT_STIMULUS_VIEW = (
+    "kind: user_message\n"
+    "semantic_role: user_utterance\n"
+    "content_source: current_user_message"
+)
+
 
 def observation_to_envelope(
     observation: Observation,
@@ -44,6 +50,9 @@ def observation_to_envelope(
     payload.setdefault("observation", observation.to_dict())
     payload.setdefault("source", observation.source)
     payload.setdefault("type", observation.type)
+    view = str(observation.stimulus_view or "").strip()
+    if view:
+        payload["stimulus_view"] = view
     if observation.subject:
         payload.setdefault("subject", observation.subject)
     if observation.causation_id:
@@ -57,15 +66,40 @@ def observation_to_envelope(
     if observation.expires_at:
         payload.setdefault("expires_at", observation.expires_at)
     text = str(observation.text or observation.subject or "").strip()
+    sid = (
+        str(stimulus_id or "").strip()
+        or str(payload.get("stimulus_id", "") or "").strip()
+        or f"stim_{uuid.uuid4().hex}"
+    )
+    activation_id = str(payload.get("activation_id", "") or "").strip() or None
+    delegate_id = str(payload.get("delegate_id", "") or "").strip() or None
+    schedule_id = str(payload.get("schedule_id", "") or "").strip() or None
+    schedule_run_id = str(
+        payload.get("schedule_run_id", payload.get("run_id", "")) or ""
+    ).strip() or None
+    schedule_delivery_id = str(
+        payload.get("schedule_delivery_id", "") or ""
+    ).strip() or None
+    priority_override = None
+    if payload.get("priority_override") is not None:
+        try:
+            priority_override = int(payload.get("priority_override"))
+        except (TypeError, ValueError):
+            priority_override = None
     return StimulusEnvelope(
-        stimulus_id=str(stimulus_id or "").strip()
-        or f"stim_{uuid.uuid4().hex}",
+        stimulus_id=sid,
         thread_id=observation.thread_id,
         conversation_id=observation.conversation_id,
         stimulus=Stimulus(kind=kind, text=text, payload=payload),
         occurred_at=observation.occurred_at,
         transaction_id=observation.transaction_id,
+        activation_id=activation_id,
+        delegate_id=delegate_id,
+        schedule_id=schedule_id,
+        schedule_run_id=schedule_run_id,
+        schedule_delivery_id=schedule_delivery_id,
         ingress_key=observation.idempotency_key,
+        priority_override=priority_override,
         pool_state="new",
     )
 
@@ -80,6 +114,7 @@ def user_message_observation(
     payload: Optional[Dict[str, Any]] = None,
     idempotency_key: Optional[str] = None,
     subject: str = "user",
+    stimulus_view: str = CHAT_STIMULUS_VIEW,
 ) -> Observation:
     return Observation(
         source="chat",
@@ -92,4 +127,5 @@ def user_message_observation(
         text=str(text or "").strip(),
         idempotency_key=idempotency_key,
         payload=dict(payload or {}),
+        stimulus_view=str(stimulus_view or "").strip() or CHAT_STIMULUS_VIEW,
     )

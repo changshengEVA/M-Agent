@@ -166,18 +166,15 @@ decision.request_complete = (
 
 ## 5. 合并 Prompt
 
-公共上下文只渲染一次：
+公共上下文只渲染一次。`[Current Stimulus]` 正文由 Source Adapter 预渲染（`Observation.stimulus_view`），Thinking 只加标题、不再按 kind 拆出 Activation Event / Observed Evidence / Current Objective：
 
 ```text
 [Persona / Role]
 [Delegable Capabilities]
-[Current Stimulus]
-[Activation Event]
-[Current Objective]
-[Observed Evidence]
+[Current Stimulus]          ← Adapter 渲染（Feedback=可证结果；Schedule=到点+待办；Chat=指针）
 [Dialogue History]
 [Scene Context]
-[Previous Task State]
+[Previous Task State]       ← 此前拟定的任务进度
 [Working Memory]
 [Thinking Turn Instructions]
 ```
@@ -188,15 +185,16 @@ decision.request_complete = (
 请生成一次完整的 Thinking Turn，并严格执行以下顺序：
 
 1. reason
-   用一至三句话分析当前刺激、旧 TaskState、Observed Evidence 和当前能力。
-   Scene Context 只能帮助理解，不能单独证明任务已经完成。
+   用一至三句话分析 [Current Stimulus]、[Previous Task State] 和当前能力。
+   Scene Context / Working Memory 只能帮助理解，不能单独证明任务已经完成。
 
 2. task_state
-   在 Previous Task State 基础上生成完整的新状态：
+   在 Previous Task State（此前拟定的任务进度）基础上生成完整的新状态：
    - 没有变化的字段必须保持连续；
    - remaining[0] 是当前步骤；
    - remaining[1:] 是之后的步骤；
-   - 只有可信证据可以推进 completed；
+   - 仅当 [Current Stimulus] 本身携带可证工具结果时可推进 completed；
+   - 日程到点/待办唤醒不是完成证明；
    - 不要把原始工具结果复制进任务状态。
 
 3. decision

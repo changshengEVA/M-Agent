@@ -50,6 +50,14 @@ def test_typed_schedule_activation_preserves_semantic_roles() -> None:
         text="schedule_due",
         payload={
             "schedule_id": "sch-1",
+            "stimulus_view": (
+                "kind: scheduled_plan\n"
+                "semantic_role: schedule_due_todo\n"
+                "schedule_id: sch-1\n"
+                "due_at_utc: 2026-08-01T09:25:29Z\n"
+                "deferred_objective:\n"
+                "Remind the user to cook"
+            ),
             "activation": {
                 "schema_version": 1,
                 "event": {
@@ -76,6 +84,8 @@ def test_typed_schedule_activation_preserves_semantic_roles() -> None:
     )
 
     assert perception.stimulus.text == "schedule_due"
+    assert perception.stimulus_view.startswith("kind: scheduled_plan")
+    assert "Remind the user to cook" in perception.stimulus_view
     assert perception.activation is not None
     assert perception.activation.event.event_type == "schedule_due"
     assert perception.activation.objective is not None

@@ -43,24 +43,26 @@ from m_agent.runtime.config import RuntimeConfig, load_runtime_config
 from m_agent.runtime.domain.contracts import (
     PauseReason,
     SceneEntry,
-    Stimulus,
     StimulusEnvelope,
-    StimulusKind,
     TransactionKind,
 )
 from m_agent.runtime.dispatch.drainer import ThreadDrainerService
 from m_agent.runtime.perception.attributor import TransactionAttributor
 from m_agent.runtime.perception.chat_adapter import ChatSignal, ChatSourceAdapter
+from m_agent.runtime.perception.feedback_adapter import (
+    FeedbackSignal,
+    FeedbackSourceAdapter,
+)
 from m_agent.runtime.perception.gateway import PerceptionGateway
 from m_agent.runtime.perception.inbox import StimulusInbox
-from m_agent.runtime.perception.observation import observation_to_envelope
+from m_agent.runtime.perception.ingress import admit_observation
+from m_agent.runtime.perception.schedule_adapter import (
+    ScheduleSignal,
+    ScheduleSourceAdapter,
+)
 from m_agent.sdk.stimulus.contracts import (
-    Disposition,
     IngestResult,
     Observation,
-    ObservationValidationError,
-    PoolState,
-    validate_observation,
 )
 from m_agent.runtime.dispatch.cpu_state import THREAD_CPU_STATE
 from m_agent.runtime.transaction import RuntimeUnitOfWork
@@ -172,11 +174,13 @@ class LangGraphRuntime:
             scene_writer=self._transaction_scene_writer,
             on_enqueued=self._on_stimulus_enqueued,
         )
+        self.feedback_adapter = FeedbackSourceAdapter(self)
+        self.schedule_adapter = ScheduleSourceAdapter(self)
         self.graph_engine = TransactionGraphEngine(
             registry=self.registry,
             uow=self.uow,
             relay_feedback=lambda intent: relay_fake_feedback(
-                self.gateway,
+                self,
                 intent,
             ),
             checkpoint_db_path=runtime_dir / "langgraph-checkpoints.sqlite3",
@@ -446,7 +450,7 @@ class LangGraphRuntime:
         )
 
     def _relay_effect_feedback(self, delivery: Dict[str, Any]) -> Dict[str, Any]:
-        """Relay one durable outbox item through canonical Feedback ingress."""
+        """Relay one durable outbox item through FeedbackSourceAdapter → ingest."""
 
         effect = dict(delivery.get("effect") or {})
         outcome = dict(delivery.get("outcome") or {})
@@ -466,46 +470,32 @@ class LangGraphRuntime:
             )
         summary = str(outcome.get("summary", "") or "").strip()
         tool_history = list(outcome.get("tool_history") or [])
-        readable = summary or "Execution finished and returned tool evidence."
-        stimulus_id = f"stim_{effect_id}"
-        stimulus = StimulusEnvelope(
-            stimulus_id=stimulus_id,
-            ingress_key=ingress_key or None,
+        result = self.feedback_adapter.handle_feedback(
+            FeedbackSignal(
+                tool_history=tool_history,
+                summary=summary,
+                delegate_id=str(effect.get("delegate_id", "") or ""),
+                activation_id=str(effect.get("activation_id", "") or ""),
+                effect_id=effect_id,
+                effect_status=str(effect.get("status", "") or ""),
+                ingress_key=ingress_key,
+                stimulus_id=f"stim_{effect_id}" if effect_id else "",
+            ),
             thread_id=record.thread_id,
             conversation_id=record.conversation_id,
-            stimulus=Stimulus(
-                kind=StimulusKind.EXECUTION_FEEDBACK,
-                text=readable,
-                payload={
-                    "activation_id": str(effect.get("activation_id", "") or ""),
-                    "delegate_id": str(effect.get("delegate_id", "") or ""),
-                    "effect_id": effect_id,
-                    "tool_history": tool_history,
-                    "summary": summary,
-                    "effect_status": str(effect.get("status", "") or ""),
-                },
-            ),
-            occurred_at=datetime.now(timezone.utc).isoformat().replace(
-                "+00:00",
-                "Z",
-            ),
             transaction_id=transaction_id,
-            activation_id=str(effect.get("activation_id", "") or "") or None,
-            delegate_id=str(effect.get("delegate_id", "") or "") or None,
+            schedule_drainer=False,
         )
-        with self._flush_fence_lock(record.thread_id):
-            self._assert_no_pending_flush(record.thread_id)
-            stored_id = self.gateway.submit(stimulus, schedule_drainer=False)
-        stored = self.runtime_store.load_stimulus(stored_id)
+        stored = self.runtime_store.load_stimulus(result.stimulus_id)
         return {
-            "stimulus_id": stored_id,
+            "stimulus_id": result.stimulus_id,
             "thread_id": record.thread_id,
             "transaction_id": transaction_id,
             "disposition": str(
-                getattr(stored, "disposition", "") or ""
+                getattr(stored, "disposition", "") or result.disposition or ""
             ),
             "disposition_reason": str(
-                getattr(stored, "disposition_reason", "") or ""
+                getattr(stored, "disposition_reason", "") or result.reason or ""
             ),
         }
 
@@ -579,86 +569,14 @@ class LangGraphRuntime:
     ) -> IngestResult:
         """Public Stimulus Kernel entry: Observation → durable pool admit."""
 
-        try:
-            observation = validate_observation(observation)
-        except ObservationValidationError as exc:
-            raise ValueError(str(exc)) from exc
-
-        expires_at = str(observation.expires_at or "").strip()
-        if expires_at and expires_at < observation.observed_at:
-            envelope = observation_to_envelope(observation)
-            stored = self.runtime_store.admit_stimulus(
-                envelope,
-                effective_priority=0,
-                pool_state=PoolState.TERMINATED.value,
-                disposition=Disposition.DISCARDED.value,
-                disposition_stage="admission",
-                disposition_reason="expired",
-                reason_code="expired",
-            )
-            return IngestResult(
-                stimulus_id=stored.stimulus_id,
-                pool_state=stored.pool_state,
-                created=True,
-                merged=False,
-                disposition=stored.disposition,
-                reason_code=stored.reason_code,
-                reason=stored.disposition_reason,
-            )
-
-        # Deterministic v0.3 kernel: irrelevant observations are discarded
-        # with an explicit disposition (Attention/ignored is v0.4).
-        if str(observation.type or "").strip().lower() == "irrelevant":
-            envelope = observation_to_envelope(observation)
-            stored = self.runtime_store.admit_stimulus(
-                envelope,
-                effective_priority=0,
-                pool_state=PoolState.TERMINATED.value,
-                disposition=Disposition.DISCARDED.value,
-                disposition_stage="admission",
-                disposition_reason="irrelevant",
-                reason_code="irrelevant",
-            )
-            return IngestResult(
-                stimulus_id=stored.stimulus_id,
-                pool_state=stored.pool_state,
-                created=True,
-                merged=False,
-                disposition=stored.disposition,
-                reason_code=stored.reason_code,
-                reason=stored.disposition_reason,
-            )
-
-        envelope = observation_to_envelope(observation)
-        prior = (
-            self.runtime_store.load_stimulus_by_ingress_key(
-                envelope.ingress_key
-            )
-            if envelope.ingress_key
-            else None
-        )
-        with self._flush_fence_lock(envelope.thread_id):
-            self._assert_no_pending_flush(envelope.thread_id)
-            stimulus_id = self.gateway.submit(
-                envelope,
+        thread_id = str(getattr(observation, "thread_id", "") or "").strip()
+        with self._flush_fence_lock(thread_id):
+            self._assert_no_pending_flush(thread_id)
+            return admit_observation(
+                self.gateway,
+                observation,
                 schedule_drainer=schedule_drainer,
             )
-        stored = self.runtime_store.load_stimulus(stimulus_id)
-        if stored is None:
-            raise RuntimeError(f"stimulus missing after ingest: {stimulus_id}")
-        merged = prior is not None
-        return IngestResult(
-            stimulus_id=stored.stimulus_id,
-            pool_state=stored.pool_state,
-            created=not merged,
-            merged=merged,
-            disposition=(
-                Disposition.MERGED.value if merged else stored.disposition
-            ),
-            reason_code=stored.reason_code
-            or ("merged_existing" if merged else None),
-            reason=stored.disposition_reason,
-        )
 
     def list_stimulus_trace(
         self,
@@ -962,33 +880,38 @@ class LangGraphRuntime:
         run_id: str = "",
         owner_id: str = "",
     ) -> Dict[str, Any]:
-        with self._flush_fence_lock(thread_id):
-            self._assert_no_pending_flush(thread_id)
-            body = dict(payload or {})
-            if run_id:
-                body["run_id"] = run_id
-            if owner_id:
-                body["owner_id"] = owner_id
-            stimulus_id = self.gateway.submit_heartbeat(
-                thread_id=thread_id,
-                conversation_id=str(conversation_id or "").strip()
-                or f"{thread_id}::0",
+        body = dict(payload or {})
+        if run_id:
+            body["run_id"] = run_id
+        if owner_id:
+            body["owner_id"] = owner_id
+        conv_id = str(conversation_id or "").strip() or f"{thread_id}::0"
+        result = self.schedule_adapter.handle_due(
+            ScheduleSignal(
                 schedule_id=schedule_id,
                 text=text,
+                run_id=str(run_id or body.get("run_id", "") or "").strip(),
+                delivery_id=str(body.get("schedule_delivery_id", "") or "").strip(),
+                owner_id=str(owner_id or body.get("owner_id", "") or "").strip(),
+                transaction_id=str(body.get("transaction_id", "") or "").strip(),
                 payload=body,
-            )
-            pending = self.inbox.pending_count(thread_id)
-            snap = THREAD_RUNTIME_STATUS.snapshot(thread_id)
-            return {
-                "stimulus_id": stimulus_id,
-                "thread_id": thread_id,
-                "schedule_id": schedule_id,
-                "run_id": run_id,
-                "pending_count": pending,
-                "effective_depth": snap.effective_depth,
-                "runtime_phase": snap.runtime_phase,
-                "accepted": True,
-            }
+            ),
+            thread_id=thread_id,
+            conversation_id=conv_id,
+            schedule_drainer=True,
+        )
+        pending = self.inbox.pending_count(thread_id)
+        snap = THREAD_RUNTIME_STATUS.snapshot(thread_id)
+        return {
+            "stimulus_id": result.stimulus_id,
+            "thread_id": thread_id,
+            "schedule_id": schedule_id,
+            "run_id": run_id,
+            "pending_count": pending,
+            "effective_depth": snap.effective_depth,
+            "runtime_phase": snap.runtime_phase,
+            "accepted": True,
+        }
 
     def list_transactions(
         self,

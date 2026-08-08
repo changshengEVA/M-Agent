@@ -1361,7 +1361,7 @@ def _run_tx_07_core(
             f"{activation_id}:tx-07-delegate"
         ),
     )
-    harness.gateway.submit(valid, schedule_drainer=False)
+    harness.admit_envelope(valid, schedule_drainer=False)
     resolved, created = harness.resolve(valid)
     evidence.check(
         "tx_07.feedback.routes_to_original",

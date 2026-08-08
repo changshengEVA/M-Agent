@@ -32,6 +32,7 @@ def build_perception_input(
     history_messages: Optional[List[Dict[str, Any]]] = None,
     scene_context: str = "",
     activation: Optional[ActivationFrame] = None,
+    stimulus_view: str = "",
 ) -> PerceptionInput:
     """Build the normalized thinking-layer input."""
     return PerceptionInput(
@@ -42,4 +43,5 @@ def build_perception_input(
         dialogue_history=normalize_history_messages(history_messages),
         scene_context=str(scene_context or "").strip(),
         activation=activation,
+        stimulus_view=str(stimulus_view or "").strip(),
     )

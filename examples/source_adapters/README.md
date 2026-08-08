@@ -3,8 +3,10 @@
 External event sources should:
 
 1. Keep any raw **Signal** private inside the adapter.
-2. Normalize each event into a public [`Observation`](../../src/m_agent/sdk/stimulus/contracts.py).
+2. Normalize each event into a public [`Observation`](../../src/m_agent/sdk/stimulus/contracts.py), including an adapter-authored `stimulus_view` (the `[Current Stimulus]` body Thinking will show).
 3. Call `runtime.ingest(observation)`.
+
+Product Feedback / Schedule adapters follow the same pattern: Feedback renders provable tool results; Schedule renders due wake-up + deferred todo (not completion proof).
 
 This package is **not** the full Cognitive Plugin SDK (that lands later). It only shows how to attach a Source Adapter to the Stimulus Kernel.
 

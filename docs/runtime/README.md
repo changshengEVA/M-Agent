@@ -11,7 +11,9 @@
 - 事务查询：`get_transactions()`
 - Stimulus Kernel（v0.3 / v0.3.1）：见 [stimulus-kernel.md](stimulus-kernel.md)
   - 公开入口：`runtime.ingest(observation)`
-  - Chat：`ChatSourceAdapter` → `ingest`；`submit_user_message` 为兼容薄封装
+  - Chat / Feedback / Schedule：各自 Source Adapter → `ingest`（Adapter 写入 `stimulus_view`）
+  - Ingress Freeze：验收 harness / Gateway typed helpers 亦经 Observation → `admit_observation`
+  - `submit_user_message` 为 Chat Adapter 兼容薄封装
   - 池状态与处置拆分；Stimulus Trace 可按刺激 / 线程 / 去重键查询
 
 持久化启动要求可用的 SQLite checkpointer 和兼容 schema；不满足条件时启动失败。Scene、Transaction、effect ledger、flush journal、stimulus trace 与 checkpoint 共同支持重试和重启恢复。

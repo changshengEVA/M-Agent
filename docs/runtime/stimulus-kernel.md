@@ -32,8 +32,18 @@ See [`examples/source_adapters/`](../../examples/source_adapters/README.md):
 - signed webhook
 - Virtual Clock replay source
 
-Product Chat uses `m_agent.runtime.perception.chat_adapter.ChatSourceAdapter`.
-`RuntimeHost.submit_user_message` is a compatibility facade over that adapter.
+Product adapters under `m_agent.runtime.perception`:
+
+| Adapter | Role |
+| --- | --- |
+| `ChatSourceAdapter` | user utterance; `stimulus_view` is a pointer (body stays in the user-role message) |
+| `FeedbackSourceAdapter` | provable tool results only in `stimulus_view` |
+| `ScheduleSourceAdapter` | due wake-up + deferred todo in `stimulus_view` (not completion proof) |
+
+`Observation.stimulus_view` is the adapter-authored `[Current Stimulus]` body. Thinking assembles the titled block and does not branch on kind for Event/Objective/Evidence sections.
+
+`RuntimeHost.submit_user_message` is a compatibility facade over `ChatSourceAdapter`.
+Product schedule due and effect feedback admit through their adapters → `runtime.ingest()`.
 
 ## Stimulus Lab
 
@@ -50,4 +60,5 @@ Additional v0.3.1 scenario: `chat_duplicate` (chat idempotency via Adapter).
 
 - Public Alpha is for Source Adapter authors, not the full Cognitive Plugin SDK.
 - **v0.3.1:** Chat sync/async product paths admit through `ChatSourceAdapter` → `runtime.ingest()`.
-- Leaving the v0.3 line still requires clearing remaining non-Chat bypasses (schedule / feedback / gateway helpers) in a later 0.3.x gate.
+- Product Chat / Feedback / Schedule now author `stimulus_view` at the Adapter edge.
+- **Ingress Freeze:** acceptance harness and Gateway typed helpers (`submit_user_message` / `submit_execution_feedback` / `submit_heartbeat`) admit only through Observation → `admit_observation` / Adapter → `ingest`. Low-level `gateway.submit(envelope)` remains the internal pool admit used by that path.

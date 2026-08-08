@@ -14,9 +14,6 @@ from pydantic import ValidationError
 
 from m_agent.layers.execution.model_provider import ModelProvider, StructuredOutputError
 from m_agent.layers.perception.contracts import (
-    ActivationFrame,
-    EventFrame,
-    ObjectiveFrame,
     Stimulus,
     StimulusKind,
 )
@@ -635,18 +632,15 @@ def test_runtime_activation_is_rendered_once_for_the_joint_schema() -> None:
             user_message="schedule_due",
             source="schedule",
             system_context={"schedule_id": "sch_1"},
-            activation=ActivationFrame(
-                event=EventFrame(
-                    event_type="schedule_due",
-                    source="heartbeat",
-                    occurred_at="2026-08-01T09:25:33Z",
-                    facts={"due_at_utc": "2026-08-01T09:25:29Z"},
-                ),
-                objective=ObjectiveFrame(
-                    description="Remind the user to cook",
-                    encoding="native",
-                ),
-                evidence=[],
+            stimulus_view=(
+                "kind: scheduled_plan\n"
+                "semantic_role: schedule_due_todo\n"
+                "schedule_id: sch_1\n"
+                "due_at_utc: 2026-08-01T09:25:29Z\n"
+                "deferred_objective:\n"
+                "Remind the user to cook\n"
+                "note: this is a wake-up with a previously planned todo; "
+                "it is not proof that the work was completed"
             ),
         )
     )
@@ -659,12 +653,11 @@ def test_runtime_activation_is_rendered_once_for_the_joint_schema() -> None:
     assert '"request_complete":' not in system_prompt
     assert "[Current Stimulus]" in system_prompt
     assert "kind: scheduled_plan" in system_prompt
-    assert "semantic_role: runtime_activation" in system_prompt
-    assert "[Activation Event]" in system_prompt
-    assert "type: schedule_due" in system_prompt
-    assert "[Current Objective]" in system_prompt
+    assert "semantic_role: schedule_due_todo" in system_prompt
     assert "Remind the user to cook" in system_prompt
-    assert "[Observed Evidence]" in system_prompt
+    assert "[Activation Event]" not in system_prompt
+    assert "[Current Objective]" not in system_prompt
+    assert "[Observed Evidence]" not in system_prompt
     assert "[Previous Task State]" in system_prompt
     assert "[Thinking Turn Requirements]" in system_prompt
     assert "thread_id:" not in system_prompt

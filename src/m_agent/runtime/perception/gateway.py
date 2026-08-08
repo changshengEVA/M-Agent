@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import logging
-import uuid
 from typing import Callable, Optional
 
 from m_agent.api.chat_api_shared import _now_iso
@@ -13,7 +12,6 @@ from m_agent.runtime.domain.contracts import (
     StimulusEnvelope,
     StimulusKind,
 )
-from m_agent.layers.perception.contracts import Stimulus
 from m_agent.runtime.perception.attributor import TransactionAttributor
 from m_agent.runtime.perception.inbox import (
     StimulusInbox,
@@ -178,18 +176,25 @@ class PerceptionGateway:
         payload: Optional[dict] = None,
         schedule_drainer: bool = True,
     ) -> str:
-        stimulus = StimulusEnvelope(
-            stimulus_id=f"stim_{uuid.uuid4().hex}",
-            thread_id=thread_id,
-            conversation_id=conversation_id,
-            stimulus=Stimulus(
-                kind=StimulusKind.USER_MESSAGE,
+        """Compatibility helper: Chat Adapter → Observation → ingest."""
+
+        from m_agent.runtime.perception.chat_adapter import (
+            ChatSignal,
+            ChatSourceAdapter,
+        )
+        from m_agent.runtime.perception.ingress import GatewayIngestHost
+
+        result = ChatSourceAdapter(GatewayIngestHost(self)).handle_message(
+            ChatSignal(
                 text=str(text or "").strip(),
+                occurred_at=_now_iso(),
                 payload=dict(payload or {}),
             ),
-            occurred_at=_now_iso(),
+            thread_id=thread_id,
+            conversation_id=conversation_id,
+            schedule_drainer=schedule_drainer,
         )
-        return self.submit(stimulus, schedule_drainer=schedule_drainer)
+        return result.stimulus_id
 
     def submit_execution_feedback(
         self,
@@ -203,27 +208,28 @@ class PerceptionGateway:
         summary: str = "",
         schedule_drainer: bool = False,
     ) -> str:
-        readable = str(summary or "").strip() or "Execution finished and returned tool evidence."
-        stimulus = StimulusEnvelope(
-            stimulus_id=f"stim_{uuid.uuid4().hex}",
+        """Compatibility helper: Feedback Adapter → Observation → ingest."""
+
+        from m_agent.runtime.perception.feedback_adapter import (
+            FeedbackSignal,
+            FeedbackSourceAdapter,
+        )
+        from m_agent.runtime.perception.ingress import GatewayIngestHost
+
+        result = FeedbackSourceAdapter(GatewayIngestHost(self)).handle_feedback(
+            FeedbackSignal(
+                tool_history=list(tool_history or []),
+                summary=str(summary or "").strip(),
+                delegate_id=str(delegate_id or "").strip(),
+                activation_id=str(activation_id or "").strip(),
+                occurred_at=_now_iso(),
+            ),
             thread_id=thread_id,
             conversation_id=conversation_id,
-            stimulus=Stimulus(
-                kind=StimulusKind.EXECUTION_FEEDBACK,
-                text=readable,
-                payload={
-                    "activation_id": str(activation_id or "").strip(),
-                    "delegate_id": delegate_id,
-                    "tool_history": tool_history,
-                    "summary": str(summary or "").strip(),
-                },
-            ),
-            occurred_at=_now_iso(),
             transaction_id=transaction_id,
-            activation_id=str(activation_id or "").strip() or None,
-            delegate_id=delegate_id,
+            schedule_drainer=schedule_drainer,
         )
-        return self.submit(stimulus, schedule_drainer=schedule_drainer)
+        return result.stimulus_id
 
     def submit_heartbeat(
         self,
@@ -234,41 +240,35 @@ class PerceptionGateway:
         text: str,
         payload: Optional[dict] = None,
     ) -> str:
+        """Compatibility helper: Schedule Adapter → Observation → ingest."""
+
+        from m_agent.runtime.perception.ingress import GatewayIngestHost
+        from m_agent.runtime.perception.schedule_adapter import (
+            ScheduleSignal,
+            ScheduleSourceAdapter,
+        )
+
         body = dict(payload or {})
         body.setdefault("schedule_id", schedule_id)
-        schedule_run_id = str(
-            body.get("schedule_run_id", body.get("run_id", "")) or ""
-        ).strip()
-        schedule_delivery_id = str(
-            body.get("schedule_delivery_id", "") or ""
-        ).strip()
-        source_transaction_id = str(
-            body.get("transaction_id", "") or ""
-        ).strip()
-        schedule_ingress_identity = (
-            schedule_delivery_id or schedule_run_id
-        )
-        stimulus = StimulusEnvelope(
-            stimulus_id=f"stim_{uuid.uuid4().hex}",
-            thread_id=thread_id,
-            conversation_id=conversation_id,
-            stimulus=Stimulus(
-                kind=StimulusKind.SCHEDULED_PLAN,
+        result = ScheduleSourceAdapter(GatewayIngestHost(self)).handle_due(
+            ScheduleSignal(
+                schedule_id=schedule_id,
                 text=str(text or "").strip(),
+                occurred_at=_now_iso(),
+                run_id=str(
+                    body.get("schedule_run_id", body.get("run_id", "")) or ""
+                ).strip(),
+                delivery_id=str(
+                    body.get("schedule_delivery_id", "") or ""
+                ).strip(),
+                transaction_id=str(body.get("transaction_id", "") or "").strip(),
                 payload=body,
             ),
-            occurred_at=_now_iso(),
-            transaction_id=source_transaction_id or None,
-            schedule_id=schedule_id,
-            schedule_run_id=schedule_run_id or None,
-            schedule_delivery_id=schedule_delivery_id or None,
-            ingress_key=(
-                f"schedule_delivery:{schedule_ingress_identity}"
-                if schedule_ingress_identity
-                else None
-            ),
+            thread_id=thread_id,
+            conversation_id=conversation_id,
+            schedule_drainer=True,
         )
-        return self.submit(stimulus)
+        return result.stimulus_id
 
     def _maybe_scene_on_ingress(self, stimulus: StimulusEnvelope) -> None:
         if stimulus.kind != StimulusKind.USER_MESSAGE:

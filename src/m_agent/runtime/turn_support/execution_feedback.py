@@ -297,12 +297,18 @@ def build_completion_nudge_message(block_reason: str) -> str:
 
 
 def augment_perception_with_nudge(perception: PerceptionInput, nudge: str) -> PerceptionInput:
-    """Copy perception with an appended gate nudge in readable stimulus text."""
+    """Copy perception with an appended gate nudge in stimulus text and view."""
     base = str(perception.stimulus.text or "").strip()
     merged = f"{base}\n\n{nudge}".strip()
     payload = copy.deepcopy(dict(perception.stimulus.payload or {}))
-    payload["completion_gate_nudge"] = str(nudge or "").strip()
+    nudge_text = str(nudge or "").strip()
+    payload["completion_gate_nudge"] = nudge_text
+    view = str(getattr(perception, "stimulus_view", "") or "").strip()
+    if view and nudge_text:
+        view = f"{view}\n\ngate_nudge:\n{nudge_text}"
+        payload["stimulus_view"] = view
     return replace(
         perception,
         stimulus=replace(perception.stimulus, text=merged, payload=payload),
+        stimulus_view=view or str(getattr(perception, "stimulus_view", "") or ""),
     )

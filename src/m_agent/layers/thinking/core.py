@@ -854,19 +854,22 @@ class ThinkingAgent:
             return (
                 "[Thinking Turn 要求]\n"
                 "只输出 ThinkingTurnOutput 对应的结构化内容，并按 reason → task_state → decision 的顺序生成。\n"
-                "1. reason：用一至三句话分析当前刺激、Previous Task State、Observed Evidence 与可委托能力；"
-                "Scene Context 只帮助理解，不能单独证明任务完成。\n"
-                "2. task_state：输出完整新快照。目标未变化时保留 goal；不得无依据删除、改写或重复 completed；"
-                "remaining[0] 是当前步骤，之后的元素是后续步骤；只有可信证据能推进 completed；不要复制原始工具结果。\n"
+                "1. reason：用一至三句话分析 [Current Stimulus]、[Previous Task State] 与可委托能力；"
+                "Scene Context / Working Memory 只帮助理解，不能单独证明任务完成。\n"
+                "2. task_state：在 Previous Task State（此前拟定的任务进度）基础上输出完整新快照。"
+                "目标未变化时保留 goal；不得无依据删除、改写或重复 completed；"
+                "remaining[0] 是当前步骤，之后的元素是后续步骤；"
+                "仅当 [Current Stimulus] 本身携带可证工具结果时可推进 completed；"
+                "日程到点/待办唤醒不是完成证明；不要复制原始工具结果。\n"
                 "新的用户请求必须保持 processing。仍需发送结果时不能 completed。仅当完整请求及必要回复均已完成时 completed。"
                 "只有澄清回复已经送达且仍需用户输入时才能 awaiting_user。\n"
                 "3. decision：必须依据刚生成的 task_state。execute 只选一个已启用 tool_name 并给出详细 instruction；"
                 "answer_directly 给出完整 answer；silent 不执行也不回复。"
                 "不要输出 request_complete；reason 不得复制到 answer 或 episode_note。\n"
                 "- episode_note 只记录后续真正值得记住的一两句话，不要写原始工具结果或临时分析。\n"
-                "- 多步任务每轮只委托当前一步，并以 execution feedback 的 Structured tool result/count 为准。\n"
+                "- 多步任务每轮只委托当前一步，并以 execution feedback 刺激中的 Structured tool result/count 为准。\n"
                 "- 闲聊、致谢或与可委托能力无关且需要回应的请求用 answer_directly；无需回复时用 silent。\n"
-                "- 若 feedback 显示 stage=param_fill 或 tool_invoked=false，目标工具尚未执行；优先用其他已启用工具补参，无法补参再直接追问。\n"
+                "- 若 feedback 刺激显示 stage=param_fill 或 tool_invoked=false，目标工具尚未执行；优先用其他已启用工具补参，无法补参再直接追问。\n"
                 "- 邮件/日程必须选择对应能力；schedule_create 每次只创建一条，删除使用 schedule_delete(schedule_id)。\n"
                 "字段组合必须严格：execute 的 answer 为空；answer_directly 的 tool_name/instruction 为空；"
                 "silent 的 tool_name/instruction/answer 均为空。\n"
@@ -882,19 +885,22 @@ class ThinkingAgent:
         return (
             "[Thinking Turn Requirements]\n"
             "Output only the structured ThinkingTurnOutput and generate it in reason → task_state → decision order.\n"
-            "1. reason: use one to three sentences to assess the stimulus, Previous Task State, Observed Evidence, and delegated capabilities. "
-            "Scene Context aids understanding but cannot prove completion by itself.\n"
-            "2. task_state: emit a complete new snapshot. Preserve goal when unchanged; never delete, rewrite, or duplicate completed items without evidence; "
-            "remaining[0] is the current step and later items are future steps; advance completed only from trustworthy evidence; never copy raw tool output.\n"
+            "1. reason: use one to three sentences to assess [Current Stimulus], [Previous Task State], and delegated capabilities. "
+            "Scene Context / Working Memory aid understanding but cannot prove completion by themselves.\n"
+            "2. task_state: emit a complete new snapshot from Previous Task State (the previously planned task progress). "
+            "Preserve goal when unchanged; never delete, rewrite, or duplicate completed items without evidence; "
+            "remaining[0] is the current step and later items are future steps; "
+            "advance completed only when [Current Stimulus] itself carries provable tool results; "
+            "a schedule-due todo wake-up is not completion proof; never copy raw tool output.\n"
             "A new user request stays processing. Do not mark completed while a result still needs delivery. Use completed only when the full request and required replies are done. "
             "Use awaiting_user only after a clarification reply was delivered and user input is still required.\n"
             "3. decision: base it on the task_state just generated. execute selects exactly one enabled tool_name with a detailed instruction; "
             "answer_directly supplies the complete answer; silent neither delegates nor replies. "
             "Do not output request_complete, and never copy reason into answer or episode_note.\n"
             "- episode_note contains only one or two facts genuinely worth remembering; never raw tool output or temporary analysis.\n"
-            "- Delegate only the current step of a multi-step task and trust Structured tool result/count in execution feedback.\n"
+            "- Delegate only the current step of a multi-step task and trust Structured tool result/count in the execution-feedback stimulus.\n"
             "- Use answer_directly for small talk, thanks, or requests unrelated to delegated capabilities that need a response; use silent when no reply is needed.\n"
-            "- If feedback says stage=param_fill or tool_invoked=false, the target tool did not run; prefer another enabled tool to fill the gap, then ask the user directly if still blocked.\n"
+            "- If the feedback stimulus says stage=param_fill or tool_invoked=false, the target tool did not run; prefer another enabled tool to fill the gap, then ask the user directly if still blocked.\n"
             "- Email and schedule work must select the matching capability; schedule_create creates one item per call and deletion uses schedule_delete(schedule_id).\n"
             "Field combinations are strict: execute leaves answer empty; answer_directly leaves tool_name/instruction empty; "
             "silent leaves tool_name/instruction/answer empty.\n"
@@ -989,10 +995,10 @@ class ThinkingAgent:
                 "- 只输出任务状态更新，不要输出 mode/tool_name/instruction/answer。\n"
                 "- 不要把原始工具结果复制进状态；只写短、可读、可执行的任务步骤。\n"
                 "- 新的用户请求必须是 processing，即使它可以直接回答。\n"
-                "- [Activation Event] 只说明本轮为何被激活，不代表激活后的工作已经完成。\n"
-                "- [Current Objective] 是仍待评估或执行的目标，即使它的表面措辞像完成态。\n"
-                "- 只有 [Observed Evidence] 可以证明下游工作完成；[Scene Context] 仅供理解。\n"
-                "- 只有当目标本身明确是观察某个事件时，该激活事件才可直接满足目标。\n"
+                "- [Previous Task State] 是此前拟定的任务进度；先更新 task_state，再谈本轮动作。\n"
+                "- [Current Stimulus] 由 Source Adapter 渲染：execution_feedback 携带可证工具结果；"
+                "scheduled_plan 是到点唤醒与待办，不是完成证明。\n"
+                "- 仅当刺激本身携带可证工具结果时可推进 completed；[Scene Context] / Working Memory 仅供理解。\n"
                 "- 当前刺激为 execution_feedback 时，根据可读反馈和证据更新 completion_status/completed/remaining。\n"
                 "- 工具结果尚需告知用户、参数缺口可改用其他工具补参时，一律保持 processing。\n"
                 "- 澄清问题已通过 reply 发给用户、仍需用户协作时，completion_status 用 awaiting_user（宏观决策）；运行时会 pause，本轮不再做动作规划。\n"
@@ -1008,10 +1014,11 @@ class ThinkingAgent:
             "- Output only task-state updates; do not output mode/tool_name/instruction/answer.\n"
             "- Do not copy raw tool results into state; write short, readable, actionable steps.\n"
             "- A new user request is processing even when it can be answered directly.\n"
-            "- [Activation Event] states why this turn exists; it is not an execution result.\n"
-            "- [Current Objective] is work to assess or carry out, even when its wording sounds result-like.\n"
-            "- Only [Observed Evidence] may prove downstream work complete; [Scene Context] is context only.\n"
-            "- An activation event may satisfy an objective only when that objective is explicitly to observe that event.\n"
+            "- [Previous Task State] is the previously planned task progress; update task_state before acting.\n"
+            "- [Current Stimulus] is adapter-authored: execution_feedback carries provable tool results; "
+            "scheduled_plan is a due wake-up plus todo, not completion proof.\n"
+            "- Advance completed only when the stimulus itself carries provable tool results; "
+            "[Scene Context] / Working Memory are context only.\n"
             "- For execution_feedback, update completion_status/completed/remaining from readable feedback and visible evidence.\n"
             "- Keep processing when tool results still need a user reply, or when a param gap can be filled by another tool.\n"
             "- After a clarification reply is delivered and you still need the user, set completion_status=awaiting_user (macro decision); runtime will pause and skip action planning this turn.\n"
@@ -1026,75 +1033,30 @@ class ThinkingAgent:
         return text[: max(0, limit - 3)].rstrip() + "..."
 
     def _render_perception_input_block(self, perception: PerceptionInput) -> str:
-        activation = perception.activation
-        if activation is not None:
-            event = activation.event
-            lines = [
-                "[Current Stimulus]",
-                f"kind: {perception.stimulus.kind.value}",
-                "semantic_role: runtime_activation",
-                "",
-                "[Activation Event]",
-                "role: activation_event",
-                f"type: {str(event.event_type or '').strip() or '(unknown)'}",
-                f"source: {str(event.source or '').strip() or '(unknown)'}",
-                f"occurred_at: {str(event.occurred_at or '').strip() or '(unknown)'}",
-                "facts:",
-                self._safe_prompt_json(event.facts, limit=2000) or "{}",
-                "",
-                "[Current Objective]",
-            ]
-            if activation.objective is None:
-                lines.append("(none)")
+        """Assemble adapter-authored Current Stimulus; no kind branching."""
+
+        view = str(getattr(perception, "stimulus_view", "") or "").strip()
+        if not view:
+            # Compatibility for harness/tests that omit adapter stimulus_view.
+            if perception.stimulus.kind == StimulusKind.USER_MESSAGE:
+                view = (
+                    "kind: user_message\n"
+                    "semantic_role: user_utterance\n"
+                    "content_source: current_user_message"
+                )
             else:
-                lines.extend(
+                view = "\n".join(
                     [
-                        "role: deferred_objective",
-                        f"encoding: {activation.objective.encoding}",
-                        "description:",
+                        f"kind: {perception.stimulus.kind.value}",
+                        "semantic_role: runtime_event",
+                        "text:",
                         self._truncate_prompt_value(
-                            activation.objective.description,
-                            2000,
+                            perception.stimulus.text, 2000
                         )
                         or "(empty)",
                     ]
                 )
-            lines.extend(["", "[Observed Evidence]"])
-            if not activation.evidence:
-                lines.append("(none)")
-            else:
-                for index, item in enumerate(activation.evidence, start=1):
-                    lines.extend(
-                        [
-                            f"- evidence_{index}:",
-                            f"  type: {item.evidence_type}",
-                            f"  source: {item.source}",
-                            f"  summary: {self._truncate_prompt_value(item.summary, 800) or '(empty)'}",
-                            "  facts: "
-                            + self._safe_prompt_json(item.facts, limit=1200),
-                        ]
-                    )
-            return "\n".join(lines).strip()
-        if perception.stimulus.kind == StimulusKind.USER_MESSAGE:
-            # The utterance itself is supplied exactly once as the current
-            # user-role message. Repeating it in the system prompt biases the
-            # model and makes context-budget accounting incorrect.
-            return "\n".join(
-                [
-                    "[Current Stimulus]",
-                    f"kind: {perception.stimulus.kind.value}",
-                    "semantic_role: user_utterance",
-                    "content_source: current_user_message",
-                ]
-            )
-        lines = [
-            "[Current Stimulus]",
-            f"kind: {perception.stimulus.kind.value}",
-            "semantic_role: runtime_event",
-            "text:",
-            self._truncate_prompt_value(perception.stimulus.text, 2000) or "(empty)",
-        ]
-        return "\n".join(lines).strip()
+        return f"[Current Stimulus]\n{view}".strip()
 
     @staticmethod
     def _model_turn_message(perception: PerceptionInput) -> Dict[str, str]:
@@ -1207,7 +1169,8 @@ class ThinkingAgent:
                 "- request_complete: 由任务状态决定；仅当 completion_status==completed 时为 true。\n"
                 "- reasoning: 可选；简要说明本轮选择 mode 的理由，便于审计。\n"
                 "[硬约束]\n"
-                "- 对运行时激活，以 [Current Objective] 为行动目标；不要把 [Activation Event] 当成执行结果，也不要把 [Scene Context] 当成 [Observed Evidence]。\n"
+                "- 依据刚更新的 task_state 行动；[Current Stimulus] 是 Adapter 渲染的本轮输入，"
+                "日程待办不是完成证明，[Scene Context] 不能当可证结果。\n"
                 "- 你本身没有工具权限，所有外部动作只能通过 execute 委托，且每轮最多一个 tool_name。\n"
                 "- 多步任务：以 feedback 中 Structured tool result 的 count 为准；未完成时 request_complete=false。\n"
                 "- 当 mode==execute 时，不要在 answer 中给出最终回复，让执行层先工作。\n"
@@ -1232,7 +1195,8 @@ class ThinkingAgent:
             "- You hold no tools yourself; delegate via execute with at most one tool_name per round.\n"
             "- Multi-step tasks: trust Structured tool result count on feedback; request_complete=false until done.\n"
             "- Read [Current Stimulus], [Scene Context], [Task State], and [Working Memory] before deciding.\n"
-            "- For runtime activations, act on [Current Objective]; do not treat [Activation Event] as an executed outcome or [Scene Context] as [Observed Evidence].\n"
+            "- Act on the updated task_state; [Current Stimulus] is adapter-authored input, "
+            "a schedule todo is not completion proof, and [Scene Context] is not provable evidence.\n"
             "- When mode==execute, leave answer empty and let the execution layer work first.\n"
             "- When completion_status==processing, request_complete=false; answer_directly must be followed by execution feedback.\n"
             "- Waiting for the user is expressed by macro task status awaiting_user, not by a pause mode.\n"

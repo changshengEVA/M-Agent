@@ -41,21 +41,28 @@ class LangGraphV1Harness(SharedRuntimeHarness):
         return self._graph_engine
 
     def _relay_fake_feedback(self, intent: FakeEffectIntent) -> str:
+        from m_agent.runtime.perception.feedback_adapter import (
+            FeedbackSignal,
+            FeedbackSourceAdapter,
+        )
+
         thread_id = self._thread_by_conversation.get(
             intent.conversation_id,
             intent.conversation_id.split("::", 1)[0],
         )
-        feedback_id = self.gateway.submit_execution_feedback(
+        result = FeedbackSourceAdapter(self).handle_feedback(
+            FeedbackSignal(
+                tool_history=[],
+                summary=str(intent.result_summary or "").strip(),
+                delegate_id=str(intent.delegate_id or "").strip(),
+                activation_id=str(intent.activation_id or "").strip(),
+            ),
             thread_id=thread_id,
             conversation_id=intent.conversation_id,
             transaction_id=intent.transaction_id,
-            delegate_id=intent.delegate_id,
-            activation_id=intent.activation_id,
-            tool_history=[],
-            summary=intent.result_summary,
             schedule_drainer=False,
         )
-        return feedback_id
+        return result.stimulus_id
 
     def run_graph_script(
         self,

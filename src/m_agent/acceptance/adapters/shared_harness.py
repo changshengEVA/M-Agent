@@ -23,7 +23,12 @@ from m_agent.runtime.perception.attributor import (
     TransactionAttributor,
 )
 from m_agent.runtime.perception.gateway import PerceptionGateway
-from m_agent.runtime.perception.inbox import StimulusInbox
+from m_agent.runtime.perception.inbox import StimulusInbox, _copy_runtime_fields
+from m_agent.runtime.perception.ingress import (
+    admit_observation,
+    envelope_to_observation,
+)
+from m_agent.sdk.stimulus.contracts import IngestResult, Observation
 from m_agent.runtime.transaction import (
     EffectCoordinator,
     FlushCoordinator,
@@ -385,6 +390,37 @@ class SharedRuntimeHarness:
             status="pending",
         )
 
+    def ingest(
+        self,
+        observation: Observation,
+        *,
+        schedule_drainer: bool = False,
+    ) -> IngestResult:
+        """Canonical harness ingress: Observation → durable pool admit."""
+
+        return admit_observation(
+            self.gateway,
+            observation,
+            schedule_drainer=schedule_drainer,
+        )
+
+    def admit_envelope(
+        self,
+        envelope: StimulusEnvelope,
+        *,
+        schedule_drainer: bool = False,
+    ) -> str:
+        """Admit a crafted envelope via Observation round-trip (Ingress Freeze)."""
+
+        result = self.ingest(
+            envelope_to_observation(envelope),
+            schedule_drainer=schedule_drainer,
+        )
+        stored = self.runtime_store.load_stimulus(result.stimulus_id)
+        if stored is not None:
+            _copy_runtime_fields(envelope, stored)
+        return result.stimulus_id
+
     def submit_stimulus(
         self,
         *,
@@ -407,7 +443,10 @@ class SharedRuntimeHarness:
                 ingress_key=ingress_key,
             )
             priority = self.attributor.priority_for(stimulus)
-            self.gateway.submit(stimulus, schedule_drainer=False)
+            admitted_id = self.admit_envelope(stimulus, schedule_drainer=False)
+            stored = self.runtime_store.load_stimulus(admitted_id)
+            if stored is not None:
+                stimulus = stored
         except Exception as exc:
             return HarnessResult(
                 operation="submit_stimulus",
