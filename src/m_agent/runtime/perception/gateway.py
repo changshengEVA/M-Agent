@@ -6,9 +6,6 @@ from typing import Callable, Optional
 
 from m_agent.api.chat_api_shared import _now_iso
 from m_agent.runtime.domain.contracts import (
-    SceneActor,
-    SceneEntry,
-    SceneEntryType,
     StimulusEnvelope,
     StimulusKind,
 )
@@ -17,6 +14,7 @@ from m_agent.runtime.perception.inbox import (
     StimulusInbox,
     _copy_runtime_fields,
 )
+from m_agent.runtime.scene_projection import append_stimulus_scene_entries
 from m_agent.systems.scene.protocols import SceneWriter
 
 logger = logging.getLogger(__name__)
@@ -31,11 +29,13 @@ class PerceptionGateway:
         inbox: StimulusInbox,
         attributor: TransactionAttributor,
         scene_writer: SceneWriter,
+        agent_name: str = "Agent",
         on_enqueued: Optional[StimulusHook] = None,
     ) -> None:
         self.inbox = inbox
         self.attributor = attributor
         self.scene_writer = scene_writer
+        self.agent_name = str(agent_name or "Agent").strip() or "Agent"
         self._on_enqueued = on_enqueued
 
     def submit(self, stimulus: StimulusEnvelope, *, schedule_drainer: bool = True) -> str:
@@ -81,9 +81,9 @@ class PerceptionGateway:
                     )
                 stored = self.inbox.push(stimulus, priority=priority)
         else:
-            self._maybe_scene_on_ingress(stimulus)
             stored = self.inbox.push(stimulus, priority=priority)
         _copy_runtime_fields(stimulus, stored)
+        self._maybe_scene_on_ingress(stored)
         if self._on_enqueued is not None:
             try:
                 self._on_enqueued(stimulus, schedule_drainer=schedule_drainer)
@@ -184,11 +184,18 @@ class PerceptionGateway:
         )
         from m_agent.runtime.perception.ingress import GatewayIngestHost
 
+        body = dict(payload or {})
         result = ChatSourceAdapter(GatewayIngestHost(self)).handle_message(
             ChatSignal(
                 text=str(text or "").strip(),
                 occurred_at=_now_iso(),
-                payload=dict(payload or {}),
+                subject=str(
+                    body.get("user_name")
+                    or body.get("username")
+                    or body.get("subject")
+                    or "user"
+                ).strip() or "user",
+                payload=body,
             ),
             thread_id=thread_id,
             conversation_id=conversation_id,
@@ -250,7 +257,10 @@ class PerceptionGateway:
 
         body = dict(payload or {})
         body.setdefault("schedule_id", schedule_id)
-        result = ScheduleSourceAdapter(GatewayIngestHost(self)).handle_due(
+        result = ScheduleSourceAdapter(
+            GatewayIngestHost(self),
+            agent_name=self.agent_name,
+        ).handle_due(
             ScheduleSignal(
                 schedule_id=schedule_id,
                 text=str(text or "").strip(),
@@ -271,25 +281,15 @@ class PerceptionGateway:
         return result.stimulus_id
 
     def _maybe_scene_on_ingress(self, stimulus: StimulusEnvelope) -> None:
-        if stimulus.kind != StimulusKind.USER_MESSAGE:
+        # Sourceless stimuli are bound to a transaction only after attribution.
+        # Writing them here with a null transaction_id would permanently orphan
+        # an idempotent Scene entry, so the Inbox loop handles those later.
+        transaction_id = str(stimulus.transaction_id or "").strip()
+        if not transaction_id:
             return
-        text = str(stimulus.text or "").strip()
-        if not text:
-            return
-        # Sourceless user utterances are bound to a transaction only after AT
-        # attribution. Writing here with a null transaction_id would permanently
-        # orphan the Scene entry because append_id replay is idempotent.
-        if not str(stimulus.transaction_id or "").strip():
-            return
-        self.scene_writer.append(
-            stimulus.conversation_id,
-            SceneEntry(
-                seq=0,
-                occurred_at=stimulus.occurred_at,
-                entry_type=SceneEntryType.UTTERANCE,
-                actor=SceneActor.USER,
-                text=text,
-                append_id=str(stimulus.stimulus_id or "").strip() or None,
-                transaction_id=stimulus.transaction_id,
-            ),
+        append_stimulus_scene_entries(
+            self.scene_writer,
+            stimulus,
+            transaction_id=transaction_id,
+            agent_name=self.agent_name,
         )

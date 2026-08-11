@@ -43,7 +43,9 @@ def test_reply_is_appended_to_conversation_segment() -> None:
     conversation_id, entry = writer.calls[0]
     assert conversation_id == "owner::thread::7"
     assert entry.actor.value == "assistant"
-    assert entry.entry_type.value == "reply"
+    assert entry.actor_name == "Agent"
+    assert entry.entry_type.value == "Action"
+    assert entry.tool_name == "reply_to_user"
     assert entry.text == "Hello"
     assert context.controller_state["history"] == [
         {

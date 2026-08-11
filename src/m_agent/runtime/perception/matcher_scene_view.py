@@ -74,7 +74,8 @@ def format_transaction_scene_view(
             f"#{max(0, int(entry.seq)):05d}",
             f"at={str(entry.occurred_at or '-').strip() or '-'}",
             f"tx={transaction_ref}",
-            f"{entry.actor.value}/{entry.entry_type.value}",
+            f"{str(entry.actor_name or entry.actor.value).strip()}/"
+            f"{entry.entry_type.value}",
         ]
         history_rows.append(
             " | ".join(metadata)
@@ -120,7 +121,13 @@ def is_user_visible_scene_interaction(entry: SceneEntry) -> bool:
         and entry.entry_type == SceneEntryType.UTTERANCE
     ) or (
         entry.actor == SceneActor.ASSISTANT
-        and entry.entry_type == SceneEntryType.REPLY
+        and (
+            entry.entry_type == SceneEntryType.REPLY
+            or (
+                entry.entry_type == SceneEntryType.ACTION
+                and str(entry.tool_name or "").strip() == "reply_to_user"
+            )
+        )
     )
 
 

@@ -26,6 +26,9 @@ from m_agent.runtime.turn_support.execution_feedback import (
     feedback_summary_from_tool_history,
     looks_like_multi_step_request,
 )
+from m_agent.runtime.perception.matcher_scene_view import (
+    is_user_visible_scene_interaction,
+)
 from m_agent.systems.scene.protocols import SceneReader
 
 
@@ -88,15 +91,16 @@ def format_scene_tail(
         scope = tx_ref(entry)
         if (
             scope != "current"
-            and entry.entry_type
-            not in {SceneEntryType.UTTERANCE, SceneEntryType.REPLY}
+            and not is_user_visible_scene_interaction(entry)
         ):
             # Internal statements from another transaction are neither user
             # dialogue nor evidence for the current activation.
             continue
         line = (
             f"- ({entry.occurred_at}) "
-            f"[tx={scope} {entry.actor.value}/{entry.entry_type.value}] "
+            f"[tx={scope} "
+            f"{str(entry.actor_name or entry.actor.value).strip()}/"
+            f"{entry.entry_type.value}] "
             f"{entry.text}"
         )
         rendered.append(line)

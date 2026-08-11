@@ -136,18 +136,20 @@ def _drive(
     *,
     thread_id: str,
     text: str,
+    subject: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     runtime.submit_user_message(
         thread_id=thread_id,
         conversation_id=f"{thread_id}::0",
         text=text,
+        subject=subject,
         schedule_drainer=False,
     )
     return list(runtime.run_thread(thread_id)["results"])
 
 
 def test_turn_loop_runs_think_delegate_feedback_reply(tmp_path: Path) -> None:
-    """One user message drives tool → structured Feedback → reply → Scene."""
+    """The real turn loop persists one stimulus-native Scene cycle."""
 
     runtime = _runtime(
         tmp_path,
@@ -168,7 +170,12 @@ def test_turn_loop_runs_think_delegate_feedback_reply(tmp_path: Path) -> None:
         name="full-loop",
     )
     try:
-        results = _drive(runtime, thread_id="t1", text="please look something up")
+        results = _drive(
+            runtime,
+            thread_id="t1",
+            text="please look something up",
+            subject=runtime.agent.user_name,
+        )
 
         # user message -> execute, tool feedback -> reply, reply feedback -> settle
         assert [item["turn_kind"] for item in results] == [
@@ -213,11 +220,62 @@ def test_turn_loop_runs_think_delegate_feedback_reply(tmp_path: Path) -> None:
         assert evidence["last_tool_step"]["tool_name"] == FAKE_CAPABILITY
 
         entries = runtime.scene_system.reader.tail("t1::0", limit=100)
-        actors = [(item.actor, item.entry_type) for item in entries]
-        assert (SceneActor.USER, SceneEntryType.UTTERANCE) in actors
-        assert (SceneActor.THINK, SceneEntryType.THOUGHT) in actors
-        assert (SceneActor.WORK, SceneEntryType.ACTION) in actors
-        assert (SceneActor.ASSISTANT, SceneEntryType.REPLY) in actors
+        wire_entries = [item.to_dict() for item in entries]
+
+        # Persisted ``actor`` is the registered participant/tool name, while
+        # ``actor_role`` remains available for role-based filtering.
+        assert [
+            (item["entry_type"], item["actor"])
+            for item in wire_entries
+        ] == [
+            ("Stimulus_USER_MESSAGE", "User"),
+            ("Thought", "Assistant"),
+            ("Action", "Assistant"),
+            ("Stimulus_EXECUTION_FEEDBACK", FAKE_CAPABILITY),
+            ("Thought", "Assistant"),
+            ("Action", "Assistant"),
+            ("Stimulus_EXECUTION_FEEDBACK", "reply_to_user"),
+        ]
+        assert [item["actor_role"] for item in wire_entries] == [
+            SceneActor.USER.value,
+            SceneActor.THINK.value,
+            SceneActor.WORK.value,
+            SceneActor.WORK.value,
+            SceneActor.THINK.value,
+            SceneActor.ASSISTANT.value,
+            SceneActor.WORK.value,
+        ]
+        assert wire_entries[1]["append_id"].endswith(":thought:reasoning")
+        assert wire_entries[4]["append_id"].endswith(":thought:reasoning")
+
+        tool_action = json.loads(wire_entries[2]["text"])
+        assert tool_action == {
+            "arguments": {"instruction": "look it up"},
+            "tool_name": FAKE_CAPABILITY,
+        }
+        assert wire_entries[2]["text"].strip() != FAKE_CAPABILITY
+
+        tool_feedback = json.loads(wire_entries[3]["text"])
+        assert tool_feedback["tool_name"] == FAKE_CAPABILITY
+        assert tool_feedback["success"] is True
+        assert tool_feedback["result"]["success"] is True
+        assert (
+            tool_feedback["result"]["answer"]
+            == f"{FAKE_CAPABILITY} completed"
+        )
+
+        reply_action = wire_entries[5]
+        assert reply_action["entry_type"] == SceneEntryType.ACTION.value
+        assert reply_action["actor"] == "Assistant"
+        assert reply_action["tool_name"] == "reply_to_user"
+        assert reply_action["text"] == "here is the answer"
+
+        reply_feedback = json.loads(wire_entries[6]["text"])
+        assert reply_feedback["tool_name"] == "reply_to_user"
+        assert reply_feedback["success"] is True
+        assert reply_feedback["result"]["success"] is True
+        assert reply_feedback["result"]["answer"] == "here is the answer"
+
         seqs = [int(item.seq) for item in entries]
         assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
     finally:

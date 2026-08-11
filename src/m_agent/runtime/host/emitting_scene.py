@@ -27,7 +27,18 @@ class EmittingSceneWriter:
         *,
         append_id: Optional[str] = None,
     ) -> SceneEntry:
-        if append_id is not None:
+        created = True
+        append_with_status = getattr(self._inner, "append_with_status", None)
+        if callable(append_with_status):
+            try:
+                stored, created = append_with_status(
+                    thread_id,
+                    entry,
+                    append_id=append_id,
+                )
+            except TypeError:
+                stored, created = append_with_status(thread_id, entry)
+        elif append_id is not None:
             try:
                 stored = self._inner.append(
                     thread_id,
@@ -38,8 +49,12 @@ class EmittingSceneWriter:
                 stored = self._inner.append(thread_id, entry)
         else:
             stored = self._inner.append(thread_id, entry)
-        try:
-            self._on_appended(thread_id, stored)
-        except Exception:
-            logger.exception("scene on_appended hook failed thread_id=%s", thread_id)
+        if created:
+            try:
+                self._on_appended(thread_id, stored)
+            except Exception:
+                logger.exception(
+                    "scene on_appended hook failed thread_id=%s",
+                    thread_id,
+                )
         return stored

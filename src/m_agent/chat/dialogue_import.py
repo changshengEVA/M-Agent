@@ -53,6 +53,8 @@ def turns_to_rounds(
             continue
         entry_type = str(item.get("entry_type", "") or "").strip().lower()
         actor = str(item.get("actor", "") or "").strip().lower()
+        actor_role = str(item.get("actor_role", "") or "").strip().lower()
+        tool_name = str(item.get("tool_name", "") or "").strip()
         ts_raw = item.get("timestamp") or item.get("occurred_at")
         ts = None
         if isinstance(ts_raw, str) and ts_raw.strip():
@@ -61,10 +63,29 @@ def turns_to_rounds(
             except Exception:
                 ts = None
 
-        is_user = entry_type == "utterance" or actor == "user" or (
-            speaker in user_names and entry_type not in {"reply", "action", "thought"}
+        is_user = (
+            entry_type in {"utterance", "stimulus_user_message"}
+            or (
+                not entry_type
+                and (
+                    actor_role == "user"
+                    or actor == "user"
+                    or speaker in user_names
+                )
+            )
         )
-        is_assistant = entry_type == "reply" or actor == "assistant" or speaker in assistant_names
+        is_assistant = (
+            entry_type == "reply"
+            or (entry_type == "action" and tool_name == "reply_to_user")
+            or (
+                not entry_type
+                and (
+                    actor_role == "assistant"
+                    or actor == "assistant"
+                    or speaker in assistant_names
+                )
+            )
+        )
 
         if is_user and not is_assistant:
             pending_user = {"text": text, "timestamp": ts, "turn": dict(item)}
@@ -84,7 +105,10 @@ def turns_to_rounds(
             )
             pending_user = None
             continue
-        if speaker in user_names or (pending_user is None and speaker not in assistant_names):
+        if not entry_type and (
+            speaker in user_names
+            or (pending_user is None and speaker not in assistant_names)
+        ):
             pending_user = {"text": text, "timestamp": ts, "turn": dict(item)}
 
     return rounds

@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 import sqlite3
 from threading import RLock
-from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional
+from typing import Any, Callable, Dict, Iterator, List, Mapping, Optional, Tuple
 import uuid
 
 from m_agent.layers.perception.contracts import Stimulus, StimulusKind
@@ -2655,6 +2655,22 @@ class RuntimeStoreUnitOfWork:
         append_id: Optional[str] = None,
         thread_id: Optional[str] = None,
     ) -> SceneEntry:
+        stored, _created = self.append_scene_entry_with_status(
+            conversation_id,
+            entry,
+            append_id=append_id,
+            thread_id=thread_id,
+        )
+        return stored
+
+    def append_scene_entry_with_status(
+        self,
+        conversation_id: str,
+        entry: SceneEntry,
+        *,
+        append_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> Tuple[SceneEntry, bool]:
         cid = str(conversation_id or "").strip()
         stable_id = (
             str(append_id or entry.append_id or "").strip()
@@ -2668,8 +2684,9 @@ class RuntimeStoreUnitOfWork:
             (stable_id,),
         ).fetchone()
         if existing is not None:
-            return SceneEntry.from_dict(
-                json.loads(existing["payload_json"])
+            return (
+                SceneEntry.from_dict(json.loads(existing["payload_json"])),
+                False,
             )
         state = self.ensure_conversation(
             cid,
@@ -2681,6 +2698,7 @@ class RuntimeStoreUnitOfWork:
             occurred_at=entry.occurred_at,
             entry_type=entry.entry_type,
             actor=entry.actor,
+            actor_name=entry.actor_name,
             text=entry.text,
             append_id=stable_id,
             transaction_id=entry.transaction_id,
@@ -2710,7 +2728,7 @@ class RuntimeStoreUnitOfWork:
             """,
             (seq, _now_iso(), cid),
         )
-        return SceneEntry.from_dict(stored.to_dict())
+        return SceneEntry.from_dict(stored.to_dict()), True
 
     def read_scene(
         self,
@@ -3853,6 +3871,22 @@ class SQLiteRuntimeStore:
     ) -> SceneEntry:
         with self.unit_of_work() as uow:
             return uow.append_scene_entry(
+                conversation_id,
+                entry,
+                append_id=append_id,
+                thread_id=thread_id,
+            )
+
+    def append_scene_entry_with_status(
+        self,
+        conversation_id: str,
+        entry: SceneEntry,
+        *,
+        append_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
+    ) -> Tuple[SceneEntry, bool]:
+        with self.unit_of_work() as uow:
+            return uow.append_scene_entry_with_status(
                 conversation_id,
                 entry,
                 append_id=append_id,

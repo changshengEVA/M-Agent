@@ -101,6 +101,9 @@ class LangGraphRuntime:
     ) -> None:
         self.agent = agent
         self.owner_id = str(owner_id or "anonymous").strip() or "anonymous"
+        self.agent_name = str(
+            getattr(agent, "assistant_name", "Agent") or "Agent"
+        ).strip() or "Agent"
         raw_runtime = (
             agent.config.get("runtime")
             if isinstance(agent.config.get("runtime"), dict)
@@ -172,10 +175,14 @@ class LangGraphRuntime:
             inbox=self.inbox,
             attributor=None,  # type: ignore[arg-type]
             scene_writer=self._transaction_scene_writer,
+            agent_name=self.agent_name,
             on_enqueued=self._on_stimulus_enqueued,
         )
         self.feedback_adapter = FeedbackSourceAdapter(self)
-        self.schedule_adapter = ScheduleSourceAdapter(self)
+        self.schedule_adapter = ScheduleSourceAdapter(
+            self,
+            agent_name=self.agent_name,
+        )
         self.graph_engine = TransactionGraphEngine(
             registry=self.registry,
             uow=self.uow,
@@ -215,6 +222,7 @@ class LangGraphRuntime:
             graph_engine=self.graph_engine,
             scene_writer=self._transaction_scene_writer,
             scene_reader=self.scene_system.reader,
+            agent_name=self.agent_name,
             scene_context_max_entries=self.config.scene_context_max_entries,
             turn_engine=self.turn_engine,
             on_runtime_updated=self._emit_runtime_updated,
@@ -255,6 +263,7 @@ class LangGraphRuntime:
             wm_system=wm_system,
             runtime_config=self.config,
             langgraph_config=self.engine_config,
+            agent_name=self.agent_name,
             effect_ledger=DelegateEffectLedger(
                 coordinator=self.effect_coordinator,
                 delivery_guarantee=self.engine_config.delivery_guarantee,
@@ -286,12 +295,14 @@ class LangGraphRuntime:
             return ExecutionAgentDelegateExecutor(
                 execution_agent=execution_agent,
                 scene_writer=self._transaction_scene_writer,
+                agent_name=self.agent_name,
                 on_reply=self._handle_reply,
                 transaction_is_deleted=transaction_is_deleted,
                 on_schedule_created=self._record_schedule_created,
             )
         return FakeToolDelegateExecutor(
             scene_writer=self._transaction_scene_writer,
+            agent_name=self.agent_name,
             capabilities=self.engine_config.fake_capabilities,
             on_reply=self._handle_reply,
             transaction_is_deleted=transaction_is_deleted,
@@ -615,7 +626,11 @@ class LangGraphRuntime:
                 text=text,
                 message_id=str(message_id or "").strip(),
                 occurred_at=occurred,
-                subject=str(subject or "").strip() or "user",
+                subject=(
+                    str(subject or "").strip()
+                    or self.owner_id
+                    or "user"
+                ),
                 payload=dict(payload or {}),
             ),
             thread_id=thread_id,

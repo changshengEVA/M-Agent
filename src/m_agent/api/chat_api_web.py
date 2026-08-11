@@ -7,7 +7,7 @@ import os
 from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from fastapi import FastAPI, File, Form, Header, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -53,6 +53,7 @@ from .chat_api_records import (
     wire_runtime_event_sink,
 )
 from .chat_api_runtime import ChatServiceRuntime, PendingFlushAdmissionError
+from .heartbeat import HeartbeatMonitor
 from .schedule_heartbeat import ScheduleHeartbeatCoordinator
 from .chat_api_shared import (
     ensure_dialogue_archive,
@@ -324,6 +325,7 @@ def create_app(
     service_runtime: ChatServiceRuntime,
     user_access: Optional[UserAccessService] = None,
     schedule_beat_seconds: int = 10,
+    heartbeat_monitors: Optional[Iterable[HeartbeatMonitor]] = None,
 ) -> FastAPI:
     wire_runtime_event_sink(service_runtime)
     image_store = ChatImageStore(
@@ -335,11 +337,14 @@ def create_app(
         user_access=user_access,
         beat_interval_seconds=max(1, int(schedule_beat_seconds or 10)),
         thread_event_sink=_THREAD_EVENTS.append_event,
+        monitors=heartbeat_monitors,
+        autostart=False,
     )
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
         try:
+            schedule_heartbeat.start()
             yield
         finally:
             schedule_heartbeat.shutdown()
@@ -351,6 +356,8 @@ def create_app(
     app.state.service_runtime = service_runtime
     app.state.user_access = user_access
     app.state.schedule_heartbeat = schedule_heartbeat
+    app.state.heartbeat = schedule_heartbeat
+    app.state.heartbeat_monitors = schedule_heartbeat.monitor_registry
     app.state.image_store = image_store
 
     app.add_middleware(
@@ -1441,10 +1448,12 @@ def create_handler(
     service_runtime: ChatServiceRuntime,
     user_access: Optional[UserAccessService] = None,
     schedule_beat_seconds: int = 10,
+    heartbeat_monitors: Optional[Iterable[HeartbeatMonitor]] = None,
 ) -> FastAPI:
     """Backward-compatible alias for the old stdlib server entrypoint."""
     return create_app(
         service_runtime=service_runtime,
         user_access=user_access,
         schedule_beat_seconds=schedule_beat_seconds,
+        heartbeat_monitors=heartbeat_monitors,
     )

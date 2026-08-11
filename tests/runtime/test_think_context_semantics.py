@@ -193,8 +193,8 @@ def test_foreign_internal_scene_entries_remain_context_not_evidence() -> None:
     )
 
     assert "Foreign task is completed" not in perception.scene_context
-    assert "[tx=context_1 assistant/reply]" in perception.scene_context
-    assert "[tx=current think/thought]" in perception.scene_context
+    assert "[tx=context_1 assistant/Reply]" in perception.scene_context
+    assert "[tx=current think/Thought]" in perception.scene_context
     assert current.transaction_id not in perception.scene_context
     assert foreign.transaction_id not in perception.scene_context
     assert perception.activation is not None

@@ -581,6 +581,11 @@ class ChatServiceRuntime:
                 self._threads[active_thread_id] = session
             return session
 
+    def conversation_id_for_thread(self, thread_id: str) -> str:
+        """Resolve the current conversation scope for external observations."""
+
+        return self._get_or_create_thread(thread_id).conversation_id
+
     # ------------------------------------------------------------------
     # Working-memory plumbing — Runtime stores WM on transaction records;
     # the service runtime only projects it for API and SSE consumers.
@@ -797,13 +802,28 @@ class ChatServiceRuntime:
             else:
                 continue
             actor = str(data.get("actor", "") or "").strip().lower()
+            actor_role = str(data.get("actor_role", "") or "").strip().lower()
             entry_type = str(data.get("entry_type", "") or "").strip().lower()
+            tool_name = str(data.get("tool_name", "") or "").strip()
             content = str(data.get("text", "") or "").strip()
             if not content:
                 continue
-            if entry_type == "utterance" or actor == "user":
+            if (
+                entry_type in {"utterance", "stimulus_user_message"}
+                or (
+                    not entry_type
+                    and (actor_role == "user" or actor == "user")
+                )
+            ):
                 role = "user"
-            elif entry_type == "reply" or actor == "assistant":
+            elif (
+                entry_type == "reply"
+                or (entry_type == "action" and tool_name == "reply_to_user")
+                or (
+                    not entry_type
+                    and (actor_role == "assistant" or actor == "assistant")
+                )
+            ):
                 role = "assistant"
             else:
                 continue
@@ -1321,6 +1341,12 @@ class ChatServiceRuntime:
                 str(turn.get("speaker", "") or "").strip() == assistant_name
                 or str(turn.get("actor", "") or "").strip().lower() == "assistant"
                 or str(turn.get("entry_type", "") or "").strip().lower() == "reply"
+                or (
+                    str(turn.get("entry_type", "") or "").strip().lower()
+                    == "action"
+                    and str(turn.get("tool_name", "") or "").strip()
+                    == "reply_to_user"
+                )
             )
         )
         meta = scene_payload.get("meta")

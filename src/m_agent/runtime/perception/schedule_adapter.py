@@ -61,8 +61,9 @@ class ScheduleSignal:
 class ScheduleSourceAdapter:
     """Normalize private ScheduleSignals and ingest Observations."""
 
-    def __init__(self, runtime: Any) -> None:
+    def __init__(self, runtime: Any, *, agent_name: str = "Agent") -> None:
         self.runtime = runtime
+        self.agent_name = str(agent_name or "Agent").strip() or "Agent"
 
     @staticmethod
     def idempotency_key(*, delivery_id: str = "", run_id: str = "") -> Optional[str]:
@@ -99,6 +100,7 @@ class ScheduleSourceAdapter:
         observed = str(observed_at or occurred_at).strip() or occurred_at
         body = dict(signal.payload or {})
         body.setdefault("schedule_id", signal.schedule_id)
+        body.setdefault("agent_name", self.agent_name)
         run_id = str(signal.run_id or body.get("run_id", "") or "").strip()
         delivery_id = str(
             signal.delivery_id or body.get("schedule_delivery_id", "") or ""

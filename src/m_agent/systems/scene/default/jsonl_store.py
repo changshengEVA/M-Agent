@@ -7,7 +7,7 @@ import re
 import threading
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from m_agent.runtime.domain.contracts import SceneEntry
 
@@ -48,6 +48,7 @@ class SceneLogStore:
         self._seq: Dict[str, int] = {}
         self._flush_seq: Dict[str, int] = {}
         self._loaded_threads: set[str] = set()
+        self._load_locks: Dict[str, threading.RLock] = {}
 
     def _meta_path(self, thread_id: str) -> Optional[Path]:
         if not self._persist_enabled or self._persist_dir is None:
@@ -194,6 +195,78 @@ class SceneLogStore:
         self._seq[thread_id] = nxt
         return nxt
 
+    def _mirror_runtime_entry_to_jsonl(
+        self,
+        thread_id: str,
+        entry: SceneEntry,
+    ) -> None:
+        """Keep the configured JSONL audit log in sync with SQLite authority."""
+
+        if not self._persist_enabled or self._persist_dir is None:
+            return
+        append_id = str(entry.append_id or "").strip()
+        if not append_id:
+            return
+        tid = str(thread_id or "").strip()
+        with self._lock:
+            mirrored = self._entries_by_append_id.setdefault(tid, {})
+            if append_id in mirrored:
+                return
+            self._persist_dir.mkdir(parents=True, exist_ok=True)
+            path = self._persist_dir / f"{scene_persist_file_stem(tid)}.jsonl"
+            with open(path, "a", encoding="utf-8") as file_obj:
+                file_obj.write(
+                    json.dumps(entry.to_dict(), ensure_ascii=False) + "\n"
+                )
+            mirrored[append_id] = entry
+
+    def _sync_runtime_jsonl(
+        self,
+        thread_id: str,
+        *,
+        loaded: List[SceneEntry],
+        canonical: List[SceneEntry],
+        force_rewrite: bool = False,
+    ) -> None:
+        """Repair the JSONL mirror without changing canonical Scene order."""
+
+        if not self._persist_enabled or self._persist_dir is None:
+            return
+        tid = str(thread_id or "").strip()
+        loaded_payloads = [entry.to_dict() for entry in loaded]
+        canonical_payloads = [entry.to_dict() for entry in canonical]
+        is_canonical_prefix = bool(
+            not force_rewrite
+            and len(loaded_payloads) <= len(canonical_payloads)
+            and loaded_payloads
+            == canonical_payloads[: len(loaded_payloads)]
+        )
+        with self._lock:
+            if not is_canonical_prefix:
+                self._persist_dir.mkdir(parents=True, exist_ok=True)
+                path = self._persist_dir / f"{scene_persist_file_stem(tid)}.jsonl"
+                temporary = path.with_suffix(path.suffix + ".tmp")
+                with open(temporary, "w", encoding="utf-8") as file_obj:
+                    for entry in canonical:
+                        file_obj.write(
+                            json.dumps(entry.to_dict(), ensure_ascii=False)
+                            + "\n"
+                        )
+                temporary.replace(path)
+                self._entries_by_append_id[tid] = {
+                    str(entry.append_id): entry
+                    for entry in canonical
+                    if entry.append_id
+                }
+                return
+            self._entries_by_append_id[tid] = {
+                str(entry.append_id): entry
+                for entry in loaded
+                if entry.append_id
+            }
+        for entry in canonical[len(loaded) :]:
+            self._mirror_runtime_entry_to_jsonl(tid, entry)
+
     def append(
         self,
         thread_id: str,
@@ -201,16 +274,32 @@ class SceneLogStore:
         *,
         append_id: Optional[str] = None,
     ) -> SceneEntry:
+        stored, _created = self.append_with_status(
+            thread_id,
+            entry,
+            append_id=append_id,
+        )
+        return stored
+
+    def append_with_status(
+        self,
+        thread_id: str,
+        entry: SceneEntry,
+        *,
+        append_id: Optional[str] = None,
+    ) -> Tuple[SceneEntry, bool]:
         tid = str(thread_id or "").strip()
         if not tid:
             raise ValueError("thread_id is required for Scene append")
         if self._runtime_store is not None:
             self.ensure_thread_loaded(tid)
-            return self._runtime_store.append_scene_entry(
+            stored, created = self._runtime_store.append_scene_entry_with_status(
                 tid,
                 entry,
                 append_id=append_id,
             )
+            self._mirror_runtime_entry_to_jsonl(tid, stored)
+            return stored, created
         self.ensure_thread_loaded(tid)
         with self._lock:
             stable_append_id = (
@@ -222,13 +311,14 @@ class SceneLogStore:
                 {},
             ).get(stable_append_id)
             if existing is not None:
-                return existing
+                return existing, False
             seq = self._next_seq(tid)
             stored = SceneEntry(
                 seq=seq,
                 occurred_at=entry.occurred_at,
                 entry_type=entry.entry_type,
                 actor=entry.actor,
+                actor_name=entry.actor_name,
                 text=entry.text,
                 append_id=stable_append_id,
                 transaction_id=entry.transaction_id,
@@ -243,7 +333,7 @@ class SceneLogStore:
                 path = self._persist_dir / f"{scene_persist_file_stem(tid)}.jsonl"
                 with open(path, "a", encoding="utf-8") as f:
                     f.write(json.dumps(stored.to_dict(), ensure_ascii=False) + "\n")
-            return stored
+            return stored, True
 
     def tail(
         self,
@@ -288,6 +378,7 @@ class SceneLogStore:
                         "occurred_at": entry.occurred_at,
                         "entry_type": entry.entry_type.value,
                         "actor": entry.actor.value,
+                        "actor_name": entry.actor_name,
                         "text": entry.text,
                         "transaction_id": entry.transaction_id,
                         "delegate_id": entry.delegate_id,
@@ -312,6 +403,7 @@ class SceneLogStore:
                     occurred_at=entry.occurred_at,
                     entry_type=entry.entry_type,
                     actor=entry.actor,
+                    actor_name=entry.actor_name,
                     text=entry.text,
                     append_id=append_id,
                     transaction_id=entry.transaction_id,
@@ -326,20 +418,37 @@ class SceneLogStore:
         tid = str(thread_id or "").strip()
         if not tid:
             return
+        with self._lock:
+            load_lock = self._load_locks.setdefault(tid, threading.RLock())
+        with load_lock:
+            with self._lock:
+                if tid in self._loaded_threads:
+                    return
+            self._load_thread_from_disk(tid)
+
+    def _load_thread_from_disk(self, tid: str) -> None:
         loaded: List[SceneEntry] = []
+        mirror_dirty = False
         if self._persist_enabled and self._persist_dir is not None:
             path = self._persist_dir / f"{scene_persist_file_stem(tid)}.jsonl"
             if path.is_file():
                 with open(path, "r", encoding="utf-8") as f:
-                    for line in f:
-                        line = line.strip()
+                    saw_line = False
+                    last_line_terminated = True
+                    for raw_line in f:
+                        saw_line = True
+                        last_line_terminated = raw_line.endswith(("\n", "\r"))
+                        line = raw_line.strip()
                         if not line:
                             continue
                         try:
                             entry = SceneEntry.from_dict(json.loads(line))
                         except (json.JSONDecodeError, TypeError, ValueError):
+                            mirror_dirty = True
                             continue
                         loaded.append(entry)
+                    if saw_line and not last_line_terminated:
+                        mirror_dirty = True
         loaded = self._normalize_loaded_entries(tid, loaded)
         if self._runtime_store is not None:
             existing = self._runtime_store.read_scene(tid)
@@ -373,6 +482,16 @@ class SceneLogStore:
                         tid,
                         through_seq=legacy_watermark,
                     )
+            canonical = self._runtime_store.read_scene(tid)
+            self._sync_runtime_jsonl(
+                tid,
+                loaded=loaded,
+                canonical=canonical,
+                force_rewrite=mirror_dirty,
+            )
+            # Publish the loaded state only after the mirror and append-id map
+            # match the authoritative SQLite snapshot.  Concurrent appenders
+            # wait on the per-conversation load lock until this point.
             with self._lock:
                 self._loaded_threads.add(tid)
             return
@@ -405,6 +524,19 @@ class SceneWriterAdapter:
         append_id: Optional[str] = None,
     ) -> SceneEntry:
         return self._store.append(
+            thread_id,
+            entry,
+            append_id=append_id,
+        )
+
+    def append_with_status(
+        self,
+        thread_id: str,
+        entry: SceneEntry,
+        *,
+        append_id: Optional[str] = None,
+    ) -> Tuple[SceneEntry, bool]:
+        return self._store.append_with_status(
             thread_id,
             entry,
             append_id=append_id,

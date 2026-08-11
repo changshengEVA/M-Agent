@@ -13,6 +13,9 @@ from m_agent.runtime.domain.contracts import (
     TransactionKind,
     TransactionRecord,
 )
+from m_agent.runtime.perception.matcher_scene_view import (
+    is_user_visible_scene_interaction,
+)
 from m_agent.runtime.transaction.predicates import (
     is_live_record,
     is_open_continue,
@@ -216,8 +219,7 @@ def scene_pending_flush_metrics(
     visible_entries = [
         entry
         for entry in entries
-        if entry.actor in {SceneActor.USER, SceneActor.ASSISTANT}
-        or entry.entry_type in {SceneEntryType.UTTERANCE, SceneEntryType.REPLY}
+        if is_user_visible_scene_interaction(entry)
     ]
     return {
         "scene_pending_entries": len(entries),
@@ -255,9 +257,7 @@ def build_dialogue_flush_payload(
     dialogue_entries = [
         entry
         for entry in entries
-        if entry.actor in {SceneActor.USER, SceneActor.ASSISTANT}
-        or entry.entry_type
-        in {SceneEntryType.UTTERANCE, SceneEntryType.REPLY}
+        if is_user_visible_scene_interaction(entry)
     ]
     if not dialogue_entries:
         return None

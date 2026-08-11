@@ -106,3 +106,54 @@ def test_scene_entry_to_dialogue_turn_skips_internal_scene_events() -> None:
         occurred_at="2026-05-29T14:14:06.000000Z",
     )
     assert scene_entry_to_dialogue_turn(entry, user_name="alice", assistant_name="Memory Assistant") is None
+
+
+def test_scene_dialogue_export_recognizes_new_and_migrated_replies_only() -> None:
+    scheduled = SceneEntry(
+        seq=8,
+        actor=SceneActor.ASSISTANT,
+        actor_name="Memory Assistant",
+        entry_type=SceneEntryType.STIMULUS_SCHEDULED_PLAN,
+        text="Run the private scheduled plan.",
+        occurred_at="2026-08-11T08:00:00Z",
+    )
+    reply_action = SceneEntry(
+        seq=9,
+        actor=SceneActor.ASSISTANT,
+        actor_name="Memory Assistant",
+        entry_type=SceneEntryType.ACTION,
+        text="The requested task is complete.",
+        occurred_at="2026-08-11T08:00:01Z",
+        tool_name="reply_to_user",
+    )
+    migrated_reply = SceneEntry.from_dict(
+        {
+            "seq": 10,
+            "actor": "assistant",
+            "entry_type": "reply",
+            "text": "Legacy reply remains visible.",
+            "occurred_at": "2026-08-11T08:00:02Z",
+        }
+    )
+
+    assert scene_entry_to_dialogue_turn(
+        scheduled,
+        user_name="alice",
+        assistant_name="Memory Assistant",
+    ) is None
+    assert scene_entry_to_dialogue_turn(
+        reply_action,
+        user_name="alice",
+        assistant_name="Memory Assistant",
+    )["text"] == "The requested task is complete."
+    assert migrated_reply.tool_name == "reply_to_user"
+    assert scene_entry_to_dialogue_turn(
+        migrated_reply,
+        user_name="alice",
+        assistant_name="Memory Assistant",
+    )["text"] == "Legacy reply remains visible."
+    assert turns_to_rounds(
+        [scheduled.to_dict(), reply_action.to_dict()],
+        user_speaker="alice",
+        assistant_speaker="Memory Assistant",
+    ) == []

@@ -17,6 +17,7 @@
 
 ## 未来设计
 
+- [v0.4.1 记忆平台接口设计](memory-platform-v0.4.1.zh-CN.md)：先定义独立记忆平台接口；当前记录 `memory_build`，其余接口后续补充。
 - [Strategy 系统级接入方案](strategy-single-llm-integration.zh-CN.md)：未来设计；经验子系统（v0.5）自立后，v0.8 Opt-in，评测达标后才可成为默认候选。
 
 ## 历史材料

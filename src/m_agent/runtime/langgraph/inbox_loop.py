@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
+from m_agent.api.chat_api_shared import _now_iso
 from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS
 from m_agent.runtime.langgraph.engine import TransactionGraphEngine
 from m_agent.runtime.langgraph.fake_effects import FakeEffectIntent
@@ -38,6 +39,7 @@ from m_agent.runtime.perception.inbox import StimulusInbox
 from m_agent.runtime.perception.matcher_scene_view import (
     is_user_visible_scene_interaction,
 )
+from m_agent.runtime.scene_projection import append_stimulus_scene_entries
 from m_agent.runtime.dispatch.cpu_state import THREAD_CPU_STATE
 from m_agent.runtime.dispatch.schedule_lifecycle import (
     ScheduleLifecycleHook,
@@ -65,6 +67,7 @@ class LangGraphInboxLoop:
         graph_engine: TransactionGraphEngine,
         scene_writer: SceneWriter,
         scene_reader: SceneReader,
+        agent_name: str = "Agent",
         scene_context_max_entries: int = 40,
         turn_engine: Optional[TransactionTurnEngine] = None,
         schedule_lifecycle: ScheduleLifecycleHook = None,
@@ -76,6 +79,7 @@ class LangGraphInboxLoop:
         self.graph_engine = graph_engine
         self.scene_writer = scene_writer
         self.scene_reader = scene_reader
+        self.agent_name = str(agent_name or "Agent").strip() or "Agent"
         self.scene_context_max_entries = max(
             1,
             int(scene_context_max_entries or 40),
@@ -157,7 +161,12 @@ class LangGraphInboxLoop:
                 stimulus,
                 transaction,
             )
-        self._bind_deferred_user_scene(stimulus, transaction)
+        # Always repair the stimulus projection after durable attribution.
+        # Stable append_id makes this a no-op after normal ingress, while the
+        # writer's created flag prevents a duplicate scene_entry_appended SSE.
+        # This also closes the crash window between inbox admission/binding and
+        # the first Scene append.
+        self._bind_stimulus_scene(stimulus, transaction)
         if not str(stimulus.transaction_id or "").strip():
             object.__setattr__(
                 stimulus,
@@ -457,15 +466,16 @@ class LangGraphInboxLoop:
             conversation_id,
             SceneEntry(
                 seq=0,
-                occurred_at="",
+                occurred_at=_now_iso(),
                 entry_type=SceneEntryType.ACTION,
                 actor=SceneActor.WORK,
+                actor_name=self.agent_name,
                 text=text,
                 transaction_id=transaction_id,
             ),
         )
 
-    def _bind_deferred_user_scene(
+    def _bind_stimulus_scene(
         self,
         stimulus: StimulusEnvelope,
         record: TransactionRecord,
@@ -475,34 +485,12 @@ class LangGraphInboxLoop:
         )
         if current is not None and current.deleted:
             return
-        if stimulus.kind != StimulusKind.USER_MESSAGE:
-            return
-        if str(stimulus.transaction_id or "").strip():
-            return
-        body = str(stimulus.text or "").strip()
-        if not body:
-            return
-        append_id = str(stimulus.stimulus_id or "").strip() or None
-        entry = SceneEntry(
-            seq=0,
-            occurred_at=stimulus.occurred_at,
-            entry_type=SceneEntryType.UTTERANCE,
-            actor=SceneActor.USER,
-            text=body,
-            append_id=append_id,
+        append_stimulus_scene_entries(
+            self.scene_writer,
+            stimulus,
             transaction_id=record.transaction_id,
+            agent_name=self.agent_name,
         )
-        if append_id is not None:
-            try:
-                self.scene_writer.append(
-                    record.conversation_id,
-                    entry,
-                    append_id=append_id,
-                )
-                return
-            except TypeError:
-                pass
-        self.scene_writer.append(record.conversation_id, entry)
 
     def _notify_schedule_started(
         self,
@@ -575,7 +563,15 @@ class LangGraphInboxLoop:
                 )
             ):
                 if (
-                    entry.entry_type == SceneEntryType.REPLY
+                    (
+                        entry.entry_type == SceneEntryType.REPLY
+                        or (
+                            entry.entry_type == SceneEntryType.ACTION
+                            and entry.actor == SceneActor.ASSISTANT
+                            and str(entry.tool_name or "").strip()
+                            == "reply_to_user"
+                        )
+                    )
                     and entry.transaction_id == transaction.transaction_id
                 ):
                     answer = str(entry.text or "").strip()

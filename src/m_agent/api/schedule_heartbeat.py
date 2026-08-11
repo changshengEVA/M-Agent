@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import logging
 import threading
+import time
 import uuid
 from typing import Any, Dict, Iterable, Optional, Tuple
 
@@ -19,12 +20,31 @@ from m_agent.schedule.service import (
 
 from .chat_api_runtime import ChatServiceRuntime, ThreadEventSink
 from .chat_api_shared import _now_iso, _scoped_thread_id
+from .heartbeat import (
+    HeartbeatContext,
+    HeartbeatMonitor,
+    HeartbeatMonitorRegistry,
+    HeartbeatMonitorResult,
+    HeartbeatTarget,
+)
 
 logger = logging.getLogger(__name__)
 
 
+class _ScheduleHeartbeatMonitor:
+    """Registry adapter that keeps Schedule's lease state machine private."""
+
+    monitor_id = "schedule"
+
+    def __init__(self, coordinator: "ScheduleHeartbeatCoordinator") -> None:
+        self._coordinator = coordinator
+
+    def beat(self, context: HeartbeatContext) -> HeartbeatMonitorResult:
+        return self._coordinator._beat_schedules(context)
+
+
 class ScheduleHeartbeatCoordinator:
-    """Background scheduler that leases due schedules and routes them back into chat runtimes."""
+    """Process Heartbeat coordinator with a protected Schedule monitor."""
 
     def __init__(
         self,
@@ -36,6 +56,7 @@ class ScheduleHeartbeatCoordinator:
         lease_duration_seconds: float = DEFAULT_SCHEDULE_LEASE_SECONDS,
         lease_owner: str = "",
         thread_event_sink: ThreadEventSink = None,
+        monitors: Optional[Iterable[HeartbeatMonitor]] = None,
         autostart: bool = True,
     ) -> None:
         self.service_runtime = service_runtime
@@ -54,6 +75,13 @@ class ScheduleHeartbeatCoordinator:
         self.created_at = _now_iso()
         self._stop_event = threading.Event()
         self._worker: Optional[threading.Thread] = None
+        self._lifecycle_lock = threading.RLock()
+        self._lifecycle_condition = threading.Condition(self._lifecycle_lock)
+        self._shutting_down = False
+        self._accepting_beats = True
+        self._active_beats = 0
+        self._beat_local = threading.local()
+        self._beat_lock = threading.Lock()
         self._stats_lock = threading.Lock()
         self._beats_total = 0
         self._items_leased = 0
@@ -63,40 +91,162 @@ class ScheduleHeartbeatCoordinator:
         self._last_beat_started_at: Optional[str] = None
         self._last_beat_finished_at: Optional[str] = None
         self._last_error: Optional[str] = None
+        self.monitor_registry = HeartbeatMonitorRegistry()
+        self.monitor_registry.register(_ScheduleHeartbeatMonitor(self))
+        self.monitor_registry.protect(_ScheduleHeartbeatMonitor.monitor_id)
+        for monitor in monitors or ():
+            self.register_monitor(monitor)
         if autostart:
             self.start()
 
-    def start(self) -> None:
-        if self._worker is not None and self._worker.is_alive():
-            return
-        self._stop_event.clear()
-        self._worker = threading.Thread(
-            target=self._run_loop,
-            name="schedule-heartbeat",
-            daemon=True,
-        )
-        self._worker.start()
+    def register_monitor(
+        self,
+        monitor: HeartbeatMonitor,
+        *,
+        replace: bool = False,
+    ) -> None:
+        """Register a monitor that will run on subsequent Heartbeat ticks."""
 
-    def shutdown(self) -> None:
-        self._stop_event.set()
-        if self._worker is not None and self._worker.is_alive():
-            self._worker.join(timeout=2.0)
+        if str(getattr(monitor, "monitor_id", "") or "").strip() == "schedule":
+            raise ValueError("the built-in schedule monitor cannot be replaced")
+        self.monitor_registry.register(monitor, replace=replace)
+
+    def unregister_monitor(self, monitor_id: str) -> Optional[HeartbeatMonitor]:
+        """Remove a monitor; the built-in Schedule monitor may not be removed."""
+
+        key = str(monitor_id or "").strip()
+        if key == _ScheduleHeartbeatMonitor.monitor_id:
+            raise ValueError("the built-in schedule monitor cannot be unregistered")
+        return self.monitor_registry.unregister(key)
+
+    def start(self) -> None:
+        with self._lifecycle_condition:
+            if self._shutting_down:
+                raise RuntimeError("heartbeat coordinator is shutting down")
+            if self._worker is not None and self._worker.is_alive():
+                if not self._accepting_beats:
+                    raise RuntimeError("heartbeat worker is still stopping")
+                return
+            self._accepting_beats = True
+            self._stop_event.clear()
+            worker = threading.Thread(
+                target=self._run_loop,
+                name="schedule-heartbeat",
+                daemon=True,
+            )
+            self._worker = worker
+            try:
+                worker.start()
+            except Exception:
+                self._worker = None
+                self._stop_event.set()
+                raise
+
+    def shutdown(self, *, timeout: Optional[float] = None) -> bool:
+        """Stop the worker before its target runtimes are closed.
+
+        The default waits for an in-flight monitor to finish.  Monitor
+        implementations therefore must keep ``beat`` bounded.
+        """
+
+        join_timeout = (
+            None
+            if timeout is None
+            else max(0.0, float(timeout))
+        )
+        with self._lifecycle_condition:
+            self._shutting_down = True
+            self._accepting_beats = False
+            self._stop_event.set()
+            worker = self._worker
+        deadline = (
+            None
+            if join_timeout is None
+            else time.monotonic() + join_timeout
+        )
+        try:
+            if (
+                worker is not None
+                and worker.is_alive()
+                and worker is not threading.current_thread()
+            ):
+                remaining = (
+                    None
+                    if deadline is None
+                    else max(0.0, deadline - time.monotonic())
+                )
+                worker.join(timeout=remaining)
+            if not bool(getattr(self._beat_local, "active", False)):
+                with self._lifecycle_condition:
+                    while self._active_beats > 0:
+                        remaining = (
+                            None
+                            if deadline is None
+                            else max(0.0, deadline - time.monotonic())
+                        )
+                        if remaining is not None and remaining <= 0:
+                            break
+                        self._lifecycle_condition.wait(timeout=remaining)
+            with self._lifecycle_condition:
+                return bool(
+                    (worker is None or not worker.is_alive())
+                    and self._active_beats == 0
+                )
+        finally:
+            with self._lifecycle_condition:
+                stopped = bool(
+                    (worker is None or not worker.is_alive())
+                    and self._active_beats == 0
+                )
+                if self._worker is worker and stopped:
+                    self._worker = None
+                self._shutting_down = False
+                self._lifecycle_condition.notify_all()
 
     def _run_loop(self) -> None:
         while not self._stop_event.wait(self.beat_interval_seconds):
+            if self._stop_event.is_set():
+                return
             try:
                 self.beat_once()
             except Exception as exc:
+                if self._stop_event.is_set():
+                    return
                 logger.exception("Schedule heartbeat beat failed")
                 with self._stats_lock:
                     self._last_error = str(exc)
 
-    def _iter_runtime_targets(self) -> Iterable[Tuple[str, ChatServiceRuntime]]:
-        yield ANONYMOUS_OWNER_ID, self.service_runtime
+    def _collect_runtime_targets(
+        self,
+    ) -> Tuple[Tuple[HeartbeatTarget, ...], Tuple[str, ...]]:
+        targets = [
+            HeartbeatTarget(
+                owner_id=ANONYMOUS_OWNER_ID,
+                service_runtime=self.service_runtime,
+                runtime_thread_id=self.service_runtime.default_thread_id,
+                public_thread_id=self.service_runtime.default_thread_id,
+            )
+        ]
+        errors = []
         if self.user_access is None:
-            return
-        for username in self.user_access.list_usernames():
-            user = self.user_access.get_user(username=username)
+            return tuple(targets), tuple(errors)
+        try:
+            usernames = list(self.user_access.list_usernames())
+        except Exception as exc:
+            logger.exception("Heartbeat failed to list user runtime targets")
+            errors.append(f"user target enumeration failed: {exc}")
+            return tuple(targets), tuple(errors)
+        for username in usernames:
+            try:
+                user = self.user_access.get_user(username=username)
+            except Exception as exc:
+                logger.warning(
+                    "Heartbeat skipped user=%s (account lookup failed): %s",
+                    username,
+                    exc,
+                )
+                errors.append(f"user {username!r} lookup failed: {exc}")
+                continue
             if user is None:
                 continue
             try:
@@ -107,8 +257,24 @@ class ScheduleHeartbeatCoordinator:
                     username,
                     exc,
                 )
+                errors.append(f"user {username!r} runtime unavailable: {exc}")
                 continue
-            yield user.username, runtime
+            public_thread_id = (
+                str(getattr(user, "canonical_thread_id", "") or "").strip()
+                or runtime.default_thread_id
+            )
+            targets.append(
+                HeartbeatTarget(
+                    owner_id=user.username,
+                    service_runtime=runtime,
+                    runtime_thread_id=_scoped_thread_id(
+                        user,
+                        public_thread_id,
+                    ),
+                    public_thread_id=public_thread_id,
+                )
+            )
+        return tuple(targets), tuple(errors)
 
     def _wire_runtime_sink(self, runtime: ChatServiceRuntime) -> None:
         if self.thread_event_sink is not None:
@@ -182,17 +348,105 @@ class ScheduleHeartbeatCoordinator:
         return payload
 
     def beat_once(self) -> Dict[str, Any]:
+        """Run one non-reentrant tick across a stable monitor snapshot."""
+
+        if bool(getattr(self._beat_local, "active", False)):
+            raise RuntimeError("heartbeat beat_once is not re-entrant")
+        with self._lifecycle_condition:
+            if self._shutting_down or not self._accepting_beats:
+                raise RuntimeError("heartbeat coordinator is not accepting beats")
+            self._active_beats += 1
+        self._beat_local.active = True
+        try:
+            with self._beat_lock:
+                with self._lifecycle_condition:
+                    if self._shutting_down or not self._accepting_beats:
+                        raise RuntimeError(
+                            "heartbeat coordinator stopped before beat started"
+                        )
+                try:
+                    return self._beat_once_locked()
+                except Exception as exc:
+                    with self._stats_lock:
+                        self._last_beat_finished_at = _now_iso()
+                        self._last_error = str(exc)
+                    raise
+        finally:
+            self._beat_local.active = False
+            with self._lifecycle_condition:
+                self._active_beats = max(0, self._active_beats - 1)
+                self._lifecycle_condition.notify_all()
+
+    def _beat_once_locked(self) -> Dict[str, Any]:
         beat_started_at = _now_iso()
+        with self._stats_lock:
+            self._beats_total += 1
+            self._last_beat_started_at = beat_started_at
+
+        targets, target_errors = self._collect_runtime_targets()
+        report = self.monitor_registry.beat(
+            HeartbeatContext(
+                beat_started_at=beat_started_at,
+                targets=targets,
+            )
+        )
+        schedule_result = dict(
+            report.get("results", {}).get("schedule", {}).get("details", {})
+        )
+        total_leased = max(0, int(schedule_result.get("leased", 0) or 0))
+        total_started = max(0, int(schedule_result.get("started", 0) or 0))
+        total_completed = max(
+            0,
+            int(schedule_result.get("completed", 0) or 0),
+        )
+        total_failed = max(0, int(schedule_result.get("failed", 0) or 0))
+        beat_finished_at = _now_iso()
+        monitor_errors = dict(report.get("errors") or {})
+        if target_errors:
+            report["target_errors"] = list(target_errors)
+        last_error = (
+            "; ".join(
+                [
+                    *(
+                        f"{monitor_id}: {error}"
+                        for monitor_id, error in monitor_errors.items()
+                    ),
+                    *target_errors,
+                ]
+            )
+            or None
+        )
+
+        with self._stats_lock:
+            self._items_leased += total_leased
+            self._items_started += total_started
+            self._items_completed += total_completed
+            self._items_failed += total_failed
+            self._last_beat_finished_at = beat_finished_at
+            self._last_error = last_error
+
+        return {
+            "beat_started_at": beat_started_at,
+            "beat_finished_at": beat_finished_at,
+            "leased": total_leased,
+            "started": total_started,
+            "completed": total_completed,
+            "failed": total_failed,
+            "monitors": report,
+        }
+
+    def _beat_schedules(
+        self,
+        context: HeartbeatContext,
+    ) -> HeartbeatMonitorResult:
         total_leased = 0
         total_started = 0
         total_completed = 0
         total_failed = 0
 
-        with self._stats_lock:
-            self._beats_total += 1
-            self._last_beat_started_at = beat_started_at
-
-        for owner_id, runtime in self._iter_runtime_targets():
+        for target in context.targets:
+            owner_id = target.owner_id
+            runtime = target.service_runtime
             self._wire_runtime_sink(runtime)
             schedule_agent = runtime.agent.get_schedule_agent()
             schedule_service = schedule_agent.service
@@ -332,23 +586,17 @@ class ScheduleHeartbeatCoordinator:
                         ),
                     )
 
-        beat_finished_at = _now_iso()
-        with self._stats_lock:
-            self._items_leased += total_leased
-            self._items_started += total_started
-            self._items_completed += total_completed
-            self._items_failed += total_failed
-            self._last_beat_finished_at = beat_finished_at
-            self._last_error = None
-
-        return {
-            "beat_started_at": beat_started_at,
-            "beat_finished_at": beat_finished_at,
-            "leased": total_leased,
-            "started": total_started,
-            "completed": total_completed,
-            "failed": total_failed,
-        }
+        return HeartbeatMonitorResult(
+            observed=total_leased,
+            admitted=total_started,
+            failed=total_failed,
+            details={
+                "leased": total_leased,
+                "started": total_started,
+                "completed": total_completed,
+                "failed": total_failed,
+            },
+        )
 
     def health_payload(self) -> Dict[str, Any]:
         with self._stats_lock:
@@ -385,5 +633,6 @@ class ScheduleHeartbeatCoordinator:
                     "started_at": self._last_beat_started_at,
                     "finished_at": self._last_beat_finished_at,
                 },
+                "monitors": self.monitor_registry.health_payload(),
                 "last_error": last_error,
             }

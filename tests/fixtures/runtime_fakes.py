@@ -617,7 +617,15 @@ class FakeRuntime:
             "thread_state": snapshot,
         }
 
-    def run_chat(self, *, message: str, thread_id: str, user_turn: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    def run_chat(
+        self,
+        *,
+        message: str,
+        thread_id: str,
+        user_turn: Optional[Dict[str, Any]] = None,
+        message_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        del message_id
         with self._threads_lock:
             state = self._ensure_state(thread_id)
             state["history_rounds"] += 1

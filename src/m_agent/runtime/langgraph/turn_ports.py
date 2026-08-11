@@ -13,6 +13,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol, Sequence, Tuple
 
+from m_agent.api.chat_api_shared import _now_iso
 from m_agent.layers.thinking.contracts import ThinkingDecision, is_reply_mode
 from m_agent.runtime.langgraph.config import DEFAULT_DELIVERY_GUARANTEE
 from m_agent.runtime.langgraph.fake_effects import FakeEffectExecutor
@@ -263,6 +264,7 @@ class FakeToolDelegateExecutor:
     transaction_is_deleted: Optional[
         TransactionDeletedPredicate
     ] = None
+    agent_name: str = "Agent"
 
     def __post_init__(self) -> None:
         # The graph relays Feedback itself, after the delegate result is durable.
@@ -351,10 +353,12 @@ class FakeToolDelegateExecutor:
                 record.conversation_id,
                 SceneEntry(
                     seq=0,
-                    occurred_at="",
-                    entry_type=SceneEntryType.REPLY,
+                    occurred_at=_now_iso(),
+                    entry_type=SceneEntryType.ACTION,
                     actor=SceneActor.ASSISTANT,
+                    actor_name=str(self.agent_name or "Agent").strip() or "Agent",
                     text=message,
+                    append_id=f"{delegate_id}:action:1",
                     transaction_id=record.transaction_id,
                     delegate_id=delegate_id,
                     tool_name=REPLY_TOOL_NAME,
@@ -395,6 +399,7 @@ class ExecutionAgentDelegateExecutor:
         TransactionDeletedPredicate
     ] = None
     on_schedule_created: Optional[Callable[..., Any]] = None
+    agent_name: str = "Agent"
 
     @property
     def enabled_tools(self) -> Sequence[str]:
@@ -480,6 +485,7 @@ class ExecutionAgentDelegateExecutor:
                 ),
                 "transaction_id": record.transaction_id,
                 "conversation_id": record.conversation_id,
+                "agent_name": self.agent_name,
                 "on_reply": on_reply,
                 **(
                     {"on_schedule_created": self.on_schedule_created}

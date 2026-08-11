@@ -22,9 +22,10 @@ import threading
 from typing import Any, Dict, Mapping, Optional
 
 from m_agent.runtime.domain.contracts import (
-    SceneActor,
     SceneEntry,
-    SceneEntryType,
+)
+from m_agent.runtime.perception.matcher_scene_view import (
+    is_user_visible_scene_interaction,
 )
 
 from .flush_journal import FlushJournal, FlushRecord
@@ -104,8 +105,7 @@ class RuntimeFlushOrchestrator:
         dialogue_entries = [
             entry
             for entry in entries
-            if entry.actor in {SceneActor.USER, SceneActor.ASSISTANT}
-            or entry.entry_type in {SceneEntryType.UTTERANCE, SceneEntryType.REPLY}
+            if is_user_visible_scene_interaction(entry)
         ]
         if not dialogue_entries:
             return None

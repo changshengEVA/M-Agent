@@ -40,6 +40,8 @@ def _build_reply_to_user_tool(context: ControllerCapabilityContext, description:
         scene_writer = hooks.get("scene_writer")
         transaction_id = str(hooks.get("transaction_id", "") or "").strip()
         delegate_id = str(hooks.get("delegate_id", "") or "").strip()
+        agent_name = str(hooks.get("agent_name", "") or "Agent").strip() or "Agent"
+        effect_id = str(hooks.get("effect_id", "") or "").strip()
         conversation_id = (
             str(hooks.get("conversation_id", "") or "").strip()
             or context.active_thread_id
@@ -57,19 +59,39 @@ def _build_reply_to_user_tool(context: ControllerCapabilityContext, description:
                     SceneEntryType,
                 )
 
-                scene_writer.append(
-                    conversation_id,
-                    SceneEntry(
-                        seq=0,
-                        occurred_at=_now_iso(),
-                        entry_type=SceneEntryType.REPLY,
-                        actor=SceneActor.ASSISTANT,
-                        text=text,
-                        transaction_id=transaction_id or None,
-                        delegate_id=delegate_id or None,
-                        tool_name="reply_to_user",
+                append_id = (
+                    f"{delegate_id}:action:1" if delegate_id else None
+                )
+                entry = SceneEntry(
+                    seq=0,
+                    occurred_at=_now_iso(),
+                    entry_type=SceneEntryType.ACTION,
+                    actor=SceneActor.ASSISTANT,
+                    actor_name=agent_name,
+                    text=text,
+                    append_id=append_id,
+                    transaction_id=transaction_id or None,
+                    delegate_id=delegate_id or None,
+                    tool_name="reply_to_user",
+                    payload_ref=(
+                        f"effect:{effect_id}:tool_history:1"
+                        if effect_id
+                        else None
                     ),
                 )
+                if append_id:
+                    try:
+                        scene_writer.append(
+                            conversation_id,
+                            entry,
+                            append_id=append_id,
+                        )
+                    except TypeError:
+                        # Compatibility for simple SceneWriter fakes and old
+                        # integrations that predate the append_id keyword.
+                        scene_writer.append(conversation_id, entry)
+                else:
+                    scene_writer.append(conversation_id, entry)
         except Exception as exc:
             context.finish_tool_call(call_id, "reply_to_user", error=str(exc))
             raise

@@ -1194,6 +1194,28 @@ Query parameters:
 
 The response is a chronological Scene log with `entries` and pagination state. Use the returned entry sequence with `before_seq`; do not confuse Scene entry sequences with run/thread SSE sequences.
 
+New Scene writes use the stimulus-native wire types below. `actor` is the
+registered/display identity, while `actor_role` is the stable machine role.
+
+| `entry_type` | `actor` | `actor_role` |
+| --- | --- | --- |
+| `Stimulus_USER_MESSAGE` | registered user name | `user` |
+| `Stimulus_EXECUTION_FEEDBACK` | `tool_name` | `work` |
+| `Stimulus_SCHEDULED_PLAN` | registered Agent name | `assistant` |
+| `Stimulus_OBSERVATION_TRIGGER` | registered observation/monitor name | `work` |
+| `Thought` | registered Agent name | `think` |
+| `Action` | registered Agent name | `work`, or `assistant` for `reply_to_user` |
+
+For ordinary tools, `Action.text` is parseable JSON containing at least
+`tool_name` and `arguments`. The following
+`Stimulus_EXECUTION_FEEDBACK.text` is parseable JSON containing at least
+`tool_name` and `success`, plus the available `result`, `error`, and `summary`.
+Sensitive values are recursively redacted; oversized evidence uses
+`truncated` and, when available, `payload_ref`. A `reply_to_user` call is an
+`Action` whose `text` remains the actual user-visible message. Historical
+lowercase `utterance`, `thought`, `action`, `outcome`, and `reply` rows remain
+read-compatible, but are not produced by new writes.
+
 ```http
 GET /v1/chat/threads/demo-thread/scene?limit=40&since_flush=true
 Authorization: Bearer <token>
@@ -1207,8 +1229,9 @@ Authorization: Bearer <token>
     {
       "seq": 1,
       "occurred_at": "2026-08-04T12:00:00Z",
-      "entry_type": "utterance",
-      "actor": "user",
+      "entry_type": "Stimulus_USER_MESSAGE",
+      "actor": "alice",
+      "actor_role": "user",
       "text": "继续跟进这件事",
       "transaction_id": "tx_123"
     }
@@ -1736,6 +1759,10 @@ The following event types may appear on `GET /v1/chat/threads/{thread_id}/events
 | `turn_failed` | 刺激处理在交付回复前失败 | Stimulus processing failed before reply delivery | `thread_id`, `conversation_id`, `transaction_id`, `stimulus_id`, `error`, `retryable` |
 
 Notes / 说明:
+
+`scene_entry_appended` sends the complete `SceneEntry` wire object: `seq`,
+`occurred_at`, `entry_type`, `actor`, `actor_role`, `text`, `append_id`,
+`transaction_id`, `delegate_id`, `tool_name`, and `payload_ref`.
 
 - thread streams do not automatically terminate like run streams
 - `thread_id` inside thread SSE payload is converted back to the public thread id

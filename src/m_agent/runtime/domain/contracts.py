@@ -62,11 +62,37 @@ class TransactionKind(str, Enum):
 
 
 class SceneEntryType(str, Enum):
-    UTTERANCE = "utterance"
-    THOUGHT = "thought"
-    ACTION = "action"
-    OUTCOME = "outcome"
-    REPLY = "reply"
+    """Semantic entries in the chronological Scene wire protocol.
+
+    ``UTTERANCE`` remains as a source-compatible alias for callers that still
+    use the pre-Stimulus name.  New persisted data always carries the explicit
+    top-level Stimulus kind.  ``OUTCOME`` and ``REPLY`` are retained only for
+    programmatic compatibility; production writes project tool results as an
+    execution-feedback Stimulus and replies as an Action.
+    """
+
+    STIMULUS_USER_MESSAGE = "Stimulus_USER_MESSAGE"
+    STIMULUS_EXECUTION_FEEDBACK = "Stimulus_EXECUTION_FEEDBACK"
+    STIMULUS_SCHEDULED_PLAN = "Stimulus_SCHEDULED_PLAN"
+    STIMULUS_OBSERVATION_TRIGGER = "Stimulus_OBSERVATION_TRIGGER"
+    UTTERANCE = "Stimulus_USER_MESSAGE"
+    THOUGHT = "Thought"
+    ACTION = "Action"
+    OUTCOME = "Outcome"
+    REPLY = "Reply"
+
+    @classmethod
+    def _missing_(cls, value: object) -> Optional["SceneEntryType"]:
+        """Load legacy lowercase JSONL without dropping Scene rows."""
+
+        normalized = str(value or "").strip().lower()
+        return {
+            "utterance": cls.STIMULUS_USER_MESSAGE,
+            "thought": cls.THOUGHT,
+            "action": cls.ACTION,
+            "outcome": cls.STIMULUS_EXECUTION_FEEDBACK,
+            "reply": cls.ACTION,
+        }.get(normalized)
 
 
 class SceneActor(str, Enum):
@@ -432,13 +458,16 @@ class SceneEntry:
     delegate_id: Optional[str] = None
     tool_name: Optional[str] = None
     payload_ref: Optional[str] = None
+    actor_name: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        actor_name = str(self.actor_name or "").strip()
         return {
             "seq": self.seq,
             "occurred_at": self.occurred_at,
             "entry_type": self.entry_type.value,
-            "actor": self.actor.value,
+            "actor": actor_name or self.actor.value,
+            "actor_role": self.actor.value,
             "text": self.text,
             "append_id": self.append_id,
             "transaction_id": self.transaction_id,
@@ -449,15 +478,66 @@ class SceneEntry:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SceneEntry":
+        raw_entry_type = str(
+            data.get("entry_type", SceneEntryType.OUTCOME.value)
+        ).strip()
+        entry_type = SceneEntryType(raw_entry_type)
+        tool_name = str(data.get("tool_name", "") or "").strip()
+        if raw_entry_type.lower() == "reply" and not tool_name:
+            # A legacy reply is the old wire representation of the
+            # reply_to_user Action.  Preserve that semantic discriminator so
+            # dialogue export and matcher context do not drop migrated rows.
+            tool_name = "reply_to_user"
+        raw_actor = str(data.get("actor", "") or "").strip()
+        raw_actor_role = str(data.get("actor_role", "") or "").strip()
+        actor = cls._parse_actor_role(
+            raw_actor_role or raw_actor,
+            entry_type=entry_type,
+            tool_name=tool_name,
+            raw_entry_type=raw_entry_type,
+        )
         return cls(
             seq=int(data.get("seq", 0)),
             occurred_at=str(data.get("occurred_at", "") or ""),
-            entry_type=SceneEntryType(str(data.get("entry_type", SceneEntryType.OUTCOME.value))),
-            actor=SceneActor(str(data.get("actor", SceneActor.WORK.value))),
+            entry_type=entry_type,
+            actor=actor,
             text=str(data.get("text", "") or ""),
+            actor_name=(
+                raw_actor
+                if raw_actor and raw_actor != actor.value
+                else None
+            ),
             append_id=data.get("append_id"),
             transaction_id=data.get("transaction_id"),
             delegate_id=data.get("delegate_id"),
-            tool_name=data.get("tool_name"),
+            tool_name=tool_name or None,
             payload_ref=data.get("payload_ref"),
         )
+
+    @staticmethod
+    def _parse_actor_role(
+        value: str,
+        *,
+        entry_type: SceneEntryType,
+        tool_name: str,
+        raw_entry_type: str,
+    ) -> SceneActor:
+        normalized = str(value or "").strip().lower()
+        try:
+            return SceneActor(normalized)
+        except ValueError:
+            pass
+        if entry_type == SceneEntryType.STIMULUS_USER_MESSAGE:
+            return SceneActor.USER
+        if entry_type == SceneEntryType.THOUGHT:
+            return SceneActor.THINK
+        if entry_type == SceneEntryType.ACTION:
+            if (
+                str(raw_entry_type or "").strip().lower() == "reply"
+                or str(tool_name or "").strip() == "reply_to_user"
+            ):
+                return SceneActor.ASSISTANT
+            return SceneActor.WORK
+        if entry_type == SceneEntryType.STIMULUS_SCHEDULED_PLAN:
+            return SceneActor.ASSISTANT
+        return SceneActor.WORK

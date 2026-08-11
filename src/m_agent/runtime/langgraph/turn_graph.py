@@ -23,6 +23,7 @@ from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from langgraph.graph import END, START, StateGraph
 
+from m_agent.api.chat_api_shared import _now_iso
 from m_agent.layers.thinking.contracts import (
     TASK_COMPLETION_AWAITING_USER,
     TaskState,
@@ -60,6 +61,7 @@ from m_agent.runtime.domain.contracts import (
     TransactionRecord,
     TransactionState,
 )
+from m_agent.runtime.scene_projection import render_tool_action_text
 from m_agent.runtime.turn_support.awaiting_user_pause import (
     pause_for_user_collaboration,
 )
@@ -229,6 +231,7 @@ class TurnGraphPorts:
         default_factory=DelegateEffectLedger,
     )
     context: TurnContext = field(default_factory=TurnContext)
+    agent_name: str = "Agent"
 
 
 def _fail(
@@ -298,6 +301,7 @@ def build_turn_graph(ports: TurnGraphPorts) -> StateGraph:
         tool_name: Optional[str] = None,
         append_id: Optional[str] = None,
         payload_ref: Optional[str] = None,
+        actor_name: Optional[str] = None,
     ) -> None:
         if _is_deleted(record.transaction_id):
             return
@@ -306,9 +310,17 @@ def build_turn_graph(ports: TurnGraphPorts) -> StateGraph:
             return
         entry = SceneEntry(
             seq=0,
-            occurred_at="",
+            occurred_at=_now_iso(),
             entry_type=entry_type,
             actor=actor,
+            actor_name=(
+                str(actor_name or "").strip()
+                or (
+                    str(ports.agent_name or "Agent").strip()
+                    if actor != SceneActor.USER
+                    else None
+                )
+            ),
             text=body,
             append_id=append_id,
             transaction_id=record.transaction_id,
@@ -330,28 +342,27 @@ def build_turn_graph(ports: TurnGraphPorts) -> StateGraph:
         tool_history: List[Dict[str, Any]],
         *,
         delegate_id: str,
+        effect_id: str,
     ) -> None:
-        for item in tool_history:
+        for index, item in enumerate(tool_history, start=1):
             if not isinstance(item, dict):
                 continue
             name = str(item.get("tool_name", "") or "").strip()
             if name == REPLY_TOOL_NAME:
                 continue
-            result = item.get("result")
-            summary = ""
-            if isinstance(result, dict):
-                summary = str(
-                    result.get("summary", result.get("message", "")) or ""
-                )[:500]
-            elif result is not None:
-                summary = str(result)[:500]
             _append_scene(
                 record,
                 entry_type=SceneEntryType.ACTION,
                 actor=SceneActor.WORK,
-                text=f"{name}: {summary}" if summary else name,
+                text=render_tool_action_text(item),
                 delegate_id=delegate_id,
                 tool_name=name or None,
+                append_id=f"{delegate_id}:action:{index}",
+                payload_ref=(
+                    f"effect:{effect_id}:tool_history:{index}"
+                    if effect_id
+                    else None
+                ),
             )
 
     def _record_snapshot(
@@ -560,6 +571,7 @@ def build_turn_graph(ports: TurnGraphPorts) -> StateGraph:
                 entry_type=SceneEntryType.THOUGHT,
                 actor=SceneActor.THINK,
                 text=str(decision.reasoning),
+                append_id=f"{transition_id}:reasoning",
             )
         if decision.episode_note:
             episode_note_id = f"{transition_id}:episode_note"
@@ -737,7 +749,12 @@ def build_turn_graph(ports: TurnGraphPorts) -> StateGraph:
         if _is_deleted(tx_id):
             return _deleted_state(state, phase="delegate result commit")
         updated = registry.get(tx_id) or record
-        _append_tool_scene(updated, outcome.tool_history, delegate_id=delegate_id)
+        _append_tool_scene(
+            updated,
+            outcome.tool_history,
+            delegate_id=delegate_id,
+            effect_id=effect_id,
+        )
         committed_effect = ports.effect_ledger.commit_result(
             effect_id=effect_id,
             outcome=outcome,

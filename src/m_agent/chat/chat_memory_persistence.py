@@ -149,13 +149,28 @@ def scene_entry_to_dialogue_turn(
         data = {}
 
     actor = str(data.get("actor", "") or "").strip().lower()
+    actor_role = str(data.get("actor_role", "") or "").strip().lower()
     entry_type = str(data.get("entry_type", "") or "").strip().lower()
+    tool_name = str(data.get("tool_name", "") or "").strip()
     text = str(data.get("text", "") or "").strip()
     if not text:
         return None
 
-    is_user = entry_type == "utterance" or actor == "user"
-    is_assistant = entry_type == "reply" or actor == "assistant"
+    is_user = (
+        entry_type in {"utterance", "stimulus_user_message"}
+        or (
+            not entry_type
+            and (actor_role == "user" or actor == "user")
+        )
+    )
+    is_assistant = (
+        entry_type == "reply"
+        or (entry_type == "action" and tool_name == "reply_to_user")
+        or (
+            not entry_type
+            and (actor_role == "assistant" or actor == "assistant")
+        )
+    )
     if is_user and not is_assistant:
         speaker = user_name
     elif is_assistant and not is_user:

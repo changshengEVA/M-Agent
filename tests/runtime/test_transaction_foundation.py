@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import threading
 from typing import Any
 
 import pytest
@@ -35,7 +36,10 @@ from m_agent.runtime.transaction.registry import (
     TransactionRegistry,
     TransactionTransitionError,
 )
-from m_agent.systems.scene.default.jsonl_store import SceneLogStore
+from m_agent.systems.scene.default.jsonl_store import (
+    SceneLogStore,
+    scene_persist_file_stem,
+)
 
 
 pytestmark = [pytest.mark.unit, pytest.mark.p2_foundation]
@@ -457,6 +461,308 @@ def test_scene_append_id_is_idempotent_and_watermark_persists(
     assert persisted_replay.to_dict() == first.to_dict()
     assert len(reopened.tail(conversation_id)) == 2
     assert reopened.flush_watermark(conversation_id) == first.seq
+
+
+def test_runtime_scene_store_mirrors_and_repairs_jsonl_without_duplicates(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "runtime.sqlite3"
+    scene_dir = tmp_path / "scene"
+    conversation_id = "p2-scene-mirror::0"
+    append_id = "append-p2-feedback-1"
+    jsonl_path = (
+        scene_dir / f"{scene_persist_file_stem(conversation_id)}.jsonl"
+    )
+    entry = SceneEntry(
+        seq=0,
+        occurred_at="2026-08-11T08:00:01Z",
+        entry_type=SceneEntryType.STIMULUS_EXECUTION_FEEDBACK,
+        actor=SceneActor.WORK,
+        actor_name="web_search",
+        text=(
+            "web_search completed successfully and returned 3 results "
+            "for the requested query."
+        ),
+        transaction_id="txn-p2-feedback",
+        tool_name="web_search",
+    )
+
+    runtime_store = SQLiteRuntimeStore(database_path)
+    scene = SceneLogStore(
+        runtime_store=runtime_store,
+        persist_dir=scene_dir,
+        persist_enabled=True,
+    )
+    stored = scene.append(
+        conversation_id,
+        entry,
+        append_id=append_id,
+    )
+    replay = scene.append(
+        conversation_id,
+        entry,
+        append_id=append_id,
+    )
+
+    assert replay.to_dict() == stored.to_dict()
+    rows = [
+        json.loads(line)
+        for line in jsonl_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(rows) == 1
+    assert rows[0]["append_id"] == append_id
+    assert rows[0]["entry_type"] == "Stimulus_EXECUTION_FEEDBACK"
+    assert rows[0]["actor"] == "web_search"
+    assert rows[0]["actor_role"] == "work"
+    assert rows[0]["text"] == entry.text
+    runtime_store.close()
+
+    # Simulate a lost audit mirror while the authoritative SQLite row survives.
+    jsonl_path.unlink()
+    reopened_runtime_store = SQLiteRuntimeStore(database_path)
+    reopened_scene = SceneLogStore(
+        runtime_store=reopened_runtime_store,
+        persist_dir=scene_dir,
+        persist_enabled=True,
+    )
+
+    restored = reopened_scene.tail(conversation_id)
+    assert len(restored) == 1
+    assert restored[0].entry_type is SceneEntryType.STIMULUS_EXECUTION_FEEDBACK
+    assert restored[0].actor is SceneActor.WORK
+    assert restored[0].actor_name == "web_search"
+
+    repaired_rows = [
+        json.loads(line)
+        for line in jsonl_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert repaired_rows == rows
+
+    reopened_scene.append(
+        conversation_id,
+        entry,
+        append_id=append_id,
+    )
+    assert len(jsonl_path.read_text(encoding="utf-8").splitlines()) == 1
+    reopened_runtime_store.close()
+
+
+@pytest.mark.parametrize("corruption", ["missing-middle", "conflicting-row"])
+def test_runtime_scene_store_atomically_repairs_non_prefix_jsonl_from_sqlite(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    corruption: str,
+) -> None:
+    database_path = tmp_path / "runtime.sqlite3"
+    scene_dir = tmp_path / "scene"
+    conversation_id = "p2-scene-canonical-repair::0"
+    jsonl_path = (
+        scene_dir / f"{scene_persist_file_stem(conversation_id)}.jsonl"
+    )
+    temporary_path = jsonl_path.with_suffix(jsonl_path.suffix + ".tmp")
+
+    runtime_store = SQLiteRuntimeStore(database_path)
+    scene = SceneLogStore(
+        runtime_store=runtime_store,
+        persist_dir=scene_dir,
+        persist_enabled=True,
+    )
+    for index in range(1, 4):
+        scene.append(
+            conversation_id,
+            _scene_entry(
+                text=f"canonical-{index}",
+                occurred_at=f"2026-08-11T08:00:0{index}Z",
+            ),
+            append_id=f"append-p2-canonical-{index}",
+        )
+
+    def read_rows(path: Path) -> list[dict[str, Any]]:
+        return [
+            json.loads(line)
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+
+    canonical_rows = read_rows(jsonl_path)
+    runtime_store.close()
+
+    if corruption == "missing-middle":
+        corrupted_rows = [canonical_rows[0], canonical_rows[2]]
+    else:
+        corrupted_rows = [dict(row) for row in canonical_rows]
+        corrupted_rows[1]["text"] = "conflicting JSONL text"
+    jsonl_path.write_text(
+        "".join(
+            json.dumps(row, ensure_ascii=False) + "\n"
+            for row in corrupted_rows
+        ),
+        encoding="utf-8",
+    )
+
+    reopened_runtime_store = SQLiteRuntimeStore(database_path)
+    reopened_scene = SceneLogStore(
+        runtime_store=reopened_runtime_store,
+        persist_dir=scene_dir,
+        persist_enabled=True,
+    )
+    replacement_snapshots: list[
+        tuple[list[dict[str, Any]], list[dict[str, Any]]]
+    ] = []
+    original_replace = Path.replace
+
+    def observe_replace(source: Path, target: Path) -> Path:
+        if source == temporary_path and Path(target) == jsonl_path:
+            replacement_snapshots.append(
+                (read_rows(jsonl_path), read_rows(temporary_path))
+            )
+        return original_replace(source, target)
+
+    monkeypatch.setattr(Path, "replace", observe_replace)
+
+    restored = reopened_scene.tail(conversation_id)
+
+    assert [entry.append_id for entry in restored] == [
+        "append-p2-canonical-1",
+        "append-p2-canonical-2",
+        "append-p2-canonical-3",
+    ]
+    assert replacement_snapshots == [(corrupted_rows, canonical_rows)]
+    assert read_rows(jsonl_path) == canonical_rows
+    assert not temporary_path.exists()
+    reopened_runtime_store.close()
+
+
+def test_runtime_scene_initial_load_serializes_mirror_sync_and_append(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "runtime.sqlite3"
+    scene_dir = tmp_path / "scene"
+    conversation_id = "p2-scene-load-race::0"
+    jsonl_path = (
+        scene_dir / f"{scene_persist_file_stem(conversation_id)}.jsonl"
+    )
+    runtime_store = SQLiteRuntimeStore(database_path)
+    runtime_store.append_scene_entry(
+        conversation_id,
+        _scene_entry(text="canonical-before-load"),
+        append_id="append-before-load",
+    )
+    scene = SceneLogStore(
+        runtime_store=runtime_store,
+        persist_dir=scene_dir,
+        persist_enabled=True,
+    )
+
+    sync_started = threading.Event()
+    allow_sync = threading.Event()
+    append_done = threading.Event()
+    failures: list[BaseException] = []
+    original_sync = scene._sync_runtime_jsonl
+
+    def paused_sync(*args: Any, **kwargs: Any) -> None:
+        sync_started.set()
+        assert allow_sync.wait(timeout=5)
+        original_sync(*args, **kwargs)
+
+    monkeypatch.setattr(scene, "_sync_runtime_jsonl", paused_sync)
+
+    def load_scene() -> None:
+        try:
+            scene.tail(conversation_id)
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    def append_during_load() -> None:
+        try:
+            scene.append(
+                conversation_id,
+                _scene_entry(
+                    text="canonical-after-load",
+                    occurred_at="2026-08-11T08:00:02Z",
+                ),
+                append_id="append-after-load",
+            )
+            append_done.set()
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    loader = threading.Thread(target=load_scene)
+    appender = threading.Thread(target=append_during_load)
+    loader.start()
+    assert sync_started.wait(timeout=5)
+    appender.start()
+    assert append_done.wait(timeout=0.1) is False
+    allow_sync.set()
+    loader.join(timeout=5)
+    appender.join(timeout=5)
+
+    assert not loader.is_alive()
+    assert not appender.is_alive()
+    assert failures == []
+    rows = [
+        json.loads(line)
+        for line in jsonl_path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert [row["append_id"] for row in rows] == [
+        "append-before-load",
+        "append-after-load",
+    ]
+    runtime_store.close()
+
+
+def test_runtime_scene_store_rewrites_a_torn_jsonl_tail(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "runtime.sqlite3"
+    scene_dir = tmp_path / "scene"
+    conversation_id = "p2-scene-torn-tail::0"
+    jsonl_path = (
+        scene_dir / f"{scene_persist_file_stem(conversation_id)}.jsonl"
+    )
+    runtime_store = SQLiteRuntimeStore(database_path)
+    scene = SceneLogStore(
+        runtime_store=runtime_store,
+        persist_dir=scene_dir,
+        persist_enabled=True,
+    )
+    for index in range(1, 3):
+        scene.append(
+            conversation_id,
+            _scene_entry(
+                text=f"canonical-{index}",
+                occurred_at=f"2026-08-11T08:00:0{index}Z",
+            ),
+            append_id=f"append-torn-{index}",
+        )
+    canonical_lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    runtime_store.close()
+
+    jsonl_path.write_text(
+        canonical_lines[0] + "\n" + '{"partial":',
+        encoding="utf-8",
+    )
+    reopened_runtime_store = SQLiteRuntimeStore(database_path)
+    reopened_scene = SceneLogStore(
+        runtime_store=reopened_runtime_store,
+        persist_dir=scene_dir,
+        persist_enabled=True,
+    )
+
+    restored = reopened_scene.tail(conversation_id)
+
+    assert [entry.append_id for entry in restored] == [
+        "append-torn-1",
+        "append-torn-2",
+    ]
+    repaired_lines = jsonl_path.read_text(encoding="utf-8").splitlines()
+    assert repaired_lines == canonical_lines
+    assert all(json.loads(line) for line in repaired_lines)
+    reopened_runtime_store.close()
 
 
 def test_transaction_owned_state_is_isolated_and_persists(
