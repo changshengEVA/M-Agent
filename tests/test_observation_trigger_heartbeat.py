@@ -43,9 +43,8 @@ class _RecordingMonitor:
 
 
 class _BlockingMonitor:
-    monitor_id = "blocking"
-
-    def __init__(self) -> None:
+    def __init__(self, monitor_id: str = "blocking") -> None:
+        self.monitor_id = monitor_id
         self.started = threading.Event()
         self.release = threading.Event()
 
@@ -329,6 +328,94 @@ def test_schedule_coordinator_runs_custom_monitor_and_exposes_monitor_health() -
     assert health["monitors"]["custom"]["status"] == "healthy"
     assert health["monitors"]["custom"]["counters"]["beats_total"] == 1
     assert health["monitors"]["custom"]["counters"]["observed_total"] == 2
+
+
+def test_monitor_group_reconcile_waits_for_in_flight_beat_and_swaps_as_one_group() -> None:
+    runtime = _CoordinatorRuntime()
+    blocking = _BlockingMonitor("gmail_email")
+    coordinator = ScheduleHeartbeatCoordinator(
+        service_runtime=runtime,
+        monitors=[blocking],
+        autostart=False,
+    )
+    calls: list[str] = []
+    replacement_gmail = _RecordingMonitor("gmail_email", calls)
+    replacement_arxiv = _RecordingMonitor("arxiv", calls)
+    committed = threading.Event()
+    reconciled = threading.Event()
+
+    beat_thread = threading.Thread(target=coordinator.beat_once)
+    beat_thread.start()
+    assert blocking.started.wait(timeout=1.0)
+
+    def reconcile() -> None:
+        coordinator.reconcile_monitor_group(
+            managed_ids={"gmail_email", "arxiv"},
+            monitors=[replacement_gmail, replacement_arxiv],
+            commit=committed.set,
+        )
+        reconciled.set()
+
+    reconcile_thread = threading.Thread(target=reconcile)
+    reconcile_thread.start()
+    assert not committed.wait(timeout=0.05)
+    assert coordinator.monitor_registry.get("gmail_email") is blocking
+
+    blocking.release.set()
+    beat_thread.join(timeout=1.0)
+    assert committed.wait(timeout=1.0)
+    assert reconciled.wait(timeout=1.0)
+    reconcile_thread.join(timeout=1.0)
+    assert coordinator.monitor_registry.get("gmail_email") is replacement_gmail
+    assert coordinator.monitor_registry.get("arxiv") is replacement_arxiv
+    assert coordinator.monitor_registry.names() == [
+        "schedule",
+        "gmail_email",
+        "arxiv",
+    ]
+
+
+def test_monitor_group_reconcile_restores_old_group_when_commit_fails() -> None:
+    runtime = _CoordinatorRuntime()
+    calls: list[str] = []
+    previous = _RecordingMonitor("gmail_email", calls)
+    replacement = _RecordingMonitor("gmail_email", calls)
+    coordinator = ScheduleHeartbeatCoordinator(
+        service_runtime=runtime,
+        monitors=[previous],
+        autostart=False,
+    )
+
+    def fail_commit() -> None:
+        raise OSError("settings disk is full")
+
+    with pytest.raises(OSError, match="settings disk is full"):
+        coordinator.reconcile_monitor_group(
+            managed_ids={"gmail_email", "arxiv"},
+            monitors=[replacement],
+            commit=fail_commit,
+        )
+
+    assert coordinator.monitor_registry.get("gmail_email") is previous
+    assert coordinator.monitor_registry.get("arxiv") is None
+
+
+def test_registry_group_restore_preserves_interleaved_monitor_order() -> None:
+    calls: list[str] = []
+    gmail = _RecordingMonitor("gmail_email", calls)
+    custom = _RecordingMonitor("custom", calls)
+    arxiv = _RecordingMonitor("arxiv", calls)
+    registry = HeartbeatMonitorRegistry([gmail, custom, arxiv])
+
+    snapshot = registry.replace_group(
+        managed_ids={"gmail_email", "arxiv"},
+        monitors=[_RecordingMonitor("gmail_email", calls)],
+    )
+    registry.restore_group(snapshot)
+
+    assert registry.names() == ["gmail_email", "custom", "arxiv"]
+    assert registry.get("gmail_email") is gmail
+    assert registry.get("arxiv") is arxiv
 
 
 def test_shutdown_waits_for_manual_in_flight_beat() -> None:

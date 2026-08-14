@@ -13,7 +13,11 @@ from threading import RLock
 from typing import Any, Callable, Dict, List, Optional
 
 from m_agent.layers.execution.core import ExecutionAgent
-from m_agent.layers.execution.model_provider import ModelProvider
+from m_agent.layers.execution.model_provider import (
+    ModelProvider,
+    StructuredOutputError,
+    StructuredOutputSemanticError,
+)
 from m_agent.systems.episodic import DefaultEpisodeRecorder, EpisodeRecorder
 from m_agent.systems.wm import WMReader
 from m_agent.layers.perception.contracts import PerceptionInput, StimulusKind
@@ -281,10 +285,36 @@ class ThinkingAgent:
         if self.thinking_mode == THINKING_MODE_SINGLE_CALL:
             try:
                 thinking_turn = self._think_once(perception, state)
-            except Exception:
+            except Exception as exc:
                 # A failed/invalid joint response must not leak the speculative
                 # user-message reopen into the live transaction record.
                 state.task_progress.completion_status = previous_completion_status
+                failure_payload: Dict[str, Any] = {
+                    "thread_id": perception.thread_id,
+                    "conversation_id": perception.conversation_id,
+                    "transaction_id": perception.transaction_id,
+                    "stimulus_id": perception.stimulus_id,
+                    "turn": state.turn_count,
+                    "source": perception.stimulus.kind.value,
+                    "error_code": "thinking_internal_error",
+                    "error": "Thinking could not complete this turn.",
+                    "retryable": False,
+                }
+                if isinstance(exc, StructuredOutputError):
+                    diagnostic = exc.to_safe_dict()
+                    failure_payload.update(
+                        {
+                            "error_code": "structured_output_invalid",
+                            "error": (
+                                "Thinking could not produce a valid structured "
+                                "response."
+                            ),
+                            "retryable": bool(diagnostic["retryable"]),
+                            "diagnostic": diagnostic,
+                            "diagnostic_id": diagnostic["diagnostic_id"],
+                        }
+                    )
+                emit("turn_failed", failure_payload)
                 raise
             task_progress_update = self._task_update_from_turn_output(
                 thinking_turn.task_state,
@@ -392,9 +422,12 @@ class ThinkingAgent:
             episode_note=str(decision.episode_note or "").strip() or None,
             # Filled only after all deterministic task-state corrections.
             request_complete=None,
-            # ``reason`` is deliberately turn-local: do not project it into
-            # ThinkingDecision, SSE, graph checkpoints, Scene, or memory.
+            # Keep the joint schema's bounded turn-local reason separate from
+            # the legacy public ``reasoning`` field.  Runtime checkpoints and
+            # Scene use it for audit, while SSE and episodic memory retain
+            # their existing contracts.
             reasoning=None,
+            planning_reason=str(output.reason or "").strip() or None,
         )
 
     def _legacy_decision_for_state(
@@ -458,6 +491,7 @@ class ThinkingAgent:
                 ),
                 episode_note=decision.episode_note,
                 reasoning=decision.reasoning,
+                planning_reason=decision.planning_reason,
             )
 
         decision.mode = normalize_thinking_mode(decision.mode)
@@ -752,8 +786,12 @@ class ThinkingAgent:
             # The state can be corrected deterministically, but a silent action
             # cannot be repaired into the execute/reply that legacy planning
             # would have produced after that correction.
-            raise ValueError(
-                "joint output becomes processing but contains an irreparable silent decision"
+            raise StructuredOutputSemanticError(
+                "silent_for_processing_stimulus",
+                field_paths=(
+                    "task_state.completion_status",
+                    "decision.mode",
+                ),
             )
         if output.decision.mode == "execute":
             enabled_names = getattr(
@@ -769,9 +807,9 @@ class ThinkingAgent:
                 }
                 tool_name = str(output.decision.tool_name or "").strip()
                 if tool_name not in enabled:
-                    supported = ", ".join(sorted(enabled)) or "(none)"
-                    raise ValueError(
-                        f"unknown or disabled tool {tool_name!r}; enabled: {supported}"
+                    raise StructuredOutputSemanticError(
+                        "tool_not_enabled",
+                        field_paths=("decision.tool_name",),
                     )
 
     def _think_once(
@@ -897,6 +935,7 @@ class ThinkingAgent:
             "3. decision: base it on the task_state just generated. execute selects exactly one enabled tool_name with a detailed instruction; "
             "answer_directly supplies the complete answer; silent neither delegates nor replies. "
             "Do not output request_complete, and never copy reason into answer or episode_note.\n"
+            "- Keep reason to the short action-selection summary; never copy credentials, tokens, email bodies, raw tool output, or hidden reasoning steps.\n"
             "- episode_note contains only one or two facts genuinely worth remembering; never raw tool output or temporary analysis.\n"
             "- Delegate only the current step of a multi-step task and trust Structured tool result/count in the execution-feedback stimulus.\n"
             "- Use answer_directly for small talk, thanks, or requests unrelated to delegated capabilities that need a response; use silent when no reply is needed.\n"
@@ -1288,6 +1327,7 @@ class ThinkingAgent:
                 episode_note=raw.get("episode_note"),
                 request_complete=raw.get("request_complete"),
                 reasoning=raw.get("reasoning"),
+                planning_reason=raw.get("planning_reason"),
             )
         if hasattr(raw, "mode"):
             return ThinkingDecision(
@@ -1298,6 +1338,7 @@ class ThinkingAgent:
                 episode_note=getattr(raw, "episode_note", None),
                 request_complete=getattr(raw, "request_complete", None),
                 reasoning=getattr(raw, "reasoning", None),
+                planning_reason=getattr(raw, "planning_reason", None),
             )
         # Fallback: treat as direct answer string.
         return ThinkingDecision(

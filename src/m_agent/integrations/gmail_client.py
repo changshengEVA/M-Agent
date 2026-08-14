@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import logging
+import math
 import mimetypes
 from dataclasses import dataclass, field
 from email.message import EmailMessage
@@ -32,6 +33,28 @@ class GmailClientConfig:
     scopes: Tuple[str, ...] = field(default_factory=lambda: _DEFAULT_GMAIL_SCOPES)
     allow_local_webserver_flow: bool = True
     allow_console_flow: bool = False
+    request_timeout_seconds: float = 10.0
+    oauth_flow_timeout_seconds: int = 300
+
+    def __post_init__(self) -> None:
+        try:
+            timeout = float(self.request_timeout_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("request_timeout_seconds must be a positive number") from exc
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("request_timeout_seconds must be a positive number")
+        self.request_timeout_seconds = timeout
+        try:
+            oauth_timeout = int(self.oauth_flow_timeout_seconds)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "oauth_flow_timeout_seconds must be a positive integer"
+            ) from exc
+        if oauth_timeout <= 0:
+            raise ValueError(
+                "oauth_flow_timeout_seconds must be a positive integer"
+            )
+        self.oauth_flow_timeout_seconds = oauth_timeout
 
 
 class GmailApiClient:
@@ -44,10 +67,11 @@ class GmailApiClient:
     @staticmethod
     def _import_google_deps() -> Dict[str, Any]:
         try:
-            from google.auth.transport.requests import Request  # type: ignore
             from google.oauth2.credentials import Credentials  # type: ignore
+            from google_auth_httplib2 import AuthorizedHttp, Request  # type: ignore
             from google_auth_oauthlib.flow import InstalledAppFlow  # type: ignore
             from googleapiclient.discovery import build  # type: ignore
+            from httplib2 import Http  # type: ignore
         except ModuleNotFoundError as exc:
             raise GmailDependencyError(
                 "Gmail API dependencies are missing. Install: "
@@ -56,7 +80,9 @@ class GmailApiClient:
         return {
             "Request": Request,
             "Credentials": Credentials,
+            "AuthorizedHttp": AuthorizedHttp,
             "InstalledAppFlow": InstalledAppFlow,
+            "Http": Http,
             "build": build,
         }
 
@@ -70,8 +96,12 @@ class GmailApiClient:
         deps = self._import_google_deps()
         Request = deps["Request"]
         Credentials = deps["Credentials"]
+        AuthorizedHttp = deps["AuthorizedHttp"]
         InstalledAppFlow = deps["InstalledAppFlow"]
+        Http = deps["Http"]
         build = deps["build"]
+        transport = Http(timeout=self.config.request_timeout_seconds)
+        refresh_request = Request(transport)
 
         creds: Any = None
         token_path = self.config.token_path
@@ -89,7 +119,7 @@ class GmailApiClient:
 
         if creds and creds.expired and creds.refresh_token:
             try:
-                creds.refresh(Request())
+                creds.refresh(refresh_request)
             except Exception:
                 logger.info(
                     "Saved Gmail OAuth token could not be refreshed; starting a new OAuth flow.",
@@ -107,7 +137,13 @@ class GmailApiClient:
             token_path.parent.mkdir(parents=True, exist_ok=True)
             token_path.write_text(creds.to_json(), encoding="utf-8")
 
-        return build("gmail", "v1", credentials=creds, cache_discovery=False)
+        authorized_http = AuthorizedHttp(creds, http=transport)
+        return build(
+            "gmail",
+            "v1",
+            http=authorized_http,
+            cache_discovery=False,
+        )
 
     @staticmethod
     def _is_auth_failure(exc: BaseException) -> bool:
@@ -117,7 +153,9 @@ class GmailApiClient:
             status_code = int(status)
         except Exception:
             status_code = 0
-        if status_code in {401, 403}:
+        # 403 is also used for quota/rate-limit failures.  Reauthenticating
+        # those requests can open an OAuth flow without fixing the problem.
+        if status_code == 401:
             return True
 
         text = str(exc).lower()
@@ -171,7 +209,10 @@ class GmailApiClient:
 
         if self.config.allow_local_webserver_flow:
             try:
-                return flow.run_local_server(port=0)
+                return flow.run_local_server(
+                    port=0,
+                    timeout_seconds=self.config.oauth_flow_timeout_seconds,
+                )
             except Exception:
                 if not self.config.allow_console_flow:
                     raise
@@ -180,7 +221,13 @@ class GmailApiClient:
                     exc_info=True,
                 )
         if self.config.allow_console_flow:
-            return flow.run_console()
+            run_console = getattr(flow, "run_console", None)
+            if callable(run_console):
+                return run_console()
+            raise GmailAuthError(
+                "Console OAuth is unavailable in this google-auth-oauthlib "
+                "version. Complete the local browser flow instead."
+            )
         raise GmailAuthError(
             "No OAuth flow is enabled. Enable gmail.oauth.allow_local_webserver_flow "
             "or gmail.oauth.allow_console_flow."
@@ -205,6 +252,51 @@ class GmailApiClient:
                 pageToken=page_token,
                 includeSpamTrash=bool(include_spam_trash),
                 labelIds=list(label_ids) if label_ids else None,
+            )
+        )
+
+    def get_profile(self) -> Dict[str, Any]:
+        """Return the authenticated mailbox profile.
+
+        The profile's ``historyId`` is the safe baseline for incremental
+        mailbox observers.  Keeping this transport primitive here avoids
+        making background observers call the user-facing ``EmailAgent``.
+        """
+
+        return self._execute_request(
+            lambda service: service.users().getProfile(
+                userId=self.config.user_id,
+            )
+        )
+
+    def list_history(
+        self,
+        *,
+        start_history_id: str,
+        max_results: int = 100,
+        page_token: Optional[str] = None,
+        label_id: Optional[str] = None,
+        history_types: Optional[Sequence[str]] = None,
+    ) -> Dict[str, Any]:
+        """List mailbox changes after a Gmail ``historyId`` cursor."""
+
+        start_id = str(start_history_id or "").strip()
+        if not start_id:
+            raise ValueError("start_history_id is required")
+        return self._execute_request(
+            lambda service: service.users()
+            .history()
+            .list(
+                userId=self.config.user_id,
+                startHistoryId=start_id,
+                maxResults=max(1, min(500, int(max_results))),
+                pageToken=page_token,
+                labelId=str(label_id or "").strip() or None,
+                historyTypes=(
+                    list(history_types)
+                    if history_types
+                    else ["messageAdded"]
+                ),
             )
         )
 

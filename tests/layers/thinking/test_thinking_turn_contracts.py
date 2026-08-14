@@ -91,13 +91,9 @@ def test_joint_contract_declares_generation_fields_in_required_order() -> None:
         ("task_state", "completed"),
         ("task_state", "remaining"),
         ("decision", "mode"),
-        ("decision", "tool_name"),
-        ("decision", "instruction"),
-        ("decision", "answer"),
-        ("decision", "episode_note"),
     ],
 )
-def test_joint_contract_rejects_every_missing_field(
+def test_joint_contract_rejects_every_missing_required_field(
     section: str,
     field: str,
 ) -> None:
@@ -107,6 +103,19 @@ def test_joint_contract_rejects_every_missing_field(
 
     with pytest.raises(ValidationError):
         ThinkingTurnOutput.model_validate(payload)
+
+
+@pytest.mark.parametrize("field", ["tool_name", "instruction", "answer", "episode_note"])
+def test_decision_contract_allows_irrelevant_nullable_fields_to_be_omitted(
+    field: str,
+) -> None:
+    payload = _valid_payload(mode="silent")
+    payload["decision"].pop(field)
+
+    output = ThinkingTurnOutput.model_validate(payload)
+
+    assert output.decision.mode == "silent"
+    assert getattr(output.decision, field) is None
 
 
 @pytest.mark.parametrize(
@@ -238,6 +247,50 @@ def test_decision_output_rejects_invalid_mode_field_combinations(
         ThinkingTurnOutput.model_validate(payload)
 
 
+@pytest.mark.parametrize(
+    ("decision", "expected_code"),
+    [
+        (
+            {"mode": "execute", "instruction": "Find it"},
+            "decision_execute_fields_missing",
+        ),
+        (
+            {
+                "mode": "execute",
+                "tool_name": "deep_recall",
+                "instruction": "Find it",
+                "answer": "too early",
+            },
+            "decision_execute_answer_present",
+        ),
+        ({"mode": "answer_directly"}, "decision_answer_missing"),
+        (
+            {
+                "mode": "answer_directly",
+                "answer": "Done",
+                "tool_name": "deep_recall",
+            },
+            "decision_answer_fields_present",
+        ),
+        (
+            {"mode": "silent", "answer": "unexpected"},
+            "decision_silent_fields_present",
+        ),
+    ],
+)
+def test_decision_semantic_failures_expose_stable_safe_error_codes(
+    decision: dict[str, Any],
+    expected_code: str,
+) -> None:
+    payload = _valid_payload()
+    payload["decision"] = decision
+
+    with pytest.raises(ValidationError) as exc_info:
+        ThinkingTurnOutput.model_validate(payload)
+
+    assert exc_info.value.errors(include_input=False)[0]["type"] == expected_code
+
+
 def test_nullable_action_fields_may_use_empty_strings_when_semantically_empty() -> None:
     direct = _valid_payload(mode="answer_directly")
     direct["decision"]["tool_name"] = ""
@@ -289,4 +342,3 @@ def test_joint_contract_enforces_documented_size_limits(
 
     with pytest.raises(ValidationError):
         ThinkingTurnOutput.model_validate(payload)
-

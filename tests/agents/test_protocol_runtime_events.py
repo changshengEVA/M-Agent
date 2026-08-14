@@ -73,15 +73,28 @@ def test_summarize_thinking_completed_lists_plan_phase() -> None:
     assert "phases=plan" in text
 
 
-def test_summarize_turn_failed_includes_transaction_and_error() -> None:
+def test_summarize_turn_failed_includes_only_safe_diagnostic_metadata() -> None:
+    sentinel = "RAW-FAILURE-MUST-NOT-BE-LOGGED"
     text = _summarize_event_payload(
         "turn_failed",
         {
             "thread_id": "t1",
             "transaction_id": "txn-1",
-            "error": "delegate transition failed",
+            "error": sentinel,
+            "error_code": "structured_output_invalid",
+            "diagnostic_id": "mdiag_safe",
+            "diagnostic": {
+                "failures": [
+                    {"category": "schema"},
+                    {"category": "parse"},
+                    {"category": "schema"},
+                ]
+            },
         },
     )
 
     assert "txn=txn-1" in text
-    assert "delegate transition failed" in text
+    assert "code=structured_output_invalid" in text
+    assert "diagnostic_id=mdiag_safe" in text
+    assert "categories=parse,schema" in text
+    assert sentinel not in text

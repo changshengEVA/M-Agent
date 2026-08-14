@@ -5,7 +5,7 @@ import logging
 import threading
 import time
 import uuid
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Optional, Tuple
 
 from m_agent.api.user_access import UserAccessService
 from m_agent.runtime.transaction import (
@@ -118,6 +118,36 @@ class ScheduleHeartbeatCoordinator:
         if key == _ScheduleHeartbeatMonitor.monitor_id:
             raise ValueError("the built-in schedule monitor cannot be unregistered")
         return self.monitor_registry.unregister(key)
+
+    def reconcile_monitor_group(
+        self,
+        *,
+        managed_ids: Iterable[str],
+        monitors: Iterable[HeartbeatMonitor],
+        commit: Callable[[], None],
+    ) -> Tuple[str, ...]:
+        """Swap a managed monitor group and commit its config as one unit.
+
+        Beats cannot observe the candidate group until ``commit`` succeeds.
+        If persistence raises, the previous monitor objects and health records
+        are restored before the beat lock is released.
+        """
+
+        candidate = tuple(monitors)
+        with self._beat_lock:
+            snapshot = self.monitor_registry.replace_group(
+                managed_ids=managed_ids,
+                monitors=candidate,
+            )
+            try:
+                commit()
+            except Exception:
+                self.monitor_registry.restore_group(snapshot)
+                raise
+        return tuple(
+            str(getattr(monitor, "monitor_id", "") or "").strip()
+            for monitor in candidate
+        )
 
     def start(self) -> None:
         with self._lifecycle_condition:

@@ -3,6 +3,7 @@ from __future__ import annotations
 from .chat_api_cli import _configure_logging, main, parse_args
 from .chat_api_models import (
     ChatRunCreateRequest,
+    ObservationMonitorSettingsPutRequest,
     ThreadMemoryFlushRequest,
     ThreadMemoryModeRequest,
     UserConfigPatchRequest,
@@ -23,6 +24,7 @@ __all__ = [
     "BufferedRound",
     "ThreadSessionState",
     "ChatRunCreateRequest",
+    "ObservationMonitorSettingsPutRequest",
     "UserRegisterRequest",
     "UserLoginRequest",
     "UserConfigPatchRequest",

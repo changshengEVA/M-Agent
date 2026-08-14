@@ -231,8 +231,23 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
 
 def _write_yaml(path: Path, payload: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
+    # Never expose a half-written settings file to a runtime created on a
+    # neighbouring request.  The account-store lock serializes writers; the
+    # sibling temporary file plus os.replace makes each file update atomic.
+    temp_path = path.with_name(
+        f".{path.name}.{secrets.token_hex(8)}.tmp"
+    )
+    try:
+        with open(temp_path, "w", encoding="utf-8") as f:
+            yaml.safe_dump(payload, f, allow_unicode=True, sort_keys=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(temp_path, path)
+    finally:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 def _empty_users_payload() -> Dict[str, Any]:
@@ -1014,13 +1029,55 @@ class UserAccountStore:
             if not changed_sections:
                 raise UserAccessError("no effective config change", status_code=400)
 
-            if "chat" in changed_sections:
-                _write_yaml(chat_path, chat_config)
-            if "model" in changed_sections:
-                _write_yaml(model_path, model_config)
+            original_chat = (
+                chat_path.read_bytes()
+                if "chat" in changed_sections and chat_path.exists()
+                else None
+            )
+            original_model = (
+                model_path.read_bytes()
+                if "model" in changed_sections and model_path.exists()
+                else None
+            )
+            original_updated_at = record.get("updated_at")
+            written: list[tuple[Path, Optional[bytes]]] = []
+            try:
+                if "chat" in changed_sections:
+                    _write_yaml(chat_path, chat_config)
+                    written.append((chat_path, original_chat))
+                if "model" in changed_sections:
+                    _write_yaml(model_path, model_config)
+                    written.append((model_path, original_model))
 
-            record["updated_at"] = _now_iso()
-            self._save_users_payload(users_payload)
+                record["updated_at"] = _now_iso()
+                self._save_users_payload(users_payload)
+            except Exception:
+                # Treat the multi-file user settings patch as one commit from
+                # the caller's point of view.  If a later write fails, restore
+                # every earlier file before surfacing the error.
+                for written_path, original in reversed(written):
+                    if original is None:
+                        written_path.unlink(missing_ok=True)
+                        continue
+                    restore_path = written_path.with_name(
+                        f".{written_path.name}.{secrets.token_hex(8)}.restore"
+                    )
+                    try:
+                        with open(restore_path, "wb") as handle:
+                            handle.write(original)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                        os.replace(restore_path, written_path)
+                    finally:
+                        try:
+                            restore_path.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                if original_updated_at is None:
+                    record.pop("updated_at", None)
+                else:
+                    record["updated_at"] = original_updated_at
+                raise
             return self._to_authenticated_user(username=normalized_username, record=record)
 
 
@@ -1187,7 +1244,14 @@ class UserAccessService:
             updates=updates,
         )
         self.runtime_pool.invalidate(updated_user.username)
-        return {"user": updated_user.to_payload()}
+        return {
+            "user": updated_user.to_payload(),
+            "application": {
+                "status": "applied",
+                "previous_runtime_retired": True,
+                "effective_on": "next_request",
+            },
+        }
 
     def get_user_config_schema(self, *, user: AuthenticatedUser) -> Dict[str, Any]:
         return self.account_store.get_user_config_schema(username=user.username)

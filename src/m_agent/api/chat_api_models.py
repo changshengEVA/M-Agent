@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class ChatImageAttachment(BaseModel):
@@ -38,8 +38,20 @@ class UserLoginRequest(BaseModel):
 
 
 class UserConfigPatchRequest(BaseModel):
+    # A settings request must never look successful while silently dropping
+    # a stale or misspelled section.  This also makes the UI/backend contract
+    # drift visible to older clients instead of pretending that it applied.
+    model_config = ConfigDict(extra="forbid")
+
     chat: Optional[Dict[str, Any]] = None
     model: Optional[Dict[str, Any]] = None
+
+
+class ObservationMonitorSettingsPutRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    config: Dict[str, Any]
+    expected_revision: Optional[str] = None
 
 
 class ThreadMemoryModeRequest(BaseModel):

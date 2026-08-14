@@ -35,6 +35,7 @@ from .chat_api_models import (
     ThreadMemoryFlushRequest,
     ThreadMemoryModeRequest,
     ThreadStimulusRequest,
+    ObservationMonitorSettingsPutRequest,
     UserConfigPatchRequest,
     UserLoginRequest,
     UserRegisterRequest,
@@ -54,6 +55,10 @@ from .chat_api_records import (
 )
 from .chat_api_runtime import ChatServiceRuntime, PendingFlushAdmissionError
 from .heartbeat import HeartbeatMonitor
+from .observation_monitor_settings import (
+    ObservationMonitorSettingsError,
+    ObservationMonitorSettingsManager,
+)
 from .schedule_heartbeat import ScheduleHeartbeatCoordinator
 from .chat_api_shared import (
     ensure_dialogue_archive,
@@ -326,6 +331,9 @@ def create_app(
     user_access: Optional[UserAccessService] = None,
     schedule_beat_seconds: int = 10,
     heartbeat_monitors: Optional[Iterable[HeartbeatMonitor]] = None,
+    observation_monitors_config_path: Optional[str | Path] = None,
+    observation_monitors_live_apply_enabled: bool = True,
+    observation_monitors_initial_config_applied: bool = False,
 ) -> FastAPI:
     wire_runtime_event_sink(service_runtime)
     image_store = ChatImageStore(
@@ -339,6 +347,18 @@ def create_app(
         thread_event_sink=_THREAD_EVENTS.append_event,
         monitors=heartbeat_monitors,
         autostart=False,
+    )
+    observation_monitor_settings = (
+        ObservationMonitorSettingsManager(
+            config_path=observation_monitors_config_path,
+            coordinator=schedule_heartbeat,
+            live_apply_enabled=observation_monitors_live_apply_enabled,
+            initial_config_applied=(
+                observation_monitors_initial_config_applied
+            ),
+        )
+        if observation_monitors_config_path is not None
+        else None
     )
 
     @asynccontextmanager
@@ -358,6 +378,7 @@ def create_app(
     app.state.schedule_heartbeat = schedule_heartbeat
     app.state.heartbeat = schedule_heartbeat
     app.state.heartbeat_monitors = schedule_heartbeat.monitor_registry
+    app.state.observation_monitor_settings = observation_monitor_settings
     app.state.image_store = image_store
 
     app.add_middleware(
@@ -537,6 +558,7 @@ def create_app(
                 "auth_logout": "/v1/auth/logout",
                 "user_config_patch": "/v1/users/me/config",
                 "user_config_schema": "/v1/users/me/config/schema",
+                "observation_monitor_settings": "/v1/users/me/settings/observation-monitors",
                 "create_run": "/v1/chat/runs",
                 "get_run": "/v1/chat/runs/{run_id}",
                 "stream_events": "/v1/chat/runs/{run_id}/events",
@@ -650,6 +672,100 @@ def create_app(
         except UserAccessError as exc:
             return _error_response(status_code=exc.status_code, message=str(exc))
         return JSONResponse(content=payload)
+
+    def _resolve_observation_settings_operator(
+        request: Request,
+    ) -> Tuple[
+        Optional[AuthenticatedUser],
+        Optional[ObservationMonitorSettingsManager],
+        Optional[JSONResponse],
+    ]:
+        if user_access is None:
+            return None, None, _error_response(
+                status_code=503,
+                message="user auth service is disabled",
+            )
+        user, auth_error = _resolve_user_only(request)
+        if auth_error is not None:
+            return None, None, auth_error
+        if user is None or str(user.role or "").strip().lower() != "advanced":
+            return None, None, _error_response(
+                status_code=403,
+                message="advanced role is required to manage observation monitors",
+            )
+        if observation_monitor_settings is None:
+            return user, None, _error_response(
+                status_code=503,
+                message="observation monitor settings management is disabled",
+            )
+        return user, observation_monitor_settings, None
+
+    def _settings_revision_from_if_match(value: Optional[str]) -> str:
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        if "," in text or text == "*":
+            raise ObservationMonitorSettingsError(
+                "If-Match must contain one explicit observation settings revision"
+            )
+        if text[:2].casefold() == "w/":
+            text = text[2:].strip()
+        if len(text) >= 2 and text[0] == text[-1] == '"':
+            text = text[1:-1]
+        return text.strip()
+
+    @app.get("/v1/users/me/settings/observation-monitors")
+    def get_observation_monitor_settings(request: Request) -> JSONResponse:
+        _, manager, error = _resolve_observation_settings_operator(request)
+        if error is not None:
+            return error
+        try:
+            payload = manager.get()
+        except ObservationMonitorSettingsError as exc:
+            return _error_response(
+                status_code=exc.status_code,
+                message=str(exc),
+                extra=exc.extra,
+            )
+        revision = str(payload.get("revision", "") or "")
+        return JSONResponse(
+            content=payload,
+            headers={"ETag": f'W/"{revision}"'},
+        )
+
+    @app.put("/v1/users/me/settings/observation-monitors")
+    def put_observation_monitor_settings(
+        request: Request,
+        body: ObservationMonitorSettingsPutRequest,
+        if_match: Optional[str] = Header(default=None, alias="If-Match"),
+    ) -> JSONResponse:
+        user, manager, error = _resolve_observation_settings_operator(request)
+        if error is not None:
+            return error
+        try:
+            header_revision = _settings_revision_from_if_match(if_match)
+            body_revision = str(body.expected_revision or "").strip()
+            if header_revision and body_revision and header_revision != body_revision:
+                raise ObservationMonitorSettingsError(
+                    "If-Match and expected_revision do not match"
+                )
+            expected_revision = header_revision or body_revision
+            payload = manager.put(
+                patch=dict(body.config),
+                expected_revision=expected_revision,
+                owner_id=str(user.username or "").strip(),
+            )
+        except ObservationMonitorSettingsError as exc:
+            return _error_response(
+                status_code=exc.status_code,
+                message=str(exc),
+                extra=exc.extra,
+            )
+        revision = str(payload.get("revision", "") or "")
+        return JSONResponse(
+            content=payload,
+            headers={"ETag": f'W/"{revision}"'},
+        )
 
     @app.post("/v1/chat/uploads/images", response_model=None)
     async def upload_chat_image(
@@ -1449,6 +1565,9 @@ def create_handler(
     user_access: Optional[UserAccessService] = None,
     schedule_beat_seconds: int = 10,
     heartbeat_monitors: Optional[Iterable[HeartbeatMonitor]] = None,
+    observation_monitors_config_path: Optional[str | Path] = None,
+    observation_monitors_live_apply_enabled: bool = True,
+    observation_monitors_initial_config_applied: bool = False,
 ) -> FastAPI:
     """Backward-compatible alias for the old stdlib server entrypoint."""
     return create_app(
@@ -1456,4 +1575,11 @@ def create_handler(
         user_access=user_access,
         schedule_beat_seconds=schedule_beat_seconds,
         heartbeat_monitors=heartbeat_monitors,
+        observation_monitors_config_path=observation_monitors_config_path,
+        observation_monitors_live_apply_enabled=(
+            observation_monitors_live_apply_enabled
+        ),
+        observation_monitors_initial_config_applied=(
+            observation_monitors_initial_config_applied
+        ),
     )

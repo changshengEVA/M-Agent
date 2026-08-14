@@ -142,10 +142,30 @@ def _summarize_event_payload(event_type: str, payload: Dict[str, Any]) -> str:
         phase_text = ",".join(str(p) for p in phases) if isinstance(phases, list) else ""
         return f"executed={payload.get('executed')} phases={phase_text or '-'}"
     if event_type == "turn_failed":
+        diagnostic = (
+            payload.get("diagnostic")
+            if isinstance(payload.get("diagnostic"), dict)
+            else {}
+        )
+        failures = (
+            diagnostic.get("failures")
+            if isinstance(diagnostic.get("failures"), list)
+            else []
+        )
+        categories = sorted(
+            {
+                str(item.get("category", "") or "").strip()
+                for item in failures
+                if isinstance(item, dict)
+                and str(item.get("category", "") or "").strip()
+            }
+        )
         return (
             f"thread={payload.get('thread_id')} "
             f"txn={payload.get('transaction_id')} "
-            f"error={_short_text(payload.get('error'))}"
+            f"code={payload.get('error_code') or 'turn_failed'} "
+            f"diagnostic_id={payload.get('diagnostic_id') or '-'} "
+            f"categories={','.join(categories) or '-'}"
         )
     if event_type == "transaction_deleted":
         transaction = (

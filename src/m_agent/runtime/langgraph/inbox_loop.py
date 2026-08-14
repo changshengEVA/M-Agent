@@ -15,6 +15,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from m_agent.api.chat_api_shared import _now_iso
 from m_agent.api.thread_runtime_status import THREAD_RUNTIME_STATUS
+from m_agent.layers.execution.model_provider import StructuredOutputError
 from m_agent.runtime.langgraph.engine import TransactionGraphEngine
 from m_agent.runtime.langgraph.fake_effects import FakeEffectIntent
 from m_agent.runtime.langgraph.turn_graph import (
@@ -120,15 +121,39 @@ class LangGraphInboxLoop:
                         reason=str(result.get("error", "") or "turn failed"),
                     )
             except Exception as exc:
-                logger.exception(
-                    "LangGraph inbox processing failed thread_id=%s",
-                    thread_id,
-                )
-                self._terminalize_failed_claim(stimulus, reason=str(exc))
+                if isinstance(exc, StructuredOutputError):
+                    logger.error(
+                        "LangGraph structured planning failed thread_id=%s "
+                        "stimulus_id=%s diagnostic_id=%s",
+                        thread_id,
+                        stimulus.stimulus_id,
+                        exc.diagnostic_id,
+                    )
+                    error_text = (
+                        "structured_output_invalid; diagnostic_id="
+                        f"{exc.diagnostic_id}"
+                    )
+                else:
+                    logger.exception(
+                        "LangGraph inbox processing failed thread_id=%s",
+                        thread_id,
+                    )
+                    error_text = str(exc)
+                self._terminalize_failed_claim(stimulus, reason=error_text)
                 results.append(
                     {
                         "success": False,
-                        "error": str(exc),
+                        "error": error_text,
+                        "error_code": (
+                            "structured_output_invalid"
+                            if isinstance(exc, StructuredOutputError)
+                            else "turn_failed"
+                        ),
+                        "diagnostic_id": (
+                            exc.diagnostic_id
+                            if isinstance(exc, StructuredOutputError)
+                            else None
+                        ),
                         "stimulus_id": stimulus.stimulus_id,
                     }
                 )
@@ -266,18 +291,28 @@ class LangGraphInboxLoop:
                 )
                 self._notify_schedule_finished(current, deleted_result)
                 return deleted_result
+            safe_error = str(exc or "langgraph processing failed").strip()
+            if isinstance(exc, StructuredOutputError):
+                diagnostic = exc.to_safe_dict()
+                diagnostic_ref = self._append_thinking_failure_trace(
+                    stimulus,
+                    diagnostic=diagnostic,
+                )
+                safe_error = (
+                    "structured_output_invalid; diagnostic_id="
+                    f"{exc.diagnostic_id}"
+                )
+                if diagnostic_ref:
+                    safe_error += f"; diagnostic_ref={diagnostic_ref}"
             if is_open_continue(current):
                 current = self.registry.fail(
                     txn_id,
-                    error=(
-                        str(exc or "langgraph processing failed").strip()
-                        or "langgraph processing failed"
-                    ),
+                    error=safe_error or "langgraph processing failed",
                 )
             if schedule_started or current.correlation.schedule_run_id:
                 self._notify_schedule_finished(
                     current,
-                    {"success": False, "error": str(exc)},
+                    {"success": False, "error": safe_error},
                 )
             raise
         finally:
@@ -287,6 +322,32 @@ class LangGraphInboxLoop:
             )
             THREAD_RUNTIME_STATUS.set_cpu_holder(tid, None)
             self._refresh_pending_stimuli(tid)
+
+    def _append_thinking_failure_trace(
+        self,
+        stimulus: StimulusEnvelope,
+        *,
+        diagnostic: Dict[str, Any],
+    ) -> Optional[str]:
+        """Persist only content-free structured-output diagnostics."""
+
+        store = getattr(self.inbox, "store", None)
+        if store is None:
+            return None
+        current = store.load_stimulus(stimulus.stimulus_id)
+        if current is None:
+            return None
+        event = store.append_stimulus_trace(
+            stimulus_id=stimulus.stimulus_id,
+            stage="thinking_failed",
+            pool_state=current.pool_state,
+            previous_pool_state=current.pool_state,
+            disposition=current.disposition,
+            reason_code="structured_output_invalid",
+            reason="Thinking structured output was invalid.",
+            details=dict(diagnostic),
+        )
+        return str(event.get("trace_id", "") or "").strip() or None
 
     def _load_stimulus_pool_state(
         self,

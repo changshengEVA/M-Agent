@@ -11,6 +11,10 @@ from typing import Any, Dict, List, Optional
 import pytest
 
 from m_agent.layers.execution.contracts import ExecutionResult, ParamFillResult
+from m_agent.layers.execution.model_provider import (
+    StructuredOutputAttemptDiagnostic,
+    StructuredOutputError,
+)
 from m_agent.layers.perception.contracts import Stimulus, StimulusKind
 from m_agent.layers.thinking.contracts import ThinkingDecision
 from m_agent.runtime.langgraph.config import (
@@ -50,6 +54,7 @@ from m_agent.runtime.transaction.schedule import (
     stable_schedule_run_id,
 )
 from m_agent.runtime.transaction.registry import TransactionRegistry
+from m_agent.runtime.transaction.predicates import project_compat_status
 
 FAKE_CAPABILITY = "fake_capability"
 
@@ -158,14 +163,18 @@ def test_turn_loop_runs_think_delegate_feedback_reply(tmp_path: Path) -> None:
                 mode="execute",
                 tool_name=FAKE_CAPABILITY,
                 instruction="look it up",
-                reasoning="need a tool first",
+                planning_reason="need a tool first",
             ),
             ThinkingDecision(
                 mode="answer_directly",
                 answer="here is the answer",
-                reasoning="tool evidence is enough",
+                planning_reason="tool evidence is enough",
             ),
-            ThinkingDecision(mode="silent", request_complete=True),
+            ThinkingDecision(
+                mode="silent",
+                request_complete=True,
+                planning_reason="the reply was delivered; settle the task",
+            ),
         ],
         name="full-loop",
     )
@@ -235,6 +244,7 @@ def test_turn_loop_runs_think_delegate_feedback_reply(tmp_path: Path) -> None:
             ("Thought", "Assistant"),
             ("Action", "Assistant"),
             ("Stimulus_EXECUTION_FEEDBACK", "reply_to_user"),
+            ("Thought", "Assistant"),
         ]
         assert [item["actor_role"] for item in wire_entries] == [
             SceneActor.USER.value,
@@ -244,9 +254,23 @@ def test_turn_loop_runs_think_delegate_feedback_reply(tmp_path: Path) -> None:
             SceneActor.THINK.value,
             SceneActor.ASSISTANT.value,
             SceneActor.WORK.value,
+            SceneActor.THINK.value,
         ]
-        assert wire_entries[1]["append_id"].endswith(":thought:reasoning")
-        assert wire_entries[4]["append_id"].endswith(":thought:reasoning")
+        planning_thoughts = [
+            item
+            for item in entries
+            if item.payload_ref == "planning_reason:v1"
+        ]
+        assert [item.text for item in planning_thoughts] == [
+            "need a tool first",
+            "tool evidence is enough",
+            "the reply was delivered; settle the task",
+        ]
+        assert all(
+            str(item.append_id or "").endswith(":thought:reasoning")
+            for item in planning_thoughts
+        )
+        assert len({item.append_id for item in planning_thoughts}) == 3
 
         tool_action = json.loads(wire_entries[2]["text"])
         assert tool_action == {
@@ -278,6 +302,20 @@ def test_turn_loop_runs_think_delegate_feedback_reply(tmp_path: Path) -> None:
 
         seqs = [int(item.seq) for item in entries]
         assert seqs == sorted(seqs) and len(set(seqs)) == len(seqs)
+
+        # A checkpoint replay reaches the same Scene append IDs. Re-appending
+        # those exact records must be a no-op rather than duplicating Thought.
+        before_replay = [item.to_dict() for item in entries]
+        for item in planning_thoughts:
+            runtime.scene_system.writer.append(
+                "t1::0",
+                item,
+                append_id=item.append_id,
+            )
+        assert [
+            item.to_dict()
+            for item in runtime.scene_system.reader.tail("t1::0", limit=100)
+        ] == before_replay
     finally:
         runtime.shutdown()
 
@@ -405,6 +443,7 @@ def test_silent_turn_with_request_complete_closes_user_task(
             ThinkingDecision(
                 mode="silent",
                 request_complete=True,
+                planning_reason="there is no action to take",
                 episode_note="Committed runtime memory",
             )
         ],
@@ -419,15 +458,23 @@ def test_silent_turn_with_request_complete_closes_user_task(
         assert record is not None
         assert record.state == TransactionState.COMPLETE
         assert record.delegate_count == 0
-        notes = [
+        thoughts = [
             entry
             for entry in runtime.scene_system.reader.tail("t5::0", limit=100)
-            if entry.payload_ref == "episode_note:v1"
+            if entry.entry_type == SceneEntryType.THOUGHT
         ]
-        assert len(notes) == 1
-        assert notes[0].text == "Committed runtime memory"
-        assert notes[0].append_id
-        assert notes[0].append_id.endswith(":episode_note")
+        assert [entry.text for entry in thoughts] == [
+            "there is no action to take",
+            "Committed runtime memory",
+        ]
+        assert [entry.payload_ref for entry in thoughts] == [
+            "planning_reason:v1",
+            "episode_note:v1",
+        ]
+        assert thoughts[0].append_id
+        assert thoughts[0].append_id.endswith(":reasoning")
+        assert thoughts[1].append_id
+        assert thoughts[1].append_id.endswith(":episode_note")
     finally:
         runtime.shutdown()
 
@@ -474,6 +521,157 @@ def test_planner_failure_cannot_leak_speculative_task_state(tmp_path: Path) -> N
         assert record is not None
         assert record.task_state.goal == ""
         assert record.task_state.completed == []
+    finally:
+        runtime.shutdown()
+
+
+def test_structured_planner_failure_persists_only_safe_diagnostics(
+    tmp_path: Path,
+) -> None:
+    sentinel = "PRIVATE-PARSER-PAYLOAD-MUST-NOT-PERSIST-91C2"
+    diagnostics = tuple(
+        StructuredOutputAttemptDiagnostic(
+            attempt=attempt,
+            stage="validate",
+            category="schema",
+            error_type="ValidationError",
+            issue_count=1,
+            field_paths=("decision",),
+            error_codes=("missing",),
+        )
+        for attempt in (1, 2)
+    )
+    structured_error = StructuredOutputError(
+        call_name="thinking.turn",
+        schema=ThinkingDecision,
+        attempts=2,
+        diagnostics=diagnostics,
+    )
+
+    class _StructuredFailureThinkingAgent:
+        @staticmethod
+        def resolve_transaction(*_args: Any, **_kwargs: Any) -> None:
+            return None
+
+        @staticmethod
+        def handle(
+            _perception: Any,
+            *,
+            transaction_state: Any = None,
+            event_emitter: Any = None,
+        ) -> ThinkingDecision:
+            del transaction_state, event_emitter
+            try:
+                raise ValueError(sentinel)
+            except ValueError as cause:
+                raise structured_error from cause
+
+    agent = _agent([])
+    agent.thinking_agent = _StructuredFailureThinkingAgent()
+    runtime = LangGraphRuntime(
+        agent,  # type: ignore[arg-type]
+        owner_id="turn-user-safe-diagnostics",
+        persist_root=tmp_path / "safe-diagnostics",
+    )
+    try:
+        stimulus_id = runtime.submit_user_message(
+            thread_id="safe-diagnostics",
+            conversation_id="safe-diagnostics::0",
+            text="trigger structured failure",
+            schedule_drainer=False,
+        )
+
+        results = list(runtime.run_thread("safe-diagnostics")["results"])
+
+        assert len(results) == 1
+        assert results[0]["success"] is False
+        assert results[0]["error_code"] == "structured_output_invalid"
+        assert results[0]["diagnostic_id"] == structured_error.diagnostic_id
+        assert results[0]["error"] == (
+            "structured_output_invalid; diagnostic_id="
+            f"{structured_error.diagnostic_id}"
+        )
+
+        stimulus = runtime.runtime_store.load_stimulus(stimulus_id)
+        assert stimulus is not None
+        assert stimulus.disposition == "failed"
+        assert stimulus.pool_state == "terminated"
+        assert stimulus.transaction_id
+
+        transaction = runtime.registry.get(stimulus.transaction_id)
+        assert transaction is not None
+        assert transaction.state == TransactionState.PAUSE
+        assert project_compat_status(transaction) == "failed"
+        assert str(transaction.last_error or "").startswith(results[0]["error"])
+        assert "; diagnostic_ref=strace_" in str(transaction.last_error or "")
+
+        failures = [
+            item
+            for item in runtime.list_stimulus_trace(stimulus_id=stimulus_id)
+            if item["stage"] == "thinking_failed"
+        ]
+        assert len(failures) == 1
+        trace = failures[0]
+        assert trace["reason_code"] == "structured_output_invalid"
+        assert trace["details"] == structured_error.to_safe_dict()
+        assert trace["details"]["attempts"] == 2
+        assert [
+            item["attempt"] for item in trace["details"]["failures"]
+        ] == [1, 2]
+        assert transaction.last_error == (
+            f"{results[0]['error']}; diagnostic_ref={trace['trace_id']}"
+        )
+        assert sentinel not in repr(results)
+        assert sentinel not in repr(transaction.to_dict())
+        assert sentinel not in repr(failures)
+        sentinel_bytes = sentinel.encode("utf-8")
+        persisted_files = [
+            path
+            for path in (tmp_path / "safe-diagnostics").rglob("*")
+            if path.is_file()
+        ]
+        assert persisted_files
+        assert all(
+            sentinel_bytes not in path.read_bytes()
+            for path in persisted_files
+        )
+    finally:
+        runtime.shutdown()
+
+
+def test_background_planning_emitter_forwards_turn_failed_to_thread_sink(
+    tmp_path: Path,
+) -> None:
+    runtime = _runtime(tmp_path, [], name="planning-event-bridge")
+    captured: List[tuple[str, str, Dict[str, Any]]] = []
+    runtime.set_thread_event_emitter(
+        lambda thread_id, event_type, payload: captured.append(
+            (thread_id, event_type, payload)
+        )
+    )
+    try:
+        emitter = runtime._build_planning_event_emitter("bridge-thread")
+        emitter(
+            "turn_failed",
+            {
+                "thread_id": "wrong-thread",
+                "error_code": "structured_output_invalid",
+                "diagnostic_id": "diag-safe",
+            },
+        )
+        emitter("non_planning_internal_event", {"secret": "ignored"})
+
+        assert captured == [
+            (
+                "bridge-thread",
+                "turn_failed",
+                {
+                    "thread_id": "bridge-thread",
+                    "error_code": "structured_output_invalid",
+                    "diagnostic_id": "diag-safe",
+                },
+            )
+        ]
     finally:
         runtime.shutdown()
 
@@ -598,7 +796,7 @@ def test_planner_failure_does_not_poison_next_stimulus(
         ]
         assert [entry.payload_ref for entry in second_scene] == [
             None,
-            None,
+            "planning_reason:v1",
             "episode_note:v1",
         ]
         assert all(

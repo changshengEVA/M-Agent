@@ -84,6 +84,16 @@ HistoryProvider = Callable[[str], Optional[List[Dict[str, Any]]]]
 _RETIRED_RUNTIME_DATABASE_NAME = "".join(
     ("think", "_", "life", ".sqlite3")
 )
+_PLANNING_EVENT_TYPES = frozenset(
+    {
+        "thinking_started",
+        "thinking_task_state",
+        "thinking_plan",
+        "thinking_completed",
+        "thinking_force_stopped",
+        "turn_failed",
+    }
+)
 
 
 class LangGraphRuntime:
@@ -230,7 +240,7 @@ class LangGraphRuntime:
         self.drainer = ThreadDrainerService(
             drain_fn=self._drain_for_thread,
             get_pending=lambda tid: self.inbox.pending_count(tid),
-            build_emitter=lambda _tid: None,
+            build_emitter=self._build_planning_event_emitter,
             get_history=lambda _tid: None,
             on_runtime_updated=self._emit_runtime_updated,
         )
@@ -364,6 +374,30 @@ class LangGraphRuntime:
                 event_type,
                 thread_id,
             )
+
+    def _build_planning_event_emitter(
+        self,
+        thread_id: str,
+    ) -> Callable[[str, Dict[str, Any]], None]:
+        """Bridge background Thinking events to the durable thread stream.
+
+        The drainer previously discarded its emitter, which meant async
+        Product Runtime failures never reached Desktop/UI subscribers.
+        Runtime snapshots use their existing dedicated bridge to avoid
+        duplicate ``thread_runtime_updated`` events.
+        """
+
+        tid = str(thread_id or "").strip()
+
+        def emit(event_type: str, payload: Dict[str, Any]) -> None:
+            kind = str(event_type or "").strip()
+            if kind not in _PLANNING_EVENT_TYPES:
+                return
+            safe_payload = dict(payload or {})
+            safe_payload["thread_id"] = tid
+            self._emit_thread_event(tid, kind, safe_payload)
+
+        return emit
 
     def _on_scene_appended(self, conversation_id: str, entry: SceneEntry) -> None:
         thread_id = str(conversation_id or "").rsplit("::", 1)[0]

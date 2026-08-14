@@ -1,16 +1,104 @@
 from __future__ import annotations
 
+import json
+import logging
 import os
+from typing import Any
 
 import pytest
+from langchain_core.exceptions import OutputParserException
+from pydantic import BaseModel, ConfigDict
 
 from m_agent.layers.execution import (
     CapabilityDescriptor,
     ExecutionResult,
     ModelProvider,
 )
+from m_agent.layers.execution.model_provider import (
+    StructuredOutputError,
+    StructuredOutputSemanticError,
+)
 from m_agent.systems.episodic import EpisodeQueryModule
 from m_agent.layers.execution import model_provider as model_provider_module
+
+
+_SENTINEL_SECRET = "SENTINEL_SECRET_7f4c2d9a"
+
+
+class _ProviderProbeOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    answer: str
+
+
+class _QueuedStructuredModel:
+    def __init__(self, owner: "_QueuedChatModel") -> None:
+        self._owner = owner
+
+    def invoke(self, messages: Any) -> Any:
+        self._owner.calls.append(list(messages))
+        if not self._owner.responses:
+            raise AssertionError("queued model ran out of responses")
+        response = self._owner.responses.pop(0)
+        if isinstance(response, BaseException):
+            raise response
+        return response
+
+
+class _QueuedChatModel:
+    def __init__(self, responses: list[Any]) -> None:
+        self.responses = list(responses)
+        self.calls: list[list[dict[str, Any]]] = []
+        self.bindings: list[dict[str, Any]] = []
+
+    def with_structured_output(
+        self,
+        _schema: type,
+        **kwargs: Any,
+    ) -> _QueuedStructuredModel:
+        self.bindings.append(dict(kwargs))
+        return _QueuedStructuredModel(self)
+
+
+def _probe_validator(value: Any) -> _ProviderProbeOutput:
+    return _ProviderProbeOutput.model_validate(value)
+
+
+def _provider_for(
+    responses: list[Any],
+    *,
+    attempts: int = 1,
+) -> tuple[ModelProvider, _QueuedChatModel]:
+    model = _QueuedChatModel(responses)
+    provider = ModelProvider(
+        model=model,
+        network_retry_attempts=1,
+        structured_retry_attempts=attempts,
+    )
+    return provider, model
+
+
+def _invoke_probe(
+    provider: ModelProvider,
+    *,
+    validator: Any = _probe_validator,
+) -> _ProviderProbeOutput:
+    return provider.invoke_structured(
+        _ProviderProbeOutput,
+        messages=[
+            {"role": "system", "content": "Return the requested object."},
+            {"role": "user", "content": "Give a short answer."},
+        ],
+        call_name="thinking.turn",
+        validator=validator,
+    )
+
+
+def _failure_payload(error: StructuredOutputError) -> list[dict[str, Any]]:
+    payload = error.to_safe_dict()
+    failures = payload.get("failures")
+    assert isinstance(failures, list)
+    return failures
 
 
 def test_execution_result_tool_call_count_and_names() -> None:
@@ -80,6 +168,159 @@ def test_model_provider_invoke_with_network_retry_returns_first_success() -> Non
     provider = ModelProvider(model=None, network_retry_attempts=3)
     assert provider.invoke_with_network_retry(fake_invoke) == "ok-1"
     assert calls == [1]
+
+
+def test_structured_output_diagnoses_schema_errors_without_validation_input() -> None:
+    provider, _model = _provider_for(
+        [{_SENTINEL_SECRET: _SENTINEL_SECRET}],
+    )
+
+    with pytest.raises(StructuredOutputError) as exc_info:
+        _invoke_probe(provider)
+
+    failures = _failure_payload(exc_info.value)
+    assert len(failures) == 1
+    assert failures[0]["category"] == "schema"
+    assert failures[0]["stage"] == "validate"
+    assert "answer" in failures[0]["field_paths"]
+    assert set(failures[0]["error_codes"]) == {
+        "missing",
+        "extra_forbidden",
+    }
+    assert _SENTINEL_SECRET not in json.dumps(
+        exc_info.value.to_safe_dict(),
+        ensure_ascii=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("failure", "expected_code"),
+    [
+        (
+            OutputParserException(
+                f"could not parse {_SENTINEL_SECRET}",
+                llm_output=_SENTINEL_SECRET,
+            ),
+            "output_parser_error",
+        ),
+        (
+            json.JSONDecodeError(
+                "invalid structured JSON",
+                _SENTINEL_SECRET,
+                0,
+            ),
+            "invalid_json",
+        ),
+    ],
+    ids=["output-parser", "json-syntax"],
+)
+def test_structured_output_diagnoses_parser_failures_as_parse(
+    failure: BaseException,
+    expected_code: str,
+) -> None:
+    provider, _model = _provider_for(
+        [
+            {
+                "raw": _SENTINEL_SECRET,
+                "parsed": None,
+                "parsing_error": failure,
+            }
+        ]
+    )
+
+    with pytest.raises(StructuredOutputError) as exc_info:
+        _invoke_probe(provider)
+
+    failures = _failure_payload(exc_info.value)
+    assert len(failures) == 1
+    assert failures[0]["category"] == "parse"
+    assert failures[0]["stage"] == "parse"
+    assert failures[0]["error_codes"] == [expected_code]
+
+
+def test_structured_output_diagnoses_typed_runtime_semantic_failure() -> None:
+    provider, _model = _provider_for([{"answer": "valid schema"}])
+
+    def reject_semantics(_value: Any) -> Any:
+        raise StructuredOutputSemanticError(
+            "unknown_or_disabled_tool",
+            field_paths=("decision.tool_name",),
+        )
+
+    with pytest.raises(StructuredOutputError) as exc_info:
+        _invoke_probe(provider, validator=reject_semantics)
+
+    failures = _failure_payload(exc_info.value)
+    assert len(failures) == 1
+    assert failures[0]["category"] == "runtime_semantic"
+    assert failures[0]["stage"] == "validate"
+    assert failures[0]["field_paths"] == ["decision.tool_name"]
+    assert failures[0]["error_codes"] == ["unknown_or_disabled_tool"]
+
+
+def test_structured_retry_adds_content_free_repair_hint_then_recovers() -> None:
+    provider, model = _provider_for(
+        [
+            {_SENTINEL_SECRET: _SENTINEL_SECRET},
+            {"answer": "recovered"},
+        ],
+        attempts=2,
+    )
+
+    output = _invoke_probe(provider)
+
+    assert output.answer == "recovered"
+    assert len(model.calls) == 2
+    retry_messages = model.calls[1]
+    assert [message["role"] for message in retry_messages] == [
+        message["role"] for message in model.calls[0]
+    ]
+    assert retry_messages[1] == model.calls[0][1]
+    original_system = str(model.calls[0][0]["content"])
+    retry_system = str(retry_messages[0]["content"])
+    assert retry_system.startswith(original_system)
+    repair_hint = retry_system[len(original_system) :]
+    assert repair_hint
+    assert "answer" in repair_hint
+    assert "missing" in repair_hint
+    assert _SENTINEL_SECRET not in repair_hint
+
+
+def test_exhausted_structured_error_is_safe_across_all_surfaces(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    failures = [
+        OutputParserException(
+            f"private parse failure: {_SENTINEL_SECRET}",
+            llm_output=_SENTINEL_SECRET,
+        ),
+        OutputParserException(
+            f"private parse failure: {_SENTINEL_SECRET}",
+            llm_output=_SENTINEL_SECRET,
+        ),
+    ]
+    provider, model = _provider_for(failures, attempts=2)
+
+    with caplog.at_level(logging.WARNING), pytest.raises(
+        StructuredOutputError
+    ) as exc_info:
+        _invoke_probe(provider)
+
+    error = exc_info.value
+    assert error.call_name == "thinking.turn"
+    assert error.__cause__ is None
+    assert _SENTINEL_SECRET not in str(error)
+    assert _SENTINEL_SECRET not in json.dumps(
+        error.to_safe_dict(),
+        ensure_ascii=False,
+    )
+    assert _SENTINEL_SECRET not in caplog.text
+    retry_request = json.dumps(
+        model.calls[1],
+        ensure_ascii=False,
+    )
+    assert "previous" in retry_request.lower()
+    assert _SENTINEL_SECRET not in retry_request
 
 
 def test_model_provider_honors_openai_compatible_environment(

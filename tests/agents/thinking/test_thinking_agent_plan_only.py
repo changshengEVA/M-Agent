@@ -10,7 +10,6 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 import pytest
-from pydantic import ValidationError
 
 from m_agent.layers.execution.model_provider import ModelProvider, StructuredOutputError
 from m_agent.layers.perception.contracts import (
@@ -217,6 +216,27 @@ def test_single_call_projects_all_three_decision_modes(
     assert fake_model.responses == []
 
 
+def test_single_call_preserves_reason_only_for_scene_projection() -> None:
+    reason = "A retrieval step is needed before answering."
+    agent, _ = _make_agent(
+        [
+            _turn(
+                mode="execute",
+                reason=reason,
+                tool_name="deep_recall",
+                instruction="Find the relevant detail",
+            )
+        ]
+    )
+
+    decision = agent.handle(_make_perception())
+
+    assert decision.planning_reason == reason
+    # The legacy field remains reserved for the legacy two-call planner and
+    # keeps the existing SSE payload contract unchanged.
+    assert decision.reasoning is None
+
+
 def test_single_call_accepts_a_raw_dict_and_validates_it_as_joint_output() -> None:
     raw = _turn(mode="answer_directly", answer="Validated").model_dump()
     agent, fake_model = _make_agent([raw])
@@ -225,6 +245,37 @@ def test_single_call_accepts_a_raw_dict_and_validates_it_as_joint_output() -> No
 
     assert decision.answer == "Validated"
     assert fake_model.called_schemas == [ThinkingTurnOutput]
+
+
+@pytest.mark.parametrize(
+    "decision",
+    [
+        {"mode": "silent"},
+        {"mode": "answer_directly", "answer": "Done"},
+        {
+            "mode": "execute",
+            "tool_name": "deep_recall",
+            "instruction": "Find the requested detail",
+        },
+    ],
+)
+def test_joint_output_allows_irrelevant_decision_fields_to_be_omitted(
+    decision: Dict[str, Any],
+) -> None:
+    output = ThinkingTurnOutput.model_validate(
+        {
+            "reason": "Choose the action that fits the current task state.",
+            "task_state": {
+                "goal": "handle the request",
+                "completion_status": "processing",
+                "completed": [],
+                "remaining": ["respond"],
+            },
+            "decision": decision,
+        }
+    )
+
+    assert output.decision.mode == decision["mode"]
 
 
 def test_single_call_retries_an_empty_mapping_then_accepts_valid_output() -> None:
@@ -261,12 +312,19 @@ def test_single_call_exhausts_empty_mappings_and_restores_completion_status() ->
     with pytest.raises(StructuredOutputError) as exc_info:
         agent.handle(_make_perception(user_message="One more thing"))
 
-    assert isinstance(exc_info.value.__cause__, ValidationError)
-    assert {
-        tuple(error["loc"])
-        for error in exc_info.value.__cause__.errors()
-        if error["type"] == "missing"
-    } == {("reason",), ("task_state",), ("decision",)}
+    assert exc_info.value.__cause__ is None
+    diagnostic = exc_info.value.to_safe_dict()
+    assert diagnostic["error_code"] == "structured_output_invalid"
+    assert len(diagnostic["failures"]) == 2
+    assert all(
+        failure["category"] == "schema"
+        for failure in diagnostic["failures"]
+    )
+    assert set(diagnostic["failures"][-1]["field_paths"]) == {
+        "reason",
+        "task_state",
+        "decision",
+    }
     assert state.task_progress.completion_status == "completed"
     assert state.task_progress.goal == "the already completed request"
     assert state.task_progress.completed == ["deliver the requested result"]
@@ -508,6 +566,7 @@ def test_reason_is_not_copied_into_episode_memory_or_user_fields() -> None:
 
     assert decision.answer == "Visible answer"
     assert decision.episode_note == "Durable note"
+    assert decision.planning_reason == reason
     assert decision.reasoning is None
     assert reason not in str(decision.answer)
     assert reason not in str(decision.episode_note)
@@ -733,3 +792,60 @@ def test_transaction_resolver_remains_a_separate_structured_call() -> None:
     assert "candidate_2" in prompt
     assert "txn-private-alpha" not in prompt
     assert "txn-private-beta" not in prompt
+
+
+def test_structured_output_failure_emits_only_safe_turn_failure_details() -> None:
+    sentinel = "RAW-MODEL-OUTPUT-MUST-NOT-LEAK-7D39"
+    agent, fake_model = _make_agent(
+        [
+            {sentinel: sentinel},
+            {sentinel: sentinel},
+        ],
+        structured_retry_attempts=2,
+    )
+    events: List[tuple[str, Dict[str, Any]]] = []
+
+    with pytest.raises(StructuredOutputError) as exc_info:
+        agent.handle(
+            _make_perception(
+                transaction_id="txn-safe-failure",
+                stimulus_id="stim-safe-failure",
+            ),
+            event_emitter=lambda event_type, payload: events.append(
+                (event_type, payload)
+            ),
+        )
+
+    assert [event_type for event_type, _payload in events] == [
+        "thinking_started",
+        "turn_failed",
+    ]
+    failure = events[1][1]
+    diagnostic = failure["diagnostic"]
+    assert failure["transaction_id"] == "txn-safe-failure"
+    assert failure["stimulus_id"] == "stim-safe-failure"
+    assert failure["error_code"] == "structured_output_invalid"
+    assert failure["error"] == (
+        "Thinking could not produce a valid structured response."
+    )
+    assert failure["diagnostic_id"] == exc_info.value.diagnostic_id
+    assert diagnostic == exc_info.value.to_safe_dict()
+    assert diagnostic["attempts"] == 2
+    assert [item["attempt"] for item in diagnostic["failures"]] == [1, 2]
+    assert all(item["category"] == "schema" for item in diagnostic["failures"])
+    assert set(failure) <= {
+        "thread_id",
+        "conversation_id",
+        "transaction_id",
+        "stimulus_id",
+        "turn",
+        "source",
+        "error_code",
+        "error",
+        "retryable",
+        "diagnostic",
+        "diagnostic_id",
+    }
+    assert sentinel not in repr(events)
+    assert sentinel not in str(exc_info.value)
+    assert fake_model.called_schemas == [ThinkingTurnOutput, ThinkingTurnOutput]

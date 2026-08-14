@@ -5,9 +5,14 @@ from pathlib import Path
 from typing import Any, Dict
 
 import yaml
+import pytest
 
 from m_agent.agents.email_agent import EmailAgent
-from m_agent.integrations.gmail_client import GmailApiClient, GmailClientConfig
+from m_agent.integrations.gmail_client import (
+    GmailApiClient,
+    GmailAuthError,
+    GmailClientConfig,
+)
 
 
 _CN_QUERY = "\u5e2e\u6211\u770b\u770b\u6709\u6ca1\u6709\u5b9e\u4e60\u62db\u8058\u76f8\u5173\u90ae\u4ef6"
@@ -39,6 +44,9 @@ def test_default_secret_alias_uses_writable_secrets_override(
     assert agent.gmail_client.config.token_path == (
         secrets_root / "gmail" / "token-readonly.json"
     ).resolve()
+    assert agent.gmail_client.config.request_timeout_seconds == 10.0
+    assert agent.gmail_client.config.oauth_flow_timeout_seconds == 300
+    assert agent.gmail_client.config.allow_console_flow is False
 
 
 class _FakeGmailClient:
@@ -300,3 +308,120 @@ def test_gmail_client_reauthenticates_once_after_api_auth_failure() -> None:
     assert result == {"ok": True}
     assert seen_services == [first_service, second_service]
     assert client.force_reauth_flags == [False, True]
+
+
+def test_gmail_client_does_not_reauthenticate_rate_limit_403() -> None:
+    class _RateLimitResponse:
+        status = 403
+
+    class _RateLimitFailure(RuntimeError):
+        resp = _RateLimitResponse()
+
+    assert GmailApiClient._is_auth_failure(
+        _RateLimitFailure("rateLimitExceeded")
+    ) is False
+    assert GmailApiClient._is_auth_failure(
+        _RateLimitFailure("insufficientPermissions")
+    ) is True
+
+
+def test_gmail_oauth_local_flow_is_bounded_and_missing_console_is_actionable(
+    tmp_path: Path,
+) -> None:
+    credentials_path = tmp_path / "client-secret.json"
+    credentials_path.write_text("{}", encoding="utf-8")
+    calls: Dict[str, Any] = {}
+
+    class _Flow:
+        @classmethod
+        def from_client_secrets_file(cls, path: str, scopes: list[str]):
+            calls["setup"] = (path, scopes)
+            return cls()
+
+        def run_local_server(self, **kwargs: Any) -> None:
+            calls["local"] = kwargs
+            raise RuntimeError("browser unavailable")
+
+    client = GmailApiClient(
+        config=GmailClientConfig(
+            credentials_path=credentials_path,
+            allow_local_webserver_flow=True,
+            allow_console_flow=True,
+            oauth_flow_timeout_seconds=42,
+        )
+    )
+
+    with pytest.raises(GmailAuthError, match="Console OAuth is unavailable"):
+        client._run_oauth_flow(_Flow)
+
+    assert calls["local"]["timeout_seconds"] == 42
+
+
+def test_gmail_client_builds_authorized_transport_with_hard_timeout(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    token_path = tmp_path / "token.json"
+    token_path.write_text("{}", encoding="utf-8")
+    calls: Dict[str, Any] = {}
+
+    class _ValidCredentials:
+        expired = True
+        refresh_token = "refresh-token"
+        valid = True
+
+        @classmethod
+        def from_authorized_user_file(cls, path: str, scopes: list[str]):
+            calls["token_load"] = (path, scopes)
+            return cls()
+
+        def to_json(self) -> str:
+            return "{}"
+
+        def refresh(self, request: Any) -> None:
+            calls["refresh_request"] = request
+
+    class _Http:
+        def __init__(self, *, timeout: float) -> None:
+            calls["timeout"] = timeout
+
+    class _AuthorizedHttp:
+        def __init__(self, credentials: Any, *, http: Any) -> None:
+            calls["authorized_credentials"] = credentials
+            calls["transport"] = http
+
+    class _Request:
+        def __init__(self, http: Any) -> None:
+            self.http = http
+            calls["refresh_transport"] = http
+
+    service = object()
+
+    def _build(api: str, version: str, **kwargs: Any) -> object:
+        calls["build"] = (api, version, kwargs)
+        return service
+
+    deps = {
+        "Request": _Request,
+        "Credentials": _ValidCredentials,
+        "AuthorizedHttp": _AuthorizedHttp,
+        "InstalledAppFlow": object,
+        "Http": _Http,
+        "build": _build,
+    }
+    client = GmailApiClient(
+        config=GmailClientConfig(
+            token_path=token_path,
+            request_timeout_seconds=7.5,
+        )
+    )
+    monkeypatch.setattr(client, "_import_google_deps", lambda: deps)
+
+    assert client._build_service() is service
+    assert calls["timeout"] == 7.5
+    assert calls["refresh_request"].http is calls["transport"]
+    assert calls["refresh_transport"] is calls["transport"]
+    assert calls["build"][0:2] == ("gmail", "v1")
+    assert calls["build"][2]["cache_discovery"] is False
+    assert "http" in calls["build"][2]
+    assert "credentials" not in calls["build"][2]

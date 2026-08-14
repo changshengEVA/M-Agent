@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from m_agent.api import user_access as user_access_module
 from m_agent.api.user_access import UserAccountStore
 from m_agent.config_paths import resolve_related_config_path
 
@@ -611,3 +612,79 @@ def test_get_user_config_schema_exposes_field_metadata(tmp_path: Path) -> None:
     model_section = schema["sections"]["model"]
     assert model_section["fields"]["model_name"]["editable"] is False
     assert model_section["fields"]["model_name"]["present"] is True
+
+
+def test_user_config_yaml_write_is_atomic_and_leaves_no_temp_file(
+    tmp_path: Path,
+) -> None:
+    base_chat_config_path = _build_base_configs(tmp_path)
+    users_root = tmp_path / "users"
+    store = UserAccountStore(
+        base_chat_config_path=base_chat_config_path,
+        users_root_dir=users_root,
+        users_db_path=users_root / "users.json",
+    )
+    user = store.register_user(
+        username="atomic-user",
+        password="password123",
+        role="advanced",
+    )
+
+    updated = store.update_user_config(
+        username=user.username,
+        updates={
+            "chat": {"chat_assistant_name": "Nova"},
+            "model": {"agent_temperature": 0.25},
+        },
+    )
+
+    chat_payload = yaml.safe_load(user.config_path.read_text(encoding="utf-8"))
+    model_path = user.config_path.parent / "chat_model.params.yaml"
+    model_payload = yaml.safe_load(model_path.read_text(encoding="utf-8"))
+    assert chat_payload["chat_assistant_name"] == "Nova"
+    assert model_payload["agent_temperature"] == 0.25
+    assert updated.updated_at != user.updated_at
+    assert list(user.config_path.parent.glob(".*.tmp")) == []
+
+
+def test_user_config_rolls_back_first_section_when_second_write_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base_chat_config_path = _build_base_configs(tmp_path)
+    users_root = tmp_path / "users"
+    store = UserAccountStore(
+        base_chat_config_path=base_chat_config_path,
+        users_root_dir=users_root,
+        users_db_path=users_root / "users.json",
+    )
+    user = store.register_user(
+        username="rollback-user",
+        password="password123",
+        role="advanced",
+    )
+    model_path = user.config_path.parent / "chat_model.params.yaml"
+    original_chat = user.config_path.read_bytes()
+    original_model = model_path.read_bytes()
+    original_writer = user_access_module._write_yaml
+
+    def _fail_model_write(path: Path, payload: dict) -> None:
+        if Path(path) == model_path:
+            raise OSError("simulated model settings write failure")
+        original_writer(path, payload)
+
+    monkeypatch.setattr(user_access_module, "_write_yaml", _fail_model_write)
+    with pytest.raises(OSError, match="simulated model settings write failure"):
+        store.update_user_config(
+            username=user.username,
+            updates={
+                "chat": {"chat_assistant_name": "Should roll back"},
+                "model": {"agent_temperature": 0.75},
+            },
+        )
+
+    assert user.config_path.read_bytes() == original_chat
+    assert model_path.read_bytes() == original_model
+    refreshed = store.get_user(username=user.username)
+    assert refreshed is not None
+    assert refreshed.updated_at == user.updated_at

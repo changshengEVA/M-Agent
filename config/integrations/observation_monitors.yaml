@@ -1,0 +1,35 @@
+gmail_email:
+  enabled: true
+  owner_ids:
+  - changshengeva
+  poll_interval_seconds: 60
+  retry_backoff_seconds: 300
+  label_id: INBOX
+  max_history_pages_per_beat: 2
+  max_messages_per_beat: 20
+  include_snippet: true
+  subject_keywords: []
+  sender_allowlist: []
+  sender_denylist: []
+arxiv:
+  enabled: true
+  poll_interval_seconds: 216
+  retry_backoff_seconds: 90
+  request_timeout_seconds: 5
+  max_deliveries_per_beat: 20
+  max_pending_per_owner: 2000
+  subscriptions:
+  - subscription_id: agent-memory
+    categories:
+    - cs.AI
+    - cs.CL
+    keywords:
+    - agent memory
+    - long-term memory
+    exclude_keywords: []
+    announce_types:
+    - new
+    - replace
+    - replace-cross
+    enabled: true
+    owner_id: changshengeva

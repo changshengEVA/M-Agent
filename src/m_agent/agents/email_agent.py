@@ -121,6 +121,8 @@ class EmailAgent:
             scopes=scopes or GmailClientConfig().scopes,
             allow_local_webserver_flow=bool(oauth_cfg.get("allow_local_webserver_flow", True)),
             allow_console_flow=bool(oauth_cfg.get("allow_console_flow", False)),
+            request_timeout_seconds=float(gmail_cfg.get("request_timeout_seconds", 10.0)),
+            oauth_flow_timeout_seconds=int(oauth_cfg.get("flow_timeout_seconds", 300)),
         )
         return GmailApiClient(config=client_config)
 

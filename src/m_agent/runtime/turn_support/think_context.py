@@ -216,6 +216,7 @@ def build_perception_for_stimulus(
         thread_id=transaction.thread_id,
         conversation_id=transaction.conversation_id,
         transaction_id=transaction.transaction_id,
+        stimulus_id=stimulus.stimulus_id,
         stimulus=replace(stimulus.stimulus, text=user_message, payload=payload),
         history_messages=history_messages,
         scene_context=format_scene_tail(

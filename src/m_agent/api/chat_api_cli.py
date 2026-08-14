@@ -8,7 +8,10 @@ from typing import Optional
 
 import uvicorn
 
-from m_agent.config_paths import DEFAULT_CHAT_AGENT_CONFIG_PATH as DEFAULT_CHAT_CONFIG_PATH
+from m_agent.config_paths import (
+    DEFAULT_CHAT_AGENT_CONFIG_PATH as DEFAULT_CHAT_CONFIG_PATH,
+    OBSERVATION_MONITORS_CONFIG_PATH,
+)
 from m_agent.api.user_access import AuthenticatedUser, UserAccessService
 from m_agent.paths import ENV_PATH
 
@@ -16,6 +19,7 @@ from .chat_api_protocol import protocol_logger
 from .chat_api_runtime import ChatServiceRuntime
 from .chat_api_shared import _resolve_config_path, _resolve_optional_path
 from .chat_api_web import create_app
+from .observation_monitor_factory import build_observation_monitors
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +84,19 @@ def parse_args() -> argparse.Namespace:
         help="Heartbeat scan interval in seconds for due schedules. Default: 10",
     )
     parser.add_argument(
+        "--observation-monitors-config",
+        default=None,
+        help=(
+            "YAML config for opt-in Heartbeat observation monitors. "
+            f"Default: {OBSERVATION_MONITORS_CONFIG_PATH}"
+        ),
+    )
+    parser.add_argument(
+        "--disable-observation-monitors",
+        action="store_true",
+        help="Disable all configured external observation monitors.",
+    )
+    parser.add_argument(
         "--users-db",
         default="config/users/users.json",
         help="User auth database path. Default: config/users/users.json",
@@ -114,6 +131,20 @@ def main() -> None:
             logger.exception("Failed to load .env from %s", ENV_PATH)
     _configure_windows_event_loop_policy()
     _configure_logging(debug=bool(args.debug))
+    observation_config_arg = str(
+        args.observation_monitors_config or ""
+    ).strip()
+    observation_config_path = (
+        observation_config_arg or OBSERVATION_MONITORS_CONFIG_PATH
+    )
+    heartbeat_monitors = (
+        ()
+        if bool(args.disable_observation_monitors)
+        else build_observation_monitors(
+            observation_config_path,
+            missing_ok=not observation_config_arg,
+        )
+    )
     config_path = _resolve_config_path(str(args.config or "").strip() or str(DEFAULT_CHAT_CONFIG_PATH))
     service_runtime = ChatServiceRuntime(
         config_path=config_path,
@@ -142,6 +173,14 @@ def main() -> None:
         service_runtime=service_runtime,
         user_access=user_access,
         schedule_beat_seconds=int(args.schedule_beat_seconds),
+        heartbeat_monitors=heartbeat_monitors,
+        observation_monitors_config_path=observation_config_path,
+        observation_monitors_live_apply_enabled=(
+            not bool(args.disable_observation_monitors)
+        ),
+        observation_monitors_initial_config_applied=(
+            not bool(args.disable_observation_monitors)
+        ),
     )
     url = f"http://{args.host}:{args.port}"
     logger.info("M-Agent chat API listening on %s", url)
@@ -154,6 +193,10 @@ def main() -> None:
     logger.info(
         "Schedule heartbeat: beat_interval_seconds=%s",
         int(args.schedule_beat_seconds),
+    )
+    logger.info(
+        "Observation monitors: %s",
+        [monitor.monitor_id for monitor in heartbeat_monitors],
     )
     if user_access is None:
         logger.info("Auth mode: disabled")

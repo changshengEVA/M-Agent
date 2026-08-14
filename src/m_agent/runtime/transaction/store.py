@@ -3530,6 +3530,32 @@ class SQLiteRuntimeStore:
                 limit=limit,
             )
 
+    def append_stimulus_trace(
+        self,
+        *,
+        stimulus_id: str,
+        stage: str,
+        pool_state: Optional[str],
+        previous_pool_state: Optional[str],
+        disposition: Optional[str],
+        reason_code: Optional[str],
+        reason: Optional[str],
+        details: Optional[Mapping[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Append a content-safe diagnostic event to the stimulus audit log."""
+
+        with self.unit_of_work() as uow:
+            return uow.append_stimulus_trace(
+                stimulus_id=stimulus_id,
+                stage=stage,
+                pool_state=pool_state,
+                previous_pool_state=previous_pool_state,
+                disposition=disposition,
+                reason_code=reason_code,
+                reason=reason,
+                details=details,
+            )
+
     def load_stimulus(
         self,
         stimulus_id: str,

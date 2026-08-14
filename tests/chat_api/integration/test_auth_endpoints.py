@@ -46,6 +46,33 @@ def test_chat_endpoints_require_token_when_auth_is_enabled(tmp_path) -> None:
     assert "missing bearer token" in response.json()["error"]
 
 
+def test_user_config_patch_rejects_stale_unknown_sections(tmp_path) -> None:
+    user_access = build_test_user_access(users_root=tmp_path / "users")
+    app = build_test_app(auth_enabled=True, user_access=user_access)
+
+    with TestClient(app) as client:
+        assert client.post(
+            "/v1/auth/register",
+            json={
+                "username": "advanced-user",
+                "password": "password123",
+                "role": "advanced",
+            },
+        ).status_code == 201
+        token = client.post(
+            "/v1/auth/login",
+            json={"username": "advanced-user", "password": "password123"},
+        ).json()["access_token"]
+        response = client.patch(
+            "/v1/users/me/config",
+            headers=_auth_headers(token),
+            json={"memory_agent": {"enabled": True}},
+        )
+
+    assert response.status_code == 422
+    assert "memory_agent" in response.text
+
+
 def test_auth_register_login_and_run_visibility_isolated_by_user(tmp_path) -> None:
     user_access = build_test_user_access(users_root=tmp_path / "users")
     app = build_test_app(auth_enabled=True, user_access=user_access)

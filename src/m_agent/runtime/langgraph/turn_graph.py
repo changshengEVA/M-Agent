@@ -121,6 +121,7 @@ def decision_to_dict(decision: ThinkingDecision) -> Dict[str, Any]:
         "episode_note": decision.episode_note,
         "request_complete": decision.request_complete,
         "reasoning": decision.reasoning,
+        "planning_reason": decision.planning_reason,
     }
 
 
@@ -134,6 +135,7 @@ def decision_from_dict(data: Optional[Dict[str, Any]]) -> ThinkingDecision:
         episode_note=payload.get("episode_note"),
         request_complete=payload.get("request_complete"),
         reasoning=payload.get("reasoning"),
+        planning_reason=payload.get("planning_reason"),
     )
 
 
@@ -565,13 +567,17 @@ def build_turn_graph(ports: TurnGraphPorts) -> StateGraph:
         if _is_deleted(tx_id):
             return _deleted_state(state, phase="thought scene commit")
         updated = registry.get(tx_id) or record
-        if decision.reasoning:
+        planning_reason = str(
+            decision.planning_reason or decision.reasoning or ""
+        ).strip()
+        if planning_reason:
             _append_scene(
                 updated,
                 entry_type=SceneEntryType.THOUGHT,
                 actor=SceneActor.THINK,
-                text=str(decision.reasoning),
+                text=planning_reason,
                 append_id=f"{transition_id}:reasoning",
+                payload_ref="planning_reason:v1",
             )
         if decision.episode_note:
             episode_note_id = f"{transition_id}:episode_note"

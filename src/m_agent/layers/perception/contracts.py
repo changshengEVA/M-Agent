@@ -192,6 +192,7 @@ class PerceptionInput:
     conversation_id: str
     transaction_id: Optional[str]
     stimulus: Stimulus
+    stimulus_id: Optional[str] = None
     dialogue_history: List[Dict[str, str]] = field(default_factory=list)
     scene_context: str = ""
     activation: Optional[ActivationFrame] = None

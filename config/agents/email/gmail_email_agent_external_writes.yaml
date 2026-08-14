@@ -5,6 +5,7 @@ thread_id: "email-agent-1"
 
 gmail:
   user_id: "me"
+  request_timeout_seconds: 10
   credentials_path: ".secrets/gmail/client_secret.json"
   token_path: ".secrets/gmail/token-send.json"
   scopes:
@@ -12,7 +13,8 @@ gmail:
     - "https://www.googleapis.com/auth/gmail.send"
   oauth:
     allow_local_webserver_flow: true
-    allow_console_flow: true
+    allow_console_flow: false
+    flow_timeout_seconds: 300
 
 query_defaults:
   recall_thread_topk: 40

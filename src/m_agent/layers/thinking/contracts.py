@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, cast
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic_core import PydanticCustomError
 
 
 SILENT_MODES = frozenset({"silent", "wait", "defer"})
@@ -147,10 +148,13 @@ class DecisionOutput(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     mode: Literal["execute", "answer_directly", "silent"]
-    tool_name: Optional[str]
-    instruction: Optional[str]
-    answer: Optional[str]
-    episode_note: Optional[str]
+    # In Pydantic v2, ``Optional[str]`` without a default is still a required
+    # key. Irrelevant action fields are genuinely optional so providers may
+    # omit them instead of having to emit explicit nulls on every turn.
+    tool_name: Optional[str] = None
+    instruction: Optional[str] = None
+    answer: Optional[str] = None
+    episode_note: Optional[str] = None
 
     @model_validator(mode="after")
     def validate_mode_fields(self) -> "DecisionOutput":
@@ -160,19 +164,30 @@ class DecisionOutput(BaseModel):
 
         if self.mode == "execute":
             if not tool_name or not instruction:
-                raise ValueError("execute requires non-empty tool_name and instruction")
+                raise PydanticCustomError(
+                    "decision_execute_fields_missing",
+                    "execute requires non-empty tool_name and instruction",
+                )
             if answer:
-                raise ValueError("execute requires answer to be empty")
+                raise PydanticCustomError(
+                    "decision_execute_answer_present",
+                    "execute requires answer to be empty",
+                )
         elif self.mode == "answer_directly":
             if not answer:
-                raise ValueError("answer_directly requires a non-empty answer")
+                raise PydanticCustomError(
+                    "decision_answer_missing",
+                    "answer_directly requires a non-empty answer",
+                )
             if tool_name or instruction:
-                raise ValueError(
-                    "answer_directly requires tool_name and instruction to be empty"
+                raise PydanticCustomError(
+                    "decision_answer_fields_present",
+                    "answer_directly requires tool_name and instruction to be empty",
                 )
         elif tool_name or instruction or answer:
-            raise ValueError(
-                "silent requires tool_name, instruction, and answer to be empty"
+            raise PydanticCustomError(
+                "decision_silent_fields_present",
+                "silent requires tool_name, instruction, and answer to be empty",
             )
         return self
 
@@ -206,6 +221,7 @@ class ThinkingDecision:
     episode_note: Optional[str] = None
     request_complete: Optional[bool] = None
     reasoning: Optional[str] = None
+    planning_reason: Optional[str] = None
 
 
 def request_is_complete(decision: ThinkingDecision) -> bool:

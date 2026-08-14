@@ -400,6 +400,14 @@ class _MonitorHealth:
     last_error: Optional[str] = None
 
 
+@dataclass(frozen=True)
+class _RegistryGroupSnapshot:
+    managed_ids: frozenset[str]
+    monitors: Tuple[Tuple[str, HeartbeatMonitor], ...]
+    health: Tuple[Tuple[str, _MonitorHealth], ...]
+    order: Tuple[str, ...]
+
+
 class HeartbeatMonitorRegistry:
     """Thread-safe, ordered registry with per-monitor failure isolation."""
 
@@ -449,6 +457,134 @@ class HeartbeatMonitorRegistry:
             monitor = self._monitors.pop(key, None)
             self._health.pop(key, None)
             return monitor
+
+    def replace_group(
+        self,
+        *,
+        managed_ids: Iterable[str],
+        monitors: Iterable[HeartbeatMonitor],
+    ) -> _RegistryGroupSnapshot:
+        """Atomically replace one caller-owned monitor group.
+
+        The returned token can be passed to :meth:`restore_group` if a later
+        persistence step fails. Unrelated and protected monitors are left
+        untouched.
+        """
+
+        managed = frozenset(
+            key
+            for key in (
+                str(value or "").strip() for value in managed_ids
+            )
+            if key
+        )
+        if not managed:
+            raise ValueError("managed heartbeat monitor ids must be non-empty")
+        replacements: list[Tuple[str, HeartbeatMonitor]] = []
+        replacement_ids: set[str] = set()
+        for monitor in monitors:
+            monitor_id = self._monitor_id(monitor)
+            if monitor_id not in managed:
+                raise ValueError(
+                    f"heartbeat monitor is outside managed group: {monitor_id}"
+                )
+            if monitor_id in replacement_ids:
+                raise ValueError(
+                    f"duplicate heartbeat monitor in managed group: {monitor_id}"
+                )
+            replacement_ids.add(monitor_id)
+            replacements.append((monitor_id, monitor))
+
+        with self._lock:
+            protected = managed.intersection(self._protected)
+            if protected:
+                raise ValueError(
+                    "heartbeat monitor group contains protected ids: "
+                    + ", ".join(sorted(protected))
+                )
+            snapshot = _RegistryGroupSnapshot(
+                managed_ids=managed,
+                monitors=tuple(
+                    (key, monitor)
+                    for key, monitor in self._monitors.items()
+                    if key in managed
+                ),
+                health=tuple(
+                    (key, health)
+                    for key, health in self._health.items()
+                    if key in managed
+                ),
+                order=tuple(self._monitors),
+            )
+            self._replace_group_locked(
+                managed=managed,
+                monitors=replacements,
+                health=None,
+            )
+            return snapshot
+
+    def restore_group(self, snapshot: _RegistryGroupSnapshot) -> None:
+        """Restore a group snapshot returned by :meth:`replace_group`."""
+
+        if not isinstance(snapshot, _RegistryGroupSnapshot):
+            raise TypeError("invalid heartbeat registry group snapshot")
+        with self._lock:
+            self._replace_group_locked(
+                managed=snapshot.managed_ids,
+                monitors=snapshot.monitors,
+                health=dict(snapshot.health),
+            )
+            restored_order = [
+                key for key in snapshot.order if key in self._monitors
+            ]
+            restored_order.extend(
+                key for key in self._monitors if key not in snapshot.order
+            )
+            self._monitors = {
+                key: self._monitors[key] for key in restored_order
+            }
+            self._health = {
+                key: self._health[key] for key in restored_order
+            }
+
+    def _replace_group_locked(
+        self,
+        *,
+        managed: frozenset[str],
+        monitors: Iterable[Tuple[str, HeartbeatMonitor]],
+        health: Optional[Mapping[str, _MonitorHealth]],
+    ) -> None:
+        replacements = tuple(monitors)
+        replacement_monitors = dict(replacements)
+        replacement_health = {
+            monitor_id: (
+                health[monitor_id]
+                if health is not None and monitor_id in health
+                else _MonitorHealth()
+            )
+            for monitor_id, _ in replacements
+        }
+
+        # Keep the managed group at the position of its first old member. If
+        # the group was absent, append it. restore_group additionally reapplies
+        # the exact pre-swap order after a failed settings commit.
+        ordered_monitors: Dict[str, HeartbeatMonitor] = {}
+        ordered_health: Dict[str, _MonitorHealth] = {}
+        inserted = False
+        for monitor_id, monitor in self._monitors.items():
+            if monitor_id in managed:
+                if not inserted:
+                    ordered_monitors.update(replacement_monitors)
+                    ordered_health.update(replacement_health)
+                    inserted = True
+                continue
+            ordered_monitors[monitor_id] = monitor
+            ordered_health[monitor_id] = self._health[monitor_id]
+        if not inserted:
+            ordered_monitors.update(replacement_monitors)
+            ordered_health.update(replacement_health)
+        self._monitors = ordered_monitors
+        self._health = ordered_health
 
     def protect(self, monitor_id: str) -> None:
         """Prevent a built-in monitor from being replaced or unregistered."""

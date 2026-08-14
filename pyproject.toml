@@ -41,6 +41,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+gmail = [
+    "google-api-python-client>=2.0,<3.0",
+    "google-auth-httplib2>=0.2,<1.0",
+    "google-auth-oauthlib>=1.2,<2.0",
+]
 acceptance = [
     "httpx>=0.27,<0.28",
     "pytest>=8.0,<9.0",

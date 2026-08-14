@@ -62,6 +62,7 @@ In the current implementation:
 | Health | `GET /` `GET /healthz` | 服务健康、运行参数、端点清单 | Service health, runtime metadata, endpoint map |
 | Auth | `POST /v1/auth/register` `POST /v1/auth/login` `GET /v1/auth/me` `POST /v1/auth/logout` | 用户注册、登录、会话信息、登出 | Registration, login, session inspection, logout |
 | User config | `GET /v1/users/me/config/schema` `PATCH /v1/users/me/config` | 当前用户可编辑配置元数据与更新接口 | Editable config metadata and patch API |
+| Observation settings | `GET/PUT /v1/users/me/settings/observation-monitors` | Gmail/arXiv 观察器配置、CAS 与热应用（advanced） | Gmail/arXiv monitor settings, CAS, and live apply (advanced) |
 | Image uploads | `POST /v1/chat/uploads/images` `GET /v1/chat/uploads/images/{upload_id}/content` | 上传图片、生成 caption 并读取原图 | Upload an image, generate a caption, and fetch its content |
 | Chat runs | `POST /v1/chat/runs` `GET /v1/chat/runs/{run_id}` `GET /v1/chat/runs/{run_id}/events` | 创建对话、获取结果、订阅 run 级事件 | Create run, fetch final result, subscribe to run events |
 | Thread events | `GET /v1/chat/threads/{thread_id}/events` | 线程级事件流 | Thread-level SSE stream |
@@ -892,11 +893,54 @@ Success response:
       "chat": ["chat_assistant_name", "chat_persona_prompt"],
       "model": []
     }
+  },
+  "application": {
+    "status": "applied",
+    "previous_runtime_retired": true,
+    "effective_on": "next_request"
   }
 }
 ```
 
-### 6.7a `POST /v1/chat/uploads/images`
+配置文件以原子替换方式写入；同时修改 `chat` 与 `model` 时，任一写入失败会恢复
+先前内容。成功后旧用户 runtime 会被回收，下一次请求按新配置懒创建 runtime。
+
+### 6.7a `GET/PUT /v1/users/me/settings/observation-monitors`
+
+用途 / Purpose:
+
+- 读取或应用 Gmail/arXiv Heartbeat Monitor 的公开配置
+- Read or apply the public Gmail/arXiv Heartbeat Monitor settings
+
+Auth / 鉴权:
+
+- required; current implementation requires role `advanced`
+
+`GET` 返回 `{config, revision, effective, health}`，并携带
+`ETag: W/"<revision>"`。`config` 不公开 owner、checkpoint 路径或 provider 运维字段。
+
+`PUT` 是 section-level patch，必须通过 `If-Match` 或
+`expected_revision` 提交 CAS revision：
+
+```json
+{
+  "expected_revision": "<revision>",
+  "config": {
+    "gmail_email": {
+      "enabled": true,
+      "poll_interval_seconds": 60,
+      "subject_keywords": ["release", "incident"]
+    }
+  }
+}
+```
+
+服务端绑定 owner 到当前认证用户，严格校验未知字段与范围。正常 CLI 模式会等待当前
+Heartbeat tick 结束，整组替换 Gmail/arXiv Monitor，并原子持久化；失败恢复旧组。
+使用 `--disable-observation-monitors` 启动时只保存并返回
+`application.status="restart_required"`。revision 冲突返回 `409`。
+
+### 6.7b `POST /v1/chat/uploads/images`
 
 上传单张图片并同步生成 caption。请求使用 `multipart/form-data`：
 
@@ -944,7 +988,7 @@ Content-Type: image/png
 上传本身不会创建 run 或 stimulus。Caption provider 未配置、不可用或返回空结果时，
 服务端返回 `503` 并清理本次文件；不应把 image upload 当成无 caption 的普通对象存储接口。
 
-### 6.7b `GET /v1/chat/uploads/images/{upload_id}/content`
+### 6.7c `GET /v1/chat/uploads/images/{upload_id}/content`
 
 返回上传的原始图片文件和对应 `Content-Type`。认证开启时仅 owner 可读取；未知 ID、
 其他用户的 ID 或缺失文件统一返回 `404`。调用方优先使用上传响应里的 `image_url`，
@@ -1205,6 +1249,14 @@ registered/display identity, while `actor_role` is the stable machine role.
 | `Stimulus_OBSERVATION_TRIGGER` | registered observation/monitor name | `work` |
 | `Thought` | registered Agent name | `think` |
 | `Action` | registered Agent name | `work`, or `assistant` for `reply_to_user` |
+
+In the production `single_call` runtime, every stimulus that reaches the
+Thinking layer produces one bounded planning `Thought` before its action, with
+`payload_ref="planning_reason:v1"`. A final
+`silent` decision still produces that Thought but has no following Action.
+An optional durable `episode_note` is stored as a separate Thought with
+`payload_ref="episode_note:v1"`; only that marker is eligible for episodic
+memory capture.
 
 For ordinary tools, `Action.text` is parseable JSON containing at least
 `tool_name` and `arguments`. The following
